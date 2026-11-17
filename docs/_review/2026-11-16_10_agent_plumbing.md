@@ -8,27 +8,14 @@ was sent nothing but `GET`, no model call was made, and no process that binds a
 port or launches a provider CLI was started. Nothing was written under `data/`
 or to a real memory directory.
 
-STATUS: IN PROGRESS. This file is written incrementally. Sections below the
-"Working notes" heading are candidate findings in the order found; the ranked
-summary, feature table, backlog table and streamlining section are written
-last. If you are resuming after a rollover: read "Progress log" first.
+STATUS: COMPLETE. 65 findings: 0 blocker, 1 high, 15 medium, 49 low. 17 of
+them are marked **latent**: they sit behind a flag that is off by default and
+off on this install (`agent_survive_restart_enabled`,
+`aider_restricted_adapter_enabled`) or in code that nothing constructs enabled.
+Lens letters: E efficiency, L coherent logic, M methodology.
 
-## Progress log
-
-- [ ] process_guard, process_ledger, process_sweep, windows_process_job
-- [ ] bg_job_liveness, background_tasks, background_model_policy, agent_jobs
-- [ ] agent_shim, agent_shim_adopt, agent_shim_client, agent_shim_completion(+retry), agent_shim_tramp
-- [ ] agent_spawn, agent_spawn_interactive, agent_uncertain_launch, agent_worktree_followup, agent_log_file, agent_log_maintenance
-- [ ] conversation_contract, conversation_store, conversation_views
-- [ ] execution_lifecycle, execution_policy, launch_marker, launch_transaction, isolated_launch
-- [ ] midturn_rollover, mid_turn_send, turn_clock
-- [ ] guardrail_hooks, fence_fail_closed, vendor_fence(+hook,+probe), vendor_context_sync
-- [ ] cli_install, cli_update, cli_update_retry, mac_update, claude_*, codex_*, aider_*
-- [ ] attend_once_*, caller_attribution, resume_*, state, transform_*, pty_backend
-- [ ] blueprints: agent_router_stats_routes, claude_import_routes, cli_update_routes
-- [ ] backlog cross-check
-- [ ] prior audits still open
-- [ ] final tables
+Written incrementally, one commit per section. Order: ranked summary, feature
+table, backlog cross-check, streamlining, earlier audits, detail, coverage.
 
 ## Scope note
 
@@ -37,7 +24,200 @@ last. If you are resuming after a rollover: read "Progress log" first.
 `mc/blueprints/agent_mail_*_routes.py` modules are taken to be pass 05b's
 (its report is not in this checkout); they are not read here.
 
-## Working notes (candidate findings, in the order found)
+## Ranked summary
+
+Block the next release on rank 1. Ranks 2 to 5 are the ones a user or an agent
+meets without doing anything unusual. Ranks 6 and 7 are measured waits of
+12 and 27 seconds. Nothing below rank 16 should hold anything up.
+
+| Rank | Id | Finding | Lens | Severity |
+|---|---|---|---|---|
+| 1 | AP1 | The process guard hook lets through seven ordinary spellings of an image-name kill and seven of a listener-PID kill (measured): the binding process-hygiene rule is enforced for the documented spellings only | L | high |
+| 2 | AP37 | An "ambiguous" launch failure refuses every later turn of that conversation for good, nothing clears the marker, and three of four ordinary spawn refusals are classed ambiguous on Windows (measured) | L | medium |
+| 3 | AP46 | The daily CLI updater checks "in use" once and then replaces the binary for up to 10 minutes with no launch interlock; a session started in that window fails in exactly the way AP37 makes permanent | L | medium |
+| 4 | AP39 | Any tool result whose text contains the background-announcement phrase is recorded as a background job (measured, and seen live in this session's own rollover block) | L | medium |
+| 5 | AP40 | After a mid-turn rollover a dispatched worker is told its only brief is "historical; may be long finished, not the current task" (seen live) | L | medium |
+| 6 | AP60 | A resume whose transcript is missing repeats one search once per agent worktree: 12.5 s inside the dispatch request, against 0.05 s for the one lookup that already covered everything (measured) | E | medium |
+| 7 | AP52 | "Import from Claude Code" reads every transcript directory before discarding agent worktrees: 26.7 s for 5,718 directories on a request thread (measured) | E | medium |
+| 8 | AP5 | On Windows, an interpreter path with a space makes the guard hook a parse error under PowerShell, which Codex and Gemini read as "allow" (measured) | L | medium |
+| 9 | AP43 | The vendor context mirror (`AGENTS.md` and its siblings) is written into an isolated worktree, which then reads as dirty in any project that does not ignore those names | L | medium |
+| 10 | AP4 | The "never kill the Clayrune listener" half of the guard finds no listener on Linux or macOS, and none on a port set only in `config.json` (with AP33) | L | medium |
+| 11 | AP6 | The split-brain guard recognises a live prior server only when its image starts with `python`; the packaged macOS app is not that, so a second launch reaps the first one's children | L | medium |
+| 12 | AP50 | The macOS swap helper decides "the new app is up" through a route that makes two GitHub requests first; on a slow or offline network a good update is rolled back | L | medium |
+| 13 | AP24 | With survive-restart switched on, nothing is ever adopted: the reader allowlist is empty by design, so the flag buys a shim and a checkpoint write every 1 to 3 s and no surviving session (latent) | L | medium |
+| 14 | AP58 | The daily updater upgrades Aider; the restricted Aider adapter refuses any version but the pinned one. With both on, unattended Aider stops the first day a release ships (latent) | L | medium |
+| 15 | AP16 | A draining older shim writes its manifest over the newer shim's on exit; reconnect and adoption then see dead PIDs (latent) | L | medium |
+| 16 | AP20 | On macOS the shim log tail launches `ps` about 20 times a second per running agent while a turn is quiet (latent, read) | E | medium |
+| 17 | AP34 | `snapshot()` is used as a read and rewrites the whole agent log (up to 2.1 MB here) every time; deleting a plan rewrites every project's log | E | low |
+| 18 | AP38 | Each turn start parses the whole agent log three times under the project lock (about 14 ms plus a 1.6 MB rewrite here, measured) | E | low |
+| 19 | AP57 | Half of Codex mid-turn usage ticks are recorded "unavailable" (2,674 against 2,635 complete, measured) because the tick must match the allowance sample's time exactly | L | low |
+| 20 | AP47 | A failed `--version` is parsed as a version when its error text holds three dotted numbers: a hung CLI under an nvm path reads as installed and current (measured) | L | low |
+| 21 | AP41 | A queued follow-up is popped before delivery; an exception in delivery loses it with nothing in the chat | L | low |
+| 22 | AP33 | The spawn factory exports `CLAYRUNE_PORT`, the guard reads only `MC_PORT`, and `server.py` never sets it (second half of AP4) | L | low |
+| 23 | AP2 | The guard matches the whole command text, so a search for, or a commit message quoting, a blocked spelling is refused (measured, and hit twice by this review) | L | low |
+| 24 | AP55 | A failed Claude usage read is never cached: every caller pays the 6 s timeout again while the endpoint is down, including the dispatch pace check | E | low |
+| 25 | AP44 | Every unattended launch re-proves the fence from scratch: one interpreter launch for Claude, a 2,000-module source walk plus four launches for Gemini and Qwen, per spawn | E | low |
+| 26 | AP8 | The orphan sweep's dead-chain walk passes through a live shell, so an idle interactive CLI in a console whose launcher exited meets all five criteria | L | low |
+| 27 | AP9 | Sweep criterion 1 is met by any process whose command line contains a CLI package directory | L | low |
+| 28 | AP31 | A shim launch that misses its deadline with no manifest leaves a marker that blocks every later spawn until a file is deleted by hand (latent) | L | low |
+| 29 | AP32 | A capture stream not closed in 10 s is settled as failed and the shim is still launched on the partial prompt (latent) | L | low |
+| 30 | AP15 | The shim's lifetime loop can block for ever on the send lock held by a write to a hung CLI; the orphan timeout then never fires (latent) | L | low |
+| 31 | AP28 | The completion retry skips a live session with an owed stamp until the session is evicted (latent) | L | low |
+| 32 | AP23 | `ShimProc.kill` checks identity and then calls the unchecked tree kill; with no recorded create time Stop silently does nothing (latent) | L | low |
+| 33 | AP21 | `send` after a second timeout keeps the socket and the sequence number; a late ACK then confirms the wrong payload (latent, not reachable from the server today) | L | low |
+| 34 | AP17 | A oneshot shim is tree-killed 12 hours after a restart whether or not it was adopted (latent) | L | low |
+| 35 | AP18 | The shim manifest is written from several threads through one temp name with no lock (latent; same pattern as pass 1 C1) | M | low |
+| 36 | AP25 | Nothing ever deletes a shim session directory; `out.log` is append-only and every boot re-reads all of them (latent) | E | low |
+| 37 | AP22 | `LogTail._cut` is quadratic on a long line: 0.78 s for one 8 MB line (measured, latent) | E | low |
+| 38 | AP26 | Two per-launch maps in the adopter grow for the life of the process (latent) | E | low |
+| 39 | AP30 | On POSIX a failed `exec` in the trampoline writes nothing; the server waits the whole ready timeout (latent) | L | low |
+| 40 | AP36 | Every conversation-store call opens a connection and re-validates the schema (latent: the store is off) | E | low |
+| 41 | AP35 | The provider-neutral conversation journal is constructed with `enabled=False` and about 2,100 lines run only under test (store half of pass 1 L1) | L/M | low |
+| 42 | AP13 | `"timeout_minutes": "nan"` on the job route removes the job's time cap (measured arithmetic) | L | low |
+| 43 | AP11 | The job table is never pruned and keeps every `Popen` handle for the life of the server | E/L | low |
+| 44 | AP12 | `_tail` reads a whole job log to return its last 4 KB | E | low |
+| 45 | AP14 | A non-string `shell` on the job route is a 500 | L | low |
+| 46 | AP48 | A registered process whose command line contains a dot-directory named after a CLI blocks that CLI's update for as long as it lives | L | low |
+| 47 | AP49 | The CLI-update POST runs the whole pass, up to minutes, on the request thread | E | low |
+| 48 | AP51 | A crash during a macOS update download leaves a hidden staging directory of a few hundred megabytes that nothing sweeps | E | low |
+| 49 | AP53 | The import scan offers every folder a CLI was ever started in: 188 candidates here (product note) | L | low |
+| 50 | AP54 | One non-numeric counter in any router-stats file makes the aggregate route return 500 | M | low |
+| 51 | AP56 | The Claude version probe inherits stdin; on a console-less server the model floor is silently not applied | M | low |
+| 52 | AP61 | `recorded_cwd` JSON-decodes a whole transcript when the provider never records a directory | E | low |
+| 53 | AP3 | The guard runs a `netstat` subprocess (53.5 ms, measured) on every shell tool call before it knows a PID kill is present | E | low |
+| 54 | AP10 | The background-job liveness scan's 3 s budget is checked between processes only, on the stream-reader thread | E | low |
+| 55 | AP7 | Three bare `except` on the child-PID ledger's read and write | M | low |
+| 56 | AP27 | `_holds_work` reads a failed job-table lookup as "holds nothing"; its sibling fails closed and logs | M | low |
+| 57 | AP19 | A spec without a usable `argv` kills the shim with no `exit.json` | M | low |
+| 58 | AP29 | General workflow idle-run recovery lives in a shim-named module and would go with it | M | low |
+| 59 | AP62 | The Windows PTY close tree-kills after terminating the root, so the tree kill can only be a no-op | L | low |
+| 60 | AP63 | The third branch of the transform kill helper is unreachable | M | low |
+| 61 | AP64 | `state.py`'s docstring states a rule the module no longer follows | M | low |
+| 62 | AP65 | Every transform HTTP call builds a new session, so no connection is reused | E | low |
+| 63 | AP59 | The audited Aider version is a literal in three files | M | low |
+| 64 | AP42 | One `print` where the module's diagnostics should use the server log | M | low |
+| 65 | AP45 | The CLI whose version decides fence `onFailure` support is taken to be `argv[0]` (question, not a defect) | L | low |
+
+One open question that is not a finding: **Q1** (`vendor_fence_hook.py:24-30`),
+whether Qwen's native edit tool is named `edit`, which the alias table does not
+map. See N18.
+
+## Feature table (lens 4)
+
+Main path and most likely failure path traced in the code for each. "Latent"
+means the feature is behind a flag that is off by default.
+
+| # | Feature | Entry point | Verdict |
+|---|---|---|---|
+| 1 | Process-hygiene guard hook on all four vendors | `process_guard.py:80-113`, installed by `guardrail_hooks.py` | Works with a defect: AP1 (bypass spellings), AP5 (spaced interpreter path on Windows), AP4 and AP33 (listener half off Windows and on a config-only port) |
+| 2 | Boot-time reap of the previous server's children | `process_ledger.py:147-205` | Works with a defect: AP6 (packaged macOS app) |
+| 3 | Orphaned-CLI sweep (Windows) | `process_sweep.py:350-405`, `system_routes.py:347-409` | Works as documented. AP8 and AP9 are narrowings for the owner to accept or not; a no-op off Windows, as documented |
+| 4 | Kill-on-close job for child trees (Windows) | `windows_process_job.py` | Works as documented |
+| 5 | Long job route with a wake-up turn | `agent_routes.py:1956-2060`, `agent_jobs.py:186-289` | Works with a defect: AP13 (NaN removes the cap), AP11, AP14 |
+| 6 | Background task and job tracking for the rollover block | `background_tasks.py`, `bg_job_liveness.py` | Works with a defect: AP39 (phantom jobs) |
+| 7 | Mid-turn context rollover with a carried state block | `midturn_rollover.py:336-576` | Works with a defect: AP40 (wrong label on a worker's only brief), AP39. This review was rolled over several times by it and resumed each time |
+| 8 | Send while a turn is running (steer or queue) | `mid_turn_send.py:73-171` | Works with a defect: AP41 |
+| 9 | Turn clock stamp and gap briefing | `turn_clock.py` | Works as documented |
+| 10 | Launch transaction and uncertain-launch protection | `launch_transaction.py:60-290` | Works with a defect: AP37 (the protection has no exit) |
+| 11 | Isolated agent launches never run in the shared tree | `isolated_launch.py:142-159`, `agent_worktree_followup.py` | Works as documented |
+| 12 | Spawn factory (plain `Popen` path, flag off) | `agent_spawn.py:379-389` | Works as documented |
+| 13 | Agent runs survive a server restart (latent) | `agent_shim*.py`, `agent_spawn.py:398-473` | Cannot work as written: AP24. The shim launches and logs; no session is ever adopted, so nothing survives. Also AP15, AP16, AP20, AP31 |
+| 14 | Fail-closed fence for unattended Claude launches | `fence_fail_closed.py:270-295`, `launch_marker.py:56-100` | Works as documented (cost: AP44) |
+| 15 | Fence for unattended Codex, Gemini and Qwen | `vendor_fence.py:47-175`, `vendor_fence_hook.py` | Works as documented for Codex and Gemini; Qwen's edit tool name could not be determined (Q1: Qwen may not be launched by this pass) |
+| 16 | Project context mirrored for non-Claude engines | `vendor_context_sync.py:60-101` | Works with a defect: AP43 |
+| 17 | Daily update of the agent CLIs | `cli_update.py:330-420`, `system_routes.py:412-459` | Works with a defect: AP46, AP47, AP48. Live state: three CLIs current, one waiting on an in-use binary, two not installed |
+| 18 | In-place update of the macOS app | `mac_update.py:500-568`, `system_routes.py:2560-2628` | Could not determine: no macOS host. Read: sound gates, one defect (AP50) |
+| 19 | Import projects from Claude Code | `claude_import_routes.py:31`, `claude_projects_scan.py:150-213` | Works with a defect: AP52 (27 s here) |
+| 20 | Router statistics aggregate | `agent_router_stats_routes.py` | Works with a defect: AP54 |
+| 21 | Model floor by Claude CLI version | `claude_cli_min_version.py` | Works as documented (AP56 on a console-less server) |
+| 22 | Claude usage limits source | `claude_usage_source.py:78-139` | Works with a defect: AP55 |
+| 23 | Codex live usage and mid-turn usage ticks | `codex_live_usage.py`, `codex_usage_checkpoint.py` | Works with a defect: AP57 (half the ticks unavailable) |
+| 24 | Codex run errors shown in the chat | `codex_run_error.py` | Works as documented |
+| 25 | Restricted Aider adapter (latent) | `aider_launch.py`, `aider_runner.py`, `aider_guard.py` | Could not determine live: Aider is not installed here. Read: fails closed correctly; one defect (AP58) |
+| 26 | Allow-once pass and replay | `attend_once_pass.py`, `attend_once_replay.py` | Works as documented |
+| 27 | Caller attribution (who is calling a route) | `caller_attribution.py` | Works as documented |
+| 28 | Resume in the right directory, with the right context | `resume_cwd.py`, `resume_context.py`, `resume_target.py` | Works with a defect: AP60 (12.5 s on a miss) |
+| 29 | Deadlines and sandbox for tool-free transforms | `transform_*.py` | Works as documented |
+| 30 | Terminal pop-out PTY | `pty_backend.py` | Works as documented (AP62 is a dead step, not a failure) |
+| 31 | Agent log transaction and snapshot | `agent_log_file.py` | Works with a defect: AP34 (cost) |
+| 32 | Provider-neutral conversation journal | `conversation_store.py`, `execution_lifecycle.py` | Cannot work as written: AP35. Constructed disabled; no user-facing effect either way |
+
+Totals: 13 work as documented, 15 work with a defect, 2 cannot work as written
+(both off by default), 2 could not be determined.
+
+## Backlog cross-check
+
+Read 2026-11-16 by `GET`: 95 items are open, in_progress or blocked. Eleven
+have their subject in this region. Items whose subject is another region's
+file were left to that pass even where they touch a module here (MC-1178
+rollover threshold, MC-1146 continuity block, MC-1109 keep-awake, MC-1016
+restart child, MC-1014 nvm path, MC-1030 install gate). No item was patched
+or noted.
+
+| Key | Status | Subject | Class | Evidence |
+|---|---|---|---|---|
+| MC-1160 | in_progress | Restart blockers list open jobs | DONE | `system_routes.py:1736-1746` emits a `job_running` row per open job. Left: the owner's look at the Restart dialog |
+| MC-1161 | in_progress | Adoption refuses sessions owning jobs | DONE | `agent_shim_adopt.py:812-820`, `:834` (fails closed, logs); dialog text at `static/js/update-power.js:280`; commit `663a305d`, merge `7b9fdbff` is an ancestor. The adoption half cannot be UI-tested while AP24 holds; the dialog text can. AP27 is a loose end in the same function family |
+| MC-1102 | in_progress | Qwen standalone install updatable | DONE | `cli_install.py:92-93`, `:124-125`; `cli_update.py:218-222`, `:260-261`. Live update state: Qwen installed equals latest, status `up_to_date`, two minor versions past the one the item names. Nothing left to build |
+| MC-1017 | blocked | Stop must not kill server | DONE in code, NEEDS A HUMAN | `mc/proc_kill.py:1-22`; the shim keeps the same own-group rule without importing it (`agent_shim.py:259-266`, `:348`, `:362`) and spawns the CLI as a session leader (`:569`). Left: the Linux machine test the item names |
+| MC-1150 | in_progress | Agent runs survive server restart | PARTLY DONE | P1 to P4 are on master (the item's own state line). What it calls "pending a live proof and the decision to turn it on" cannot pass as written: `agent_shim_adopt.py:69` is an empty allowlist, so `assess` refuses every session (`:506-509`) and nothing is adopted (AP24). Smallest next step: make one reader path restorable, or record that the flag keeps nothing alive yet. Before any live proof also fix AP16 and AP31 |
+| MC-1149 | in_progress | Rollover must not kill jobs | PARTLY DONE | Phase 1 is on master (`b68e951c` is an ancestor; `midturn_rollover.py:415`). It has a defect the item does not know about: AP39 lists jobs that never existed and tells the agent to check their output files; AP40 sits in the same block. Phase 2 stays conditional. This review started no long job outside the job route, so its rollovers are no evidence either way on the original loss |
+| MC-1136 | in_progress | Restricted Aider adapter, default off | DONE in code, one new defect | Adapter and pin are on master (`aider_source_pin.py:11-51`, `vendor_fence.py:56-78`). Before the owner turns it on: AP58, the daily updater will move Aider off the pinned version. Left: the owner's test |
+| MC-998 | in_progress | Codex usage sampling calibration | PARTLY DONE | The item records "118 complete, monotonic" ticks. Over the whole store the count is 2,635 complete against 2,674 unavailable (measured, AP57): complete ticks are correct, half are missing. Smallest fix is in AP57 |
+| MC-975 | blocked | Codex unattended sandbox on Windows | NEEDS A HUMAN, reopen condition met | The item is parked "until codex-cli upgrades" from the version that crashed. The live update state shows Codex nine minor versions newer. The elevated probe the item names can be rerun; only the owner can run it |
+| MC-1004 | blocked | Per-action allow, block, approve rules | NEEDS A HUMAN | Nothing built: no rules store in `mc/` or `steward/` (grep). The reusable piece exists and is sound (`attend_once_pass.py`, `attend_once_replay.py`). Waits on product decisions |
+| MC-1174 | open | Stop check for multi-unit plans | NOT DONE | No stop check exists (grep for the terms finds one unrelated docstring). Not the same defect as any finding here |
+
+Classed DONE: MC-1160, MC-1161, MC-1102, and MC-1017 and MC-1136 in code
+(each still carries a human test). None classed OBSOLETE or DUPLICATE.
+
+## Streamlining
+
+Callers were checked by grep over `mc/`, `server.py`, `app.py`, `tools/`,
+`steward/` and `tests/`, not guessed.
+
+| # | What | Where | Evidence | Lines |
+|---|---|---|---|---|
+| ST1 | The conversation journal is built disabled | `conversation_store.py` (1,478), `conversation_contract.py` (102), `conversation_views.py` (107), `execution_lifecycle.py` (421) | The only constructor call passes `enabled=False` (`server.py:1070-1072`); every service entry returns first when disabled; `conversation_views` has no importer outside tests; the legacy attempt API (`:523-655`), the five migrations (`:346-482`) and the capture pipeline (`:1209-1380`) have no caller even with the service on (AP35) | about 2,100 if parked on a branch; about 550 (legacy API, migrations, capture pipeline, views) with no decision needed |
+| ST2 | Adoption code that only tests run | `agent_shim_adopt.py:640-803` | `RESTORABLE_READER_PATHS` is empty and only tests add to it (AP24) | 165, if the reader path is not going to be finished |
+| ST3 | Unreachable third branch of the transform kill | `transform_process_deadline.py:36-52` | Both callers are in the file and always pass `job` or `pgid` (AP63) | 17 |
+| ST4 | Dead tree-kill step on PTY close | `pty_backend.py:226-240` | The root is already terminated (AP62); reorder or delete | 14 |
+| ST5 | Three readers of the Claude `--version` text | `cli_update.py:151`, `claude_cli_min_version.py:74-91`, `fence_fail_closed.py:96`, `:136` | Three regexes, three subprocess wrappers, three caches; AP47 and AP56 are each a bug one copy has and another does not | about 40 |
+| ST6 | Two `git` runners | `turn_clock.py:249-254`, `midturn_rollover.py:394-398` | Same job; one has the no-stdin, no-window flags, the other does not | about 10 |
+| ST7 | Candidate loop that can only repeat a miss | `resume_cwd.py:125-138` | The runtime lookup already covers every worktree transcript directory (AP60) | about 10, and 12 s |
+| ST8 | Two answers to "does this session own a job" | `agent_shim_adopt.py:558-559`, `:812-820` | AP27 | about 8 |
+| ST9 | The audited Aider version as three literals | `aider_launch.py:44`, `aider_runner.py:56`, `aider_source_pin.py:11` | AP59 | 2 |
+| ST10 | Incident narrative carried in docstrings | `guardrail_hooks.py` (about 330 of 493 lines) | The same measurements are in the evidence doc the docstrings cite | about 300 comment lines |
+
+Flags that are one value everywhere: `agent_survive_restart_enabled` (default
+False, absent from this install's config) gates about 3,100 lines of shim
+family; `aider_restricted_adapter_enabled` (default off) gates about 460; the
+lifecycle service's `enabled` is a literal False. None is a deletion candidate
+without a product decision; they are listed so the carrying cost is visible.
+
+Total with no decision needed: about 650 code lines plus about 300 comment
+lines. With the two decisions (park the journal, drop the unfinished adoption
+path): about 2,350 code lines.
+
+## Earlier audits: what is still open in this scope
+
+- `docs/_review/2026-09-10_efficiency.md` **E3** (the agent log has no cache;
+  several parse-and-write cycles per dispatch) is still open. AP34 and AP38
+  are the same cost seen from `agent_log_file.py` and `launch_transaction.py`,
+  with this pass's measurements.
+- `docs/_review/2026-09-10_security.md` section 0 (six different "is this
+  unattended" detectors): the modules in this region all read one set,
+  `launch_marker.UNATTENDED_TRIGGER_TYPES` (`vendor_fence.py:42-43`,
+  `fence_fail_closed.py:75-77`, `launch_marker.py:72`, `:97`). Nothing to add.
+  That review's F6 is in `steward/fence.py`, not in this region.
+- `docs/ENTANGLEMENT_AUDIT.md` names `mc/state.py` only as an identity risk
+  for a route split; AP64 is the docstring side of that. No other file in this
+  region is listed there.
+- Earlier 2026-11-16 passes, other halves named in the detail: pass 1 **S2**
+  (AP6), **C1** (AP18), **L1** (AP35); pass 2 **R59** (AP43). The reports for
+  passes 05b, 06a, 06b, 09 and B14 are not in this checkout and were not read.
+
+## Detail (working notes, in the order the files were read)
 
 ### N1. `mc/process_guard.py` (113 lines, read fully)
 
@@ -54,8 +234,9 @@ last. If you are resuming after a rollover: read "Progress log" first.
   `Stop-Process -Id 111,4242`, and any indirect form (`kill $(lsof -ti :port)`).
   Fix: for PID patterns, find the command word and then scan every integer
   in that command segment; add `-ProcessName`, `/FI ... IMAGENAME`, and the
-  `kill`/`spps` aliases on the right of a `Get-Process`/`gps` pipe. Tests:
-  `tests/test_process_guard*.py` to be checked for these spellings (see N-tests).
+  `kill`/`spps` aliases on the right of a `Get-Process`/`gps` pipe.
+  `tests/test_process_guard.py` holds none of these spellings (grep), so no
+  existing test catches it.
 - **AP2 (L, low) `process_guard.py:21-25`** — the patterns run over the whole
   command text, so a command that only MENTIONS a blocked spelling is refused:
   `grep -rn "pkill" docs/` and a `git commit -m` whose message quotes the
@@ -114,7 +295,9 @@ last. If you are resuming after a rollover: read "Progress log" first.
   (`app.py` boots with `check_port=False` and no bind first). Fix: compare
   against the ledger writer's own recorded image (store `mc_image` and
   `mc_create_time` beside `mc_pid` at `:122-123`) instead of a name prefix.
-  Read, not measured. `tests/test_process_ledger*.py` to check.
+  Read, not measured. `tests/test_process_ledger.py` covers the identity
+  match (`:138-140`) and has no case with a non-`python` server image, so it
+  cannot catch this.
 - **AP7 (M, low) `process_ledger.py:124-125`, `:161-162`, `:204-205`** —
   three bare `except Exception: pass/return` on a state-file write and read.
   Project policy says these log. A ledger that silently stops being written
@@ -644,8 +827,8 @@ carry live evidence: the state block this session was handed.
   `--version` under an nvm prefix is reported healthy and current for 23
   hours, every day. The same reader produces `installed_after` (`:358`), so a
   binary broken by an update can read as "updated". Fix: `_ver(out) if rc ==
-  0 else None`. `tests/test_cli_update*.py` to check; the stubs return clean
-  version strings.
+  0 else None`. `tests/test_cli_update.py` stubs return clean version strings
+  (`:36-46`), so no existing test catches it.
 - **AP48 (L, low) `system_routes.py:427-434`** (the in-use probe this module
   is given) — a registered process counts as "using" a CLI when the CLI's
   name appears as a word in its name or command preview, and a path segment
@@ -922,4 +1105,48 @@ carry live evidence: the state block this session was handed.
   the neutral directory keeps project context out of a tool-free transform
   (`transform_sandbox.py:41-62`).
 
-<!-- APPEND-HERE -->
+## Coverage
+
+In scope: 65 modules under `mc/` (15,769 lines) and three route modules under
+`mc/blueprints/` (128 lines).
+
+- **Read fully (62 modules, 13,768 lines, plus the three route modules):**
+  `process_guard`, `process_ledger`, `process_sweep`, `windows_process_job`,
+  `guardrail_hooks`, `bg_job_liveness`, `background_tasks`,
+  `background_model_policy`, `agent_jobs`, `agent_shim`, `agent_shim_client`,
+  `agent_shim_adopt`, `agent_shim_completion`, `agent_shim_completion_retry`,
+  `agent_shim_tramp`, `agent_spawn`, `agent_spawn_interactive`,
+  `agent_uncertain_launch`, `agent_worktree_followup`, `agent_log_file`,
+  `agent_log_maintenance`, `conversation_views`, `launch_transaction`,
+  `launch_marker`, `isolated_launch`, `execution_policy`, `midturn_rollover`,
+  `mid_turn_send`, `turn_clock`, `fence_fail_closed`, `vendor_fence`,
+  `vendor_fence_probe`, `vendor_fence_hook`, `vendor_context_sync`,
+  `cli_update`, `cli_update_retry`, `cli_install`, `mac_update`,
+  `claude_projects_scan`, `claude_cli_min_version`, `claude_resume_snapshot`,
+  `claude_signin_channel`, `claude_usage_source`, `codex_live_usage`,
+  `codex_usage_checkpoint`, `codex_run_error`, `aider_guard`, `aider_launch`,
+  `aider_runner`, `aider_source_pin`, `attend_once_pass`, `attend_once_replay`,
+  `caller_attribution`, `resume_context`, `resume_cwd`, `resume_target`,
+  `state`, `transform_deadline`, `transform_http_deadline`,
+  `transform_process_deadline`, `transform_sandbox`, `pty_backend`;
+  `blueprints/agent_router_stats_routes`, `blueprints/claude_import_routes`,
+  `blueprints/cli_update_routes`.
+- **Read partly:** `conversation_store.py` lines 178-300, 485-522, 762-850 and
+  1385-1478 (344 of 1,478), plus the call sites of every public method. The
+  rest was not read line by line: the store is unreachable at run time (AP35).
+- **Structure level only:** `conversation_contract.py` (102) and
+  `execution_lifecycle.py` (421), for the same reason.
+- **Followed into other regions only as far as a finding needed:** the job
+  route, the send route, the model-pin and plan-delete call sites and the
+  context-sync call site in `agent_routes.py`; the sweep, CLI-update daemon,
+  restart-blocker and update-status routes in `system_routes.py`; the
+  transcript lookup in `agent_runtime.py:2520-2550`; `local_auth.py:271-291`;
+  `runtime_lifecycle_service.py`; `proc_kill.py:1-60`.
+- **Not reached:** the `mc/agent_mail_*.py` modules (55 files) and their route
+  modules, taken to be pass 05b's. Tests were read only where a finding asks
+  "would a test catch this". No macOS or Linux host, no Qwen and no Aider were
+  available, so every finding about those is read, not measured, and says so.
+
+Measured in scratch scripts or by read-only counts: AP1, AP2, AP3, AP5, AP13,
+AP22, AP34 (file sizes), AP37, AP38, AP39, AP47, AP52, AP57, AP60. Seen live in
+this session: AP2, AP39, AP40. Everything else is read, not measured.
