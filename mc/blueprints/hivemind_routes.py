@@ -639,6 +639,22 @@ def hivemind_create():
     if type(project_generation) is not int or project_generation < 1:
         return jsonify({'error': 'project generation unavailable: invalid generation'}), 409
 
+    # MC-1179 OS28: when a decompose will be dispatched (no inline workstreams),
+    # an orchestrator engine that cannot resolve (unknown provider, a model that
+    # belongs to another vendor) is refused here, before a run exists, not as a
+    # 500 from the dispatch after the manifest saved.
+    if not data.get('workstreams'):
+        try:
+            _orch_p = data.get('orchestrator_provider') or ''
+            engine_selection.resolve_engine(
+                state.CONFIG, p, provider_override=_orch_p,
+                model_override=data.get('orchestrator_model', 'sonnet' if (
+                    _orch_p or p.get('provider') or state.CONFIG.get('default_provider')
+                    or 'claude') == 'claude' else ''),
+                legacy_default='claude')
+        except engine_selection.EngineSelectionError as exc:
+            return jsonify({'error': str(exc)}), 400
+
     hivemind_id = 'hm_' + str(uuid.uuid4())[:8]
     _hm_ensure_dirs(hivemind_id)
 
@@ -1230,7 +1246,19 @@ def _hm_dispatch_orchestrator(hivemind_id, task_type, extra_context=''):
         if hivemind_id in _hivemind_orchestrating:
             return None
         _hivemind_orchestrating.add(hivemind_id)
+    try:
+        return _hm_dispatch_orchestrator_claimed(hivemind_id, task_type, extra_context)
+    except BaseException:
+        # MC-1179 OS28: anything raised between taking the slot and starting the
+        # worker thread (an engine selection error, a failed project load) used
+        # to leave the id in the set until restart.
+        with _hivemind_orch_lock:
+            _hivemind_orchestrating.discard(hivemind_id)
+        raise
 
+
+def _hm_dispatch_orchestrator_claimed(hivemind_id, task_type, extra_context=''):
+    """Body of _hm_dispatch_orchestrator once the orchestrator slot is held."""
     manifest = _hm_load_manifest(hivemind_id)
     if not manifest:
         with _hivemind_orch_lock:

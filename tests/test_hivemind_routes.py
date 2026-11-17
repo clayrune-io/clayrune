@@ -882,3 +882,25 @@ class TestPathSafeIds:
     def test_a_traversal_hivemind_id_is_not_found(self, client):
         assert client.get('/api/hivemind/..%2f..%2fx').status_code == 404
         assert client.hm._hm_load_manifest('../x') is None
+
+
+# ── MC-1179 OS28: the orchestrator slot and the create-time engine check ─────
+
+class TestOrchestratorSlot:
+    def test_create_refuses_an_orchestrator_engine_that_cannot_resolve(self, client):
+        before = set(p.name for p in client.hm_dir.iterdir())
+        r = client.post('/api/hivemind/create', json={
+            'goal': 'g', 'project_id': 'thm', 'orchestrator_provider': 'no-such-vendor'})
+        assert r.status_code == 400
+        assert set(p.name for p in client.hm_dir.iterdir()) == before
+
+    def test_an_engine_error_frees_the_orchestrator_slot(self, client, monkeypatch):
+        hm_id = _create(client)['hivemind']['id']
+        from mc import engine_selection as es
+
+        def boom(*a, **k):
+            raise es.EngineSelectionError('model belongs to another provider')
+        monkeypatch.setattr(es, 'resolve_engine', boom)
+        with pytest.raises(es.EngineSelectionError):
+            client.hm._hm_dispatch_orchestrator(hm_id, 'synthesize')
+        assert hm_id not in client.state._hivemind_orchestrating
