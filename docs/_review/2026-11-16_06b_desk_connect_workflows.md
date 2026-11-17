@@ -358,3 +358,64 @@ Read fully: `custom_connection_{store,service,operation,activation,guard,removal
 - sound: the launch gate refuses before the wrapper reads any secret; the approval
   fingerprint binds the request id; the store fails closed (`StoreUnreadable`); removal
   only deletes a direct child of the managed root and refuses links.
+
+### Desk Connect: working notes, batch 3 (candidates, not yet ranked)
+
+Read fully: `remote_mcp_{transport,bridge,activation,check,operation,service,observed}`,
+`github_{connection,activation,start_check,required_keys,install_output,manifest,start_command,install_steps}`,
+`custom_npm_{closure,edges,registry,node_paths}`.
+
+- cand DC-g (medium, L; MEASURED): `github_start_check.handshake` raises `AttributeError` on a
+  JSON-valid answer of the wrong shape from the just-started repository server (`:186` error is a
+  string, `:187` result is a string or `serverInfo` is a list, `:197` tools/list error is a
+  string). Four shapes measured with a scratch stdio server; each raised. `custom_connection_service.commit`
+  calls it at `:303` after the record is `registered` and the MCP config is written, with no
+  `try`; the route (`desk_connect_custom_routes.py:124-126`) turns it into 500 "could not save".
+  The connection IS saved and registered; no start check is recorded; `_done` is not set, so a
+  retry of the same Save is refused as "repository changed since Review" (`:268-270`, the
+  installed output now differs from the source inventory).
+- cand DC-h (medium, L; read): a GitHub clone made by `stage` is never removed. `_stages`
+  (`github_connection.py:27, 67-70`) drops the record at 50 entries or 30 minutes; nothing in
+  `mc/desk_connect/` calls `mcp_installer.cleanup_staged` (only `mcp_routes.py:411`, the older
+  installer). Abandoned stages, stages that fail mid-way (`:38-47`), and the directory of an
+  approval that a re-approval replaced all stay on disk. Also: a failed install step leaves
+  partial output in the clone, after which `checked_stage` (`:90`) and `check_submission`
+  (`custom_connection_service.py:268`) both refuse it for good ("Enter the address again"), so
+  every failed Save costs a new clone and leaks the old one.
+- cand DC-i (medium, L; read): Python repositories. `github_install_steps.dependencies` (`:39`)
+  takes `mcp_installer.install_commands`, which for a Python repo is `[sys.executable, '-m',
+  'pip', 'install', ...]` (`mcp_installer.py:846-848`) or bare `uv sync`. No virtual environment
+  is made (grep: none). The step therefore installs a stranger's requirements into the
+  interpreter environment the Clayrune server itself runs from, and the server is then started
+  with whichever `python` is first on PATH (`github_activation.resolve_command`), which need not
+  be that interpreter. The card shows the argv but not where it installs. The step also runs
+  with `script_env` (`custom_npm_scripts.py:31-50`): PATH is the node folder plus system
+  folders, HOME a temp directory that is deleted afterwards, so on POSIX a bare `uv` outside
+  `/usr/local/bin` is not found and a `--user` fallback install lands in the deleted temp home.
+- cand DC-j (low, L; read): install steps have a fixed 120 s limit (`github_activation.py:73`,
+  `custom_npm_scripts.TIMEOUT_S`) with a cold cache every time (`npm_config_cache` and HOME are
+  the temp home). A slow or large dependency install fails the Save and, by DC-h, the stage.
+- cand DC-k (low, L; read): `remote_mcp_transport._open` (`:156-158`) reports a response-phase
+  timeout (a tool call that runs past the 120 s idle limit) as `connect_failed`, "Could not
+  reach the server", although the request was delivered.
+- cand DC-l (low, L; read): `remote_mcp_observed._read` (`:67-76`) moves the record file aside
+  on any `OSError`, including a transient one, and from the read-only list path (`get`). The
+  next check then records a new baseline (with a note), which is the comparison the tool-change
+  detection depends on. `custom_connection_store` fails closed for the same condition.
+- cand DC-m (low; read): `remote_mcp_operation._SECRET_QUERY_KEYS` (`:45`) is a substring match:
+  an address with `?author=`, `?design=` or `?session_id=` is refused as holding a secret.
+- cand DC-n (low, E; read): `custom_npm_closure._docs` / `_facts` (`:54-55`) check the TTL on
+  read and never evict, so every package ever resolved stays in memory for the life of the
+  server (a version-list document can be megabytes). `github_activation.matches` (`:33-37`)
+  compares against `sys.executable` and the absolute gate path, so a moved install or a new
+  interpreter path turns every GitHub connection into "changed"; the remote kind has
+  `strict=False` for that case (`remote_mcp_activation.py:131-168`).
+- streamlining: `remote_mcp_bridge.Bridge.__init__` (`:49-54`) opens the session in two
+  branches that differ only in `on_close`, which `open_session` accepts for both; `_seen` is
+  duplicated in both session classes (`remote_mcp_transport.py:255-259, 367-371`).
+- sound: the remote transport follows no redirect, pins one origin, resolves once per request
+  and connects to the vetted address, and no header value reaches an error; the bridge scrubs
+  the parsed tree, not the serialised text; the remote check never calls a tool and `adopt` is
+  bound to the digest the person was shown; OAuth is never reported connected; the closure
+  takes dependency edges from the archive, not the registry; the GitHub gate re-hashes reviewed
+  source before every start and resolves a bare program name outside the repository folder.
