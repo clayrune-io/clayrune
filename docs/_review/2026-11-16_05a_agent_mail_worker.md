@@ -145,3 +145,44 @@ Notes are terse on purpose; each is re-verified and expanded when moved to
   reserve+authorize in one batch.
 - Progress: also read fully: pull-send-http.js, outbound.js, email-sending.js,
   ledger-pull.js (second read).
+- C7 CONFIRMED (F, high: cannot work as written). `owner-management.js:387-388`
+  renders the post-step-up form with `action="/mail/key-recovery"` and
+  `action="/mail/delete"`. Neither path is in any registry: `signup-http.js:14-15`,
+  `owner-management.js:11-12`, `owner-change.js:11-12`; `worker.js:61-63` answers
+  404 `not_found`. But `owner-management.js:14,174` accepts both purposes at
+  `/v1/pull/management/start`, queues the step-up mail and charges the
+  3-per-day verification budget (`:223-227`). Owner confirms, clicks, gets 404.
+  Also no statement anywhere sets `pull_installs.state='deleted'` (grep of all
+  source: only readers and `pull-fence-http.js:192` which preserves it), so every
+  `deleted` branch is dead: `owner-change.js:280-291,369,374,388`,
+  `control-mail-delivery.js:240`, `pull-retention.js:27,38,41`,
+  `pull-status-http.js:147-149`, `owner-management.js:192,267`.
+- C13 (L, low) `/mail/change/cancel` (`owner-change.js:407-429`) has no form
+  anywhere: the manage page (`owner-management.js:387-398`) renders the purpose
+  action and logout only. Reachable only by a hand-built POST.
+- C14 (L, low/medium) the "already confirmed" replay page is unreachable.
+  `worker.js:76-79` sends every `/mail/link/confirm` through `LinkRouter`, whose
+  lookup requires `t.state='pending'` and `s.state='csrf'`
+  (`link-router.js:63-64`). After a successful confirm both are false, so a
+  refresh / double-submit gets the router's 404 `not_found` page, never the
+  fixed receipt in `signup-http.js:342-347`, `owner-management.js:312-318`,
+  `owner-change.js:194,293`. Those three branches are dead through the Worker
+  entry (tests reach them by calling the handler directly; to verify).
+- C15 (M, streamlining) duplicated boundary code across HTTP classes:
+  `flatJSON` (`signup-http.js:52-87` vs `pull-send-http.js:31-64`), signed
+  response builder (`signup-http.js:128-142`, `owner-management.js:93-107`,
+  `pull-send-http.js:224-239`), hand-rolled v2 verify
+  (`owner-management.js:109-139` vs `signed-v2-verifier.js:21-38`), cookie
+  parser x4 (`signup-http.js:99-104`, `owner-management.js:80-85`,
+  `owner-change.js:39-44`, `link-router.js:53-55`), HTML headers x4, generation
+  retire block (`owner-change.js:237-261` vs key-rotate/fence, to compare).
+  Every signed response re-imports the Ed25519 key (`importKey` per response).
+- C16 (E, low) `control-mail-delivery.js:94-160`: about 16 to 18 D1 round trips
+  per control mail, sequential; page limit 100 (`:7`). Count by read.
+- C1 correction: `pull_control_outbox.envelope_sealed` IS nulled by the wired
+  control consumer (`control-mail-delivery.js:62-65,86-93`); the leak is
+  `pull_owner_changes.old_owner_sealed` after the revert window
+  (`owner-change.js:320-321` keeps it; only `pull-retention.js` clears it).
+- Progress: also read fully: signup-http.js, verification-mail.js,
+  control-mail-delivery.js, owner-management.js, link-router.js,
+  owner-change.js, signed-v2-verifier.js (second read).
