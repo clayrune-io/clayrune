@@ -121,3 +121,27 @@ Notes are terse on purpose; each is re-verified and expanded when moved to
   pull-retention.js, pull-sweep.js, ledger-pull.js, ingress-pull.js,
   ingress.js, pull-ledger.js, pull-mailbox.js, owner-registry.js.
 
+- C12 (L/F, HIGH, confirmed by read + existing tests) a send that is reserved
+  but not authorized is stuck in `reserved` for good. `outbound.js:130`
+  `reserveSend` commits the intent row as `reserved` (plus the request nonce,
+  budget and `pull_operations` row); `outbound.js:136` `authorizeSend` is a
+  SECOND batch. If it refuses (`send_limit`, `ledger-pull.js:210,229`) or D1
+  fails between the two, the row stays `reserved`. A retry with the same
+  `intent_id` hits `outbound.js:120-125` (prior exists -> return its receipt)
+  and never reaches `authorizeSend` again. Nothing else moves `reserved`:
+  writers of `pull_intents.state` from `reserved` are `ledger-pull.js:216`
+  (authorize), `owner-change.js:251`, `pull-key-rotate-http.js:191`,
+  `pull-fence-http.js:199` (all -> `revoked`). No sweep. Pinned as intended by
+  `test/outbound-pull.test.js:217-221` and `test/pull-send-http.test.js:386-394`.
+  Contract `docs/AGENT_MAIL_PULL_CONTRACT.md:760` tells the client `reserved`
+  = "in flight, read /send/status, never resubmit", and the status route
+  (`pull-send-http.js:203-223`) returns `reserved` forever. Client half (05b
+  territory, cite only): `mc/agent_mail_outbound.py:457-458` treats 429
+  `send_limit` as "retryable, Worker proves no reservation/write", which is
+  false; the retry gets the 409 `reserved` receipt and holds as uncertain.
+  Net: the 21st mail of a day (policy `sendsPerDay`) is never delivered, even
+  after the budget resets. Smallest fix: on a replay whose prior state is
+  `reserved`, run `authorizeSend` (its CAS already admits one winner), or put
+  reserve+authorize in one batch.
+- Progress: also read fully: pull-send-http.js, outbound.js, email-sending.js,
+  ledger-pull.js (second read).
