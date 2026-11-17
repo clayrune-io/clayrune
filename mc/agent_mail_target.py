@@ -56,7 +56,9 @@ def snapshot(project: dict[str, Any], session: dict[str, Any],
 
 
 def validate(project: dict[str, Any], source: dict[str, Any], bound: dict[str, Any],
-             *, busy: bool = True) -> None:
+             *, busy: bool = True, wake: bool = True) -> None:
+    """`wake=False` is a SEND: the rollover and quota checks guard resuming a
+    conversation, not mailing out of it (MC-1179 MB13), so they are skipped."""
     from mc import agent_runtime
     from mc.blueprints import agent_routes as ar
     # Older snapshots may predate the bind-time refusal. Gemini's runtime
@@ -111,13 +113,13 @@ def validate(project: dict[str, Any], source: dict[str, Any], bound: dict[str, A
     transcript = runtime.transcript_path(bound['cwd'], bound['native_id'])
     if transcript is None or not Path(transcript).is_file() or Path(transcript).stat().st_size == 0:
         raise MailHeld('native_history_missing')
-    if bound['provider'] == 'claude':
+    if wake and bound['provider'] == 'claude':
         reason, _ = ar._auto_fresh_trigger(project['project_path'], bound['native_id'],
                                           source.get('context_tokens'), session_or_character=source)
         if reason or ar._resume_unresumable(source, project['id'], project['project_path'],
                                             bound['native_id']):
             raise MailHeld('rollover_required')
-    refusal = ar._allowance_refusal(bound['provider'], user_initiated=True)
+    refusal = ar._allowance_refusal(bound['provider'], user_initiated=True) if wake else None
     if refusal:
         raise MailHeld('provider_quota_held')
 

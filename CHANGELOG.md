@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - A question mail that fails to send is no longer lost (MC-1179 OS16, MB13)
+
+- A question raised by an unattended run got one attempt at being mailed; a failure wrote one server-log line, the qid stayed in `_delivered`, the chat showed nothing and no push was raised, so the run parked for good (on a default install with no mail credentials, every question).
+- A failed send now removes the qid from `_delivered` (a later boundary can select it again), appends a "question NOT sent, and why" chat line (closed phrases: no credential, address or remote error text), raises the existing web push (first failure and give-up; server process only), and re-arms the timer while the cause can clear on its own. Cap: 4 attempts in all, waits of 5 min, 15 min, 1 h. A cause that needs a person (no mail credentials, agent mail switched off) is final after the chat line and push. A send whose outcome is uncertain (mailer timeout, agent-mail `uncertain`) is NOT re-sent: it keeps the qid delivered, arms no timer, and the chat line says it may or may not have arrived. New module `mc/question_send_failure.py`; `question_channel.py` only calls it.
+- MB13, agent-mail send path: a connection that never opened (DNS, refused, network unreachable) raises the new `ServiceNotSent` and is stored `retryable`, not `uncertain`; a timeout or reset stays `uncertain`. `Outbound.send` no longer applies the `rollover_required` and provider-quota checks (`validate(..., wake=False)`); they still guard a wake.
+- Tests: `tests/test_agent_mail_send_not_sent.py` (new, 12) and 11 added to `tests/test_question_channel.py`. No existing test was rewritten. Branch candidate for review; no merge, push or server restart.
+
 ## [2026-11-16] - Model auto-upgrade edits one line of a character file (MC-1179 OS45)
 
 - The unattended model auto-upgrade applied a change by round-tripping the character through `write_character`, which rebuilds the frontmatter from a fixed key list: a subagent `tools:` line (it limits what the subagent may call, so losing it widened the agent), `color:` and any other unmodelled key were dropped, across every pinned character at once.

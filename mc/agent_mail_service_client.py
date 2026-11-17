@@ -18,11 +18,13 @@ existing ceremony importer until its replacement. Never use it for pull proof.
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import math
 import re
 import secrets
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -93,6 +95,30 @@ REASONS = frozenset().union(*ERRORS.values(), {
 
 class ServiceRefused(EnrollmentRefused):
     """Code-owned closed reason only; never remote text or exception detail."""
+
+
+class ServiceNotSent(ServiceRefused):
+    """`connection_lost` where the connection never opened, so no request byte
+    was written. A caller may re-send safely; every other `connection_lost`
+    stays a plain ServiceRefused whose outcome is uncertain (MC-1179 MB13)."""
+
+
+# errno values meaning "no route / no connection", Linux and Winsock. A timeout
+# or a reset is deliberately absent: either can arrive after bytes were written.
+_NEVER_CONNECTED_ERRNOS = frozenset({
+    errno.ECONNREFUSED, errno.ENETUNREACH, errno.EHOSTUNREACH, errno.ENETDOWN,
+    100, 101, 111, 113, 10050, 10051, 10061, 10065, 11001})
+
+
+def _never_connected(exc: BaseException) -> bool:
+    """True only for a URLError raised by open() whose cause is a failed connect."""
+    if not isinstance(exc, urllib.error.URLError) or isinstance(exc, urllib.error.HTTPError):
+        return False
+    cause = exc.reason
+    if isinstance(cause, socket.gaierror) or isinstance(cause, ConnectionRefusedError):
+        return True
+    return isinstance(cause, OSError) and not isinstance(cause, (TimeoutError, ConnectionResetError)) \
+        and cause.errno in _NEVER_CONNECTED_ERRNOS
 
 
 def _need(ok: object, reason: str = 'response_unverified') -> None:
@@ -264,8 +290,10 @@ class HttpsTransport:
                 return self._read(exc, exc.code)
         except ServiceRefused:
             raise
-        except Exception:
+        except Exception as exc:
             _log('[agent-mail] service_client connection_lost', flush=True)
+            if _never_connected(exc):
+                raise ServiceNotSent('connection_lost') from None
             raise ServiceRefused('connection_lost') from None
 
     @staticmethod

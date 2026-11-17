@@ -77,6 +77,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from mc import question_channel_retention as retention
+from mc import question_send_failure as send_failure
 from mc import state
 from mc.core import _log
 
@@ -214,8 +215,10 @@ def _send_email(subject: str, body: str, to: Optional[str], message_id: str) -> 
     that is the value `handle_reply` later requires an inbound In-Reply-To/
     References to name before treating anything as a genuine reply.
     """
+    send_failure.note_legacy('')
     if not _MAILER.exists():
         _log(f"[question-channel] mailer not found at {_MAILER}", flush=True)
+        send_failure.note_legacy('mailer_missing')
         return False
     cmd = [sys.executable, str(_MAILER), "--subject", subject, "--body", body,
            "--message-id", message_id]
@@ -226,10 +229,16 @@ def _send_email(subject: str, body: str, to: Optional[str], message_id: str) -> 
         if r.returncode != 0:
             _log(f"[question-channel] send failed rc={r.returncode}: "
                  f"{(r.stderr or r.stdout or '').strip()[:200]}", flush=True)
+            send_failure.note_legacy(f'rc{r.returncode}')
             return False
         return True
+    except subprocess.TimeoutExpired as e:
+        _log(f"[question-channel] send failed: {e}", flush=True)
+        send_failure.note_legacy('timeout')
+        return False
     except Exception as e:
         _log(f"[question-channel] send failed: {e}", flush=True)
+        send_failure.note_legacy('error')
         return False
 
 
@@ -308,6 +317,9 @@ def _notify(session: dict, q: dict, qid: str, selection_lock: Any) -> None:
         delivery_key = revision_key if agent_mail else qid
         with _lock:
             _delivered.add(delivery_key)
+        # A fresh selection owns delivery now; a pending backoff retry for the
+        # same key must not mail it a second time (MC-1179 OS16).
+        send_failure.cancel_retry(delivery_key)
 
     project_id = session.get("project_id") or ""
     try:
@@ -370,6 +382,14 @@ def _deliver_if_still_unattended(qid: str, session: dict, grace: int) -> None:
             from mc.agent_mail_outbound_questions import deliver
             result = deliver(session, form or {}, meta['project_name'])
             meta['agent_mail_status'] = result
+            failure = send_failure.from_agent_mail(result)
+            if failure is None:
+                if result.get('state') == 'accepted':
+                    send_failure.succeeded(qid)
+            else:
+                # The NOT-sent explanation goes first; the raw state line below
+                # stays the last chat line, as the existing tests pin.
+                send_failure.on_failure(qid, session, grace, failure, _deliver_if_still_unattended)
             session.setdefault('log_lines', []).append(
                 f"[question mail: {result['state']}" +
                 (f" ({result['reason']})" if result.get('reason') else '') + ']')
@@ -394,8 +414,17 @@ def _deliver_if_still_unattended(qid: str, session: dict, grace: int) -> None:
             session.setdefault("log_lines", []).append(
                 f"[question sent to your offline channel — reply to the email "
                 f"(q:{qid[:8]}) and I'll pick it up]")
+            send_failure.succeeded(qid)
+        else:
+            send_failure.on_failure(qid, session, grace, send_failure.from_legacy(),
+                                    _deliver_if_still_unattended)
     except Exception as e:
         _log(f"[question-channel] delivery failed for {qid[:8]}: {e}", flush=True)
+        try:
+            send_failure.on_failure(qid, session, grace, send_failure.internal_error(),
+                                    _deliver_if_still_unattended)
+        except Exception as e2:
+            _log(f"[question-channel] failure handling failed for {qid[:8]}: {e2}", flush=True)
     finally:
         retention.timer_done(qid)
 
