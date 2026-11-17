@@ -896,12 +896,13 @@ async function saveSkillFromEditor(modalId, isNew, origScope, origName, origProj
     const payload = isNew
       ? { name, description, body, scope, project_id: projectId || undefined }
       : { description, body, project_id: projectId || undefined };
-    const res = await fetch(url, {
+    const res = await humanProofFetch(url, {
       method,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const data = await res.json();
+    if (res === null) return;
+    const data = res.body;
     if (!res.ok || data.error) {
       statusEl.textContent = data.error || ('HTTP ' + res.status);
       statusEl.style.color = 'var(--red)';
@@ -926,8 +927,9 @@ async function archiveSkillAction(scope, name, projectId) {
     const params = new URLSearchParams();
     if (projectId) params.set('project_id', projectId);
     if (scope !== 'global') params.set('archive', 'false');
-    const res = await fetch(API_BASE + `/api/skills/${encodeURIComponent(scope)}/${encodeURIComponent(name)}?` + params.toString(), { method: 'DELETE' });
-    const data = await res.json();
+    const res = await humanProofFetch(API_BASE + `/api/skills/${encodeURIComponent(scope)}/${encodeURIComponent(name)}?` + params.toString(), { method: 'DELETE' });
+    if (res === null) return;
+    const data = res.body;
     if (!res.ok || data.error) { showToast(data.error || 'Failed', 4000); return; }
     showToast(data.action === 'archived' ? 'Archived' : 'Deleted');
     _allSkillsCache.loaded = false;
@@ -941,7 +943,8 @@ async function deleteSkillAction(scope, name, projectId, hard) {
     // For archive scope, we use a different delete endpoint pattern — currently
     // archived skills delete via filesystem path; expose this through DELETE on
     // archive scope. (Backend handles archive as a scope.)
-    const res = await fetch(API_BASE + `/api/skills/archive/${encodeURIComponent(name)}?archive=false`, { method: 'DELETE' });
+    const res = await humanProofFetch(API_BASE + `/api/skills/archive/${encodeURIComponent(name)}?archive=false`, { method: 'DELETE' });
+    if (res === null) return;
     if (!res.ok) {
       // Fallback: archive scope delete may not be exposed; just hide locally
       showToast('Could not delete archived skill (manual cleanup required)', 4000);
@@ -955,8 +958,9 @@ async function deleteSkillAction(scope, name, projectId, hard) {
 
 async function restoreSkillAction(name) {
   try {
-    const res = await fetch(API_BASE + `/api/skills/archive/${encodeURIComponent(name)}/restore`, { method: 'POST' });
-    const data = await res.json();
+    const res = await humanProofFetch(API_BASE + `/api/skills/archive/${encodeURIComponent(name)}/restore`, { method: 'POST' });
+    if (res === null) return;
+    const data = res.body;
     if (!res.ok || data.error) { showToast(data.error || 'Failed', 4000); return; }
     showToast('Restored to global skills');
     _allSkillsCache.loaded = false;
@@ -1054,12 +1058,13 @@ async function _doSkillImportFullPlugin(modalId, force) {
     const body = src.source === 'git'
       ? { staging_id: src.staging_id, force: !!force }
       : { path: src.path, force: !!force };
-    const res = await fetch(API_BASE + '/api/skills/import/plugin', {
+    const res = await humanProofFetch(API_BASE + '/api/skills/import/plugin', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
+    if (res === null) return;
+    const data = res.body;
     if (data.quarantined) {
       _siShowQuarantine(modalId, data, `_doSkillImportFullPlugin('${modalId}', true)`);
       _siStatus(modalId, data.message || 'Blocked by security scan', 'var(--red)');
@@ -1224,12 +1229,13 @@ async function _doSkillImportPaste(modalId, force) {
   if (!content.trim()) { _siStatus(modalId, 'paste content is empty', 'var(--red)'); return; }
   _siStatus(modalId, force ? 'Forcing install...' : 'Importing...');
   try {
-    const res = await fetch(API_BASE + '/api/skills/import/paste', {
+    const res = await humanProofFetch(API_BASE + '/api/skills/import/paste', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ content, scope: ctx.scope, project_id: ctx.projectId, name: name || undefined, force: !!force }),
     });
-    const data = await res.json();
+    if (res === null) return;
+    const data = res.body;
     if (data.quarantined) {
       _siShowQuarantine(modalId, data, `_doSkillImportPaste('${modalId}', true)`);
       _siStatus(modalId, data.message || 'Blocked by security scan', 'var(--red)');
@@ -1281,7 +1287,7 @@ async function _doSkillImportFolder(modalId, selectedRelDir, force) {
   if (!path) { _siStatus(modalId, 'path is required', 'var(--red)'); return; }
   _siStatus(modalId, force ? 'Forcing install...' : 'Importing...');
   try {
-    const res = await fetch(API_BASE + '/api/skills/import/folder', {
+    const res = await humanProofFetch(API_BASE + '/api/skills/import/folder', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1289,7 +1295,8 @@ async function _doSkillImportFolder(modalId, selectedRelDir, force) {
         name: name || undefined, selected_rel_dir: selectedRelDir, force: !!force,
       }),
     });
-    const data = await res.json();
+    if (res === null) return;
+    const data = res.body;
     if (data.quarantined) {
       _siShowQuarantine(modalId, data, `_doSkillImportFolder('${modalId}', ${JSON.stringify(selectedRelDir || null)}, true)`);
       _siStatus(modalId, data.message || 'Blocked by security scan', 'var(--red)');
@@ -1377,7 +1384,7 @@ async function _doSkillImportGit(modalId) {
   if (!url) { _siStatus(modalId, 'URL is required', 'var(--red)'); return; }
   _siStatus(modalId, 'Cloning...');
   try {
-    const res = await fetch(API_BASE + '/api/skills/import/git', {
+    const res = await humanProofFetch(API_BASE + '/api/skills/import/git', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1385,7 +1392,8 @@ async function _doSkillImportGit(modalId) {
         name: name || undefined,
       }),
     });
-    const data = await res.json();
+    if (res === null) return;
+    const data = res.body;
     if (data.quarantined) {
       // Auto-install path found exactly one candidate before it was blocked —
       // retry it directly (install-one against the preserved staging dir)
@@ -1446,7 +1454,7 @@ async function _doSkillImportGitInstallOne(modalId, relDir, defaultName, force) 
   if (!stagingId) { _siStatus(modalId, 'staging session expired — re-clone', 'var(--red)'); return; }
   _siStatus(modalId, force ? 'Forcing install...' : 'Installing...');
   try {
-    const res = await fetch(API_BASE + '/api/skills/import/git/install', {
+    const res = await humanProofFetch(API_BASE + '/api/skills/import/git/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1456,7 +1464,8 @@ async function _doSkillImportGitInstallOne(modalId, relDir, defaultName, force) 
         cleanup: true, force: !!force,
       }),
     });
-    const data = await res.json();
+    if (res === null) return;
+    const data = res.body;
     if (data.quarantined) {
       _siShowQuarantine(modalId, data, `_doSkillImportGitInstallOne('${modalId}', ${JSON.stringify(relDir)}, ${JSON.stringify(defaultName)}, true)`);
       _siStatus(modalId, data.message || 'Blocked by security scan', 'var(--red)');
@@ -1477,12 +1486,13 @@ async function _doSkillImportGitCancel(modalId) {
   const stagingId = win_gitStaging[modalId];
   if (stagingId) {
     try {
-      await fetch(API_BASE + '/api/skills/import/git/cancel', {
+      const result = await humanProofFetch(API_BASE + '/api/skills/import/git/cancel', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ staging_id: stagingId }),
       });
-    } catch(e) {}
+      if (result === null) return;
+      if (!result.ok) { _siStatus(modalId, result.body.error || 'Cancel failed', 'var(--red)'); return; }
+    } catch(e) { _siStatus(modalId, 'Cancel failed: ' + e.message, 'var(--red)'); return; }
     win_gitStaging[modalId] = null;
   }
   closeModalById(modalId);
@@ -1653,7 +1663,7 @@ async function _sibInstallHere(modalId, srcScope, srcName, srcProjectId) {
 
     // POST as new skill in destination
     _siStatus(modalId, 'Installing...');
-    const rPost = await fetch(API_BASE + '/api/skills', {
+    const rPost = await humanProofFetch(API_BASE + '/api/skills', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1664,7 +1674,8 @@ async function _sibInstallHere(modalId, srcScope, srcName, srcProjectId) {
         project_id: ctx.projectId,
       }),
     });
-    const data = await rPost.json();
+    if (rPost === null) return;
+    const data = rPost.body;
     if (!rPost.ok || data.error) { _siStatus(modalId, data.error || 'install failed', 'var(--red)'); return; }
     _siStatus(modalId, 'Installed', 'var(--green)');
     _allSkillsCache.loaded = false;

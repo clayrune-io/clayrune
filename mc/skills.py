@@ -33,6 +33,7 @@ from typing import Any
 import mc.agent_runtime as _agent_runtime
 import mc.skill_import_guard as _guard
 from mc.atomic_json import write_json_atomic
+from mc.skill_authority import require_skill_authority
 
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -331,6 +332,7 @@ def write_skill(
         raise ValueError(err)
     if not description or not description.strip():
         raise ValueError('description is required')
+    require_skill_authority(description, body)
 
     path = _skill_dir(scope, name, project_path)
     skill_md = path / 'SKILL.md'
@@ -386,6 +388,8 @@ def restore_skill(name: str) -> dict[str, Any]:
     src = ARCHIVE_SKILLS_DIR / name
     if not src.exists():
         raise FileNotFoundError(f'archived skill not found: {name}')
+    meta, body = parse_skill_md((src / 'SKILL.md').read_text(encoding='utf-8'))
+    require_skill_authority(meta.get('description') or '', body)
     GLOBAL_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     dest = GLOBAL_SKILLS_DIR / name
     if dest.exists():
@@ -745,6 +749,7 @@ def _install_skill_dir(
     description = (meta.get('description') or '').strip()
     if not description:
         raise ValueError('description missing in SKILL.md frontmatter')
+    require_skill_authority(description, body)
 
     _guard.scan_and_gate(
         src_dir, tier=trust_tier, force=force,
@@ -1188,6 +1193,15 @@ def install_full_plugin(
     _guard.scan_and_gate(
         root, tier=trust_tier, force=force, source_label=f"plugin:{info['name']}",
     )
+
+    # Preflight every installed instruction before copying ANY component.
+    # force only overrides the import scanner, never the authority rail.
+    components = [root / 'skills' / name / 'SKILL.md' for name in info['skill_dirs']]
+    components += [root / 'commands' / name for name in info['command_files']]
+    components += [root / 'agents' / name for name in info['agent_files']]
+    for component in components:
+        meta, body = parse_skill_md(component.read_text(encoding='utf-8'))
+        require_skill_authority(meta.get('description') or '', body)
 
     GLOBAL_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     GLOBAL_COMMANDS_DIR.mkdir(parents=True, exist_ok=True)

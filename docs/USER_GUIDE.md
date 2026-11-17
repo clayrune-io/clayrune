@@ -885,6 +885,16 @@ so you don't have to hand-edit `~/.claude/skills/`.
   commands, and sub-agents together. Hooks aren't installed (they
   require manual settings.json edits — use CC's `/plugin` for those).
 
+**Confirming changes**: Creating, editing, archiving, deleting, restoring,
+and importing skills require your dashboard passcode through the shared
+confirmation dialog. This also applies to full plugins, forced scanner
+retries, cancelling a staged Git import, and discarding quarantine copies.
+If no passcode is configured, the dialog offers the existing passcode setup
+flow before confirmation. Browsing and search remain available without it.
+Unattended callers cannot change skills. Installed instructions that expand
+an agent's own authority are refused even with a correct passcode or a
+forced import; revise the instruction rather than retrying with force.
+
 **Built-ins**: Clayrune ships ~5 built-in skills (e.g. `mc-clayrune-apis`,
 `mc-project-status`) under `data/skills/builtin/`. They install
 automatically on first run and update on each Clayrune upgrade. Your
