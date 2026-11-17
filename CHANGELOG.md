@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Backup export, import and restore points: close the vault export, member-path and restore-point-id holes (MC-1179 pass 07: P26, P27, P28)
+
+- P26: `POST /api/backup/export-project/<id>` with `vault: true` now needs the retyped dashboard passcode (`_require_human_passcode`, same as restore, import and rollback) and is refused before the vault is opened; `vault` false or omitted is unchanged. The vault export loop (`export_all_for_backup`) also refuses `oauth.*` entries and writes one `export_entry` audit line per exported entry. The panel (`static/js/backup-panel.js`) asks for the passcode through `humanProofFetch` when the vault box is ticked.
+- P26 tests: `test_backup_unattended_gate.py` rewritten to the new rule (the two named tests plus the manual-session and idle-session ones, which sent a vault export with no passcode); new `test_backup_vault_export.py`.
+- Branch candidate for review; no merge, push, deployment or server restart.
+
 ## [2026-11-16] - Process guard: ordinary spellings of an image-name or listener-PID kill, and a lazy listener lookup (MC-1190 / MC-1179 AP1, AP3)
 
 - AP1: the process-guard hook now finds the kill command word (`kill`, the Windows kill tool, `Stop-Process`, `spps`) and reads its whole segment. Every integer in it is checked against the listener PIDs, so `kill -TERM <pid>`, `kill 111 <pid>`, a second `/PID`, `/FI "PID eq <pid>"`, positional `Stop-Process <pid>` and `-Id 111,<pid>` are refused. Image-name spellings added: the `/FI "IMAGENAME eq x"` filter and `-im`, `-ProcessName` and the `-Na`/`-Pr` prefixes, `spps -Name`, `Get-Process x | kill`, `gps x | spps`, `(Get-Process x).Kill()`, and the CIM/WMI `Terminate` form.

@@ -2742,6 +2742,11 @@ def export_all_for_backup(passphrase: str, *, consumer: str,
         for name, rec in store['secrets'].items():
             if scope_filter is not None and rec.get('scope', 'global') != scope_filter:
                 continue
+            if is_server_internal(name):
+                # `_open` below skips get_secret_value's oauth.* deny, so the
+                # export loop has to refuse these itself (P26): they hold a
+                # live access + refresh token and never leave the machine.
+                continue
             try:
                 value = '' if isinstance(rec.get('field_refs'), dict) and 'value' in rec['field_refs'] else _open(name, rec)
             except SecretsError as e:
@@ -2763,6 +2768,9 @@ def export_all_for_backup(passphrase: str, *, consumer: str,
             if 'field_refs' in rec:
                 exported['field_refs'] = rec['field_refs']
             entries.append(exported)
+    for exported in entries:
+        _audit('export_entry', name=exported['name'], consumer=consumer,
+               scope_filter=scope_filter)
     payload = json.dumps({'version': STORE_VERSION, 'entries': entries},
                          ensure_ascii=False).encode('utf-8')
     salt = os.urandom(16)

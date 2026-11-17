@@ -570,7 +570,8 @@ def api_backup_restore():
 # ── Phase 2 — per-project export/import (spec §4.1/§4.2/§4.4/§8) ───────────
 #
 # export-project is safe unattended (reversible, additive) EXCEPT the vault
-# category, which stays attended-only same as full-backup secrets; import
+# category, which is attended-only AND needs the retyped dashboard passcode
+# (P26), same as full-backup secrets; import
 # is attended-only outright, same gate style as restore above — an
 # unattended cycle must never remap or overwrite a project's own identity.
 
@@ -581,6 +582,19 @@ def api_backup_export_project(project_id):
     vault = data.get('vault')  # tri-state: True | False | omitted (None) => unanswered
     vault_passphrase = data.get('vault_passphrase')
     label = data.get('label')
+    if vault is True:
+        # P26 (MC-1179 pass 07): reading the vault out is the one export
+        # action that needs a human, not just a non-unattended caller. The
+        # is_unattended check below is forgeable (any Origin header, any
+        # manual-chat agent, an unattended session on another project all
+        # pass it), so `vault: true` also needs the retyped dashboard
+        # passcode, same as restore/import/rollback. Checked before
+        # export_project runs, so a refused request never opens the vault.
+        if _is_unattended(project_id):
+            return jsonify({'error': 'vault export is attended-only — refused for this trigger type'}), 403
+        refusal = _require_human_passcode(data)
+        if refusal is not None:
+            return refusal
     try:
         result = _backup.export_project(
             project_id, categories=categories, vault=vault,

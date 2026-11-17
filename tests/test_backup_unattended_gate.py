@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from flask import Flask
+from flask import Flask, jsonify
 
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
@@ -57,14 +57,31 @@ def client(tmp_path, monkeypatch):
     agent_sessions.clear()
 
     from mc.blueprints import backup_routes
+
+    # Stand-in for the dashboard-passcode check (P26): same contract as
+    # secrets_routes._require_human_passcode - None on success, a Flask
+    # response tuple on refusal - with a fixed passcode instead of local_auth.
+    def _fake_passcode_gate(data):
+        if (data or {}).get('passcode') == PASSCODE:
+            return None
+        return jsonify({'error': 'bad_passcode'}), 403
+
+    monkeypatch.setattr(backup_routes, '_require_human_passcode', _fake_passcode_gate)
     app = Flask(__name__)
     app.register_blueprint(backup_routes.bp)
     yield app.test_client()
     agent_sessions.clear()
 
 
-def _export(client, **body_over):
+PASSCODE = 'dash-passcode'
+
+
+def _export(client, passcode=PASSCODE, **body_over):
+    """Vault export WITH the retyped dashboard passcode by default (P26): the
+    route now refuses `vault: true` without it. Pass passcode=None to send none."""
     body = {'vault': True, 'vault_passphrase': 'hunter2'}
+    if passcode is not None:
+        body['passcode'] = passcode
     body.update(body_over)
     return client.post('/api/backup/export-project/proj_x', json=body)
 
@@ -116,25 +133,65 @@ def test_interactive_manual_session_still_succeeds(client):
     assert b'PLAINTEXT-VAULT-SECRET' not in archives[0].read_bytes()
 
 
-def test_no_agent_session_at_all_is_the_spa_case_and_still_succeeds(client):
-    """No Claude CLI session is running at all (nothing to find in
-    agent_sessions) is the browser SPA's own shape of request — it must not
-    start refusing just because the new gate exists."""
+def test_no_agent_session_and_no_passcode_is_refused_and_vault_not_read(client, monkeypatch):
+    """P26: with no agent session at all - the shape of a bare `curl` with no
+    Origin header - `vault: true` and no passcode used to export the project's
+    secrets under a passphrase the caller picked. It is now refused before the
+    vault is opened: no archive on disk, and export_all_for_backup is never
+    called (checked by spy, not by status alone)."""
+    from mc import secrets_store as ss
+    calls = []
+    real = ss.export_all_for_backup
+    monkeypatch.setattr(ss, 'export_all_for_backup',
+                        lambda *a, **k: calls.append(1) or real(*a, **k))
+    res = _export(client, passcode=None)
+    assert res.status_code == 403
+    assert _vault_archives_on_disk() == []
+    assert calls == []
+
+
+def test_wrong_passcode_is_refused_and_vault_not_read(client):
+    res = _export(client, passcode='not-the-passcode')
+    assert res.status_code == 403
+    assert _vault_archives_on_disk() == []
+
+
+def test_no_agent_session_with_passcode_succeeds(client):
+    """The SPA's own shape of request (no running session) keeps working once
+    the human has retyped the passcode."""
     res = _export(client)
     assert res.status_code == 200
     assert len(_vault_archives_on_disk()) == 1
 
 
-def test_unattended_session_on_a_different_project_does_not_block_this_one(client):
-    """The gate is scoped by project_id (this route already names one in its
-    URL) — an unrelated unattended session on another project must not block
-    an interactive export of THIS project."""
+def test_unattended_session_on_a_different_project_still_needs_the_passcode(client):
+    """An unattended session on ANOTHER project does not trip is_unattended
+    for this one - that was the hole. Without the passcode it is refused."""
     agent_sessions['other-project-unattended'] = {
         'status': 'running', 'project_id': 'some_other_project', 'trigger_type': 'schedule',
     }
+    res = _export(client, passcode=None)
+    assert res.status_code == 403
+    assert _vault_archives_on_disk() == []
     res = _export(client)
     assert res.status_code == 200
     assert len(_vault_archives_on_disk()) == 1
+
+
+def test_export_without_vault_needs_no_passcode(client):
+    """vault: false is unchanged - no passcode, still exports, no secrets."""
+    res = client.post('/api/backup/export-project/proj_x', json={'vault': False})
+    assert res.status_code == 200
+    assert _vault_archives_on_disk() == []
+    assert len(list(Path(bk.effective_backup_dir()).glob('clayrune-project-proj_x-*.crbackup'))) == 1
+
+
+def test_vault_omitted_is_still_the_unanswered_refusal(client):
+    """vault omitted keeps its own spec s4.2 refusal; the passcode gate only
+    covers `vault is True`."""
+    res = client.post('/api/backup/export-project/proj_x', json={})
+    assert res.status_code == 400
+    assert 'unanswered' in res.get_json()['error']
 
 
 def test_idle_unattended_session_does_not_block_export(client):
