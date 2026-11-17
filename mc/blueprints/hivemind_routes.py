@@ -172,7 +172,8 @@ def _hm_load_manifest(hivemind_id):
         return None
     try:
         return json.loads(p.read_text(encoding='utf-8'))
-    except Exception:
+    except Exception as e:
+        _log(f"[hivemind] manifest for {hivemind_id} unreadable: {e}", flush=True)
         return None
 
 
@@ -189,7 +190,8 @@ def _hm_load_workstream(hivemind_id, ws_id):
         return None
     try:
         return json.loads(p.read_text(encoding='utf-8'))
-    except Exception:
+    except Exception as e:
+        _log(f"[hivemind] workstream {ws_id} of {hivemind_id} unreadable: {e}", flush=True)
         return None
 
 
@@ -209,9 +211,28 @@ def _hm_list_workstreams(hivemind_id):
         try:
             ws = json.loads(f.read_text(encoding='utf-8'))
             result.append(ws)
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[hivemind] workstream file {f.name} of {hivemind_id} unreadable: {e}", flush=True)
     return result
+
+
+def _hm_unreadable_workstream_files(hivemind_id):
+    """Names of workstream files that exist but do not parse.
+
+    MC-1179 OS30: _hm_list_workstreams drops such a file, so a run whose only
+    unfinished workstream was unreadable on one tick looked fully completed.
+    The terminal check refuses while this is non-empty.
+    """
+    ws_dir = _hm_dir(hivemind_id) / 'workstreams'
+    if not ws_dir.exists():
+        return []
+    bad = []
+    for f in sorted(ws_dir.glob('*.json')):
+        try:
+            json.loads(f.read_text(encoding='utf-8'))
+        except Exception:
+            bad.append(f.name)
+    return bad
 
 
 # ── Worktree isolation + integration state (e3c0824e) ────────────────────────
@@ -1918,6 +1939,13 @@ def _hivemind_orchestrator_loop():
                 # Check if all workstreams are completed
                 workstreams = _hm_list_workstreams(hivemind_id)
                 outcome = _hm_terminal_outcome(workstreams)
+                if outcome:
+                    _bad_ws = _hm_unreadable_workstream_files(hivemind_id)
+                    if _bad_ws:
+                        # MC-1179 OS30: a workstream we could not read may be the
+                        # unfinished one; decide on a later tick.
+                        _log(f"[hivemind] {hivemind_id} not closed: unreadable workstream file(s) {_bad_ws}", flush=True)
+                        outcome = None
                 if outcome:
                     manifest['status'] = outcome
                     manifest['updated_at'] = now_iso()
