@@ -79,9 +79,7 @@ class Call:
         return sum(parts) if parts else None
 
 
-def token_report(calls: Sequence[Call], *, retries: int = 0, duplicate_turns: int = 0,
-                 skills_declared: int = 0, skill_listing_scoped: Optional[int] = None,
-                 skill_listing_unscoped: Optional[int] = None) -> dict:
+def token_report(calls: Sequence[Call], *, retries: int = 0, duplicate_turns: int = 0) -> dict:
     """Build the token block and its verdicts for one cell."""
     checks: List[Dict[str, str]] = []
     firsts = [c for c in calls if c.index == 0]
@@ -140,9 +138,6 @@ def token_report(calls: Sequence[Call], *, retries: int = 0, duplicate_turns: in
         'per_call_max': max(contexts) if contexts else None,
         'input': total('input'), 'output': total('output'),
         'cache_read': total('cache_read'), 'cache_write': total('cache_write'),
-        'skills_declared': skills_declared,
-        'skill_listing_scoped': skill_listing_scoped,
-        'skill_listing_unscoped': skill_listing_unscoped,
         'retries': retries, 'duplicate_turns': duplicate_turns,
         'checks': checks, 'verdict': roll_up(checks),
     }
@@ -313,10 +308,49 @@ def persona_held(expected: Optional[dict], observed: Optional[dict],
         for d in default_names:
             if d in own:
                 continue
-            if re.search(rf"\b(i am|i'm|this is|as)\s+{re.escape(d)}\b|[—-]\s*{re.escape(d)}\s*$",
-                         text, re.I | re.M):
+            # "as <name>" is also ordinary prose ("stored as vector data"), so that
+            # form matches the name as a proper noun: case-sensitive, whole word.
+            if re.search(rf"\b(i am|i'm|this is)\s+{re.escape(d)}\b|[—-]\s*{re.escape(d)}\s*$",
+                         text, re.I | re.M) \
+                    or re.search(rf"\b(?i:as)\s+{re.escape(d.capitalize())}\b", text):
                 return check('persona_held', FAIL, f'reply self-identifies as default {d!r}')
     return check('persona_held', PASS, f'session character {got!r}; voice: see excerpt (not machine-checked)')
+
+
+def resume_identity(before: str, after: str, *, recalled: bool, replied: bool) -> Dict[str, str]:
+    """The restart-resume cell's identity check. Same native id before and after
+    passes. A CHANGED id passes only on evidence the resume kept the earlier turn
+    (`recalled`: the reply gave back what was said before the restart), and fails
+    without it. If the id cannot be compared (one side empty) the evidence is all
+    there is; with no reply either, nothing was measured and the verdict is
+    UNVERIFIABLE, never PASS."""
+    name = 'same_native_identity_or_lossless_resume'
+    seen = f'native before={before!r} after={after!r}'
+    if before and after:
+        if before == after:
+            return check(name, PASS, seen)
+        if recalled:
+            return check(name, PASS, f'{seen}: id changed, earlier turn kept (lossless resume)')
+        return check(name, FAIL, f'{seen}: id changed and the earlier turn was not kept')
+    if not replied:
+        return check(name, UNVERIFIABLE, f'{seen}: id not comparable and no reply to measure')
+    if recalled:
+        return check(name, PASS, f'{seen}: id not comparable; earlier turn kept (lossless resume)')
+    return check(name, FAIL, f'{seen}: id not comparable and the earlier turn was not kept')
+
+
+def token_counts_exposed(rows: int, emits_usage: Optional[bool]) -> Dict[str, str]:
+    """Token counts are exposed, or the vendor is recorded as not exposing them.
+    PASS on either; otherwise UNVERIFIABLE (rows missing and nothing recorded
+    that says why), so the check can fail to pass."""
+    name = 'token_counts_exposed_or_reported_unavailable'
+    if rows > 0:
+        return check(name, PASS, f'{rows} usage row(s) parsed')
+    if emits_usage is False:
+        return check(name, PASS, 'no usage rows; the vendor is recorded as not exposing token counts')
+    return check(name, UNVERIFIABLE, 'no usage rows and the vendor is not recorded as '
+                 'unable to expose them' if emits_usage else
+                 'no usage rows and no record of whether the vendor exposes them')
 
 
 def reply_shape(assistant_texts: Sequence[str], *, ceiling: int = WORD_CEILING,
