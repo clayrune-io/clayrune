@@ -66,9 +66,13 @@ def guard_command(command: str, listener_pids: Union[Iterable[str], Callable[[],
 
 def clayrune_listener_pids() -> set[str]:
     ports = {"5199"}
-    configured = os.environ.get("MC_PORT", "").strip()
-    if configured:
-        ports.add(configured)
+    # MC_PORT is set by app.py; the spawn factory exports the bound port to
+    # every agent as CLAYRUNE_PORT, which also covers a port set only in
+    # config.json (AP33).
+    for name in ("MC_PORT", "CLAYRUNE_PORT"):
+        configured = os.environ.get(name, "").strip()
+        if configured:
+            ports.add(configured)
     try:
         result = subprocess.run(
             ["netstat", "-ano"], capture_output=True, text=True, encoding='utf-8', errors='replace',
