@@ -124,7 +124,11 @@ def transcript_cwd(runtime, project_path: str, native_id: str,
 
     candidates = [Path(project_path)]
     agents = Path(project_path) / '.clayrune' / 'agents'
-    if agents.is_dir():
+    # Claude's lookup for the project path already globs every agent-worktree
+    # transcript directory, so the per-worktree candidates below can only
+    # repeat a miss (12.5 s for one miss on a 288-worktree install, AP60).
+    # Other providers key their store on the exact directory and still need them.
+    if provider != 'claude' and agents.is_dir():
         candidates.extend(p for p in agents.iterdir() if p.is_dir())
     for candidate in candidates:
         transcript = runtime.transcript_path(str(candidate), native_id)
