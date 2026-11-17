@@ -492,4 +492,69 @@ Read: `conversation_views.py` fully; `conversation_store.py` lines 178-300,
   `execution_policy.authorize_execution` is pure, fails closed on every
   missing or stale record, and has no shared state (`:242-287`).
 
+### N17. `mc/midturn_rollover.py` (576), `mid_turn_send.py` (187), `turn_clock.py` (383): read fully
+
+This review was itself rolled over twice by this module, so two findings below
+carry live evidence: the state block this session was handed.
+
+- **AP39 (L, medium) `bg_job_liveness.py:57-76` with
+  `agent_routes.py:6337-6341`, `:6748-6749` and `midturn_rollover.py:198-203`** —
+  a phantom background job is recorded whenever ANY tool's output merely
+  contains the announcement phrases. `note_bg_job_result` is called for every
+  tool_result with no check on the tool name, `parse_tool_result` searches the
+  whole text for "moved to the background" / "Output is being written to:",
+  and `:199-203` adds a job entry when the first phrase is present. Measured:
+  feeding `parse_tool_result` the line-numbered text of
+  `bg_job_liveness.py` itself (whose docstring quotes the CLI message) returns
+  a job with `moved_on_timeout=True` and an output path that begins with a
+  line number and a tab. Live: after this review read that file, its rollover
+  state listed two "Read: (foreground call moved to the background ...)" jobs,
+  one with exactly that unreadable path, and told the agent to check the
+  output file before relaunching a job that never existed. Costs: a wrong
+  instruction in the one block the fresh session trusts; a descendant scan of
+  up to 3 s on the stream-reader thread per false match (AP10); and each
+  phantom takes one of the 10 job slots (`:204`), so real jobs are evicted.
+  Fix: act only when the tool is a shell tool, and anchor the phrases to the
+  start of the result. `tests/test_bg_job_liveness.py` feeds only genuine
+  announcements, so it cannot catch this.
+- **AP40 (L, medium) `midturn_rollover.py:471-479` with
+  `agent_routes.py:13878-13933`** — for a dispatched one-prompt worker, the
+  case this module says it was built for (`:3-6`), the state block marks the
+  agent's only instruction as probably stale. `note_user_message` is called
+  from the follow-up and steer sites only (five call sites, all in the send
+  route), never when a session is dispatched, so `_mt_latest_user_msg` is
+  unset and the block prints "Latest user message (current direction): (not
+  recorded; use the recent conversation)" directly above "First message of
+  this chat (historical; may be long finished, not the current task)". Live:
+  that is the block this session received, twice, while its first message was
+  the entire brief. Fix: when no later message was recorded, label the first
+  message as the current task. No test renders the block for a session with a
+  task and no follow-up and asserts the label.
+- **AP41 (L, low) `mid_turn_send.py:165-171` with `agent_routes.py:10697-10701`** —
+  `drain_next` pops the queued message before it delivers it. A refusal
+  writes a chat line (`:170`), but an exception from the delivery (the
+  follow-up handler raising) is caught by the caller and written to the
+  server log only: the user's queued message is gone and the chat shows
+  nothing. Fix: catch in `drain_next` and write the same "[queued follow-up
+  not sent ...]" line.
+- **AP42 (M, low) `mid_turn_send.py:51`** — `print` instead of `_log` (the
+  one diagnostic in the module bypasses the server log's timestamping).
+- Note, not a finding: `turn_clock.commits_since` (`:249-254`) runs `git log`
+  without the `stdin=DEVNULL` / no-window flags that `midturn_rollover._git`
+  documents as required on a server with no stdin (`:394-398`). This install's
+  server logs hold no `[turn-clock] git log failed` line (grep, count 0), so
+  it works here; the two helpers should be one.
+- Note: for an isolated agent the briefing's commit list is its own worktree
+  HEAD (`turn_clock.py:250`), so commits landed on `master` during the gap,
+  the ones that matter to it, are not listed.
+- Sound: pending tool ids are scoped to the current process, so a replaced
+  process cannot hold the gate shut (`midturn_rollover.py:101-113`); a roll
+  needs 20k tokens of growth over the fresh prefix or over the last failed
+  attempt, and gives up out loud after three failures (`:336-369`); the roll
+  log is outside the project-records directory (`:491-499`); `decide` puts
+  every interrupt guard above the steer/queue choice (`mid_turn_send.py:
+  73-98`); `turn_clock.render` cannot raise into a live stdin write
+  (`:358-377`) and measures from the last assistant output, not the last
+  status change. The turn stamp is visible on this session's own first message.
+
 <!-- APPEND-HERE -->
