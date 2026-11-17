@@ -1204,8 +1204,9 @@ def run_usage(ctx: Ctx, run: CellRun) -> None:
     rows = len(tokens_measured)
     for proj, sid in ctx.notes.get('all_sessions', [])[:5]:
         try:  # the native-transcript parser is the other source of usage rows
-            text = read_native_transcript(ctx, ctx.api.session(proj, sid) or {})
-            rows += len(G.ingest_native_usage(ctx.vendor, text, sid)) if text else 0
+            row = ctx.api.session(proj, sid) or {}
+            text = read_native_transcript(ctx, row)
+            rows += len(G.ingest_native_usage(session_vendor(row, ctx.vendor), text, sid)) if text else 0
         except Exception as e:
             print(f'  ! native usage read failed for {sid}: {e}', file=sys.stderr)
     prov = [p for p in ctx.api.providers() if p.get('name') == ctx.vendor]
@@ -1499,7 +1500,7 @@ def calls_for(ctx: Ctx, run: CellRun) -> Tuple[List[G.Call], int, int]:
         try:
             text = read_native_transcript(ctx, s)
             if text:
-                native = G.ingest_native_usage(ctx.vendor, text, sid)
+                native = G.ingest_native_usage(session_vendor(s, ctx.vendor), text, sid)
         except Exception as e:  # never let evidence gathering break the run
             print(f'  ! native transcript read failed for {sid}: {e}', file=sys.stderr)
         if native:
@@ -1529,17 +1530,25 @@ def calls_for(ctx: Ctx, run: CellRun) -> Tuple[List[G.Call], int, int]:
     return calls, retries, dup
 
 
+def session_vendor(s: Optional[dict], default: str) -> str:
+    """The vendor that ran this session: the row's own provider, else `default`
+    (the vendor under test). A cross-vendor destination session is run by another
+    vendor, so its transcript is located and parsed as that vendor's."""
+    return ((s or {}).get('provider') or default or '').strip().lower()
+
+
 def read_native_transcript(ctx: Ctx, s: dict) -> str:
     home = getattr(ctx.inst, 'home', None)
     if not home:
         return ''
-    if ctx.vendor == 'codex' and s.get('provider_session_id'):
+    vendor = session_vendor(s, ctx.vendor)
+    if vendor == 'codex' and s.get('provider_session_id'):
         hits = list((Path(home) / '.codex' / 'sessions').glob(f"*/*/*/rollout-*-{s['provider_session_id']}.jsonl"))
         return hits[0].read_text(encoding='utf-8', errors='replace') if hits else ''
-    if ctx.vendor == 'claude' and s.get('claude_session_id'):
+    if vendor == 'claude' and s.get('claude_session_id'):
         hits = list((Path(home) / '.claude' / 'projects').glob(f"*/{s['claude_session_id']}.jsonl"))
         return hits[0].read_text(encoding='utf-8', errors='replace') if hits else ''
-    if ctx.vendor == 'gemini' and s.get('provider_session_id'):
+    if vendor == 'gemini' and s.get('provider_session_id'):
         # gemini-cli's ChatRecordingService: <home>/.gemini/tmp/<project>/chats/
         # session-<ts>-<sid[:8]>.jsonl (node's homedir() is the isolated
         # USERPROFILE/HOME). A resume may open a second file with the same
@@ -1556,7 +1565,7 @@ def read_native_transcript(ctx: Ctx, s: dict) -> str:
             if isinstance(meta, dict) and meta.get('sessionId') == sid:
                 texts.append(text)
         return '\n'.join(texts)
-    if ctx.vendor == 'qwen' and s.get('provider_session_id'):
+    if vendor == 'qwen' and s.get('provider_session_id'):
         # qwen-code 0.23.4 --chat-recording: <home>/.qwen/projects/<encoded
         # cwd>/chats/<session id>.jsonl, one file per session, appended to on
         # --resume (live-verified 2026-09-19).
