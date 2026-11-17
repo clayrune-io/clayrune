@@ -201,7 +201,7 @@
   // server enforces it; this only decides whether to open the prompt first.
   function widens() {
     const s = status.settings;
-    return draft.mode === 'on' && (['mode', 'secret_name', 'budget_usd', 'stop_pct'].some((k) => draft[k] !== s[k])
+    return draft.mode === 'on' && (['mode', 'secret_name', 'budget_usd', 'stop_pct', 'reset_day'].some((k) => draft[k] !== s[k])
       || (draft.session_reserve_usd ?? 3) < (s.session_reserve_usd ?? 3));
   }
 

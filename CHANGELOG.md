@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - API-credits stop point can no longer be undone without the passcode (MC-1179 pass 11, SF31)
+
+- `reset_day` (starts a new empty cycle) and `prices` (may be all zeros) join `mode`, `secret_name`, `budget_usd` and `stop_pct` as passcode-gated fields on `PUT /api/api-credits/settings`, with the existing rule that the gate applies when the saved mode is `on`. A human with the passcode can still change all of them.
+- A save that changes none of the passcode-gated fields (or lowers `session_reserve_usd`) no longer clears a halt set by a rejected key or an exhausted balance; a save that does change one still clears it, as before.
+- The settings panel now opens the passcode prompt when the reset day is edited with mode on (`static/js/api-credits-settings.js` `widens()`); the panel does not edit `prices`.
+- Tests that saved `reset_day` without a passcode with mode on now expect the passcode; `plan_credit_usd` stands in as the ungated field.
+
 ## [2026-11-16] - An agent's hidden browser tab can no longer be clicked or typed into on Clayrune's own address (MC-1179 pass 11, SF33)
 
 - `AgentTab.input` read only the URL the caller typed, so a tab redirected onto the dashboard could still be clicked and typed into, and a page in the pane's Chromium counts as the human on Origin-gated routes. Before every input it now reads the tab's own `location.href` (as `read` does) and refuses with the existing 403 when that is Clayrune's own origin, using `_is_clayrune_own_origin` unchanged; the tab is moved to `about:blank` on refusal. After a navigate it checks again. An address it cannot read refuses (502) rather than sending the input.

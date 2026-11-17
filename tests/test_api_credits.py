@@ -653,10 +653,11 @@ def test_put_settings_turning_on_requires_passcode(client):
             r = c.put('/api/api-credits/settings', json={**body, 'passcode': '1234'})
         assert r.status_code == 200 and budget.load_settings()['mode'] == 'on'
         assert 'passcode' not in budget.settings_path().read_text(encoding='utf-8')
-        # already on, nothing spend-widening changed -> no passcode needed
+        # already on, nothing passcode-gated changed -> no passcode needed
+        # (reset_day was once listed here; SF31 made it a gated field)
         with patch('mc.blueprints.api_credits_routes._require_human_passcode',
                    side_effect=AssertionError('asked')):
-            r = c.put('/api/api-credits/settings', json={'reset_day': 5})
+            r = c.put('/api/api-credits/settings', json={'plan_credit_usd': 200})
         assert r.status_code == 200
 
 
@@ -689,3 +690,71 @@ def test_test_route_reports_result(client):
     with patch('mc.blueprints.api_credits_routes.is_unattended_caller', return_value=False), \
             patch('requests.post', poster(Resp(401, err_body('x')))):
         assert c.post('/api/api-credits/test').get_json()['result'] == 'invalid_key'
+
+
+# ── SF31: reset_day and prices are spend fields; a save does not clear a halt for free ──
+
+_ZERO_PRICES = {'claude-haiku-5-5': {'input': 0, 'output': 0, 'cache_read': 0, 'cache_write': 0}}
+
+
+def _at_stop_point():
+    turn_on(budget_usd=10.0, stop_pct=50)
+    budget.record(caller='t', model='claude-haiku-5-5', usage={}, cost=6.0, estimated=False)
+    assert budget.can_spend('claude-haiku-5-5') == (False, 'stop_point_reached')
+
+
+def _put(c, body):
+    with patch('mc.blueprints.api_credits_routes.is_unattended_caller', return_value=False):
+        return c.put('/api/api-credits/settings', json=body)
+
+
+def test_reset_day_change_with_mode_on_needs_passcode_and_leaves_cycle_alone(client):
+    c, _ = client
+    _at_stop_point()
+    with patch('mc.blueprints.api_credits_routes._require_human_passcode',
+               side_effect=lambda data: jsonify_403()) as gate:
+        r = _put(c, {'reset_day': 15})            # today is 2026-10-15: starts a new empty cycle
+    assert r.status_code == 403 and gate.called
+    assert budget.load_settings()['reset_day'] == 1
+    assert budget.can_spend('claude-haiku-5-5') == (False, 'stop_point_reached')
+
+
+def test_zero_prices_with_mode_on_need_passcode(client):
+    c, _ = client
+    _at_stop_point()
+    with patch('mc.blueprints.api_credits_routes._require_human_passcode',
+               side_effect=lambda data: jsonify_403()) as gate:
+        r = _put(c, {'prices': _ZERO_PRICES})
+    assert r.status_code == 403 and gate.called
+    assert budget.load_settings()['prices'] == {}
+
+
+def test_reset_day_and_prices_changes_pass_with_the_passcode(client):
+    c, _ = client
+    turn_on()
+    with patch('mc.blueprints.api_credits_routes._require_human_passcode', return_value=None) as gate:
+        r = _put(c, {'reset_day': 15, 'prices': _ZERO_PRICES, 'passcode': '1234'})
+    assert r.status_code == 200 and gate.called
+    saved = budget.load_settings()
+    assert saved['reset_day'] == 15 and saved['prices'] == budget.clean_settings({'prices': _ZERO_PRICES})['prices']
+
+
+def test_save_without_gated_change_does_not_clear_a_halt(client):
+    c, _ = client
+    turn_on()
+    budget.halt('Credit balance too low', 'credit_low')
+    with patch('mc.blueprints.api_credits_routes._require_human_passcode',
+               side_effect=AssertionError('asked')):
+        r = _put(c, {'plan_credit_usd': 200})      # not a passcode-gated field
+    assert r.status_code == 200
+    assert budget.can_spend('claude-haiku-5-5') == (False, 'halted')
+
+
+def test_save_with_gated_change_still_clears_a_halt(client):
+    c, _ = client
+    turn_on()
+    budget.halt('Rejected key', 'bad_key')
+    with patch('mc.blueprints.api_credits_routes._require_human_passcode', return_value=None):
+        r = _put(c, {'secret_name': 'other-key', 'passcode': '1234'})
+    assert r.status_code == 200
+    assert budget.can_spend('claude-haiku-5-5')[0] is True
