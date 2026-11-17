@@ -1,5 +1,8 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Platform: tunnel stop, backup memory, desktop CLI check (MC-1179 P76, P29, P70)
+
+- Remote access: Disable (and Disconnect this PC) during an attestation round trip no longer leaves the tunnel up. `stop()` set the cancel flag and stopped the connector, but an attestation already in flight returned, called `swap_token` (which starts cloudflared) and only then saw the cancel, so the dashboard said off while the public hostname kept serving and nothing supervised the process. The attest loop now re-checks the cancel flag and starts the connector under a new `_swap_lock` that `stop()` also takes around its connector stop, so a swap either finishes first and is stopped, or never starts (P76).
 ## [2026-11-17] - Control plane public routes and the mail reader (MC-1179 MB25, MB26, MB1)
 
 - Mail reader (MB1): a sender-chosen charset name in a header (`=?<any text>?B?...?=`) no longer aborts `tools/mail-mcp/read_digest.py`. `_dec` decodes an unknown or NUL-bearing charset as UTF-8, and the fetch-failure envelope reports the exception class name, not `repr(e)`, so no sender text reaches the calling session unlaundered and one message can no longer make every digest read exit 1.
