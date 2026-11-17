@@ -22,6 +22,7 @@ from typing import Callable, Optional
 
 from flask import Blueprint, jsonify, request
 
+from mc import workflow_human_gate as _human_gate
 from mc import workflows as _wf
 # MC-995: the same retyped-dashboard-passcode gate the vault-lock routes use
 # (secrets_routes.py), generalized here — one shared helper, not a copy per
@@ -179,10 +180,17 @@ def review_workflow():
 
 @bp.route('/api/workflows/<workflow_id>/run', methods=['POST'])
 def run_workflow(workflow_id):
-    """Manual trigger + 'Run Now' (later phases). Not gated: running an
-    already-authored, human-approved workflow does not expand any agent's
-    capability set — the same posture the scheduler's existing run-now
-    endpoint already takes."""
+    """Manual trigger + 'Run Now' (later phases). Human-only (MC-1188): a run
+    dispatches tooled agents with characters, and a caller with `curl` could
+    otherwise restart a workflow as soon as the one-live-run guard cleared.
+    Gated by `workflow_human_gate` (browser Origin + managed-agent attribution,
+    no passcode) because the dashboard calls this on every Run click; the
+    stronger passcode gate stays on definition CRUD and decisions. The
+    scheduler's own fire path calls `start_run` directly, not this route, so it
+    is unaffected."""
+    refusal = _human_gate.refuse_if_agent_caller()
+    if refusal:
+        return refusal
     try:
         run = _wf.start_run(workflow_id, trigger_type='manual')
     except KeyError:

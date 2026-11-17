@@ -164,9 +164,9 @@ def test_scheduled_live_append_rechecks_stop_before_write(ctx, isolated, monkeyp
 def test_schedule_workflow_optout_reaches_agent_step(ctx, monkeypatch):
     from test_scheduler_routes import _seed_workflow
     wf = _seed_workflow(ctx)
-    row = ctx.client.post('/api/schedules', json={'workflow_id': wf['id'],
+    row = ctx.client.post('/api/schedules', headers={'Origin': 'http://localhost:5199'}, json={'workflow_id': wf['id'],
         'billing': 'subscription', 'continue_session': False}).get_json()
-    response = ctx.client.post('/api/schedule/' + row['id'] + '/run-now')
+    response = ctx.client.post('/api/schedule/' + row['id'] + '/run-now', headers={'Origin': 'http://localhost:5199'})
     assert response.status_code == 200
     assert ctx.dispatch.calls
     assert ctx.dispatch.calls[0]['session_metadata'] == {'billing_preference': 'subscription'}

@@ -688,9 +688,9 @@ def test_one_live_run_per_workflow(wf):
 
 def test_run_now_route_returns_409_when_busy(wf):
     doc = wf.m.create_workflow(_doc('busy2', [_agent('only')]))
-    r1 = wf.client.post(f"/api/workflows/{doc['id']}/run")
+    r1 = wf.client.post(f"/api/workflows/{doc['id']}/run", headers=UI_HEADERS)
     assert r1.status_code == 200
-    r2 = wf.client.post(f"/api/workflows/{doc['id']}/run")
+    r2 = wf.client.post(f"/api/workflows/{doc['id']}/run", headers=UI_HEADERS)
     assert r2.status_code == 409
 
 
@@ -936,12 +936,41 @@ def test_decision_succeeds_with_origin_header(wf):
     assert resp.get_json()['run']['status'] == 'completed'
 
 
-def test_run_endpoint_not_gated_for_agent_callers(wf):
-    """Running an already-authored, human-approved workflow is not a
-    capability expansion -- only authoring/approving is gated."""
+def test_run_endpoint_refused_for_agent_callers_and_open_to_human_ones(wf, monkeypatch):
+    """MC-1188 (was `test_run_endpoint_not_gated_for_agent_callers`, which pinned
+    the opposite): a run dispatches tooled agents, so an agent may not start one.
+    The gate is Origin + managed-agent attribution, no passcode."""
+    from mc import caller_attribution as ca
+    monkeypatch.setattr(ca, 'attribute_caller', lambda *a, **k: ca.Attribution(ca.UNATTRIBUTED))
     doc = wf.m.create_workflow(_doc('runnable', [_agent('only')]))
-    resp = wf.client.post(f"/api/workflows/{doc['id']}/run")  # no Origin header
-    assert resp.status_code == 200
+    url = f"/api/workflows/{doc['id']}/run"
+
+    assert wf.client.post(url).status_code == 403                      # no Origin
+    monkeypatch.setattr(ca, 'attribute_caller',
+                        lambda *a, **k: ca.Attribution(ca.ATTRIBUTED, session_id='s', pid=1))
+    assert wf.client.post(url, headers=UI_HEADERS).status_code == 403  # Origin, but a managed agent
+    assert wf.m.list_runs(doc['id']) == [] and wf.dispatch.calls == []
+
+    monkeypatch.setattr(ca, 'attribute_caller', lambda *a, **k: ca.Attribution(ca.UNATTRIBUTED))
+    ok = wf.client.post(url, headers=UI_HEADERS)                       # browser, no passcode in the body
+    assert ok.status_code == 200
+    assert len(wf.dispatch.calls) == 1
+
+
+def test_a_definition_with_no_enabled_key_does_not_start(wf):
+    """MC-1188: a record written around the human routes (no `enabled` key)
+    reads as disabled; create_workflow always writes the key explicitly."""
+    doc = wf.m.create_workflow(_doc('written-directly', [_agent('only')]))
+    assert doc['enabled'] is True
+    records = json.loads(wf.m.WORKFLOWS_PATH.read_text(encoding='utf-8'))
+    for r in records:
+        r.pop('enabled', None)
+    wf.m.WORKFLOWS_PATH.write_text(json.dumps(records), encoding='utf-8')
+    with pytest.raises(ValueError, match='disabled'):
+        wf.m.start_run(doc['id'])
+    resp = wf.client.post(f"/api/workflows/{doc['id']}/run", headers=UI_HEADERS)
+    assert resp.status_code == 400
+    assert wf.dispatch.calls == []
 
 
 # ── run snapshot: editing a workflow affects FUTURE runs only (run-42a3f2aa) ─
@@ -1362,3 +1391,108 @@ def test_review_route_open_without_origin_header(wf, monkeypatch):
     resp = wf.client.post('/api/workflows/review', json={'definition': doc})  # no Origin
     assert resp.status_code == 200
     assert resp.get_json()['valid'] is True
+
+
+# ── MC-1188 / DCW-W3: rendered ids are checked before they become a path or URL ──
+
+_BAD_IDS = ['*', 'MC-[0-9]', '../victim', '../../planted', 'a/b', '..', 'x..y',
+            'a?b', 'a#b', 'a b', '-lead', '', 'x' * 65]
+
+
+@pytest.mark.parametrize('bad', [b for b in _BAD_IDS if b])
+def test_journal_append_refuses_a_bad_item_id_and_writes_nothing(wf, tmp_path, monkeypatch, bad):
+    root = tmp_path / 'root'
+    journal_dir = root / 'docs' / '_journal'
+    journal_dir.mkdir(parents=True)
+    victim = journal_dir / 'MC-9-other-item.md'
+    victim.write_text('ORIGINAL', encoding='utf-8')
+    outside = root / 'docs' / 'victim-notes.md'
+    outside.write_text('ORIGINAL', encoding='utf-8')
+    monkeypatch.setattr(wf.m, '_JOURNAL_DIR', journal_dir)
+    before = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob('*') if p.is_file())
+
+    record = wf.m.create_workflow(_doc('j', [
+        _action('log', 'journal_append', config={'item_id': bad, 'title': 't', 'text': 'PLANTED'})]))
+    run = wf.m.get_run(wf.m.start_run(record['id'])['id'])
+
+    assert run['steps']['log']['status'] == 'failed'
+    assert victim.read_text(encoding='utf-8') == 'ORIGINAL'
+    assert outside.read_text(encoding='utf-8') == 'ORIGINAL'
+    after = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob('*') if p.is_file()
+                   if not p.relative_to(tmp_path).parts[0] == 'workflow_runs'
+                   and p.name != 'workflows.json')
+    before = [b for b in before if not b.startswith('workflow_runs') and not b.endswith('workflows.json')]
+    assert after == before
+
+
+def test_journal_append_refuses_a_bad_id_that_arrived_through_a_slot(wf, tmp_path, monkeypatch):
+    """The real shape of the hole: the id is an earlier agent step's reply."""
+    journal_dir = tmp_path / 'docs' / '_journal'
+    journal_dir.mkdir(parents=True)
+    victim = tmp_path / 'docs' / 'victim-notes.md'
+    victim.write_text('ORIGINAL', encoding='utf-8')
+    monkeypatch.setattr(wf.m, '_JOURNAL_DIR', journal_dir)
+    record = wf.m.create_workflow(_doc('slot', [
+        _agent('first'),
+        _action('log', 'journal_append',
+                config={'item_id': '{{steps.first.output}}', 'text': 'PLANTED'})],
+        edges=[_edge('first', 'log')]))
+    run = wf.m.start_run(record['id'])
+    _complete(wf, run, 'first', summary='../victim')
+    after = wf.m.get_run(run['id'])
+    assert after['steps']['log']['status'] == 'failed'
+    assert victim.read_text(encoding='utf-8') == 'ORIGINAL'
+
+
+def test_journal_append_still_appends_for_a_clean_id(wf, tmp_path, monkeypatch):
+    journal_dir = tmp_path / '_journal'
+    monkeypatch.setattr(wf.m, '_JOURNAL_DIR', journal_dir)
+    record = wf.m.create_workflow(_doc('ok', [
+        _action('log', 'journal_append', config={'item_id': 'a1b2c3d4', 'title': 'x', 'text': 'fine'})]))
+    run = wf.m.get_run(wf.m.start_run(record['id'])['id'])
+    assert run['steps']['log']['status'] == 'completed'
+    assert 'fine' in next(journal_dir.glob('a1b2c3d4-*.md')).read_text(encoding='utf-8')
+
+
+@pytest.mark.parametrize('bad', ['a?b', 'a#b', '../x', 'a/b', '*', ''])
+@pytest.mark.parametrize('action,config', [
+    ('backlog_create', {'text': 'hi'}),
+    ('backlog_patch', {'item_id': 'abc12345', 'status': 'done'}),
+    ('restore_point_create', {'label': 'l'}),
+])
+def test_http_actions_refuse_a_bad_project_id_and_make_no_request(wf, monkeypatch, action, config, bad):
+    calls = []
+    monkeypatch.setattr(wf.m, '_http_json', lambda *a, **k: calls.append(a) or {})
+    record = wf.m.create_workflow(_doc('h', [_action('go', action, config={'project_id': 'p1', **config})]))
+    # swap the (valid) saved project_id for the bad one in the stored definition
+    stored = json.loads(wf.m.WORKFLOWS_PATH.read_text(encoding='utf-8'))
+    stored[0]['nodes'][0]['config']['project_id'] = bad
+    wf.m.WORKFLOWS_PATH.write_text(json.dumps(stored), encoding='utf-8')
+    run = wf.m.get_run(wf.m.start_run(record['id'])['id'])
+    assert run['steps']['go']['status'] == 'failed'
+    assert calls == []
+
+
+@pytest.mark.parametrize('bad', ['a?b', 'a#b', '../x', 'a/b', '*', ''])
+def test_backlog_patch_refuses_a_bad_item_id_and_makes_no_request(wf, monkeypatch, bad):
+    calls = []
+    monkeypatch.setattr(wf.m, '_http_json', lambda *a, **k: calls.append(a) or {})
+    record = wf.m.create_workflow(_doc('h', [
+        _action('go', 'backlog_patch', config={'project_id': 'p1', 'item_id': 'abc12345', 'status': 'done'})]))
+    stored = json.loads(wf.m.WORKFLOWS_PATH.read_text(encoding='utf-8'))
+    stored[0]['nodes'][0]['config']['item_id'] = bad
+    wf.m.WORKFLOWS_PATH.write_text(json.dumps(stored), encoding='utf-8')
+    run = wf.m.get_run(wf.m.start_run(record['id'])['id'])
+    assert run['steps']['go']['status'] == 'failed'
+    assert calls == []
+
+
+def test_http_actions_still_call_with_a_clean_id(wf, monkeypatch):
+    calls = []
+    monkeypatch.setattr(wf.m, '_http_json', lambda *a, **k: calls.append(a) or {'item': {'key': 'MC-7'}})
+    record = wf.m.create_workflow(_doc('h', [
+        _action('go', 'backlog_patch',
+                config={'project_id': 'mission_control', 'item_id': 'abc12345', 'status': 'done'})]))
+    run = wf.m.get_run(wf.m.start_run(record['id'])['id'])
+    assert run['steps']['go']['status'] == 'completed'
+    assert calls[0][:2] == ('PATCH', '/api/project/mission_control/backlog/abc12345')
