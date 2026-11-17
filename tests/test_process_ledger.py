@@ -161,3 +161,27 @@ def test_persist_pid_ledger_never_raises_on_bad_path(monkeypatch):
 def test_should_reap_entry_truth_table(entry, live_image, live_ct, expected):
     import mc.process_ledger as pl
     assert pl._should_reap_entry(entry, live_image, live_ct) is expected
+
+
+# ── AP7: ledger read/write failures are observable (still swallowed) ─────────
+
+def test_ledger_write_failure_is_logged_not_raised(tmp_path, monkeypatch):
+    import mc.process_ledger as pl
+    logs = []
+    monkeypatch.setattr(pl, '_PID_LEDGER_PATH', tmp_path / 'ledger.json')
+    monkeypatch.setattr(pl, '_atomic_write_text',
+                        lambda *a: (_ for _ in ()).throw(OSError('disk full')))
+    monkeypatch.setattr(pl, '_log', lambda m, **k: logs.append(m))
+    pl._persist_pid_ledger()                      # never raises
+    assert any('ledger write failed' in m and 'disk full' in m for m in logs)
+
+
+def test_unreadable_ledger_at_boot_is_logged(tmp_path, monkeypatch):
+    import mc.process_ledger as pl
+    led = tmp_path / 'ledger.json'
+    led.write_text('{not json', encoding='utf-8')
+    logs = []
+    monkeypatch.setattr(pl, '_PID_LEDGER_PATH', led)
+    monkeypatch.setattr(pl, '_log', lambda m, **k: logs.append(m))
+    pl._reap_prior_instance_strays()              # never raises
+    assert any('ledger read failed' in m for m in logs)
