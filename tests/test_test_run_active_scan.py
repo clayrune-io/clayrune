@@ -7,12 +7,14 @@ import pytest
 from mc import test_run_store as runs
 from mc.test_run_snapshots import SnapshotCache
 from mc.test_run_terminal import TerminalIndex
+from tests.run_store_cold import cold
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(runs, '_SNAPSHOTS', SnapshotCache(max_entries=2))
     monkeypatch.setattr(runs, '_TERMINAL', TerminalIndex())
+    cold(monkeypatch)
     return runs.TestRunStore(tmp_path)
 
 

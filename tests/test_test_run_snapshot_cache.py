@@ -1,5 +1,5 @@
 """Snapshot cache correctness and lock boundaries, using only temporary records."""
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 import json
 import os
 from pathlib import Path
@@ -10,12 +10,14 @@ import pytest
 from mc import test_run_store as runs
 from mc.test_run_snapshots import SnapshotCache
 from mc.test_run_terminal import TerminalIndex
+from tests.run_store_cold import cold
 
 
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(runs, '_SNAPSHOTS', SnapshotCache())
     monkeypatch.setattr(runs, '_TERMINAL', TerminalIndex())
+    cold(monkeypatch)
     return runs.TestRunStore(tmp_path)
 
 
@@ -128,7 +130,7 @@ def test_failed_append_does_not_publish_an_uncommitted_snapshot(store, monkeypat
         raise OSError('write refused')
 
     with monkeypatch.context() as patch:
-        patch.setattr(runs, 'write_json_atomic', fail)
+        patch.setattr(runs.tail_log, 'append', fail)
         with pytest.raises(OSError, match='write refused'):
             store.apply('a', run['run_id'], dict(
                 schema=1, run_id=run['run_id'], producer_id='reporter', producer_seq=1,
@@ -231,34 +233,35 @@ def test_directory_scan_does_not_block_a_submit(store, monkeypatch):
         assert len(scan.result(timeout=5)) == 2
 
 
-def test_full_validation_holds_lock_for_only_one_file(store, monkeypatch):
-    for i in range(4):
-        store.create('a', observed_at=i)
-    original = store._snapshot
-    submits = []
+def test_one_runs_lock_does_not_block_any_other_run(store):
+    # MC-1179 SF30: the lock is per run file. While one run is held (as it is
+    # during its own validation or append), writes and reads of every other run
+    # - same project or another - go through.
+    held, other = (store.create('a', observed_at=i) for i in range(2))
+    foreign = store.create('b', observed_at=9)
+    entered, release = threading.Event(), threading.Event()
 
-    def snapshot(pid, rid, **kwargs):
-        # A worker queues for the lock while this individual record is being
-        # validated. The next record must allow that worker to finish first.
-        if not submits:
-            future = pool.submit(store.create, 'b', observed_at=10)
-            submits.append(future)
-        return original(pid, rid, **kwargs)
+    def hold():
+        with store.locked('a', held['run_id']):
+            entered.set()
+            assert release.wait(5), 'test did not release the run lock'
 
-    # Assert lock releases at each record boundary directly, without depending
-    # on OS thread fairness or a timing threshold for a cold folder replay.
-    class LockProbe:
-        def __enter__(self):
-            runs_lock.acquire()
-
-        def __exit__(self, *args):
-            runs_lock.release()
-            if threading.current_thread() is threading.main_thread() and submits:
-                submits[0].result(timeout=2)
-
-    runs_lock = runs._LOCK
-    monkeypatch.setattr(runs, '_LOCK', LockProbe())
-    monkeypatch.setattr(store, '_snapshot', snapshot)
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        assert len(store.all_snapshots('a')) == 4
-    assert submits[0].result()['project_id'] == 'b'
+    event = dict(schema=1, producer_id='r', producer_seq=1, observed_at=5,
+                 type='heartbeat', payload={'output': True})
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        holder = pool.submit(hold)
+        try:
+            assert entered.wait(5)
+            applied = pool.submit(store.apply, 'a', other['run_id'], {**event, 'run_id': other['run_id']})
+            created = pool.submit(store.create, 'b', observed_at=10)
+            read = pool.submit(store.get, 'b', foreign['run_id'])
+            assert applied.result(timeout=2)['seq'] == 1
+            assert created.result(timeout=2)['state'] == 'running'
+            assert read.result(timeout=2) == foreign
+            blocked = pool.submit(store.get, 'a', held['run_id'])
+            with pytest.raises(FutureTimeout):
+                blocked.result(timeout=0.3)
+        finally:
+            release.set()
+        holder.result(timeout=5)
+        assert blocked.result(timeout=5) == held

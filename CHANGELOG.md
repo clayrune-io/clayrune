@@ -1,5 +1,14 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Test runs: an event batch no longer rewrites the whole run record, and finished runs are deleted after 14 days (MC-1179 / SF30)
+
+- Cause: every event batch re-read, re-validated and rewrote the entire run record under one process-wide lock, and nothing ever deleted a run. On one install that was 404 MB of records in nine days; the largest, a 69,688-event run, was 27 MB.
+- Write path: an open run keeps its reducer state in memory and each batch is appended as JSON lines to `<run-id>.log` (one write, one fsync of just that batch). When the run ends the tail is folded into the `.json` record in one atomic write and removed, so a finished run is still one file. A crash mid-append loses at most the unterminated last line; loading drops it. Locks are now per run file, held only across reducing the batch and one append, so two runs never wait for each other.
+- Restart: a terminal file validated once is recorded in `_validated.jsonl` (per project folder, path + mtime + size), so later restarts stat the files instead of replaying them. It is a cache; missing or stale only costs a re-validation. Old-format records load exactly as before and are never rewritten.
+- Retention: new setting `test_run_retention_days` (default 14, `0` keeps everything, Settings > Working defaults). A run is deleted once it ended more than that many days ago; an active run is never deleted by age. Runs once at startup (off the boot path) and then at most once a day, logging one line with runs and bytes removed; a file that cannot be deleted is logged and the sweep goes on. No size bound.
+- Measured on a copy of the real store (3,467 files, 397 MB): one submit to the 27 MB run, 3.5-4.9 s before (mean 3.67 s over 100), 1.9 s for the first submit after load (one replay) then 1.7 ms. First Floor read after a restart: 26.1 s before; 28.5 s on the first restart after upgrading (no migration, so every file is validated once more and recorded), 0.11 s from the next restart on.
+- New modules `mc/test_run_log.py`, `mc/test_run_open.py`, `mc/test_run_ledger.py`, `mc/test_run_retention.py`; `mc/test_run_store.py` changed in place; `docs/TEST_RUN_STORE.md` updated. Tests: `tests/test_test_run_append_log.py`, `tests/test_test_run_retention.py`.
+
 ## [2026-11-17] - Workflow toolbar: buttons that add a block no longer look like buttons that do something
 
 - Action, Approval gate and Wait (which drop a block on the canvas) looked identical to Undo, Redo, Reset, Check workflow, Update and Run now. The toolbar is now three groups with a rule between each: Undo / Redo / Reset | a muted "Add" label then Action / Approval gate / Wait | Check workflow / Update / Run now.

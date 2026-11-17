@@ -5,7 +5,6 @@ to its child's wait result; the server observes only the launcher's identity.
 """
 from __future__ import annotations
 
-import copy
 from dataclasses import dataclass
 import hashlib
 import hmac
@@ -129,21 +128,19 @@ class TestRunFinalize:
                  result: dict[str, Any]) -> dict[str, Any]:
         with self.ingest._lock:
             owner = self._owner(project_id, caller)
-            with runs._LOCK:
-                record = self.ingest.store._read(project_id, run_id)
-                run = record['enrollment']
+            with self.ingest.store.locked(project_id, run_id) as stored:
+                run = stored.enrollment
                 if (run['owner_session_id'] != owner.session_id
                         or run['process_identity'] != owner.process_identity
                         or not isinstance(token, str) or len(token) != 64 or not token.isascii()
                         or not hmac.compare_digest(self._token(run), token)):
                     raise IngestRefused('Launcher capability unavailable')
                 payload = self._payload(run['process_identity'], result)
-                if record['snapshot']['state'] in runs.TERMINAL_STATES:
-                    prior = next((e for e in record['events']
-                                  if e['producer_id'] == runs._PROCESS_PRODUCER), None)
-                    if prior is None or prior['payload'] != payload:
+                if stored.terminal:
+                    prior = stored.process_payload
+                    if prior is None or prior != payload:
                         raise FinalizeConflict('Conflicting process exit evidence')
-                    return copy.deepcopy(record['snapshot'])
+                    return stored.snapshot
                 return self.ingest.store.finish(
                     project_id, run_id, state=payload['state'], exit_code=payload['exit_code'],
                     observed_at=self.ingest._clock(), evidence=payload['evidence'])

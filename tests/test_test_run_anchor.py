@@ -11,6 +11,7 @@ from mc import state, test_run_anchor as anchor, test_run_detection as detection
 from mc.core import TimestampedLines
 from mc.test_run_capture import RunCapture
 from mc.test_run_ingest import OwnerBinding, TestRunIngest
+from mc import test_run_store as runs
 from mc.test_run_store import TestRunStore
 from test_test_run_routes import env as route_env
 
@@ -120,7 +121,7 @@ def test_persistence_failure_does_not_append_and_can_retry(env, monkeypatch):
     def fail(*args, **kwargs):
         raise OSError('claim write refused')
     with monkeypatch.context() as patch:
-        patch.setattr(anchor, 'write_json_atomic', fail)
+        patch.setattr(runs.TestRunStore, '_set_record_flag', fail)
         assert not anchor.post(store, 'p', run['run_id'])
     assert not session.get('log_lines')
     assert 'claim write refused' in logs[0]
@@ -178,7 +179,7 @@ def test_job_capture_emits_or_fails_without_changing_job_result(env, tmp_path, m
     if fail:
         def broken(*args, **kwargs):
             raise OSError('anchor disk error')
-        monkeypatch.setattr(anchor, 'write_json_atomic', broken)
+        monkeypatch.setattr(runs.TestRunStore, '_set_record_flag', broken)
     # No OS process: exercise real start_job/watch with a supplied fake child.
     proc = SimpleNamespace(pid=999999, wait=lambda **kw: 0, poll=lambda: 0)
     done, results = threading.Event(), []
@@ -204,7 +205,7 @@ def test_http_enrollment_still_succeeds_when_anchor_fails(route_env, monkeypatch
     monkeypatch.setattr(anchor, '_log', lambda msg, **kw: logs.append(msg))
     def broken(*args, **kwargs):
         raise OSError('anchor write failed')
-    monkeypatch.setattr(anchor, 'write_json_atomic', broken)
+    monkeypatch.setattr(runs.TestRunStore, '_set_record_flag', broken)
     response = route_env.client.post('/api/project/a/test-runs/enroll', json={'metadata': {'runner': 'pytest'}})
     assert response.status_code == 201
     assert response.get_json()['receipt']['token']
@@ -235,7 +236,7 @@ def test_detection_continues_after_anchor_write_failure(env, monkeypatch):
     monkeypatch.setattr(anchor, '_log', lambda msg, **kw: logs.append(msg))
     def broken(*args, **kwargs):
         raise OSError('anchor unavailable')
-    monkeypatch.setattr(anchor, 'write_json_atomic', broken)
+    monkeypatch.setattr(runs.TestRunStore, '_set_record_flag', broken)
     observer = detection.DetectionObserver(store.root.parent, lambda p: {'id': p})
     observer._apply(session, 'launch', 'claude', detection.ToolObservation(
         'call', 'candidate', completed=True, exit_code=7), 100)
