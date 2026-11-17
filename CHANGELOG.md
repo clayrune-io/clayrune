@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Workflow toolbar: buttons that add a block no longer look like buttons that do something
+
+- Action, Approval gate and Wait (which drop a block on the canvas) looked identical to Undo, Redo, Reset, Check workflow, Update and Run now. The toolbar is now three groups with a rule between each: Undo / Redo / Reset | a muted "Add" label then Action / Approval gate / Wait | Check workflow / Update / Run now.
+- The add buttons reuse the page's existing "add something" look, `.wfb-tab-new` ("+ New Workflow"): dashed border, accent text, plus a leading "+" (added in CSS, so the button text and the drag/click behaviour are unchanged). The six command buttons stay solid; Update stays the filled primary, Run now the accent outline. Nothing renamed or moved to a menu. Each group is one no-wrap unit, so at 390px the row breaks between groups and "Add" stays with its buttons.
+- Add-button tooltips now say what they add ("Add an approval gate: the workflow pauses until a person decides", etc.).
+- `static/js/workflow-builder.js`, `static/css/app.css`. `tools/smoke/workflow-run-now.mjs` gained 7 grouping checks per width (12 failed on the old code, all pass now; set `SHOT_DIR` to also write a toolbar screenshot); `tools/smoke/workflow-builder.mjs`'s tool-order check now reads the groups.
+- Note: "+ Description" is a solid-border button, not dashed, so it was not the precedent for the add look; it is unchanged.
+
 ## [2026-11-17] - Workflow toolbar: Update and Run now are styled like the rest, and Run now cannot be double-tapped into a false failure (MC-1201)
 
 - Seen on a phone: "Update" rendered as a white browser-default button and "Run now" as a plain square one (they wore only `btn-sched-save` / `btn-sched-cancel`, which `app.css` styles under `.schedule-form` alone). Both now also carry `wfb-toolbar-btn` (+ `-primary` / `-accent` for the accent), so they match Reset / Check workflow at 390px and 1440px.

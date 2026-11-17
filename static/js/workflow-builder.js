@@ -1652,15 +1652,19 @@ function _wfRenderBody(st) {
         <span>Enabled</span>
       </label>
       <span class="wfb-toolbar-spacer"></span>
-      <button type="button" class="wfb-toolbar-btn" title="Undo (Ctrl+Z)" onclick="_wfUndo()" ${_wfCanUndo(st) ? '' : 'disabled'}>&#8630; Undo</button>
-      <button type="button" class="wfb-toolbar-btn" title="Redo (Ctrl+Shift+Z)" onclick="_wfRedo()" ${_wfCanRedo(st) ? '' : 'disabled'}>&#8631; Redo</button>
-      <button type="button" class="wfb-toolbar-btn" title="Revert to the last saved state" onclick="_wfResetCanvas()">&#8635; Reset</button>
+      <span class="wfb-toolbar-group" data-wf-group="edit" role="group" aria-label="Edit">
+        <button type="button" class="wfb-toolbar-btn" title="Undo (Ctrl+Z)" onclick="_wfUndo()" ${_wfCanUndo(st) ? '' : 'disabled'}>&#8630; Undo</button>
+        <button type="button" class="wfb-toolbar-btn" title="Redo (Ctrl+Shift+Z)" onclick="_wfRedo()" ${_wfCanRedo(st) ? '' : 'disabled'}>&#8631; Redo</button>
+        <button type="button" class="wfb-toolbar-btn" title="Revert to the last saved state" onclick="_wfResetCanvas()">&#8635; Reset</button>
+      </span>
       ${_wfRenderToolbarTools()}
-      <button type="button" class="wfb-toolbar-btn" onclick="_wfCheckWorkflow()" ${st.reviewChecking ? 'disabled' : ''}
-        title="Ask the model to review this workflow for problems">${st.reviewChecking ? 'Checking…' : 'Check workflow'}</button>
-      <button type="button" class="btn-sched-save wfb-toolbar-btn wfb-toolbar-btn-primary" onclick="_wfSave()" ${st.saving ? 'disabled' : ''}>${st.saving ? 'Saving…' : (st.workflowId ? 'Update' : 'Create')}</button>
-      <button type="button" class="btn-sched-cancel wfb-toolbar-btn wfb-toolbar-btn-accent" onclick="_wfRunNow()" ${st.runStarting ? 'disabled' : ''}
-        title="${st.workflowId ? 'Validate and run this workflow now' : 'Save the workflow first'}">${st.runStarting ? 'Starting…' : '&#x25B6; Run now'}</button>
+      <span class="wfb-toolbar-group" data-wf-group="act" role="group" aria-label="Workflow">
+        <button type="button" class="wfb-toolbar-btn" onclick="_wfCheckWorkflow()" ${st.reviewChecking ? 'disabled' : ''}
+          title="Ask the model to review this workflow for problems">${st.reviewChecking ? 'Checking…' : 'Check workflow'}</button>
+        <button type="button" class="btn-sched-save wfb-toolbar-btn wfb-toolbar-btn-primary" onclick="_wfSave()" ${st.saving ? 'disabled' : ''}>${st.saving ? 'Saving…' : (st.workflowId ? 'Update' : 'Create')}</button>
+        <button type="button" class="btn-sched-cancel wfb-toolbar-btn wfb-toolbar-btn-accent" onclick="_wfRunNow()" ${st.runStarting ? 'disabled' : ''}
+          title="${st.workflowId ? 'Validate and run this workflow now' : 'Save the workflow first'}">${st.runStarting ? 'Starting…' : '&#x25B6; Run now'}</button>
+      </span>
       <span id="wfb-save-stamp" class="wfb-save-stamp${st.dirty ? ' wfb-save-stamp-dirty' : ''}">${st.dirty ? 'Unsaved changes' : esc(_wfRelativeSavedLabel(st.savedAt))}</span>
     </div>
     ${descOpen ? `<div class="wfb-toolbar-desc-row">
@@ -1704,12 +1708,13 @@ function _wfRenderBody(st) {
 // re-open the same axis-conflict trap (defect 13) in the opposite direction,
 // since a toolbar-to-canvas drag goes DOWN where the palette's went UP.
 function _wfRenderToolbarTools() {
-  return `<span class="wfb-toolbar-tools" role="group" aria-label="Add a step">
-    <button type="button" class="wfb-toolbar-tool" title="${Object.keys(_WF_ACTION_META).length} verbs &middot; no agent"
+  return `<span class="wfb-toolbar-group wfb-toolbar-tools" data-wf-group="add" role="group" aria-label="Add a block">
+    <span class="wfb-toolbar-group-label" aria-hidden="true">Add</span>
+    <button type="button" class="wfb-toolbar-tool" title="Add an action block: one of ${Object.keys(_WF_ACTION_META).length} verbs, runs with no agent"
       data-wf-tool="action" onpointerdown="_wfPaletteDown(event,'action',null,null,true)">&#9881; <span class="wfb-toolbar-tool-label">Action</span></button>
-    <button type="button" class="wfb-toolbar-tool" title="a human decides"
+    <button type="button" class="wfb-toolbar-tool" title="Add an approval gate: the workflow pauses until a person decides"
       data-wf-tool="approval" onpointerdown="_wfPaletteDown(event,'approval',null,null,true)">&#9995; <span class="wfb-toolbar-tool-label">Approval gate</span></button>
-    <button type="button" class="wfb-toolbar-tool" title="a delay, or until a time"
+    <button type="button" class="wfb-toolbar-tool" title="Add a wait: a delay, or wait until a set time"
       data-wf-tool="wait" onpointerdown="_wfPaletteDown(event,'wait',null,null,true)">&#9203; <span class="wfb-toolbar-tool-label">Wait</span></button>
   </span>`;
 }
