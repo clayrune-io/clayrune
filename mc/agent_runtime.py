@@ -6788,7 +6788,14 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 session.setdefault('log_lines', TimestampedLines()).append(
                     f'[mc-tool scan error: {e}]')
             if session.get('proc') is proc:
-                if session.get('status') == 'running':
+                # `_interrupted_pid` (set by _mode_a_interrupt before the kill)
+                # names the process the user stopped: its non-zero rc is the
+                # kill, not a crash (MC-1179 MA1). Keyed on the pid so it needs
+                # no clearing: the next turn's process has a different pid.
+                _stopped_pid = session.get('_interrupted_pid')
+                if (session.get('status') == 'running'
+                        and (_stopped_pid is None
+                             or _stopped_pid != getattr(proc, 'pid', None))):
                     if session.get('_capture_error'):
                         session['status'] = 'error'
                     elif mc_res['paused']:
@@ -6844,10 +6851,15 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
 def _mode_a_interrupt(handle: SessionHandle) -> None:
     session = handle.session_dict
     proc = session.get('proc')
-    if proc and proc.poll() is None:
-        _kill_pid(proc.pid)
+    # State BEFORE the kill (as GeminiRuntime.interrupt does): _kill_pid is
+    # synchronous and the reader's `finally` runs the instant the process dies,
+    # so a status still 'running' there is logged as a crash (MC-1179 MA1).
+    if proc and getattr(proc, 'pid', None) is not None:
+        session['_interrupted_pid'] = proc.pid
     session['status'] = 'stopped'
     session['last_status_change_time'] = _time.time()
+    if proc and proc.poll() is None:
+        _kill_pid(proc.pid)
     session['process_alive'] = False
     session['log_lines'].append('[interrupted]')
 
