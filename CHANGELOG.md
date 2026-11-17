@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - The Desk's first open paints its home page at once, with a loading state (MC-1205, half 1)
+
+- Before: opening the Desk while the workspace read was slow showed a header and one grey line, "Loading your workspace...". Measured in the smoke browser with the read held back: 7 ms to that line, 33 s until the home items. The scripts were not the wait (all 132 desk-v1 scripts were already loaded at dashboard boot); the single workspace read was.
+- Now the home page's own frame is in the DOM in the same JS turn as the click: column headings, three placeholder rows, and the crumb's Engagement / Studio buttons. New campaign is held back until the workspace has loaded (a draft made against an empty store would be thrown away by the load that follows). The words "Loading your workspace" stay on the region for screen readers.
+- A failed workspace read shows its error INSIDE that frame with Try again, which re-reads and fills the page in; no endless spinner. A slow engagement read does not hold the board.
+- New `static/js/desk-v1-loading.js` + `static/css/desk-v1-loading.css`; `desk-v1-shell.js` calls it for the Home route only (every other route keeps the plain notice), `desk-v1-home.js` exposes its crumb buttons as `window.deskV1HomeCrumbTools`. Nothing the Desk shows once loaded changed.
+- New smoke `tools/smoke/desk-v1-first-open.mjs` (fails on the old code at 5 checks, passes now).
+
 ## [2026-11-17] - The legacy Desk screen is gone; Desk v1 is the only Desk (MC-1179 pass 04)
 
 - Deleted `static/js/desk.js` (2,361 lines; 37 of its 39 window names had no caller while `desk_v1` was on), `static/js/desk-impact-link-seam.js` (the legacy queue's tracked-link seam, only loaded by `desk.js`) and 643 + 11 lines of `.desk-*` CSS in `app.css` and `desk-window-maximize.css` that no remaining file names. Net 3,093 lines removed in this commit.
