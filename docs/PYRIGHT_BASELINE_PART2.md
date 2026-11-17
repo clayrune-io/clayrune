@@ -117,9 +117,17 @@ user guides, changelog, agent instructions, and rules need no changes.
 
 ## CI gate: new errors only (backlog 3f2c103a)
 
-`.github/workflows/pyright.yml` no longer ends in `|| true`. It runs
-`python tools/pyright_baseline_check.py`, which runs `pyright --outputjson`
-and compares against the committed `tools/pyright_baseline.json`.
+**Status, as of 2026-11-17: the gate script exists; CI does not run it yet.**
+`.github/workflows/pyright.yml` still ends in `pyright --outputjson || true`,
+so a new pyright error still merges green. The workflow edit that swaps that
+step for `python tools/pyright_baseline_check.py` is waiting on the branch
+`pending/pyright-workflow-gate`: the push token has no `workflow` scope, so
+the push that carries it is refused. Until that branch is pushed by someone
+whose token can touch `.github/workflows/`, the gate runs only by hand. This
+section describes the gate as it will behave once wired.
+
+`tools/pyright_baseline_check.py` runs `pyright --outputjson` and compares
+against the committed `tools/pyright_baseline.json`.
 
 - **Key:** repo-relative file + rule + first line of the message. Line numbers
   and pyright's indented detail lines are not part of it, so moving code or a
