@@ -5368,6 +5368,7 @@ class GeminiRuntime(AgentRuntime):
         if stdin_text:
             full = f"{full}\n\n---\n\n{stdin_text}"
         cmd = self._transform_argv(model=model)
+        self.last_error = ''
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
                                input=full,
@@ -5376,9 +5377,20 @@ class GeminiRuntime(AgentRuntime):
                                env=self._transform_env(),
                                creationflags=_POPEN_FLAGS,
                                startupinfo=_STARTUPINFO)
-        except Exception:
+        except subprocess.TimeoutExpired:
+            self.last_error = 'timeout after 180s'
+            return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e!r}'
+            print(f'[runtime:gemini] text transform spawn failed: {e!r}', flush=True)
             return None
         text = (r.stdout or '').strip()
+        # MC-1179 G1: a non-zero exit or an empty answer is a failure, not a
+        # completed transform (same tail as describe_image below).
+        detail = _oneshot_exit_check.failure_detail(r.returncode, r.stderr, text)
+        if detail:
+            self.last_error = detail
+            return None
         return OneshotResult(text=text, raw=None)
 
     VISION_DESCRIBE_MODEL = 'gemini-flash-lite-latest'
