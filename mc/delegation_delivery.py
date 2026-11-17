@@ -24,6 +24,12 @@ from mc.delegation_settlement import SettlementStore, authorize_absence
 
 RESTART_UNCERTAIN_ERROR = 'provider submission status unknown after restart'
 
+# Set on an agent-log row whose turn finished with the spawner latch already
+# spent and no event committed for it: the live path decided that turn owed its
+# spawner no wake (a human or an agent follow-up that did not name
+# notify_session, a self-started wake). `recover_outbox` must never rebuild it.
+WAKE_NOT_OWED_KEY = 'delegation_wake_not_owed'
+
 # What `last_error` of an 'uncertain' inbox row means, as a closed set so the
 # status list can say why without echoing free text. Prefix match, first hit
 # wins; the second field says whether the parent was provably never handed the
@@ -739,11 +745,15 @@ class DeliveryStore(SettlementStore):
     def recover_outbox(self, entries: list[dict[str, Any]], project_id: str) -> int:
         """Rebuild missing notifications from the durable agent log source."""
         recovered = 0
+        conflicts: list[str] = []
         for entry in entries:
             parent = (entry.get('spawned_by_session_id') or '').strip()
             child = (entry.get('session_id') or '').strip()
             if (not parent or not child or entry.get('incognito') or
                     entry.get('status') not in ('completed', 'error', 'stopped')):
+                continue
+            if entry.get(WAKE_NOT_OWED_KEY):
+                # The turn finished without owing its spawner a wake (MC-1196).
                 continue
             exact = entry.get('delegation_completion')
             if not isinstance(exact, dict):
@@ -759,9 +769,12 @@ class DeliveryStore(SettlementStore):
                 # MC-1196: the stored event wins and stays untouched. Skip this
                 # row and keep going: one conflict used to abort the whole log,
                 # leaving every later row unexamined.
-                _log(f'[delegation-delivery] log recovery skipped {event_id} '
-                     f'(session {child}, project {project_id}): '
-                     'conflicting completion event identity')
+                conflicts.append(event_id)
+        if conflicts:
+            more = f' (+{len(conflicts) - 3} more)' if len(conflicts) > 3 else ''
+            _log(f'[delegation-delivery] log recovery skipped {len(conflicts)} row(s) of '
+                 f'project {project_id} with a conflicting completion event identity: '
+                 f'{", ".join(conflicts[:3])}{more}')
         return recovered
 
     def committed_payload(self, event_id: str, project_id: str,

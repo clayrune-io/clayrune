@@ -35,7 +35,7 @@ def test_recovery_skips_a_conflicting_row_and_queues_the_rest(tmp_path):
     assert stored['status'] == 'idle'
 
 
-def test_conflict_is_logged_once_with_event_id_and_session(tmp_path, monkeypatch):
+def test_conflicts_are_logged_once_per_project_with_event_ids(tmp_path, monkeypatch):
     import mc.delegation_delivery as dd
     lines = []
     monkeypatch.setattr(dd, '_log', lambda msg, **kw: lines.append(msg))
@@ -44,7 +44,8 @@ def test_conflict_is_logged_once_with_event_id_and_session(tmp_path, monkeypatch
     store.enqueue(sent['event_id'], 'p', 'parent', sent)
     store.recover_outbox([_row('a', 1, _exact('a', 1))], 'p')
     hits = [m for m in lines if 'a:turn:1' in m]
-    assert len(hits) == 1 and 'session a' in hits[0] and 'conflicting' in hits[0]
+    # One line per project, not per row: the event id embeds the child session id.
+    assert len(hits) == 1 and '1 row(s) of project p' in hits[0] and 'conflicting' in hits[0]
 
 
 def test_enqueue_still_raises_on_conflict(tmp_path):
