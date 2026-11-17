@@ -60,7 +60,7 @@ def assert_no_server():
             "A memory probe must never import server; see this file's docstring.")
 
 
-def wire(corpus_snapshot=None, project_path=None):
+def wire(corpus_snapshot=None, project_path=None, project_id=None):
     """Initialise `mc.memory` without importing `server`. Returns (module, project).
 
     corpus_snapshot: a directory written by tools/memory-snapshot.py. When given,
@@ -72,6 +72,10 @@ def wire(corpus_snapshot=None, project_path=None):
     corpus and transcript history — `repo_root()` would otherwise resolve to
     the worktree's own (empty) encoded CLAUDE_HOME slot, silently measuring
     nothing. See fts_recall_probe.py (MC-918).
+
+    project_id: use this id instead of looking up the record for this checkout.
+    For a tool that works on projects other than the repo's own and so must not
+    exit just because the checkout is not itself a registered project.
     """
     root = repo_root()
     if str(root) not in sys.path:
@@ -88,7 +92,7 @@ def wire(corpus_snapshot=None, project_path=None):
     # The id is the record whose project_path is this checkout (or the
     # canonical one named by project_path), never a literal.
     import _checkout
-    project = {'id': _checkout.project_id(project_path),
+    project = {'id': project_id or _checkout.project_id(project_path),
                'project_path': project_path or str(root)}
 
     def noop(*a, **k):
@@ -114,7 +118,7 @@ def wire(corpus_snapshot=None, project_path=None):
             raise SystemExit(f'no corpus at {src}')
         tmp_home = Path(tempfile.mkdtemp(prefix='mc-eval-corpus-'))
         _TMP_ROOTS.append(tmp_home)
-        encoded = m._encode_project_path(str(root))
+        encoded = m._encode_project_path(str(project_path or root))
         if not encoded:
             raise SystemExit(f'could not encode project path {root}')
         dest = tmp_home / encoded / 'memory'

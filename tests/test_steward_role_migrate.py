@@ -251,6 +251,15 @@ def test_other_schedules_and_manual_sessions_do_not_block(api):
     assert mig.active_sessions(api, api.row) == []
 
 
+def test_unreadable_charter_or_task_file_is_an_error_line_not_a_traceback(api, tmp_path):
+    missing = str(tmp_path / 'nope.md')
+    code, text = run(api, '--charter-file', missing)
+    assert code == mig.EXIT_PLAN and text.startswith('ERROR:') and '--charter-file' in text
+    snap = migrated(api)
+    code, text = rollback(api, snap, '--task-file', missing)
+    assert code == mig.EXIT_PLAN and 'ERROR:' in text and '--task-file' in text
+
+
 def test_bind_failure_leaves_job_paused_and_restores_charter(api, tmp_path):
     api.bind_error = 'only one active steward assignment is allowed per project'
     charter = tmp_path / 'charter.md'

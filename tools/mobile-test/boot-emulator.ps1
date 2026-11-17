@@ -46,7 +46,8 @@ if ($avds -notcontains $Avd) {
   cmd /c "echo no| `"$avdmgr`" create avd -n $Avd -k `"$Image`" -d pixel_6 -f"
   $cfg = "$env:ANDROID_AVD_HOME\$Avd.avd\config.ini"
   $lines = Get-Content $cfg
-  if ($lines -notmatch '^hw\.keyboard=') { Add-Content $cfg 'hw.keyboard=yes' }
+  # -notmatch on an array FILTERS it (true if any line differs); ask whether any line matches.
+  if (-not ($lines -match '^hw\.keyboard=')) { Add-Content $cfg 'hw.keyboard=yes' }
 }
 
 Write-Host "booting $Avd headless on port $Port ..."

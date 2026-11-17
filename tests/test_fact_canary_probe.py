@@ -125,3 +125,13 @@ def test_scribe_and_distiller_calls_are_not_ron_messages(p):
     marker, not by phrase-filtering their prose."""
     text = 'You are a project-memory scribe. We already covered this above.'
     assert any(marker in text.lower() for marker in p._TOOL_PROMPT_MARKERS)
+
+
+# ── MC-1179 TL29: a damaged state sidecar is reported, not swallowed ─────
+
+def test_read_state_logs_a_damaged_sidecar(p, tmp_path, monkeypatch, capsys):
+    bad = tmp_path / 'state.json'
+    bad.write_text('{not json', encoding='utf-8')
+    monkeypatch.setattr(p, 'STATE_FILE', bad)
+    assert p.read_state() == {}
+    assert 'could not read' in capsys.readouterr().err

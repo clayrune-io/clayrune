@@ -306,9 +306,12 @@ def main(argv: list[str] | None = None) -> int:
     cmd = [_resolve_program(cmd[0]), *cmd[1:]]
 
     if args.raw:
-        proc = subprocess.run(
-            cmd, env=env,
-            input=(stdin_value.encode() if stdin_value is not None else None))
+        try:
+            proc = subprocess.run(
+                cmd, env=env,
+                input=(stdin_value.encode() if stdin_value is not None else None))
+        except OSError as e:
+            return _cannot_start(cmd[0], e)
         return proc.returncode
 
     # We decode the child as utf-8, so tell it to encode as utf-8. Without
@@ -316,11 +319,14 @@ def main(argv: list[str] | None = None) -> int:
     # its bytes as utf-8, and anything non-ASCII arrives as U+FFFD mojibake.
     env.setdefault('PYTHONIOENCODING', 'utf-8')
 
-    proc = subprocess.Popen(
-        cmd, env=env,
-        stdin=subprocess.PIPE if stdin_value is not None else None,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding='utf-8', errors='replace', bufsize=1)
+    try:
+        proc = subprocess.Popen(
+            cmd, env=env,
+            stdin=subprocess.PIPE if stdin_value is not None else None,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding='utf-8', errors='replace', bufsize=1)
+    except OSError as e:
+        return _cannot_start(cmd[0], e)
 
     if stdin_value is not None and proc.stdin is not None:
         try:
@@ -343,9 +349,36 @@ def main(argv: list[str] | None = None) -> int:
     # line is scrubbed of any value the vault has dispensed this process.
     if proc.stdout is not None:
         for line in proc.stdout:
-            sys.stdout.write(vault.redact(line))
+            sys.stdout.write(_scrub(line))
             sys.stdout.flush()
     return proc.wait()
+
+
+def _cannot_start(program: str, exc: OSError) -> int:
+    """A child that never started is exit 2 (this tool's own failure), not a
+    traceback with exit 1 that reads as the child having run and failed. On
+    Windows a `.cmd` shim named without its extension (`npx`) lands here."""
+    print(f"with-secret: cannot start {os.path.basename(program)!r}: {type(exc).__name__}",
+          file=sys.stderr)
+    return 2
+
+
+_MIN_LINE_NEEDLE = 8  # shorter lines of a multi-line value are too common to be a safe needle
+
+
+def _scrub(line: str) -> str:
+    """`vault.redact` plus, for a multi-line secret (a PEM key, a service-account
+    JSON), each of its own lines. The child's output is scrubbed one line at a
+    time and a value containing a newline never fits inside one line, so the
+    whole-value replace could not match it (MC-1179 TL5)."""
+    line = vault.redact(line)
+    for value, name in vault.dispensed_values():
+        if chr(10) not in value.strip():
+            continue
+        for part in sorted({p.strip() for p in value.splitlines()}, key=len, reverse=True):
+            if len(part) >= _MIN_LINE_NEEDLE and part in line:
+                line = line.replace(part, f'[redacted:{name}]')
+    return line
 
 
 if __name__ == '__main__':

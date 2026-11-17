@@ -51,6 +51,7 @@ from __future__ import annotations
 import argparse
 import difflib
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -186,7 +187,14 @@ def plan_generate(vendor: str, guard_script: Optional[Path] = GUARD_SCRIPT,
     cfg = VENDOR_CONFIGS[vendor]
     command = guard_command(guard_script, python_exe)
     dest = _gh.launch_file_path(vendor, clayrune_home)
-    before = _load_json_object(dest)
+    try:
+        before = _load_json_object(dest)
+    except RuntimeError as e:
+        # This file is Clayrune's own and is regenerated from scratch, so a
+        # damaged copy (a truncated write) has nothing worth protecting. Raising
+        # here left it on disk and every launch pointed at it (MC-1179 TL23).
+        print(f'[guards] {vendor} launch file unreadable, regenerating: {e}', file=sys.stderr, flush=True)
+        before = {}
     after: Dict[str, Any] = {}
 
     hooks = after.setdefault('hooks', {})

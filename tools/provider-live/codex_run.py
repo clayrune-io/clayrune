@@ -53,13 +53,15 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from collections import deque
+from typing import Any, Callable, Deque, Dict, List, Optional, Tuple
 
 HERE = Path(__file__).resolve().parent
 REPO_ROOT = HERE.parent.parent
 sys.path.insert(0, str(HERE))
 import live_gates as G  # noqa: E402
 
+TRACE_KEEP = 12  # API calls kept for the cell report
 VENDORS = ('claude', 'gemini', 'qwen', 'codex')
 PROD_PORT = 5199
 TERMINAL = {'idle', 'completed', 'error', 'stopped'}
@@ -254,7 +256,9 @@ class Api:
             raise ValueError('refusing to drive port 5199')
         self.base = f'http://127.0.0.1:{port}'
         self.port, self.vendor, self.cross_ok = port, vendor, cross_ok
-        self.trace: List[dict] = []
+        # Only the last TRACE_KEEP calls are ever read (the cell report), and wait() polls
+        # a full session list every 3 s, so an unbounded list held thousands of payloads.
+        self.trace: Deque[dict] = deque(maxlen=TRACE_KEEP)
         self._open = opener or urllib.request.urlopen
 
     def request(self, method: str, path: str, body: Any = None, human: bool = False,
@@ -621,6 +625,12 @@ _SHELL_TOOLS = {'bash', 'powershell', 'run_shell_command', 'shell'}
 _KILL_SUCCEEDED = re.compile(r'has been terminated|SUCCESS:\s*The process', re.I)
 
 
+def mcp_tool_receipt(log: str, tool: str) -> bool:
+    """Did MC log a `[tool: ...]` line for `tool`? The prompt echo at the top of the
+    log names the tool too, so a plain substring search is always true."""
+    return any(_TOOL_LINE.match(l) and tool in l for l in (log or '').splitlines())
+
+
 def shell_tool_attempts(log: str, text: str, command: str):
     """(attempted, tool_lines) — did the agent actually INVOKE a shell tool
     with `command`?
@@ -970,7 +980,6 @@ def run_workflow(ctx: Ctx, run: CellRun) -> None:
 
 def run_schedule(ctx: Ctx, run: CellRun) -> None:
     a, b, e = ctx.mk('schedule', 1)
-    when = (datetime.now() .replace(microsecond=0)).isoformat()
     code, r = ctx.api.request('POST', '/api/schedules',
                               {'project_id': ctx.project, 'task': marker_prompt(a, b), 'schedule_type': 'once',
                                # UTC with Z: the server reads a naive run_at as UTC, so a naive
@@ -1117,13 +1126,12 @@ def run_mcp(ctx: Ctx, run: CellRun) -> None:
     text = ctx.reply_text(s)
     log = '\n'.join(s.get('log_lines') or [])
     run.ok('tool_result_in_reply', e in text, text[:160])
-    run.ok('tool_receipt_in_transcript', 'fixture_token' in log.replace(text, ''), 'a tool-call record, not just the reply')
+    run.ok('tool_receipt_in_transcript', mcp_tool_receipt(log, 'fixture_token'), 'a tool-call record, not just the reply')
     run.artifacts.update({'mcp_reply': text, 'mcp_log': log[:3000]})
     run.claims.append(G.Claim('fixture tool returned the token', 'mcp_reply', e))
 
 
 def run_usage(ctx: Ctx, run: CellRun) -> None:
-    sids = [sid for _p, sid in ctx.notes.get('all_sessions', [])][:5]
     seen = []
     for proj, sid in ctx.notes.get('all_sessions', [])[:5]:
         s = ctx.api.session(proj, sid) or {}
@@ -1582,7 +1590,7 @@ def write_evidence(ctx: Ctx, cell: Cell, run: CellRun, status: str, token: dict,
         L += ['', '### Shell-tool invocations (the "was it attempted" evidence)', '```',
               san(run.artifacts['guardrail_tool_lines'])[:1200], '```']
     L += ['', '## Trace (sanitized, last 12 calls)', '```']
-    for t in ctx.api.trace[-12:] if ctx.api else []:
+    for t in list(ctx.api.trace)[-TRACE_KEEP:] if ctx.api else []:
         L.append(san(json.dumps({k: t[k] for k in ('method', 'path', 'status')}) + ' ' + json.dumps(t.get('response'))[:300]))
     L += ['```', '', f'Result: **{status}**']
     path.write_text('\n'.join(L) + '\n', encoding='utf-8')
@@ -1646,6 +1654,9 @@ def parse(argv=None):
     ap.add_argument('--allow-scribe-claude', action='store_true')
     ap.add_argument('--keep-home', action='store_true')
     a = ap.parse_args(argv)
+    unknown = [i for i in a.only.split(',') if i and i not in {c.id for c in CELLS}]
+    if unknown:
+        ap.error(f'--only names no such cell: {", ".join(unknown)}')  # exit 2, not a silent empty run
     if not a.journal_dir:
         a.journal_dir = str(REPO_ROOT / 'docs' / '_journal' / 'provider-live' / a.vendor)
     return a

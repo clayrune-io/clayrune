@@ -172,17 +172,22 @@ def shadow_check(name, resolved_path):
     # shadow is a second copy in a DIFFERENT directory on PATH -- that is the
     # case where PATH order, not the package manager, decides what runs.
     others = []
-    winner_dir = os.path.normcase(os.path.abspath(os.path.dirname(resolved_path)))
+    # realpath, not abspath: on a merged-/usr Linux /bin is a link to /usr/bin,
+    # and abspath would call one install a shadow of itself (MC-1179 TL9).
+    winner_dir = os.path.normcase(os.path.realpath(os.path.dirname(resolved_path)))
+    winner_file = os.path.normcase(os.path.realpath(resolved_path))
     seen_dirs = {winner_dir}
     for d in (os.environ.get('PATH') or '').split(os.pathsep):
         if not d:
             continue
-        norm_dir = os.path.normcase(os.path.abspath(d))
+        norm_dir = os.path.normcase(os.path.realpath(d))
         if norm_dir in seen_dirs:
             continue
         for ext in ('', '.cmd', '.exe', '.ps1'):
             cand = os.path.join(d, name + ext)
             if os.path.isfile(cand):
+                if os.path.normcase(os.path.realpath(cand)) == winner_file:
+                    break
                 others.append(os.path.normcase(os.path.abspath(cand)))
                 seen_dirs.add(norm_dir)
                 break
@@ -421,6 +426,18 @@ def _cmp(a, b):
     return (pa > pb) - (pa < pb)
 
 
+def _cmp_unreadable(a, b):
+    """True when either version is missing or not dotted integers (what _cmp calls 0)."""
+    if not a or not b:
+        return True
+    try:
+        [int(x) for x in a.split('.')]
+        [int(x) for x in b.split('.')]
+    except ValueError:
+        return True
+    return False
+
+
 def check_one(cli, apply_updates=False):
     inst, path = installed_version(cli.name)
     if not path:
@@ -468,6 +485,10 @@ def check_one(cli, apply_updates=False):
         row['status'] = 'outdated'
     elif shadows:
         row['status'] = 'shadowed'
+    elif cli.npm_package and (_cmp_unreadable(latest, inst)):
+        # _cmp answers 0 for a version it could not read, which is also "equal".
+        # Say "could not check" instead of "ok" (MC-1179 TL8).
+        row['status'] = 'unknown'
 
     if apply_updates and behind and not cli.update_cmd and method is not None:
         row['update_skipped'] = ('install method unknown for %s -- not guessing an updater'

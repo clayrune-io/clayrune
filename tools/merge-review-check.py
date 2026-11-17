@@ -206,9 +206,6 @@ def main(argv: list[str] | None = None) -> int:
                 return 0  # Ordinary commits stay outside merge preflight.
         except ValueError:
             return 2
-        commits = _merge_head_commits(repo)
-    else:
-        commits = []
 
     data_root = Path(a.data_root)
     project = (find_project(data_root, repo, a.project)

@@ -58,7 +58,7 @@ shared tree, and survives every time with worktrees.
 ## Note on scope
 
 This proves the **isolation engine**. It does not exercise MC's dispatch
-wiring, because that wiring doesn't exist yet — `agent_worktree.py` is not yet
-imported by the server. When it is, the end-to-end test should register a
-*throwaway* project in MC and dispatch real agents at it — never
-mission-control itself.
+wiring: `agent_worktree.py` is imported by the server's agent routes and agent
+worktrees are live, but this script drives the module directly. An
+end-to-end test should register a *throwaway* project in MC and dispatch real
+agents at it — never mission-control itself.

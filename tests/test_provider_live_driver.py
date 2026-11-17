@@ -769,3 +769,42 @@ def test_mixed_workflow_samples_each_step_session_not_just_its_final_doc():
         'a step session with no sample is UNAVAILABLE usage, which downgrades '
         'an all-PASS cell to INCONCLUSIVE')
     assert "'context_tokens': sess.get('context_tokens')" in body
+
+
+# ── MC-1179 TL41 / TL42 ─────────────────────────────────────────────────────
+
+def test_mcp_receipt_needs_a_tool_line_not_the_prompt_echo():
+    echo = '> codex: Call the MCP tool named fixture_token (server clayrune_fixture) and reply'
+    assert not D.mcp_tool_receipt(echo + '\nthe token is abc123', 'fixture_token')
+    called = echo + '\n[tool: mcp__clayrune_fixture__fixture_token] {}\nabc123'
+    assert D.mcp_tool_receipt(called, 'fixture_token')
+
+
+def test_only_naming_no_cell_is_a_usage_error_not_a_green_empty_run(capsys):
+    with pytest.raises(SystemExit) as e:
+        D.parse(['--vendor', 'codex', '--only', 'guardrial'])
+    assert e.value.code == 2
+    assert 'guardrial' in capsys.readouterr().err
+    ok_id = D.CELLS[0].id
+    assert D.parse(['--vendor', 'codex', '--only', ok_id]).only == ok_id
+
+
+def test_api_trace_keeps_only_the_calls_the_report_reads():
+    class Resp:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{"x": 1}'
+    api = D.Api(5391, 'codex', opener=lambda req, timeout=None: Resp())
+    for i in range(D.TRACE_KEEP * 5):
+        api.request('GET', f'/api/ping/{i}')
+    assert len(api.trace) == D.TRACE_KEEP
+    assert api.trace[-1]['path'] == f'/api/ping/{D.TRACE_KEEP * 5 - 1}'
+
+
+def test_fixture_mcp_server_survives_a_json_line_that_is_not_an_object():
+    lines = '[1, 2]\n"x"\nnull\n' + json.dumps({'jsonrpc': '2.0', 'id': 7, 'method': 'tools/call'}) + '\n'
+    done = subprocess.run([sys.executable, str(TOOLS / 'fixture_mcp_server.py'), 'TOK'],
+                          input=lines, capture_output=True, text=True, timeout=30)
+    assert done.returncode == 0, done.stderr
+    assert 'TOK' in done.stdout

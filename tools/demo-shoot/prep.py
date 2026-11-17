@@ -113,7 +113,7 @@ CHARACTER_TASKS = [
      "how it actually gets exploited, the blast radius if it is, the fix, and a "
      "test you would add to catch a regression." + _LENGTH_FLOOR +
      " Do not edit any files."),
-    ("brightleaf", "global:market-researcher",
+    ("brightleaf", "global:researcher",
      "Read src/pricing.md in full — do not search the web, work from this file "
      "only. Write a competitive positioning memo covering each of the three "
      "competitor moves listed, one numbered section per competitor: how their "
@@ -150,7 +150,6 @@ DEMO_CONFIG = {
     "coordination_enabled": False,
     "question_channel": "off",
     "keep_awake_enabled": False,
-    "reply_summarize_enabled": False,
 }
 
 

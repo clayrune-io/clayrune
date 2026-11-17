@@ -5,7 +5,10 @@
 const CDP = require('chrome-remote-interface');
 const { findWebviewSocket, forwardDevtools, CDP_PORT, sleep } = require('./adb');
 
-const DASH_RE = /10\.0\.2\.2:5199/;
+const { dashPattern } = require('./dash-pattern');
+
+// Same MC_BASE split4.js reads; unset means the live server on :5199.
+const DASH_RE = dashPattern(process.env.MC_BASE);
 
 async function connectDashboard({ retries = 25, delay = 1000 } = {}) {
   let lastErr = null;

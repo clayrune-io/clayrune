@@ -11,7 +11,7 @@ the bugs it guards against, and the oracle.
 pwsh tools/mobile-test/boot-emulator.ps1      # create + boot the AVD (once)
 pwsh tools/mobile-test/build-dev-apk.ps1      # build + install hermetic dev APK
 npm  install --prefix tools/mobile-test       # harness deps (chrome-remote-interface)
-node tools/mobile-test/run.js                 # run S1..S4
+node tools/mobile-test/run.js                 # run S1..S5
 ```
 
 Requires MC running on `localhost:5199`. The emulator reaches it at
@@ -22,12 +22,16 @@ and no credential gate (debug-only — never ship it).
 
 | File | Role |
 |------|------|
-| `run.js` | Scenario runner (S1–S4) + pass/fail oracle. |
+| `run.js` | Scenario runner (S1–S5) + pass/fail oracle. |
 | `lib/adb.js` | adb wrapper: WebView devtools-socket discovery, forward, app lifecycle (HOME/foreground), screencap. |
 | `lib/cdp.js` | Connect to the dashboard page over CDP (`local: true` is required for the Android WebView inspector). |
 | `lib/app.js` | SPA driving (dispatch, switch, kill-SSE) + server truth (`/agent/status`) + scratch-project bootstrap. |
 | `probe.js` | CDP connectivity smoke test. |
 | `discover.js` | Dump the SPA's reachable driving surface (debugging aid). |
+| `static-proxy.js` | Serve a worktree's `static/` on another port (point the WebView at it with `MC_BASE`; `lib/cdp.js` follows `MC_BASE`). |
+| `split4.js` | Standalone split-view scenario with its own connect and navigate. |
+| `browser-pane-site-check.js` | Browser pane on the WebView against live sites (needs the harness on :5391). |
+| `debug-midturn.js` / `debug-tap.js` | Debugging aids for mid-turn typing and tap geometry. |
 | `boot-emulator.ps1` / `build-dev-apk.ps1` | One-time environment setup. |
 
 ## Env vars

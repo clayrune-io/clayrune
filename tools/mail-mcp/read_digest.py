@@ -35,6 +35,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 _HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(_HERE))  # sibling helper, same as server.py
+from imap_quote import safe_mailbox  # noqa: E402
 _REPO_ROOT = _HERE.parent.parent
 
 
@@ -66,10 +68,16 @@ def fetch_messages(mail_server, query: str, count: int, mailbox: str) -> List[Di
     """Search + fetch full bodies for up to `count` matching messages. Returns
     plain dicts (from/date/subject/body) — the only place in this script that
     touches raw IMAP content."""
+    mailbox_arg = safe_mailbox(mailbox)
     M = mail_server._connect()
     try:
-        M.select(mailbox, readonly=True)
+        typ, sel = M.select(mailbox_arg, readonly=True)
+        if typ != "OK":
+            raise RuntimeError(f"cannot open mailbox {mailbox!r}")
         typ, data = mail_server.gmail_search(M, query)
+        if typ != "OK":
+            # A refused search carries the server's error text, not ids.
+            raise RuntimeError("mail search was refused by the server")
         ids = data[0].split() if data and data[0] else []
         uids = ids[-count:][::-1]
         messages = []

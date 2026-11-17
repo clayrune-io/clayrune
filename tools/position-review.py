@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -37,9 +38,51 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from server import load_project, load_projects   # noqa: E402
+# NEVER `import server` here (MC-1179 TL30): it starts the tunnel autostart
+# thread, whose orphan reaper kills the running server's connector. The records
+# are read directly and mc.memory is wired by the server-free harness the
+# memory-eval probes use (see tools/memory-eval/_harness.py).
+sys.path.insert(0, str(REPO_ROOT / 'tools' / 'memory-eval'))
+import _harness                                  # noqa: E402
+
+_harness.wire(project_id='_position_review')
 from mc import memory as _mem                    # noqa: E402
 from mc import positions_review as pr            # noqa: E402
+from mc.blueprints.project_routes import EXCLUDED_SIDECAR_SUFFIXES  # noqa: E402
+
+
+def _projects_dir():
+    root = Path(os.environ.get('MC_DATA_DIR') or REPO_ROOT)
+    return root / 'data' / 'projects'
+
+
+def load_project(pid):
+    """One project record, or None (missing, unreadable or not an object)."""
+    if not pid or Path(pid).name != pid:
+        return None
+    f = _projects_dir() / f'{pid}.json'
+    if f.name.endswith(EXCLUDED_SIDECAR_SUFFIXES):
+        return None
+    try:
+        rec = json.loads(f.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(rec, dict):
+        return None
+    rec.setdefault('id', pid)
+    rec.setdefault('project_path', '')
+    return rec
+
+
+def load_projects():
+    out = []
+    for f in sorted(_projects_dir().glob('*.json')):
+        if f.name.endswith(EXCLUDED_SIDECAR_SUFFIXES):
+            continue
+        rec = load_project(f.stem)
+        if rec:
+            out.append(rec)
+    return out
 
 
 def _projects(pid):
@@ -139,7 +182,9 @@ def main(argv=None):
     f.set_defaults(fn=cmd_flags)
 
     args = ap.parse_args(argv)
-    return args.fn(args)
+    rc = args.fn(args)
+    _harness.assert_no_server()
+    return rc
 
 
 if __name__ == '__main__':

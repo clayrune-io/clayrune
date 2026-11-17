@@ -61,6 +61,22 @@ def scan(mem_dir):
     return files, links, names
 
 
+_MD_LINK = re.compile(r'\]\(([^)\s]+\.md)\)')
+
+
+def markdown_links(files):
+    """{note name: [target stems]} for `[x](file.md)` links. The index cites most
+    notes this way, so counting wikilinks alone listed cited notes as orphans
+    (MC-1179 TL29). Used for the inbound count only; a markdown link that
+    resolves to no note is not reported as dangling."""
+    out = {}
+    for p in files:
+        txt = p.read_text(encoding='utf-8', errors='replace')
+        out[p.name] = [t.replace('\\', '/').rsplit('/', 1)[-1].rsplit('.', 1)[0]
+                       for t in _MD_LINK.findall(txt)]
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--project', default=None)
@@ -90,6 +106,13 @@ def main():
                 dangling.setdefault(t, []).append(src)
             else:
                 resolved += 1
+                # A note linking to itself is not a way in to it.
+                if hit[0] != src:
+                    inbound[hit[0]] = inbound.get(hit[0], 0) + 1
+    for src, tgts in markdown_links(files).items():
+        for t in tgts:
+            hit = by_key.get(_mem_link_key(t))
+            if hit and hit[0] != src:
                 inbound[hit[0]] = inbound.get(hit[0], 0) + 1
 
     drift = {f: n for f, n in names.items()

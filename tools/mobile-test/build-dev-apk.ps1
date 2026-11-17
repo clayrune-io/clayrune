@@ -41,7 +41,20 @@ $cfg      = Join-Path $MobileRepo 'capacitor.config.json'
 $manifest = Join-Path $MobileRepo 'android\app\src\main\AndroidManifest.xml'
 $mainAct  = Join-Path $MobileRepo 'android\app\src\main\java\io\clayrune\app\MainActivity.java'
 
+# The revert below is `git checkout`, which discards local work: only start on a
+# clean copy of the three files (the header's promise, now checked).
+$dirty = & git -C $MobileRepo status --porcelain -- `
+  capacitor.config.json `
+  android/app/src/main/AndroidManifest.xml `
+  android/app/src/main/java/io/clayrune/app/MainActivity.java
+if ($dirty) {
+  throw "refusing to start: uncommitted changes in files this script patches then reverts with git checkout:`n$dirty"
+}
+
 Write-Host "== 1/5 applying dev edits (transient) =="
+
+# From here a failure still reaches the revert in `finally`.
+try {
 
 # capacitor.config.json -- point at the host server, allow cleartext, keep the
 # WebView debuggable (captureInput must stay false -- Gboard IME gotcha).
@@ -82,7 +95,10 @@ $repl   = "    public void onCreate(Bundle savedInstanceState) {`r`n" +
           "        CredentialStore.Creds creds = CredentialStore.load(this);"
 if ($j -notmatch 'DEV BUILD ONLY') { $j = $j.Replace($needle, $repl); Set-Content -Path $mainAct -Value $j -Encoding utf8 }
 
-try {
+# An exact-string patch silently does nothing on a working copy with LF endings.
+if ((Get-Content $manifest -Raw) -notmatch 'usesCleartextTraffic') { throw "manifest patch did not apply (line endings?)" }
+if ((Get-Content $mainAct -Raw) -notmatch 'DEV BUILD ONLY') { throw "MainActivity patch did not apply (line endings?)" }
+
   Write-Host "== 2/5 cap copy =="
   Push-Location $MobileRepo
   & npx cap copy android

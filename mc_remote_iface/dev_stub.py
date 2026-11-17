@@ -15,7 +15,7 @@ Activate by setting the env var:
 
 This module does NOT auto-register itself. Import + activate explicitly
 from your dev launcher or the main MC startup code if `MC_DEV_REMOTE_STUB`
-is set. See `_maybe_register_dev_stub()` below.
+is set. See `maybe_register_dev_stub()` below.
 """
 from __future__ import annotations
 
@@ -52,13 +52,13 @@ class _DevStubProvider:
         if m == "online":
             return ProviderStatus(
                 enrolled=True, online=True,
-                hostname="ron.clayrune.io", username="ron",
+                hostname="demo.clayrune.io", username="demo",
                 last_seen=now_iso, error_code=None, error_message=None,
             )
         if m == "error":
             return ProviderStatus(
                 enrolled=True, online=False,
-                hostname="ron.clayrune.io", username="ron",
+                hostname="demo.clayrune.io", username="demo",
                 last_seen=now_iso,
                 error_code="bad_client_signature",
                 error_message="Couldn't connect — try restarting Mission Control.",
@@ -66,7 +66,7 @@ class _DevStubProvider:
         # default: offline (enrolled but tunnel not running)
         return ProviderStatus(
             enrolled=True, online=False,
-            hostname="ron.clayrune.io", username="ron",
+            hostname="demo.clayrune.io", username="demo",
             last_seen=now_iso, error_code=None, error_message=None,
         )
 

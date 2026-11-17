@@ -88,9 +88,13 @@ if os.environ.get('MC_FORCE_TTY') == '1':
         import shutil as _shutil
         _orig_shutil_gts = _shutil.get_terminal_size
 
-        def _patched_shutil_gts(fallback=None):
-            cols = int(os.environ.get('COLUMNS', '120'))
-            lines = int(os.environ.get('LINES', '30'))
+        def _patched_shutil_gts(fallback=(80, 24)):
+            try:
+                cols = int(os.environ.get('COLUMNS', '120'))
+                lines = int(os.environ.get('LINES', '30'))
+            except ValueError:
+                # Unusable COLUMNS/LINES: stdlib behaviour (ignore it, use the fallback).
+                return _orig_shutil_gts(fallback)
             return os.terminal_size((cols, lines))
 
         _shutil.get_terminal_size = _patched_shutil_gts

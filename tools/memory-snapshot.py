@@ -47,6 +47,8 @@ import _harness  # noqa: E402
 
 SNAP_ROOT = Path.home() / '.clayrune' / 'memory-snapshots'
 PROTECTED = {'MEMORY.md', 'MEMORY_ARCHIVE.md'}
+# Windows and default macOS filesystems are case-insensitive: `memory.md` IS MEMORY.md.
+_PROTECTED_FOLDED = {n.casefold() for n in PROTECTED}
 
 
 def sha256(p):
@@ -73,6 +75,11 @@ def ordered_files(src):
 
 def create(label):
     src = memory_dir()
+    if not (src / 'MEMORY.md').is_file():
+        # An empty or wrong directory (an agent worktree resolves its own empty
+        # slot, not the project's) would write a 0-file "rollback" and say ok.
+        raise SystemExit(f'refusing to snapshot {src}: it has no MEMORY.md, so it is '
+                         "not this project's memory directory")
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
     dest = SNAP_ROOT / f'{stamp}-{label}'
     (dest / 'memory').mkdir(parents=True)
@@ -117,18 +124,28 @@ def restore(snap, only):
     """Scoped topic-file restore. See the module docstring for why this refuses
     to touch MEMORY.md and the archive."""
     snap = Path(snap)
-    bad = [n for n in only if n in PROTECTED]
+    # A name must be a bare file name: `./MEMORY.md` or `sub/../MEMORY.md`
+    # would pass an exact-string compare and still land on the live index.
+    pathy = [n for n in only if Path(n).name != n or n in ('', '.', '..')]
+    if pathy:
+        raise SystemExit(f'refusing {", ".join(pathy)}: --only takes bare file names, no paths')
+    bad = [n for n in only if n.casefold() in _PROTECTED_FOLDED]
     if bad:
         raise SystemExit(
             f'refusing to restore {", ".join(bad)}. Restoring these rolls back every\n'
             'watermark and supersede since the snapshot, silently reviving retired\n'
             'state — that is not a rollback. Do it by hand after reading the diff.')
     dst = memory_dir()
+    man = json.loads((snap / 'manifest.json').read_text(encoding='utf-8'))
+    hashes = {e['name']: e['sha256'] for e in man['files']}
     done = []
     for name in only:
         src = snap / 'memory' / name
         if not src.exists():
             raise SystemExit(f'{name} is not in {snap}')
+        if name in hashes and sha256(src) != hashes[name]:
+            raise SystemExit(f'{name} in {snap} no longer matches its recorded hash; '
+                             'run --verify. Nothing restored.')
         shutil.copy2(src, dst / name)
         done.append(name)
     print(f'restored {len(done)} file(s) into {dst}:')

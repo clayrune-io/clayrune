@@ -130,8 +130,8 @@ def main():
           f'of the zero-result set '
           f'({100.0 * lit_up / max(1, zero_before):.1f}%)')
     print(f'total cold hits returned:            {total_cold_hits} '
-          f'(avg {statistics.mean(cold_hit_counts):.2f}/task, '
-          f'median {statistics.median(cold_hit_counts):.0f}/task)')
+          f'(avg {statistics.mean(cold_hit_counts) if cold_hit_counts else 0:.2f}/task, '
+          f'median {statistics.median(cold_hit_counts) if cold_hit_counts else 0:.0f}/task)')
     print(f'distinct real sessions reached ONLY via cold tier: '
           f'{len(distinct_cold_sessions)}')
     print(f'tasks with >=1 cold hit (content dark before this feature): '

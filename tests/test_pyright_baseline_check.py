@@ -117,6 +117,13 @@ def test_unusable_report_exits_2_not_pass(tmp_path):
     assert pbc.main(["--report", str(tmp_path / "nokey.json"), "--baseline", str(tmp_path / "base.json")]) == 2
 
 
+def test_zero_files_analysed_exits_2_not_pass(tmp_path):
+    report = {"generalDiagnostics": [], "summary": {"filesAnalyzed": 0, "errorCount": 0}}
+    (tmp_path / "empty.json").write_text(json.dumps(report), encoding="utf-8")
+    assert pbc.main(["--report", str(tmp_path / "empty.json"), "--baseline", str(tmp_path / "base.json")]) == 2
+    assert pbc.main(["--report", str(tmp_path / "empty.json"), "--baseline", str(tmp_path / "base.json"), "--update"]) == 2
+
+
 def test_missing_baseline_exits_2(tmp_path, capsys):
     rc, _ = run(tmp_path, capsys, diag(*A))
     assert rc == 2

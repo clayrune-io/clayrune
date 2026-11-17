@@ -97,9 +97,13 @@ def cmd_create(args):
     preview = bk.size_preview(categories)
     _print_preview(preview)
     print(f"\nwriting archive to {args.dest or bk._paths()['backup_dir']} ...")
-    result = bk.create_backup(categories=categories,
-                              dest_dir=Path(args.dest) if args.dest else None,
-                              label=args.label)
+    try:
+        result = bk.create_backup(categories=categories,
+                                  dest_dir=Path(args.dest) if args.dest else None,
+                                  label=args.label)
+    except bk.BackupError as e:
+        print(f'FAILED: {e}', file=sys.stderr)
+        return 1
     print(f"\ncreated: {result['path']}")
     print(f"  {result['files_written']} files written, {len(result['warnings'])} warnings")
     if result['warnings']:
@@ -220,7 +224,13 @@ def cmd_import(args):
 
 
 def cmd_restore(args):
-    manifest = json.loads(__import__('zipfile').ZipFile(args.archive).read('manifest.json'))
+    try:
+        manifest = json.loads(__import__('zipfile').ZipFile(args.archive).read('manifest.json'))
+    except (OSError, KeyError, ValueError, __import__('zipfile').BadZipFile) as e:
+        # Bad zip, missing file or no manifest.json: one line and a non-zero exit.
+        print(f'REFUSED before any write: cannot read manifest.json from {args.archive}: {e}',
+              file=sys.stderr)
+        return 1
     print(bk.announcement_for(manifest))
     if manifest.get('format', 0) > bk.FORMAT_VERSION:
         print('REFUSING: this backup was made by a newer Clayrune — update first', file=sys.stderr)
@@ -239,11 +249,20 @@ def cmd_restore(args):
         print(f'REFUSED before any write: {e}', file=sys.stderr)
         return 1
     print(f"\nrestored categories: {', '.join(report['restored_categories']) or '(none)'}")
+    failed = False
     for cat, stats in report['per_category'].items():
         print(f"  {cat}: {stats['restored']} restored, {stats['conflicts']} conflicts, "
              f"{stats['refused']} refused")
         for err in stats['errors'][:10]:
             print(f"    ! {err}")
+        if stats['errors'] or stats['refused']:
+            failed = True
+    if failed:
+        # restore_backup collects per-file refusals and write failures instead
+        # of raising; a script checking the exit code must not read them as success.
+        print('\nRESTORE INCOMPLETE: some files were refused or failed to write',
+              file=sys.stderr)
+        return 1
     return 0
 
 

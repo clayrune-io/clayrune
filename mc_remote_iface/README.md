@@ -25,7 +25,7 @@ mc_remote_iface           ← this package (open source, always present)
 mc_remote (or your fork's provider)   ← proprietary / pluggable
 ```
 
-`server.py` does `import mc_remote_iface` unconditionally, then
+`mc/blueprints/remote_routes.py` does `import mc_remote_iface` unconditionally, then
 optionally imports a concrete provider; if none registers, every
 remote-access endpoint degrades to a "no provider installed" CTA. No
 provider ⇒ core still runs.
@@ -45,7 +45,7 @@ register_provider(MyProvider())     # MyProvider implements the Protocol
 - Core retrieves it via `get_provider() -> RemoteAccessProvider | None`.
 - `clear_provider()` exists for tests / hot-reload only.
 
-Discovery order in `server.py` (today):
+Discovery order in `mc/blueprints/remote_routes.py` (today):
 1. `import mc_remote_iface` (always).
 2. If `MC_DEV_REMOTE_STUB` is set → `dev_stub.maybe_register_dev_stub()`.
 3. Else `import mc_remote` (proprietary; self-registers via its
