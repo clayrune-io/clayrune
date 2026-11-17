@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Control plane accounts: three high findings (MC-1179 pass 5b, MB22, MB23, MB24)
+
+- Control plane: the suspension write to the edge denylist is now actually sent. `CloudflareClient.kv_put` passed `headers={"Content-Type": None}`, which httpx rejects with a TypeError before any request leaves, so `denylist.add` always returned False and a suspended account kept edge access until its token expired. The multipart body and its boundary header are now built on a throwaway request and handed to the real call. 3 new tests (`control_plane/tests/test_cf_kv_put.py`). Reaches users only when the control plane is next deployed (MB24).
+
 ## [2026-11-17] - Agent plumbing, second wave of decided fixes from the pass-10 review (MC-1179)
 
 - Guard hook: the command written into Codex and Gemini hook config uses the call prefix the shell needs, so an interpreter path with a space is no longer a PowerShell parse error that those CLIs read as allow (AP5, new `mc/hook_command_shell.py`).
