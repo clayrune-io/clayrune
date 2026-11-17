@@ -3,6 +3,7 @@
 ## [2026-11-17] - Control plane public routes and the mail reader (MC-1179 MB25, MB26, MB1)
 
 - Mail reader (MB1): a sender-chosen charset name in a header (`=?<any text>?B?...?=`) no longer aborts `tools/mail-mcp/read_digest.py`. `_dec` decodes an unknown or NUL-bearing charset as UTF-8, and the fetch-failure envelope reports the exception class name, not `repr(e)`, so no sender text reaches the calling session unlaundered and one message can no longer make every digest read exit 1.
+- Connect page callback (MB26): `/v1/signin/start` and `/v1/signin/complete` no longer accept a callback a browser would send off the machine. `http://evil.example\@127.0.0.1/api/mc-callback` parsed as host 127.0.0.1 in Python and as `evil.example` in a browser, and `signin/complete` appended the enrollment token and device id to it. The check now refuses a backslash, `@`, whitespace or control character, a bad port, a query or a fragment, and the stored intent and the redirect are rebuilt from the parsed host, port and path (new `control_plane/app/connect_page_safety.py`). A callback written before this fix is refused at `signin/complete` with `bad_callback`.
 - Control-plane fixes reach users only when the control plane is next deployed; nothing here was deployed.
 
 ## [2026-11-17] - Agent plumbing, second wave of decided fixes from the pass-10 review (MC-1179)

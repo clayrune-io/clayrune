@@ -18,12 +18,13 @@ import datetime as _dt
 import hashlib
 import logging
 import os
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from . import build_info, firestore as fs
+from .connect_page_safety import canonical_callback
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -36,29 +37,18 @@ FB_API_KEY     = os.environ.get("FB_API_KEY", "")
 FB_AUTH_DOMAIN = os.environ.get("FB_AUTH_DOMAIN", "clayrune.firebaseapp.com")
 FB_PROJECT_ID  = os.environ.get("FB_PROJECT_ID", "clayrune")
 
-# Allowed callback hosts: only loopback is permitted as the redirect target so
-# we can't be turned into an open redirect that exfiltrates enrollment tokens.
-_ALLOWED_CALLBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
-
 # Username policy mirror (kept in sync with routes_account.py:_USERNAME_RE).
 _USERNAME_RE_STR = r"^[a-z0-9](-?[a-z0-9])*$"
 
 
 def _is_safe_callback(url: str) -> bool:
-    """True iff `url` is `http://(127.0.0.1|localhost):<port>/api/mc-callback`."""
-    if not url:
-        return False
-    try:
-        u = urlparse(url)
-    except Exception:
-        return False
-    if u.scheme != "http":
-        return False
-    if (u.hostname or "").lower() not in _ALLOWED_CALLBACK_HOSTS:
-        return False
-    if u.path != "/api/mc-callback":
-        return False
-    return True
+    """True iff `url` is `http://(127.0.0.1|localhost)[:<port>]/api/mc-callback`.
+
+    Only loopback is permitted as the redirect target so we can't be turned
+    into an open redirect that exfiltrates enrollment tokens; the judgement
+    (and why urlparse alone is not enough) lives in connect_page_safety.
+    """
+    return canonical_callback(url) is not None
 
 
 @router.get("/health", tags=["public"])
@@ -138,7 +128,8 @@ async def signin_start(
             "message": "nonce, pub, and callback are required.",
             "request_id": "x",
         })
-    if not _is_safe_callback(callback):
+    callback_clean = canonical_callback(callback)
+    if callback_clean is None:
         raise HTTPException(status_code=400, detail={
             "code": "bad_callback",
             "message": "Callback URL must be http://(127.0.0.1|localhost):<port>/api/mc-callback",
@@ -154,7 +145,7 @@ async def signin_start(
     db.collection(fs.COL_ENROLL_INTENTS).document(nonce_hash).set({
         "csrf_nonce_hash": nonce_hash,
         "device_pub_hash": pub_hash,
-        "callback": callback,
+        "callback": callback_clean,
         "created_at": now,
         "expires_at": expires,
     })
@@ -235,8 +226,8 @@ async def signin_complete(
             "message": "Sign-in token doesn't match this MC instance.",
             "request_id": "x",
         })
-    callback = intent.get("callback") or ""
-    if not _is_safe_callback(callback):
+    callback = canonical_callback(intent.get("callback") or "")
+    if callback is None:
         raise HTTPException(status_code=400, detail={
             "code": "bad_callback",
             "message": "Stored callback URL is invalid.",
