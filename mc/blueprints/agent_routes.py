@@ -180,6 +180,7 @@ from mc.delegation_delivery import (DeliveryStore, callback_payload,
                                     DeliveryNotHandedOff, DeliveryUncertain,
                                     drain_once, event_id_for_turn)
 import mc.question_callback as _question_callback  # a paused child's question -> its spawner
+from mc.delegation_completion_pin import completion_for_row  # MC-1196
 
 # Cross-blueprint imports (the 1.4/1.5/1.11 precedent — defs, not wire
 # placeholders; called at request/stream time only, long after server.py has
@@ -10411,13 +10412,10 @@ def _log_agent_completion_body(session):
         'project_generation': int(session.get('project_generation', 1)),
         # Exact, untruncated recovery source. Legacy `summary` remains the UI
         # preview; recovery refuses rows without this field.
-        'delegation_completion': (
-            callback_payload(session, summary, event_id_for_turn(
-                session.get('session_id', ''), int(session.get('_delegation_turn', 1))))
-            if (session.get('_notify_session') or '').strip()
-            and (session.get('_notify_session') or '').strip() != session.get('session_id', '')
-            else None
-        ),
+        # Pinned to the completion already committed for this turn, if any
+        # (MC-1196, mc/delegation_completion_pin.py).
+        'delegation_completion': completion_for_row(
+            _delivery_store, project_id, session, summary),
         'started_at': session.get('started_at', ''),
         'usage': session.get('usage', {}),
         'cost_usd': session.get('cost_usd', 0),

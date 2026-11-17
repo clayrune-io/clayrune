@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Delegation log recovery no longer stops at a conflicting row, and the log row no longer disagrees with the stored completion (MC-1196)
+
+- Cause: a Mode B child commits its wake to the outbox at the turn boundary while the session status is `idle`; the process-exit path then rewrites the agent-log row with status `completed` and rebuilds `delegation_completion` from the live session. Same event id, different `status` and `message`, so `DeliveryStore.recover_outbox` raised "conflicting completion event identity" at boot and the per-file `except` in `start_delegation_delivery` dropped every row after it. Measured on the live data (read-only): 147 conflicting rows across 9 projects, 146 differing only in `status` and `message`, 1 also in `summary` (an interim reply later replaced under the same turn).
+- `mc/delegation_delivery.py`: the identity conflict is now `ConflictingEventIdentity` (a `ValueError`; both raise sites). `recover_outbox` skips such a row, logs its event id, session and project once, and goes on. The stored event is neither queued again nor overwritten; any other failure still aborts the file as before. New read-only `DeliveryStore.committed_payload`.
+- New `mc/delegation_completion_pin.py`: the agent-log row's `delegation_completion` is the payload already committed for that event (same project and parent), else a fresh one. `agent_routes.py` calls it in place of the inline expression. New rows can no longer conflict; the 147 existing rows stay as they are.
+- New `tests/test_delegation_recovery_conflict.py` (8 tests), including the real boundary-then-exit sequence through `_maybe_notify_spawner` and `_log_agent_completion_body`.
+
 ## [2026-11-17] - Four stale smokes brought to the current contract, and the Desk exit gate split (MC-1179 pass 08 / T8-2 follow-up)
 
 - Test-only; nothing under `mc/` or `static/` changed. Of the six smokes the one runner reported red: four were stale or day-dependent, one is split, one (`browser-pane-binary-stream`) is NOT fixed (intermittent under CPU load, cause not found).

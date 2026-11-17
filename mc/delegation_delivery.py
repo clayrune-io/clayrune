@@ -66,6 +66,13 @@ class DeliveryUncertain(RuntimeError):
     """A provider submission may have happened; never replay automatically."""
 
 
+class ConflictingEventIdentity(ValueError):
+    """An event id already stored under a different project, parent or payload.
+
+    Still a ValueError: every caller that caught the old bare ValueError keeps
+    working. Recovery catches this one alone, to skip the row and go on."""
+
+
 class DeliveryNotHandedOff(DeliveryUncertain):
     """Failed before the parent could have been handed the message.
 
@@ -332,7 +339,7 @@ class DeliveryStore(SettlementStore):
             if old is not None:
                 if (old['project_id'], old['parent_session_id'], old['payload']) != (project_id, parent_session_id, encoded):
                     db.execute('ROLLBACK')
-                    raise ValueError('conflicting completion event identity')
+                    raise ConflictingEventIdentity('conflicting completion event identity')
                 db.execute('COMMIT')
                 return 'duplicate'
             cur = db.execute(
@@ -364,7 +371,7 @@ class DeliveryStore(SettlementStore):
             if old is not None:
                 if (old['project_id'], old['parent_session_id'], old['payload']) != (project_id, parent_session_id, encoded):
                     db.execute('ROLLBACK')
-                    raise ValueError('conflicting completion event identity')
+                    raise ConflictingEventIdentity('conflicting completion event identity')
                 db.execute('COMMIT')
                 return False
             cur = db.execute(
@@ -745,9 +752,33 @@ class DeliveryStore(SettlementStore):
                 continue
             event_id = exact.get('event_id') or event_id_for_turn(
                 child, int(entry.get('delegation_turn', 1)))
-            if self.enqueue(event_id, project_id, parent, exact):
-                recovered += 1
+            try:
+                if self.enqueue(event_id, project_id, parent, exact):
+                    recovered += 1
+            except ConflictingEventIdentity:
+                # MC-1196: the stored event wins and stays untouched. Skip this
+                # row and keep going: one conflict used to abort the whole log,
+                # leaving every later row unexamined.
+                _log(f'[delegation-delivery] log recovery skipped {event_id} '
+                     f'(session {child}, project {project_id}): '
+                     'conflicting completion event identity')
         return recovered
+
+    def committed_payload(self, event_id: str, project_id: str,
+                          parent_session_id: str) -> Optional[dict[str, Any]]:
+        """The completion payload already committed to the outbox for this
+        event under this project and parent, or None (absent or a different
+        project/parent). Read-only."""
+        with self._db() as db:
+            row = db.execute("SELECT project_id,parent_session_id,payload FROM outbox"
+                             " WHERE event_id=?", (event_id,)).fetchone()
+        if row is None or (row['project_id'], row['parent_session_id']) != (project_id, parent_session_id):
+            return None
+        try:
+            value = json.loads(row['payload']).get('payload')
+        except (TypeError, ValueError, AttributeError):
+            return None
+        return value if isinstance(value, dict) else None
 
 
 def event_id_for_turn(child_session_id: str, turn_number: int) -> str:
