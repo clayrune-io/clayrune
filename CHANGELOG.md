@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Journal export never rewrites a journal (MC-1179 TL14)
+
+- Re-running `tools/backlog-journal-export.py` rebuilt every journal of an item with notes from the notes alone, so text an agent had appended to `docs/_journal/<id>-<slug>.md` (gitignored, no other copy) was lost with exit 0. A journal that exists is now never rewritten: it is created only when absent, and otherwise only the notes whose `(timestamp, agent_code)` heading is not already in it are appended; every other byte, and the mtime of an untouched file, stays. New logic is in `tools/backlog_journal_sync.py`.
+- The item's journal is found by its id prefix before any name is derived, so a changed item text appends to the old-slug file instead of creating a second one (this does not fix TL15; the filename is still derived from the text when no journal exists).
+- New `--index-only` regenerates `INDEX.md` and touches no journal. The summary line now reads `journals: N created, M got appended notes, K left alone`.
+- Tests: new `tests/test_backlog_journal_export.py` (11 tests, synthetic items in a temp directory). Not run against the live backlog or `docs/_journal`.
+- Branch candidate for review; no merge, push or server restart.
+
 ## [2026-11-16] - Process guard: ordinary spellings of an image-name or listener-PID kill, and a lazy listener lookup (MC-1190 / MC-1179 AP1, AP3)
 
 - AP1: the process-guard hook now finds the kill command word (`kill`, the Windows kill tool, `Stop-Process`, `spps`) and reads its whole segment. Every integer in it is checked against the listener PIDs, so `kill -TERM <pid>`, `kill 111 <pid>`, a second `/PID`, `/FI "PID eq <pid>"`, positional `Stop-Process <pid>` and `-Id 111,<pid>` are refused. Image-name spellings added: the `/FI "IMAGENAME eq x"` filter and `-im`, `-ProcessName` and the `-Na`/`-Pr` prefixes, `spps -Name`, `Get-Process x | kill`, `gps x | spps`, `(Get-Process x).Kill()`, and the CIM/WMI `Terminate` form.
