@@ -181,3 +181,61 @@ Read so far (update): `mc/memory.py:1-6955` (whole file).
   list and test real-looking summaries.
 - K36 `memory.py:6507-6508` swallowed archive read, no log (policy, low).
 
+Read so far (update): `mc/distiller.py:1-2884` (whole file).
+
+- K40 `distiller.py:1284`, `:1289` `_evaluate_candidate` keys suppression and
+  outbox lookups by the SIGNAL kind (`topic`); every writer keys by the ARTIFACT
+  kind (`skill`): `record_push` `:2222-2230`, `_suppress_artifact` `:2751`, the
+  outbox marker `:1834`. So for skills the pre-generation "no" check and the 7-day
+  outbox dedupe never match: a model call per recurring session end, and (outbox
+  has no post-generation re-check) a new `_proposed/` dir each time. VERIFY with
+  the pure function, and count repeated fingerprints in `_proposed` read-only.
+- K41 `distiller.py:1316-1322` the `later` branch returns None on both arms, and
+  is only reached below threshold; above threshold `later` is never consulted.
+  `record_push` `:2238-2254` computes `wait_until_recurrence` for nothing.
+- K42 `distiller.py:452-468` `_read_skill_stats` returns the empty schema on a
+  parse or read error ("preserving file untouched"); every caller is a
+  read-modify-write (`_increment_counter` `:507-513`, `_commit_signals` `:1136`,
+  outbox `:1832`, `_suppress_artifact` `:2752`), so the next write replaces the
+  file with the empty schema: signals, outbox and SUPPRESSIONS gone (rail 3).
+  `:467` other read errors do the same with no log. An empty file parses to `{}`
+  and `stats['counters']`/`stats['signals']` then raise KeyError.
+- K43 `distiller.py:2007-2060` `reframe_exploration_to_skill` returns fresh model
+  output for install; no `_authority_violation` here. Read the promote route:
+  is the guard applied to (a) the reframed body, (b) any `_proposed/` artifact at
+  promote time (legacy flat entries and agent-written mc-distill proposals never
+  went through `_generate_and_write_artifact`)? Rail 1.
+- K44 `distiller.py:2398`, `:2846` rail 2 trusts the `origin:` line of whatever
+  file sits in `_proposed/`. Agents write there themselves (mc-distill). Check
+  whether the steward fence blocks `data/skills/_proposed`; if not an unattended
+  session can write an exploration stamped `origin: interactive`.
+- K45 `distiller.py:1704-1725` the authority guard is a phrase denylist. Test
+  paraphrases against the pure function ("act autonomously", "stop asking for
+  permission", "no need to confirm"). Read tests/test_distiller_safety.py.
+- K46 `distiller.py:2388-2408` `exploration_read_floor` on every dispatch: two or
+  three `_increment_counter` calls (each a locked read + full atomic rewrite of
+  the stats sidecar), one more per blocked artifact (`:2399`), and
+  `list_proposed()` `:2390`, which reads every proposed artifact of every project
+  twice (`_read_proposed_meta` `:2822` + `_exploration_snippet` `:2831`). Measure.
+- K47 `distiller.py:1448-1525` the cross-project walk reads every project's stats
+  file and only writes log lines; `_update_summary_cache` `:1530` writes a
+  summary "for future readers". Grep for a reader of either.
+- K48 `distiller.py:1375-1400` cost cap reads `stats['cost'][today]`. Grep for a
+  writer; if none, the cap never trips.
+- K49 `distiller.py:1934`, `:1960`, `:1995`, `:2038` model errors in the renderers
+  are swallowed and counted as `render_refuse:<kind>` (`:1784`), which
+  `loop_health` reports as the refuse rate. No log (policy).
+- K50 `distiller.py:874-881` a second session of the same project ending while
+  the first is distilling is dropped (`skipped_reentrant`), not queued. K23 class.
+- K51 `distiller.py:907-909` the kill-switch gate is called with a hard-coded
+  `incognito: False, housekeeping: False`; check the caller filters incognito.
+- K52 `distiller.py:1055-1108` no type guard on model output: a non-dict item in
+  `topics`, or `signals` as a list, raises AttributeError and the whole
+  session's signals are lost (`daemon_thread_exception`). `paths_tried` items
+  are stored and replayed with no type or length cap.
+- K53 `distiller.py:1239-1245` global suppression read under the project lock;
+  failure swallowed with no log, and then "no" does not bind (fails open). Same
+  at `:1641`.
+- K54 `distiller.py:2087-2094` `name:` is searched in the whole model output, not
+  the frontmatter (low).
+
