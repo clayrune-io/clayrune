@@ -174,18 +174,28 @@ def test_guard_only_vendor_diff_never_shows_unrelated_content(tmp_path):
     assert result['diff'].count('matcher') == 1  # nothing else in this file
 
 
-def test_non_dict_generated_file_refuses_to_read(tmp_path):
+def test_non_dict_json_is_refused_by_the_loader(tmp_path):
+    dest = tmp_path / 'qwen-settings.json'
+    dest.write_text('[1, 2, 3]', encoding='utf-8')
+
+    try:
+        install_hooks._load_json_object(dest)
+        assert False, 'expected RuntimeError'
+    except RuntimeError as e:
+        assert 'not an object' in str(e)
+
+
+def test_non_dict_generated_file_is_regenerated(tmp_path):
+    # The generated file is Clayrune's own; a non-object copy is damage, not user data (TL23).
     clayrune_home = tmp_path / '.clayrune'
     dest = clayrune_home / 'hooks' / 'qwen-settings.json'
     dest.parent.mkdir(parents=True)
     dest.write_text('[1, 2, 3]', encoding='utf-8')
 
-    try:
-        install_hooks.generate('qwen', apply=True, clayrune_home=clayrune_home)
-        assert False, 'expected RuntimeError'
-    except RuntimeError as e:
-        assert 'not an object' in str(e)
-    assert dest.read_text(encoding='utf-8') == '[1, 2, 3]'
+    result = install_hooks.generate('qwen', apply=True, clayrune_home=clayrune_home)
+
+    assert result['changed'] is True
+    assert isinstance(json.loads(dest.read_text(encoding='utf-8')), dict)
 
 
 def test_guard_command_points_at_the_one_shared_guard():
@@ -212,11 +222,15 @@ def test_generate_for_boot_silently_skips_codex():
     assert results == []
 
 
-def test_generate_for_boot_survives_one_vendor_failing(tmp_path):
+def test_generate_for_boot_survives_one_vendor_failing(tmp_path, monkeypatch):
     clayrune_home = tmp_path / '.clayrune'
-    bad = clayrune_home / 'hooks' / 'qwen-settings.json'
-    bad.parent.mkdir(parents=True)
-    bad.write_text('not json', encoding='utf-8')
+    real_plan = install_hooks.plan_generate
+
+    def flaky(vendor, *a, **k):
+        if vendor == 'qwen':
+            raise RuntimeError('boom')
+        return real_plan(vendor, *a, **k)
+    monkeypatch.setattr(install_hooks, 'plan_generate', flaky)
 
     results = install_hooks.generate_for_boot(clayrune_home=clayrune_home,
                                                installed_vendors=['qwen', 'gemini'])
@@ -333,3 +347,18 @@ def test_fence_command_matches_steward_core_project_install_command():
     # could silently diverge on interpreter/script resolution.
     from steward import core as steward_core
     assert install_hooks.fence_command() == steward_core._fence_command()
+
+
+def test_damaged_destination_is_regenerated_not_left_in_place(tmp_path):
+    """MC-1179 TL23: a truncated launch file used to raise on every boot and stay on disk."""
+    clayrune_home = tmp_path / '.clayrune'
+    install_hooks.generate('gemini', apply=True, clayrune_home=clayrune_home)
+    path = gh.launch_file_path('gemini', clayrune_home)
+    good = path.read_text(encoding='utf-8')
+    path.write_text(good[:len(good) // 2], encoding='utf-8')  # truncated JSON
+
+    rows = install_hooks.generate_for_boot(clayrune_home=clayrune_home, installed_vendors=['gemini'])
+
+    assert not any(r.get('error') for r in rows), rows
+    assert path.read_text(encoding='utf-8') == good
+    assert not path.with_name(path.name + '.tmp').exists()
