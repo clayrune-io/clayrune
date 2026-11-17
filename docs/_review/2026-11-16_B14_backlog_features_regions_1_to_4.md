@@ -84,6 +84,54 @@ owner-side acceptance (device test, UI look, product call) keeps the item open.
 | MC-869 | open | Revisit MCP fleet efficiency | NEEDS A HUMAN | The trim path exists (`mc/agent_runtime.py:2234-2238`). What the item asks for is a re-measurement on live trading sessions and a rollout decision; neither is a code change. Open since 2026-06-03 with "soon" in its text. |
 | MC-868 | open | Per-turn model switching | NOT DONE | No code. Depends on an auto-router that has since shipped, so its stated blocker is gone; whether it is still wanted is a product call. Duplicate in substance of MC-895 phase 5. |
 | MC-713 | in_progress | In-app installed app update | DONE (code), NEEDS A HUMAN | All five commits on master. `static/js/installed-app-update.js:1-16` pauses agent streams around `update()` (`static/js/agent-stream-pause.js:13`), the fix for the 2026-10-16 hang. Left: a real installed desktop and phone app, owner only. |
+| MC-1045 | blocked | Empty turn reads as completed | DONE (code), NEEDS A HUMAN | `82cc17ab` / `296d8884` on master. `mc/empty_turn.py` is called from the readers (`mc/agent_runtime.py:4972-4975`, `:5216`, `:6499-6505`). Left: a live run that ends with no reply. Not blocked on code. |
+
+**Desk items (17).** The Desk backend belongs to passes 5 and 6; these rows
+record only what a commit check and a look at the Desk files under `static/`
+show, so that an item whose text is behind the code is not missed. They are
+not a feature trace of the Desk.
+
+| Item | Status | Subject | Class | Evidence |
+|---|---|---|---|---|
+| MC-1175 | in_progress | Posy cannot see scene pictures | DONE (code), text stale | `9d78f64c` (2026-11-12) on master; the item still says "Tobin dispatched". Needs the owner's look in Studio. |
+| MC-1118 | in_progress | Connections one vocabulary | DONE (code), text stale | `f1a8f093` (2026-10-28, "fixes and complete validation results") on master; copy lives in `static/js/desk-v1-connect-copy.js`. The item still says "Sol_Tobin dispatched". |
+| MC-1116 | in_progress | Re-approving widened campaign | DONE (code), NEEDS A HUMAN | `ffe41be5` on master. Owner UI check named in the item. |
+| MC-1114 | in_progress | Readiness ignores post permission | DONE (code), text stale | Six commits name it, latest `f96028e2` (2026-10-28) and `09daa80e`, all on master. The item carries no state line at all. |
+| MC-1113 | in_progress | Setup fields from the vault | DONE (code), text stale | `3b287cfe`, `c97f9139` (2026-10-26) on master; picker is `static/js/desk-v1-connect-vault-picker.js`. No state line on the item. |
+| MC-1112 | in_progress | Campaign What and Where fixes | PARTLY DONE | `b179518b` and `2b0fc24d` on master cover lifecycle (delete, archive, undo: `static/js/desk-v1-what.js:257-277`) and item 9. Item 3 (media inside the article body) was not found in those two commits; passes 5 and 6 should confirm. |
+| MC-1074, MC-1070, MC-1068, MC-1067, MC-1064 | in_progress | Check connection; scene subset render; async render; model discovery; spending guard | DONE (code), NEEDS A HUMAN | Every named commit is on master (`8fda9f61`, `4166b3f7`, `a405a363`, `c412b52d`, `1704183e`, `6f6631d8`). Each waits only on the owner's UI script. MC-1067 additionally has an unexplained 21-second quote (measurement, not code, per the item). |
+| MC-1054 | blocked | MCP config and package drift | DONE (code), NEEDS A HUMAN | Part 2 `a46b73c0` on master. Part 1 no longer waits on a human: the fence covers `~/.claude.json` and `.mcp.json` since `c04f0bc9` (2026-10-12; `steward/fence.py:3118-3131`). "blocked" is stale. |
+| MC-1052 | blocked | One passcode prompt on Details | DONE (code), NEEDS A HUMAN | `1fb20c81` on master. Not blocked; one UI test. |
+| MC-1050, MC-1048 | in_progress | Pane digest reader; custom MCP connect | DONE (code), NEEDS A HUMAN | `01d0f983`, `86ef7dea`, `e41c0b32`, `6f1a474a`, `f63d3548` on master. Left: human-only install and a live read. |
+| MC-977 | blocked | Desk IA revision 2 | PARTLY DONE | 184 commits name it. Everything but R2-12 is built per the item, and R2-12 is deferred by the owner. "blocked" describes a deferral, not a blocker. |
+| MC-968 | open | Per-campaign autonomous publishing | PARTLY DONE | Steps 0 and 2 to 7 on master per the item; not re-verified here. |
+
+**Out of region, not classified (23):** MC-1176 (steward on agent-mail),
+MC-1171 (masked test verdicts, deferred), MC-1153, MC-1152, MC-1151, MC-1119,
+MC-1110 (Desk channels and phone lane), MC-1140, MC-1132 (steward role,
+hivemind roster), MC-1105 (vault entry type), MC-1005, MC-1004 (event
+triggers, per-action rules), MC-999, MC-960, MC-948, MC-936, MC-920, MC-919,
+MC-879, MC-878, MC-875, MC-735, MC-727 (feedback worker, dev harness, tunnel,
+repo transfer, webhooks, vendor hedge, remote access, mobile APK).
+
+### What the table says about the backlog itself
+
+Of the 46 in-region items, **26 have their code ask met on master** (7 DONE
+outright, 19 open only for an owner-side acceptance). Counted another way: 13
+of the 46 are
+marked `blocked`, and for 10 of those nothing is blocked; the item is waiting
+for one person to look at a screen or a device. The `blocked` status has come
+to mean "waiting on the owner", which hides the three that really are stuck
+(MC-1108 on VM access, MC-975 on an upstream crash, MC-890 on five decisions).
+
+Stale text is the second pattern. Nine items say work is "dispatched" or
+"NEXT: P1" while the commits are already on master (MC-1168, MC-1150,
+MC-1065, MC-1033, MC-988, MC-1175, MC-1118, MC-1114, MC-1113). An agent that
+reads the item and not the log will re-dispatch finished work.
+
+Three items describe one feature (MC-885, MC-1174, MC-895 phase 4) and two
+pairs track the same remainder (MC-944 with MC-964 Step F; MC-868 with MC-895
+phase 5).
 <!-- BACKLOG-ROWS-END -->
 
 ## Streamlining
