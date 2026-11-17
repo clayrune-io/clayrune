@@ -758,7 +758,11 @@ and `""` or retained opaque provider evidence (ASCII <=256) for
 common-prefix only. The receipt shape is all-or-nothing: any 409 carrying some
 but not all receipt fields, extra fields, `code !== state`, or a mismatched
 intent/thread is `response_unverified`. Client meaning: `reserved`/`sending`
-= in flight, read `/send/status`, never resubmit; `uncertain` = hold, no
+= in flight, read `/send/status`, never resubmit (one exception since
+MC-1184: after a 429 `send_limit`, or a storage fault between reservation and
+authorization, the intent is left `reserved` with nothing sent, and resubmitting
+the same `intent_id` re-runs the authorization CAS; one retry wins and sends
+once); `uncertain` = hold, no
 resend; `failed` = terminal for this intent, any retry is a new human-visible
 decision; `revoked` = generation hold. Both adapters (Worker unit 14a, Python
 unit 21) pin this with shared positive and negative vectors.
