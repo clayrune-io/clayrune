@@ -179,3 +179,13 @@ def test_it_writes_only_its_own_sidecar(env):
     after = {f.name: f.read_bytes() for f in tmp.glob('*.md')}
     assert after == before, 'the review touched a note or the index'
     assert (tmp / r.REVIEW_STATE_FILE).is_file()
+
+
+# ── MC-1179 TL29: a damaged review sidecar is reported, not swallowed ───────
+
+def test_a_damaged_review_sidecar_is_logged_not_silent(env, capsys):
+    mem, deliv, tmp = env
+    r = _review()
+    r._state_path(mem, P).write_text('{not json', encoding='utf-8')
+    assert r.read_state(mem, P) == {}
+    assert 'could not read' in capsys.readouterr().err

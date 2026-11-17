@@ -194,4 +194,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        _harness.cleanup()  # MC-1179 TL29: remove the snapshot mount _harness.wire made

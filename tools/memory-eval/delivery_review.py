@@ -83,7 +83,9 @@ def read_state(m, project):
             return {}
         d = json.loads(p.read_text(encoding='utf-8'))
         return d if isinstance(d, dict) else {}
-    except Exception:
+    except Exception as e:
+        # A damaged sidecar re-raises every flag; say so instead of doing it silently.
+        print(f'[delivery_review] could not read review state: {e}', file=sys.stderr)
         return {}
 
 

@@ -1,7 +1,10 @@
 # memory-eval — does the memory system actually retrieve anything?
 
 Read-only probes behind the memory redesign (`docs/MEMORY_REDESIGN_2026-08.md`,
-backlog `dae8d6e7`). Nothing here writes to the memory corpus.
+backlog `dae8d6e7`). Nothing here edits a memory note. A few probes write
+their own sidecar: `delivery_backfill.py` and `delivery_review.py` (delivery
+counters / review state), `fact_canary_probe.py` (its state file), and
+`fts_recall_probe.py` builds a cold-search database beside the index.
 
 ```bash
 python tools/memory-eval/pin_suite.py           # freeze the task suite (once)

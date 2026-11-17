@@ -114,7 +114,7 @@ def wire(corpus_snapshot=None, project_path=None):
             raise SystemExit(f'no corpus at {src}')
         tmp_home = Path(tempfile.mkdtemp(prefix='mc-eval-corpus-'))
         _TMP_ROOTS.append(tmp_home)
-        encoded = m._encode_project_path(str(root))
+        encoded = m._encode_project_path(str(project_path or root))
         if not encoded:
             raise SystemExit(f'could not encode project path {root}')
         dest = tmp_home / encoded / 'memory'

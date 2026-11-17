@@ -284,8 +284,9 @@ def read_state():
     try:
         if STATE_FILE.is_file():
             return json.loads(STATE_FILE.read_text(encoding='utf-8'))
-    except Exception:
-        pass
+    except Exception as e:
+        # A damaged sidecar re-raises every flag; say so instead of doing it silently.
+        print(f'[fact_canary] could not read {STATE_FILE}: {e}', file=sys.stderr)
     return {}
 
 

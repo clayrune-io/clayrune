@@ -151,7 +151,10 @@ def run(corpus_snapshot=None, canary=False):
         (tmp / 'memory' / 'zzz_canary_unreachable.md').write_text(
             'Qqxzzy vorplex thrunge. Nothing links here and no real task shares '
             'this vocabulary.\n', encoding='utf-8')
-        return run(corpus_snapshot=str(tmp), canary=False)
+        try:
+            return run(corpus_snapshot=str(tmp), canary=False)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)  # MC-1179 TL29: this copy was never removed
 
     tasks = load_suite()
     topics = set(_harness.topic_files(m, project))
@@ -199,4 +202,7 @@ def main():
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    finally:
+        _harness.cleanup()  # MC-1179 TL29: the snapshot mount _harness.wire made is a full vault copy
