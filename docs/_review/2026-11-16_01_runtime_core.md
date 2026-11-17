@@ -1037,3 +1037,297 @@ runs on every dispatch and every follow-up (`_gate_model`, `:9528`).
 - Follow-up environments were compared with dispatch: `retry_budgets.apply_env`
   affects only Claude and Qwen and `vendor_fence.prepare_command` only Aider,
   so the follow-ups that skip them lose nothing.
+
+---
+
+## 5. `server.py` (3,928 lines, read fully)
+
+Roughly 2,100 of the lines are the config defaults (`:80-680`), blueprint
+wiring and tombstone comments. The logic that remains is startup maintenance
+(`:1302-1843`), static serving (`:2468-2564`), exit hooks (`:2567-2636`), the
+port banner (`:2639-2849`), the Claude runtime hooks (`:3290-3500`) and
+`boot()` (`:3593-3843`).
+
+### S1 · high · L — the startup backfill re-imports every earlier transcript of a rolled-over conversation as a fake "interrupted" chat
+
+`server.py:1448` builds the set of transcripts the log already knows from one
+key: `{e.get('claude_session_id') for e in log ...}`. A real row carries a
+second key, `claude_session_ids`, the list of every transcript the
+conversation has used (written at `mc/blueprints/agent_routes.py:8972`, merged
+at `:9043-9045`; a conversation gets a new transcript at each context rollover
+or fresh-session resume). The backfill never reads the list. Every earlier
+transcript of a conversation that is still in the log is therefore "unknown",
+and `:1475-1491` inserts a synthesized row for it with `status: 'interrupted'`.
+The commit-side guard has the same blind spot: `mc/agent_log_file.py:79`
+checks `r.get('claude_session_id') == csid` only.
+
+**Measured** on the review machine's live data (read-only count over the 26
+`*_agent_log.json` files, 5,250 rows): 3,337 rows (64%) are synthesized, and
+**at least 305 of them carry a transcript id that a real row in the same log
+lists in its own `claude_session_ids`**. In the busiest log that is 143 of the
+500 rows; that log is at its cap and reaches back 7 days. The count is a floor:
+a duplicate whose real row has already been pushed out by the cap cannot be
+matched. The other synthesized rows were not classified.
+
+What it costs, each confirmed by reading:
+
+- **Real history is evicted.** `_save_agent_log` keeps the newest 500 rows
+  (`agent_routes.py:7460-7462`). Every fake row displaces a real one.
+- **The reconciler re-scribes them.** A synthesized row has no `scribed` key
+  and a terminal status, so `_reconcile_unscribed_sessions` (`:1604-1654`)
+  takes it: one model call and one `_(interrupted)_` memory entry per row, up
+  to `scribe_reconcile_cap` (5) per project per boot. 284 synthesized rows are
+  waiting in that state here. The conversation they belong to was already
+  scribed by its completion path, and it did not end interrupted.
+- **The Chats and Agent Log lists show a conversation several times**, once
+  real and once per earlier transcript, the extras labelled interrupted.
+
+**Fix:** build `known_csids` from both keys at `:1448`, and make the insert
+guard in `merge_rows` look in `claude_session_ids` as well. Existing duplicates
+need a one-off cleanup (a synthesized row whose id appears in a real row's
+list).
+**Test coverage:** none. `tests/test_agent_log_durability.py:161` covers the
+unreadable-log refusal only; no backfill test builds a row with
+`claude_session_ids`.
+
+### S2 · high · L — the desktop entry point runs every startup phase with no single-instance check
+
+`__main__` binds the port first (`:3925`) and the comment at `:3534-3542`
+explains why: before MC-1060 "the loser of a boot race had already reconciled
+the agent log, adopted or marked stale the winner's runs, delivered callbacks
+and rewritten guardrail hooks before its own bind failed". The other entry
+point still does exactly that. `app.py:481-483` is
+`from server import app, boot; boot(check_port=False); app.run(...)`: no bind,
+no probe, nothing before `boot()`.
+
+`boot()`'s own comments disagree about this. `:3612-3614` says app.py "binds
+through app.run and has no single-instance guard of its own". `:3640-3642`
+says "that caller already did its own single-instance handling before ever
+calling boot()". The first is the true one (app.py read, `:472-483` and
+`:518-546`).
+
+A desktop launch beside a running instance (the autostart server, or a second
+copy of the app) therefore runs, before its `app.run` fails to bind:
+
+- `ensure_exec_token(PORT)` (`:3646`), which overwrites the running instance's
+  on-disk token. The comment directly above it (`:3634-3639`) calls this "the
+  exact cross-process token mismatch MC-981 exists to prevent".
+- `_reconcile_pending_agent_log_entries` (`:3713` → `:1834-1836`), which flips
+  the running instance's `in_progress` rows to `interrupted`.
+- workflow adoption (`:3731`) and the hivemind stale pass (`:3744`), which
+  mark the running instance's live runs interrupted or stale.
+- the guardrail hook rewrite (`:3842`).
+
+The stray reaper has its own guard, but it recognises a live owner only when
+its image name starts with `python` (`mc/process_ledger.py:174-179`), which a
+frozen desktop build is not. And the failure is hidden from the user:
+`app.py:541` waits for *anything* to answer on the port, the running instance
+answers, and the window opens on it.
+
+Read, not measured: reproducing it means starting two servers, which this
+review does not do.
+**Fix:** have `app.py` serve through `_reserve_listeners` and
+`_serve_reserved` like `__main__`, or make `boot()` take the reserved listener
+as a required argument so it cannot run unbound.
+**Test coverage:** misleading. `tests/test_entrypoint_boot.py:75-109` asserts
+that `_check_port_conflict` appears before `ensure_exec_token` in `boot()`'s
+source. Both callers pass `check_port=False`, so the call it orders never
+runs; the test passes while the property it names does not hold for app.py.
+
+### S3 · medium · L — exit cleanup covers one session mode and one way of exiting
+
+`_cleanup_persistent_agents` (`:2569-2589`) acts only on sessions with
+`mode == 'B'` and `process_alive`. Every Mode A engine (Gemini, Codex, Qwen,
+OpenCode, Goose, Aider, Kiro; `mc/agent_runtime.py:4843`, `:5663`) is skipped.
+The comment at `:2577-2579` gives the reason the reap is needed, that children
+lead their own session and no longer receive the terminal's Ctrl-C, and that
+is equally true of Mode A (`mc/agent_spawn.py:235`). After a Ctrl-C exit those
+CLIs keep running, unsupervised and with their bypass flags, until they next
+write to the dead pipe or the next boot's reaper finds them in the ledger.
+
+Two more gaps in the same hook set:
+
+- There is no `SIGTERM` handler in `server.py`, `app.py` or
+  `mc/listen_socket.py` (grep). A service stop or a plain `kill` ends Python
+  without running any `atexit` hook, so none of `:2619-2636` runs: agents,
+  terminals, the delivery loop, and `_cleanup_browsers`, whose graceful close
+  is what keeps a named profile's login (project notes, browser pane section).
+- `:2589` calls `_unregister_process(session['proc'].pid)` outside the three
+  `try` blocks above it. A Mode B session with `process_alive` set and
+  `proc is None` (a state `mc/hivemind_reviewer.py:233-235` handles by name)
+  raises `AttributeError` there and ends the hook for every later session.
+
+The three `except Exception: pass` blocks at `:2575-2588` wrap subprocess
+operations, which the project's exception policy says must log.
+**Fix:** reap every session whose `proc` is alive regardless of mode; guard
+`:2589`; install a `SIGTERM` handler that calls `sys.exit` so the hooks run.
+**Test coverage:** none found for `_cleanup_persistent_agents`.
+
+### S4 · medium · L, M — the Claude runtime hooks are a second, weaker copy of the stop and follow-up paths
+
+`_register_claude_runtime_hooks` (`:3483-3497`) wires three hooks that claim
+to bridge to "the real claude path" (`:3284-3287`). Two of them do not.
+
+**Stop and interrupt (live).** `_claude_interrupt_hook` (`:3459-3475`) kills
+the process tree first and sets `status = 'stopped'` afterwards
+(`:3468-3472`). The real path does the reverse (`agent_routes.py:15254` sets
+the status, the kill follows), because the reader thread decides between
+"stopped" and "crashed" from that field when it sees the exit. With the hook's
+order the reader can record a non-zero exit as an error before the status
+changes, the same shape as MA1. The hook also skips `_unregister_process`, and
+swallows a failed kill silently (`:3470`). It is reachable:
+`mc/hivemind_reviewer.py:244` calls `runtime.stop()` for whatever provider the
+reviewer runs on, Claude included.
+
+**Follow-up (dead).** `runtime.write_followup` is called at
+`agent_routes.py:14621` and `:15636`, both inside `if session_provider !=
+'claude'` (`:14578`, `:15603`). `_claude_followup_hook` (`:3404-3456`) has no
+production caller. If it were called it would: pass the message as an argv
+string (`:3438`), which the project already knows breaks on Windows past the
+command-line limit; resume with `--continue` when the session has no
+transcript id (`:3437`), which attaches to whichever conversation ran last in
+that directory; launch with no system prompt file, MCP config or provider
+environment scope; never register the child in the process ledger; and report
+a failed spawn by appending a log line and returning normally (`:3453-3456`),
+so the caller believes the message was sent.
+**Fix:** route `stop`/`interrupt` through `_stop_session` plus
+`_kill_proc_background`; delete the follow-up hook or point it at the real
+follow-up function.
+**Test coverage:** `tests/test_launch_marker.py:176-180` pins that the dead
+follow-up hook's `Popen` passes the launch environment. Nothing tests the
+stop hook's ordering.
+
+### S5 · low · E — each read-only startup pass rewrites every agent log
+
+`_log_maintenance.snapshot` goes through `_update_agent_log`
+(`agent_routes.py:7425-7445`), which saves unconditionally after the mutator.
+The mutator for a snapshot is `claim_rows`, a no-op once rows carry their
+attempt id. Five passes call it per project per boot (`:1383`, `:1446`,
+`:1571`, `:1684`, `:1831`), the last on the synchronous boot path (`:3713`).
+**Measured:** 26 logs, 12.6 MB; one pass costs 0.13 s of parse, copy and
+serialise, and writes and fsyncs all 12.6 MB. A boot that changes nothing
+writes about 63 MB. Each replace also opens the Windows read window that
+`agent_routes.py:6975-6983` measured at 0.48% of reads. The callers'
+`copy.deepcopy(log)` repeats the copy `claim_rows` already returned
+(`mc/agent_log_file.py:66`).
+**Fix:** skip the save when the mutator left the rows unchanged, and take one
+snapshot per project for the four background passes.
+
+### S6 · low · E — the telemetry backfill re-probes the same rows on every boot
+
+`_backfill_token_telemetry` (`:1687-1698`) skips a row only when it already
+has `model_tokens`. A row whose transcript is gone, or yields no telemetry, is
+never marked and is looked up again at every start. A miss in
+`_find_transcript_file` walks every agent worktree directory
+(`mc/memory.py:406-416`). **Measured:** 469 rows qualify on the review machine
+(103 of them synthesized), and its main project has 270 worktree directories.
+Not timed.
+**Fix:** stamp the row when the probe finds nothing.
+
+### S7 · low · E — the port banner outlived the check it belonged to
+
+Both entry points pass `check_port=False` (`:3926`, `app.py:482`), so
+`_check_port_conflict` (`:2639-2849`) is called only from `_exit_port_in_use`
+(`:3530`), which exits 2 whatever it returns. Inside it:
+
+- the 15 s restart wait (`:2726-2733`) cannot run: `_reserve_listeners` pops
+  `MC_RESTART_FROM_PID` first (`:3550`);
+- with `MC_ALLOW_PORT_CONFLICT=1` it logs "proceeding ANYWAY" (`:2844-2847`)
+  and the caller then exits (`:3531`);
+- `if f':{PORT}' in line` (`:2750`) matches ports 51990-51999 as port 5199, so
+  the banner can name an unrelated process as the holder;
+- the docstring (`:2640-2656`) still describes a guard with a bypass.
+
+**Fix:** reduce it to the banner it now is, match the port with a word
+boundary, and delete the `check_port` parameter (which also removes the
+contradiction in S2's comments).
+
+### S8 · low · M — two things still happen on a bare `import server`
+
+The file documents this hazard for the exec token and moved that into `boot()`
+(`:2182-2190`). Two siblings remain at module scope:
+
+- `:3180` `_limit_resume_dispatch.restore_waits(_bp_agent)` rebuilds paused
+  sessions from the store and can write to it (`confirm_submission` and
+  `finalize`, `mc/limit_resume_dispatch.py:79-81`, `:99`, `:104`). A test or
+  script that imports `server` against the real data directory writes the
+  running server's `limit_resume.json`.
+- `:699` `maybe_set_sole_provider_default` can write `config.json` (A10).
+
+Prior finding E6 (import starts a tunnel connector) is the same class and is
+still open; see section 0.
+**Fix:** move both calls into `boot()`.
+
+### S9 · low · M — the Distiller's skills root ignores the data root
+
+`:1853` sets `_SKILLS_ROOT = Path(__file__).parent / 'data' / 'skills'`. Every
+other store in the file hangs off `_DATA_ROOT` (`:848-888`). An instance
+isolated with `MC_DATA_DIR` therefore writes its proposals into the source
+checkout's `data/skills/_proposed/`, shared with whatever else runs from that
+checkout. In a frozen build the path is inside the application bundle. Read,
+not verified on a frozen build.
+**Fix:** derive it from `_DATA_ROOT`, keeping `_APP_DIR` for the bundled
+built-ins.
+
+### S10 · low · E — three `--version` subprocesses on the boot path to read three booleans
+
+`_install_guardrail_hooks_on_boot` (`:3896-3897`) calls `health_check()` on
+each of three vendors and reads only `.installed`. Each health check runs the
+CLI's `--version` with a 10 s timeout (`:3308-3309` for Claude). The phase is
+synchronous, after the port is bound and before serving starts
+(`:3925-3928`). Read, not measured (launching a provider CLI is out of bounds
+for this review); `_boot_phase` logs the phase when it exceeds 0.25 s.
+**Fix:** use `installed_runtimes()` or `resolve_binary()` for the boolean.
+
+### S11 · low · E — `_asset_version()` walks the static tree on every call
+
+`:2496-2522`, called by `/` (`:2528`) and `/api/version` (`:2564`).
+**Measured:** 404 files, 3.35 ms per call. Each open tab polls
+`/api/version` every 60 s (`static/index.html:4516`). Small; a few seconds of
+caching removes it.
+
+### S12 · low · L, M — smaller items
+
+- `:683` `PORT = int(...)` is unguarded. A non-numeric `port` or `MC_PORT`
+  ends the import with a bare `ValueError`, twenty lines after a malformed
+  `config.json` is given a clean fallback and a message (`:671-678`).
+- `:854` `Path(CONFIG.get('shared_rules_path', ''))` turns an empty setting
+  into the current directory.
+- `:3335` reports `last_checked` as now when Claude auth was never probed,
+  next to a status of `unknown`.
+- `:1575-1581`: a log made only of synthesized rows has no `scribed` key
+  anywhere, so the reconciler baseline-stamps it. A new project whose first
+  session was hard-killed is never scribed, which is the case the pass exists
+  for.
+- `:1646-1656`: the reconciler writes the memory entry, then commits
+  `scribed = True` through `merge_rows`, which drops the change if the row
+  moved in the meantime (`mc/agent_log_file.py:88-91`). The entry is then
+  written again at the next boot.
+- `:2836` `port_conflict.log` is appended at the data root with no cap.
+
+### Sound in `server.py`
+
+- `_load_config` (`:664-680`) merges saved values over defaults and reports a
+  malformed file on stderr instead of silently running on defaults.
+- CORS (`:758-798`) allowlists app shells and loopback and never reflects an
+  arbitrary origin. Cross-site JSON posts need a preflight and fail it. Five
+  routes parse the body with `force=True` (three in `agent_routes.py`, one
+  each in `popout_routes.py` and `push_mobile.py`); those accept a body with
+  no JSON content type, which skips the preflight. Left for the passes that
+  own those files.
+- The `immutable` cache header is gated on `?v=` being present (`:831-836`).
+- The worktree GC takes its snapshot before serving and re-checks liveness per
+  id (`:1302-1361`).
+- The backfill refuses to run against a log it cannot parse (`:1427-1430`).
+- `__main__` binds before `boot()` (`:3925`), and the exec token is minted in
+  `boot()`, not at import (`:3646`).
+- `_boot_phase` (`:3568-3586`) times and isolates each phase.
+- Every store path is a sibling of `DATA_DIR`, not a member (`:857-888`,
+  `:1071`, `:3044-3045`, `:3174-3206`).
+- `_reconcile_pending_agent_log_entries` leaves adopted sessions alone
+  (`:1818-1836`).
+- The reconciler's cap does bound model calls: `_write_session_memory` always
+  returns True (`mc/memory.py:4919-5046`), so a failing row cannot be retried
+  without counting.
+- The frozen-build branch of the guardrail hook generation (`:3906-3911`)
+  matches its comment.
