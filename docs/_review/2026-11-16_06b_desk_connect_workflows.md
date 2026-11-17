@@ -463,3 +463,44 @@ Read fully: `browser_setup`, `browser_setup_record`, `browser_check`, `browser_c
   names, never values; `browser_check` builds its script from reviewed profile selectors only
   and re-checks the final URL at evidence time; `linkedin_destination.apply` refuses to
   re-sign an invalid policy.
+
+### Desk Connect: working notes, batch 5 (candidates, not yet ranked)
+
+Read fully: `parameter_parsers`, `parameter_detect`, `parameter_classifier`, `parameter_schema`,
+`profile_schema`, `profile_compat`, `custom_npm_semver`, `custom_npm_card`, `higgsfield_mcp_capture`,
+`higgsfield_mcp_catalogue`, `higgsfield_mcp_snapshot`, `readme_servers`, `mcp_errors`,
+`providers/google_ai`, `providers/openai_api`. That completes `mc/desk_connect/`.
+
+- cand DC-r (medium, E/M; MEASURED): `parameter_parsers._FENCE` (`:34`) used by `_candidate_blocks`
+  (`:230`) is quadratic on text with many fence openers that are not at the start of a line. Input
+  `'a```\n' * n`: 10 KB 0.08 s, 20 KB 0.33 s, 40 KB 1.3 s, 80 KB 8.0 s. The text is a registry
+  README (document cap 2,000,000 bytes, `parameter_sources.py:37`), a documentation page, or pasted
+  text. Python's `re` holds the interpreter lock for the whole match: measured, a thread that should
+  tick every 50 ms ran once in 7 s. So one detection on a package whose README has this shape stops
+  every thread of the server (requests, streams, scheduler) for the length of the scan, over an hour
+  at 2 MB by extrapolation, and `parameter_detect._lock` (`:94`) stays held, so later detections get
+  429. The 60 s total (`parameter_detect.py:38`) is only checked between stages.
+- cand DC-d resolved (low, E; walk MEASURED): `custom_package_manifest.check_for_launch`
+  (`agent_routes.py:802`) stat-walks every approved npm server's tree on every agent dispatch, and
+  `derive_state` (`custom_connection_activation.py:316`) does the same per connections listing.
+  Hashing is skipped by a size and time shortcut, so the cost is the walk: 48 ms for 5,000 files
+  cold, about 0.2 s at the 20,000-file cap, per server, per dispatch.
+- DC-e dropped: the install holds the closure's archives in memory, but the closure caps the total
+  at 96 MB (`custom_npm_closure.py:48`). Bounded.
+- DC-f dropped: a corrupt MCP config during removal is caught and logged by the route
+  (`desk_connection_removal_routes.py:29`).
+- small (low): `higgsfield_mcp_snapshot.capture` (`:50-56`) rewrites the snapshot without the
+  `models` key, so every tool capture discards the 24-hour model-contract cache that
+  `higgsfield_mcp_catalogue.refresh` (`:99-107`) wrote into the same file, and two catalogue
+  refreshes for different models are a read, network call, write with no lock (last writer wins).
+  Cost is a repeated read-only call, not a wrong result. `parameter_classifier._clean` (`:84-86`)
+  cleans the whole text, up to 2 MB, character by character, then keeps 20,000.
+  `parameter_schema.runs_arbitrary_code` (`:178-190`) does not label `env bash`, `npx -c "..."` or
+  `node --eval=...`; it is a label on a card that shows the command verbatim, not a gate.
+- sound: vault placeholders in a detected command or argument are refused at approval
+  (`custom_connection_operation.py:85, 94`); the classifier's answer is checked for exact shape and
+  every value must appear in the text that was sent; env and header values are never copied into a
+  draft; `$ref` is followed inside the document only; the semver subset matches node-semver on the
+  cases checked by reading (caret on 0.x, tilde, partials, hyphen ranges, the prerelease rule);
+  profile validation rejects unknown fields and never returns a half-valid profile; the Higgsfield
+  snapshot logs the exception class only.
