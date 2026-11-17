@@ -93,7 +93,7 @@ async function renderStewardRoles() {
     const startOff = blocked || !!a.role_error;
     const startWhy = a.role_error ? a.role_error
       : blocked ? 'Cannot start: ' + SR.blockers.map(b => BLOCKER_LABELS[b.code] || b.code).join('; ') : 'Start this role';
-    const pid = _E(a.project_id);
+    const pid = window.jsAttr(a.project_id);
     return `<div class="schedule-card-wrap" data-srole-card="${_E(a.schedule_id)}"><div class="schedule-card srole-card">
       <div class="schedule-card-body">
         <div class="schedule-card-project">${_E(a.project_name)}

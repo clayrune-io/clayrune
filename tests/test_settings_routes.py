@@ -344,12 +344,12 @@ def test_add_domain_duplicate_409(ctx):
 def test_update_domain_patches_fields(ctx):
     ctx.client.post('/api/settings/domains/add', json={'id': 'edit_me'})
     resp = ctx.client.patch('/api/settings/domains/edit_me',
-                            json={'label': 'Edited', 'color': 'red'})
+                            json={'label': 'Edited', 'color': '#ff0000'})
     assert resp.status_code == 200
     saved = json.loads(ctx.settings_path.read_text(encoding='utf-8'))
     dom = next(d for d in saved['domains'] if d['id'] == 'edit_me')
     assert dom['label'] == 'Edited'
-    assert dom['color'] == 'red'
+    assert dom['color'] == '#ff0000'
 
 
 def test_update_domain_not_found_404(ctx):

@@ -14,9 +14,9 @@ function chatSearchHTML(projectId) {
     <span class="chat-search-icon">&#128269;</span>
     <input type="text" class="chat-search-input" id="chat-search-${esc(projectId)}"
       placeholder="Search past chats by content…" value="${esc(q)}" spellcheck="false"
-      oninput="onChatSearchInput('${esc(projectId)}', this.value)"
-      onkeydown="if(event.key==='Escape'){clearChatSearch('${esc(projectId)}')}">
-    <span class="chat-search-clear" onclick="clearChatSearch('${esc(projectId)}')" title="Clear search">&#10005;</span>
+      oninput="onChatSearchInput('${window.jsAttr(projectId)}', this.value)"
+      onkeydown="if(event.key==='Escape'){clearChatSearch('${window.jsAttr(projectId)}')}">
+    <span class="chat-search-clear" onclick="clearChatSearch('${window.jsAttr(projectId)}')" title="Clear search">&#10005;</span>
   </div>`;
 }
 
@@ -53,7 +53,7 @@ function chatResultsHTML(projectId) {
     const label = (item.label || '(no label)').substring(0, 90);
     const meta = [item.ts_relative, item.matches ? `${item.matches} hit${item.matches !== 1 ? 's' : ''}` : '']
       .filter(Boolean).join(' · ');
-    return `<div class="chat-result" onclick="pickChatResult('${esc(projectId)}','${esc(item.csid)}')" title="${esc(item.label)}">
+    return `<div class="chat-result" onclick="pickChatResult('${window.jsAttr(projectId)}','${esc(item.csid)}')" title="${esc(item.label)}">
       <div class="chat-result-top">
         <span class="chat-result-label">${_highlightTerm(label, q)}</span>
         <span class="chat-result-meta">${esc(meta)}</span>

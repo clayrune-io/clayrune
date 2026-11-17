@@ -38,7 +38,7 @@ function _providerBadge(){return ''} function getDefaultResumeId(){return ''}
 function refreshModal(){const p={id:activeProjectId,project_path:'/tmp/'+activeProjectId}; document.querySelector('#app').innerHTML=window.agentLogPanelHTML(p)}
 function refreshModalById(id){if(id===activeProjectId) refreshModal()}
 window.refreshModal=refreshModal; window.refreshModalById=refreshModalById; window.API_BASE='';
-</script><script type="module" src="/static/js/agent-log.js"></script><script type="module" src="/static/js/agent-console.js"></script>`;
+</script><script src="/static/js/js-attr.js"></script><script type="module" src="/static/js/agent-log.js"></script><script type="module" src="/static/js/agent-console.js"></script>`;
 
 let server = null;
 let browserServer = null;
@@ -48,7 +48,7 @@ try {
 server = http.createServer((req, res) => {
   const path = decodeURIComponent((req.url || '').split('?')[0]);
   if (path === '/') { res.writeHead(200, {'content-type': 'text/html'}); return res.end(pageHTML); }
-  if (path.startsWith('/static/js/agent-log.js') || path.startsWith('/static/js/agent-console.js')) {
+  if (path.startsWith('/static/js/agent-log.js') || path.startsWith('/static/js/agent-console.js') || path === '/static/js/js-attr.js') {
     const file = resolve(REPO_ROOT, path.slice(1));
     res.writeHead(200, {'content-type': 'text/javascript'}); return res.end(readFileSync(file));
   }

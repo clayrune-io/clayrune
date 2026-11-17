@@ -48,6 +48,8 @@ NO import cycle: imports leaf modules only (mc.state, mc.core, flask, stdlib).
 from pathlib import Path
 import json
 
+from mc.ui_field_validation import validate_colors
+
 from flask import Blueprint, jsonify, request
 
 from mc import provider_preferences
@@ -639,6 +641,10 @@ def get_domains():
 @bp.route('/api/settings/domains/add', methods=['POST'])
 def add_domain():
     data = request.get_json() or {}
+    error = validate_colors(data)
+    if error:
+        return jsonify({'error': error}), 400
+
     domain_id = (data.get('id') or '').strip().lower().replace(' ', '_')
     domain_id = ''.join(c for c in domain_id if c.isalnum() or c == '_')
     if not domain_id:
@@ -658,6 +664,10 @@ def add_domain():
 @bp.route('/api/settings/domains/<domain_id>', methods=['PATCH'])
 def update_domain(domain_id):
     data = request.get_json() or {}
+    error = validate_colors(data)
+    if error:
+        return jsonify({'error': error}), 400
+
     settings = _load_settings()
     domains = settings.get('domains', [])
     domain = next((d for d in domains if d['id'] == domain_id), None)

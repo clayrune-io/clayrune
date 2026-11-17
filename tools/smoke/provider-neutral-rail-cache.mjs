@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 
 const here = dirname(fileURLToPath(import.meta.url));
+const jsAttrSource = readFileSync(resolve(here, '..', '..', 'static', 'js', 'js-attr.js'), 'utf8');
 const source = readFileSync(resolve(here, '..', '..', 'static', 'js', 'agent-log.js'), 'utf8');
 // The picker-only VM has no DOM; gesture coverage runs in chat-text-selection.
 const previewSource = readFileSync(resolve(here, '..', '..', 'static', 'js', 'resume-preview.js'), 'utf8')
@@ -17,6 +18,7 @@ const context = vm.createContext({
   conversationsCache: {}, agentLogCache: {}, agentStatusCache: {},
   agentOutputBuffers: {}, agentPendingImages: {},
 });
+vm.runInContext(jsAttrSource, context, { filename: 'js-attr.js' });
 vm.runInContext(source, context, { filename: 'agent-log.js' });
 
 const upsert = (csid, text, status, meta) => {
@@ -72,6 +74,7 @@ const previewContext = vm.createContext({
   _getProviderCaps: () => ({ supports_session_resume: true }),
   esc: value => String(value ?? ''),
 });
+vm.runInContext(jsAttrSource, previewContext, { filename: 'js-attr.js' });
 vm.runInContext(previewSource, previewContext, { filename: 'resume-preview.js' });
 const picker = vm.runInContext("sessionPickerHTML('project')", previewContext);
 if (!picker.includes("selectResumeSession('project','thread-1','codex','mc-1')"))

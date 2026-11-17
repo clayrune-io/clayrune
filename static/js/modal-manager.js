@@ -766,17 +766,17 @@ function _renderProfileDialog() {
     </div>
     <div class="settings-row">
       <div><div class="settings-label">Emoji</div><div class="settings-hint">Shown on the tile and modal</div></div>
-      <button class="btn-dispatch" style="background:var(--surface3);border-color:var(--border2);color:var(--text);font-size:16px;min-width:48px" onclick="editProjectEmoji('${esc(p.id)}')">${p.emoji ? esc(p.emoji) : 'Pick…'}</button>
+      <button class="btn-dispatch" style="background:var(--surface3);border-color:var(--border2);color:var(--text);font-size:16px;min-width:48px" onclick="editProjectEmoji('${window.jsAttr(p.id)}')">${p.emoji ? esc(p.emoji) : 'Pick…'}</button>
     </div>
     <div class="settings-row" style="align-items:flex-start;flex-direction:column;gap:6px">
       <div><div class="settings-label">Folder</div><div class="settings-hint">Working directory the agent runs in — enables dispatch, skills, MCP</div></div>
       <div style="display:flex;width:100%;gap:6px;align-items:center">
         <input id="pfd-path" class="path-input" type="text" value="${esc(p.project_path || '')}"
           placeholder="No folder selected — click Browse, or type a path"
-          onblur="saveProjectPath('${esc(p.id)}',this)"
+          onblur="saveProjectPath('${window.jsAttr(p.id)}',this)"
           onkeydown="if(event.key==='Enter'){this.blur()}"
           style="flex:1;box-sizing:border-box">
-        <button class="btn-browse" onclick="openFolderPicker('${esc(p.id)}')" title="Browse for folder">Browse…</button>
+        <button class="btn-browse" onclick="openFolderPicker('${window.jsAttr(p.id)}')" title="Browse for folder">Browse…</button>
       </div>
     </div>
     <div class="settings-row">
@@ -798,7 +798,7 @@ function _renderProfileDialog() {
     </div>
     <div class="settings-row">
       <div><div class="settings-label">Auto-generate</div><div class="settings-hint">Agent writes the summary + emoji from the project files</div></div>
-      <button class="btn-dispatch" style="background:var(--surface3);border-color:var(--border2);color:var(--text);display:inline-flex;align-items:center;gap:6px;justify-content:center" onclick="closeProfileDialog();generateProjectProfile('${esc(p.id)}')"><svg class="menu-svg"><use href="#ic-sparkle"/></svg> ${p.summary ? 'Regenerate' : 'Generate'}</button>
+      <button class="btn-dispatch" style="background:var(--surface3);border-color:var(--border2);color:var(--text);display:inline-flex;align-items:center;gap:6px;justify-content:center" onclick="closeProfileDialog();generateProjectProfile('${window.jsAttr(p.id)}')"><svg class="menu-svg"><use href="#ic-sparkle"/></svg> ${p.summary ? 'Regenerate' : 'Generate'}</button>
     </div>
     <div class="mc-dialog-footer">
       <button class="btn-dispatch" style="background:var(--surface3);border-color:var(--border2);color:var(--text)" onclick="closeProfileDialog()">Cancel</button>

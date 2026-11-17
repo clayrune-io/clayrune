@@ -181,11 +181,11 @@ async function refreshSecretsList() {
         <div style="display:flex;gap:6px;flex-shrink:0">
           <button class="btn-header-action" style="padding:4px 10px;font-size:11px"
                   title="Copy the placeholder to paste into a task"
-                  onclick="copySecretPlaceholder('${esc(s.name)}')">Copy ref</button>
+                  onclick="copySecretPlaceholder('${window.jsAttr(s.name)}')">Copy ref</button>
           <button class="btn-header-action" style="padding:4px 10px;font-size:11px"
-                  onclick="openSecretEditor('${esc(s.name)}')">Edit</button>
+                  onclick="openSecretEditor('${window.jsAttr(s.name)}')">Edit</button>
           <button class="btn-header-action" style="padding:4px 10px;font-size:11px"
-                  onclick="deleteSecret('${esc(s.name)}')">Delete</button>
+                  onclick="deleteSecret('${window.jsAttr(s.name)}')">Delete</button>
         </div>
       </div>`;
   }).join('');

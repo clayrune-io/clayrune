@@ -616,7 +616,7 @@ function _backupRestoreRowHTML(b) {
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <span style="font-family:var(--mono);font-size:12px;color:var(--text);word-break:break-all">${esc(fname)}</span>
       <span style="margin-left:auto;font-size:11px;color:var(--text-faint)">${_fmtBackupBytes(b.bytes)}</span>
-      <button class="btn-tiny" onclick='_backupRestoreConfirm(${JSON.stringify(b.path)})'>Restore</button>
+      <button class="btn-tiny" onclick="_backupRestoreConfirm('${window.jsAttr(b.path)}')">Restore</button>
     </div>
     <div style="font-size:10px;color:var(--text-faint)">${esc(date)} &middot; ${esc(cats.join(', ') || 'no categories')}${b.warning_count ? ` &middot; ${b.warning_count} warning${b.warning_count === 1 ? '' : 's'}` : ''}</div>
   </div>`;
@@ -978,7 +978,7 @@ function _exportRender(modalId) {
 function _exportBodyHTML(state, projectId) {
   const rows = DEFAULT_BACKUP_CATEGORIES.map(cat => `
     <label style="display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;border-bottom:1px solid var(--border)">
-      <input type="checkbox" ${state.checklist[cat] ? 'checked' : ''} onchange="_exportToggleCategory('${esc(projectId)}','${cat}',this.checked)">
+      <input type="checkbox" ${state.checklist[cat] ? 'checked' : ''} onchange="_exportToggleCategory('${window.jsAttr(projectId)}','${cat}',this.checked)">
       <span style="font-size:13px;color:var(--text)">${BACKUP_CATEGORY_LABELS[cat]}</span>
     </label>`).join('');
   const noneChecked = DEFAULT_BACKUP_CATEGORIES.every(c => !state.checklist[c]);
@@ -995,29 +995,29 @@ function _exportBodyHTML(state, projectId) {
       <div style="font-size:12px;font-weight:600;color:var(--text);margin-bottom:6px">Include the secrets vault?</div>
       <div style="display:flex;gap:14px;font-size:12px">
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-          <input type="radio" name="export-vault-${esc(projectId)}" ${state.vault === true ? 'checked' : ''} onchange="_exportSetVault('${esc(projectId)}',true)"> Include (needs a passphrase)
+          <input type="radio" name="export-vault-${esc(projectId)}" ${state.vault === true ? 'checked' : ''} onchange="_exportSetVault('${window.jsAttr(projectId)}',true)"> Include (needs a passphrase)
         </label>
         <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-          <input type="radio" name="export-vault-${esc(projectId)}" ${state.vault === false ? 'checked' : ''} onchange="_exportSetVault('${esc(projectId)}',false)"> Omit
+          <input type="radio" name="export-vault-${esc(projectId)}" ${state.vault === false ? 'checked' : ''} onchange="_exportSetVault('${window.jsAttr(projectId)}',false)"> Omit
         </label>
       </div>
       ${state.vault === null ? '<div style="font-size:11px;color:var(--amber);margin-top:6px">Unanswered — export refuses to proceed until you pick one.</div>' : ''}
       ${state.vault === true ? `
-        <input ${window.MaskedInput.attrs()} value="${esc(state.vaultPassphrase)}" oninput="_exportSetVaultPassphrase('${esc(projectId)}',this.value)"
+        <input ${window.MaskedInput.attrs()} value="${esc(state.vaultPassphrase)}" oninput="_exportSetVaultPassphrase('${window.jsAttr(projectId)}',this.value)"
           placeholder="Passphrase to re-encrypt the vault under"
           style="width:100%;margin-top:8px;padding:6px 10px;font-size:13px;background:var(--bg);border:1px solid var(--border);border-radius:4px;color:var(--text)">
         <div style="font-size:10px;color:var(--text-faint);margin-top:4px">A leaked archive is a credential bundle — this passphrase is the only lock.</div>` : ''}
     </div>
     <div style="margin-top:12px">
       <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">Label (optional)</label>
-      <input type="text" value="${esc(state.label)}" oninput="_exportSetLabel('${esc(projectId)}',this.value)"
+      <input type="text" value="${esc(state.label)}" oninput="_exportSetLabel('${window.jsAttr(projectId)}',this.value)"
         style="width:100%;padding:6px 10px;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text)">
     </div>
     ${noneChecked ? '<div style="margin-top:8px;font-size:11px;color:var(--red-text)">Untick everything and there is nothing to export — pick at least one category.</div>' : ''}
     ${state.error ? `<div style="margin-top:10px;font-size:12px;color:var(--red-text)">${esc(state.error)}</div>` : ''}
     ${state.result ? _exportResultHTML(state.result) : ''}
     <div style="display:flex;justify-content:flex-end;margin-top:14px">
-      <button class="btn-add" ${canSubmit ? '' : 'disabled'} onclick="_exportRun('${esc(projectId)}')">${state.exporting ? 'Exporting…' : 'Export'}</button>
+      <button class="btn-add" ${canSubmit ? '' : 'disabled'} onclick="_exportRun('${window.jsAttr(projectId)}')">${state.exporting ? 'Exporting…' : 'Export'}</button>
     </div>`;
 }
 

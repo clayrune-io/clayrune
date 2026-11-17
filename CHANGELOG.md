@@ -14,6 +14,13 @@
 - Move and non-post Duplicate are disabled in live mode with a not-connected explanation; connected post duplication and demo actions remain available.
 - Hermetic campaign-menu regression smoke covers persistence/reload, refusal, Undo, repeated clicks and disconnected actions.
 
+## [2026-11-16] - Keep stored text inert in dashboard markup and handlers (MC-1183)
+
+- A shared `window.jsAttr()` escapes JavaScript string contents before HTML attributes. The named MC-1179 sinks now preserve quotes, backslashes and line breaks in project IDs, Floor/persona/workstream/skill/server names, repository env keys, folder paths, backup paths and session labels.
+- Backlog status/priority, project/domain colors, issue numbers and workstream priorities are escaped at render time, including legacy records. Quarantine retries, Windows skill pickers and named-session rename buttons retain their original arguments.
+- Incoming backlog enums, project IDs, color fields and integer workstream priorities are validated before writes. Existing invalid values remain on disk and render safely; unrelated edits do not normalize them.
+- Branch candidate for review; no merge, push, deployment or server restart.
+
 ## [2026-11-16] - Require human confirmation for every Skills mutation (MC-1182)
 
 - All eleven Skills mutations now refuse unattended callers, then require the existing dashboard passcode check: create, update, delete/archive, restore, paste/folder/Git/plugin import, staged install/cancel, and quarantine discard. Read/search routes stay open.

@@ -242,7 +242,7 @@ async function refreshScheduleList() {
           </div>
           <div class="schedule-card-actions">
             <div class="schedule-toggle ${enabledClass}" onclick="toggleScheduleEnabled('${esc(s.id)}', ${!s.enabled})" title="${s.enabled ? 'Disable' : 'Enable'}"></div>
-            <button class="btn-header-action" style="padding:3px 8px;font-size:11px" onclick="toggleScheduleRuns('${esc(s.id)}','${esc(s.project_id || '')}')" title="Show past runs">Runs</button>
+            <button class="btn-header-action" style="padding:3px 8px;font-size:11px" onclick="toggleScheduleRuns('${esc(s.id)}','${window.jsAttr(s.project_id || '')}')" title="Show past runs">Runs</button>
             <button class="btn-header-action" style="padding:3px 8px;font-size:11px" onclick="editSchedule('${esc(s.id)}')">Edit</button>
             <button class="btn-header-action" style="padding:3px 8px;font-size:11px;color:var(--red-text);border-color:var(--red)" onclick="deleteSchedule('${esc(s.id)}')">Del</button>
             <button class="btn-header-action" style="padding:3px 8px;font-size:11px;color:var(--accent);border-color:var(--accent)" onclick="runScheduleNow('${esc(s.id)}')" title="Dispatch this task now">&#x25B6; Run Now</button>
@@ -298,7 +298,7 @@ async function loadScheduleRunsPage(scheduleId, projectId, offset) {
     const data = await res.json();
     const runs = data.runs || [];
     const total = data.total || 0;
-    const pageFnTemplate = `loadScheduleRunsPage('${esc(scheduleId)}','${esc(projectId)}',$OFFSET)`;
+    const pageFnTemplate = `loadScheduleRunsPage('${esc(scheduleId)}','${window.jsAttr(projectId)}',$OFFSET)`;
     // A workflow-invoking schedule's runs are workflow run records, not
     // agent_log entries (MC-871 Q4) -- different shape, different renderer.
     const rows = data.kind === 'workflow' ? renderWorkflowRunRows(runs) : renderRunRows(runs, projectId);

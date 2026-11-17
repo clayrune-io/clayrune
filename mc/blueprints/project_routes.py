@@ -52,6 +52,7 @@ import mc.agent_runtime as _agent_runtime
 from mc import engine_selection
 from mc import provider_preferences
 from mc import state
+from mc.ui_field_validation import validate_project_fields, validate_backlog_fields
 from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
 from mc.project_safety_settings import refuse_agent_safety_write
@@ -713,11 +714,18 @@ def update_project(project_id):
     if refusal is not None:
         return refusal
 
+    error = validate_project_fields(project_id, {})
+    if error:
+        return jsonify({'error': error}), 400
+
     filepath = DATA_DIR / f'{project_id}.json'
     is_new = not filepath.exists()
     refusal = require_human_routing_write(data, is_new=is_new)
     if refusal is not None:
         return refusal
+    error = validate_project_fields(project_id, data)
+    if error:
+        return jsonify({'error': error}), 400
     routing_data = data.copy()  # retain request-only proof for the concurrent-create recheck
     data.pop('passcode', None)  # request proof must never become project data
 
@@ -1299,6 +1307,10 @@ def add_backlog_item(project_id):
     if not data or not data.get('text', '').strip():
         return jsonify({'error': 'text required'}), 400
 
+    error = validate_backlog_fields(data)
+    if error:
+        return jsonify({'error': error}), 400
+
     p = load_project(project_id)
     if p is None:
         return jsonify({'error': 'not found'}), 404
@@ -1336,6 +1348,10 @@ def update_backlog_item(project_id, item_id):
     data = request.get_json()
     if not data:
         return jsonify({'error': 'no data'}), 400
+
+    error = validate_backlog_fields(data)
+    if error:
+        return jsonify({'error': error}), 400
 
     p = load_project(project_id)
     if p is None:

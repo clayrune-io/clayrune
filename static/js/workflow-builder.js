@@ -871,9 +871,9 @@ const _wfTabsSig = {}; // projectId -> last-seen "id,id,id" signature
 
 function _wfTabsRowHTML(projectId, list, selectedId) {
   const tabs = list.map(w => `<button type="button" class="wfb-tab${w.id === selectedId ? ' active' : ''}"
-      onclick="_wfTabClick('${_wfJsStrEsc(projectId)}','${_wfJsStrEsc(w.id)}','${_wfJsStrEsc(w.name || 'Untitled workflow')}')">${esc(w.name || 'Untitled workflow')}</button>`).join('');
+      onclick="_wfTabClick('${window.jsAttr(projectId)}','${window.jsAttr(w.id)}','${window.jsAttr(w.name || 'Untitled workflow')}')">${esc(w.name || 'Untitled workflow')}</button>`).join('');
   return `<div class="wfb-tabs-row">${tabs}
-    <button type="button" class="wfb-tab wfb-tab-new" onclick="_wfNewWorkflowClick('${_wfJsStrEsc(projectId)}')">+ New Workflow</button>
+    <button type="button" class="wfb-tab wfb-tab-new" onclick="_wfNewWorkflowClick('${window.jsAttr(projectId)}')">+ New Workflow</button>
   </div>`;
 }
 
@@ -1162,7 +1162,7 @@ function _wfInsertOptions(st, nodeName) {
 
 function _wfInsertControlHTML(st, nodeName, fieldKey) {
   return `<button type="button" class="wfb-insert-btn" title="Pull an earlier step's result into this field, at the cursor"
-      onclick="_wfInsertMenuToggle(event,'${_wfJsStrEsc(nodeName)}','${_wfJsStrEsc(fieldKey)}')">+ Insert a result</button>`;
+      onclick="_wfInsertMenuToggle(event,'${window.jsAttr(nodeName)}','${window.jsAttr(fieldKey)}')">+ Insert a result</button>`;
 }
 
 const _WF_SLOT_ANY_RE = /\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g;
@@ -1734,8 +1734,8 @@ function _wfRenderPalette(st) {
   const shown = showAll ? bench : bench.slice(0, WFB_PALETTE_PEOPLE_CAP);
   const hidden = bench.length - shown.length;
   const rows = shown.map(b => `<div class="wfb-palette-person"
-      onpointerdown="_wfPaletteDown(event,'person','${_wfJsStrEsc(b.scope || 'global')}','${_wfJsStrEsc(b.name)}')"
-      onmouseenter="_wfPalettePersonHover(event,'${_wfJsStrEsc(b.scope || 'global')}','${_wfJsStrEsc(b.name)}')"
+      onpointerdown="_wfPaletteDown(event,'person','${window.jsAttr(b.scope || 'global')}','${window.jsAttr(b.name)}')"
+      onmouseenter="_wfPalettePersonHover(event,'${window.jsAttr(b.scope || 'global')}','${window.jsAttr(b.name)}')"
       onmouseleave="_wfPalettePersonUnhover()">
       <span class="wfb-palette-avatar">${_wfAvatarHTML(b, 28)}</span>
       <span class="wfb-palette-person-info">
@@ -2000,7 +2000,7 @@ function _wfRenderNode(st, node) {
     return `<div class="wfb-port-row${connected ? '' : ' wfb-port-unconnected'}">
       <span class="wfb-port wfb-port-out" data-node="${nameAttr}" data-when="" title="Drag to connect to the next step" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
       <button type="button" class="wfb-port-plus" title="After this step, run&hellip;"
-        onclick="_wfPortPlusClick(event,'${_wfJsStrEsc(node.name)}','')">&#43;</button>
+        onclick="_wfPortPlusClick(event,'${window.jsAttr(node.name)}','')">&#43;</button>
       ${connected ? '' : '<span class="wfb-port-stub"></span>'}
     </div>`;
   })();
@@ -2070,15 +2070,15 @@ function _wfRenderNode(st, node) {
   const liveCls = (liveStatus && liveStatus !== 'pending') ? ` wfb-node-live-${liveStatus}` : '';
   const liveBadge = _wfLiveStatusBadge(liveStatus);
   return `<div class="wfb-node${nodeStateCls}${liveCls}" data-name="${nameAttr}" style="left:${node.x || 0}px;top:${node.y || 0}px">
-    <div class="wfb-node-head" onpointerdown="_wfNodeDragDown(event)" ondblclick="_wfOpenInspector('${_wfJsStrEsc(node.name)}')">
+    <div class="wfb-node-head" onpointerdown="_wfNodeDragDown(event)" ondblclick="_wfOpenInspector('${window.jsAttr(node.name)}')">
       ${liveBadge}
       ${unwiredBadge}
       ${validationBadge}
       ${reviewBadge}
       ${headHtml}
-      <button class="wfb-node-menu-btn" title="Step options" onclick="_wfNodeMenuToggle(event,'${_wfJsStrEsc(node.name)}')">&#8230;</button>
+      <button class="wfb-node-menu-btn" title="Step options" onclick="_wfNodeMenuToggle(event,'${window.jsAttr(node.name)}')">&#8230;</button>
     </div>
-    <div class="wfb-node-body" onclick="_wfOpenInspector('${_wfJsStrEsc(node.name)}')">
+    <div class="wfb-node-body" onclick="_wfOpenInspector('${window.jsAttr(node.name)}')">
       <div class="wfb-node-summary">${esc(_wfNodeSummary(node))}</div>
       ${vocabPresent ? `<div class="wfb-node-compact-ports">${_wfRenderVocabRowsCompact(st, node, node.type === 'approval' ? 'option' : 'outcome')}</div>` : ''}
     </div>
@@ -2109,9 +2109,9 @@ function _wfRenderVocabRows(st, node, kind) {
     const connected = edges.some(e => e.from === node.name && (e.when || null) === label);
     return `<div class="wfb-vocab-row">
       <input class="${inputCls} wfb-vocab-pill" value="${esc(label)}">
-      <button class="wfb-branch-del" title="Remove ${kind}" onclick="${removeFn}('${_wfJsStrEsc(node.name)}',${oi})">&#10005;</button>
+      <button class="wfb-branch-del" title="Remove ${kind}" onclick="${removeFn}('${window.jsAttr(node.name)}',${oi})">&#10005;</button>
       <button type="button" class="wfb-port-plus" title="After &ldquo;${esc(label)}&rdquo;, run&hellip;"
-        onclick="_wfPortPlusClick(event,'${_wfJsStrEsc(node.name)}','${_wfJsStrEsc(label)}')">&#43;</button>
+        onclick="_wfPortPlusClick(event,'${window.jsAttr(node.name)}','${window.jsAttr(label)}')">&#43;</button>
       <span class="wfb-port wfb-port-out" data-node="${nameAttr}" data-when="${esc(label)}" title="Drag to connect to the next step" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
       ${connected ? '' : '<span class="wfb-port-stub"></span>'}
     </div>`;
@@ -2124,7 +2124,7 @@ function _wfRenderVocabRows(st, node, kind) {
       ${otherConnected ? '' : '<span class="wfb-port-stub"></span>'}
     </div>`;
   })() : '';
-  return `${rows}<button class="wfb-add-btn wfb-vocab-add" onclick="${addFn}('${_wfJsStrEsc(node.name)}')">+ ${kind}</button>${otherwiseRow}`;
+  return `${rows}<button class="wfb-add-btn wfb-vocab-add" onclick="${addFn}('${window.jsAttr(node.name)}')">+ ${kind}</button>${otherwiseRow}`;
 }
 
 // ── MC-963 box view: compact, read-only port rows for the canvas box ───────
@@ -2147,7 +2147,7 @@ function _wfRenderVocabRowsCompact(st, node, kind) {
     return `<div class="wfb-vocab-row">
       <span class="wfb-vocab-pill wfb-vocab-pill-ro">${esc(label)}</span>
       <button type="button" class="wfb-port-plus" title="After &ldquo;${esc(label)}&rdquo;, run&hellip;"
-        onclick="_wfPortPlusClick(event,'${_wfJsStrEsc(node.name)}','${_wfJsStrEsc(label)}')">&#43;</button>
+        onclick="_wfPortPlusClick(event,'${window.jsAttr(node.name)}','${window.jsAttr(label)}')">&#43;</button>
       <span class="wfb-port wfb-port-out" data-node="${nameAttr}" data-when="${esc(label)}" title="Drag to connect to the next step" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
       ${connected ? '' : '<span class="wfb-port-stub"></span>'}
     </div>`;
@@ -2320,7 +2320,7 @@ function _wfRenderPromptField(st, node) {
     // panel would silently re-force itself open again next render anyway
     // (still broken == still forced).
     const toggleBtn = forceOpen ? '' : `<button type="button" class="wfb-prompt-toggle"
-        onclick="_wfTogglePromptOpen(event,'${_wfJsStrEsc(node.name)}')" title="Hide the prompt">&#9662; Hide prompt</button>`;
+        onclick="_wfTogglePromptOpen(event,'${window.jsAttr(node.name)}')" title="Hide the prompt">&#9662; Hide prompt</button>`;
     return `${label}
     <div class="wfb-prompt-inset">
       <textarea class="wfb-prompt" rows="3" placeholder="What should this step do?">${esc(prompt)}</textarea>
@@ -2334,7 +2334,7 @@ function _wfRenderPromptField(st, node) {
     <div class="wfb-prompt-collapsed">
       <span class="wfb-prompt-summary" title="${esc(summaryText)}">${esc(summaryText)}</span>
       <button type="button" class="wfb-prompt-toggle"
-        onclick="_wfTogglePromptOpen(event,'${_wfJsStrEsc(node.name)}')" title="Show the prompt">&#9656; Show prompt</button>
+        onclick="_wfTogglePromptOpen(event,'${window.jsAttr(node.name)}')" title="Show the prompt">&#9656; Show prompt</button>
     </div>`;
 }
 
@@ -3984,9 +3984,9 @@ function _wfRedrawEdges() {
     // pointer alone since hovering the path itself reveals its own ×.
     html += `<g class="wfb-edge-group${selected ? ' wfb-edge-group-selected' : ''}">
       <path class="wfb-edge-path${selected ? ' wfb-edge-selected' : ''}" d="${bezier(p1, p2)}"
-        onpointerdown="_wfEdgeClick(event,'${_wfJsStrEsc(e.from)}','${_wfJsStrEsc(e.to)}','${_wfJsStrEsc(e.when || '')}')"></path>
+        onpointerdown="_wfEdgeClick(event,'${window.jsAttr(e.from)}','${window.jsAttr(e.to)}','${window.jsAttr(e.when || '')}')"></path>
       <g class="wfb-edge-del" transform="translate(${mid.x},${mid.y})"
-        onpointerdown="_wfEdgeDelClick(event,'${_wfJsStrEsc(e.from)}','${_wfJsStrEsc(e.to)}','${_wfJsStrEsc(e.when || '')}')">
+        onpointerdown="_wfEdgeDelClick(event,'${window.jsAttr(e.from)}','${window.jsAttr(e.to)}','${window.jsAttr(e.when || '')}')">
         <circle class="wfb-edge-del-hit" r="10"></circle>
         <circle class="wfb-edge-del-bg" r="7"></circle>
         <text class="wfb-edge-del-glyph" x="0" y="1" text-anchor="middle" dominant-baseline="central">&#10005;</text>
@@ -4033,7 +4033,7 @@ function _wfPopoverPeopleHTML(st, search) {
   const people = _wfBenchFiltered(st, search);
   if (!people.length) return '<div class="wfb-popover-empty">No one matches.</div>';
   return people.map(b => `<div class="wfb-popover-person"
-    onclick="_wfPopoverPickPerson('${_wfJsStrEsc(b.scope || 'global')}','${_wfJsStrEsc(b.name)}')">
+    onclick="_wfPopoverPickPerson('${window.jsAttr(b.scope || 'global')}','${window.jsAttr(b.name)}')">
     <span class="wfb-popover-avatar">${_wfAvatarHTML(b, 20)}</span>
     <span class="wfb-popover-person-name">${esc(b.display || b.name)}</span>
   </div>`).join('');
@@ -4138,11 +4138,11 @@ function _wfNodeMenuToggle(e, name) {
   // action uses (_wfMarkDirty + _wfRender), so all three are undoable for
   // free via the Change 3 checkpoint hook -- nothing extra needed here.
   box.innerHTML = `
-    <div class="wfb-node-menu-item" onclick="_wfOpenInspector('${_wfJsStrEsc(name)}');_wfCloseNodeMenu()">Edit</div>
-    <div class="wfb-node-menu-item" onclick="_wfDuplicateNode('${_wfJsStrEsc(name)}');_wfCloseNodeMenu()">Duplicate</div>
-    <div class="wfb-node-menu-item" onclick="_wfDisconnectNode('${_wfJsStrEsc(name)}');_wfCloseNodeMenu()">Disconnect</div>
+    <div class="wfb-node-menu-item" onclick="_wfOpenInspector('${window.jsAttr(name)}');_wfCloseNodeMenu()">Edit</div>
+    <div class="wfb-node-menu-item" onclick="_wfDuplicateNode('${window.jsAttr(name)}');_wfCloseNodeMenu()">Duplicate</div>
+    <div class="wfb-node-menu-item" onclick="_wfDisconnectNode('${window.jsAttr(name)}');_wfCloseNodeMenu()">Disconnect</div>
     <div class="wfb-node-menu-sep"></div>
-    <div class="wfb-node-menu-delete" onclick="_wfDeleteNode('${_wfJsStrEsc(name)}');_wfCloseNodeMenu()">Delete step</div>`;
+    <div class="wfb-node-menu-delete" onclick="_wfDeleteNode('${window.jsAttr(name)}');_wfCloseNodeMenu()">Delete step</div>`;
   document.body.appendChild(box);
   let left = r.right - box.offsetWidth;
   if (left < 8) left = 8;
@@ -4684,7 +4684,7 @@ function _wfRenderLiveRun(st) {
   // canvas to its node (_wfFocusLiveNode) -- a real <button>, not a styled
   // <span>, so it's reachable the same way the Cancel button already is.
   const inFlightHtml = inFlight
-    .map(n => `<button type="button" class="wfb-live-run-step-link" onclick="_wfFocusLiveNode('${_wfJsStrEsc(n)}')">${esc(n)}</button>`)
+    .map(n => `<button type="button" class="wfb-live-run-step-link" onclick="_wfFocusLiveNode('${window.jsAttr(n)}')">${esc(n)}</button>`)
     .join(', ');
   return `<div class="wfb-live-run" data-run-id="${esc(run.id)}">
       <span class="wfb-live-run-dot"></span>

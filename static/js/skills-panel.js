@@ -722,12 +722,12 @@ function _renderSkillRow(s) {
   const shadowBadge = s.shadowed_by_project
     ? '<span style="font-size:10px;background:transparent;color:var(--amber);padding:1px 6px;border:1px solid var(--amber);border-radius:3px;margin-left:4px" title="A project skill of the same name shadows this global">shadowed</span>'
     : '';
-  const editArgs = `'${esc(s.scope)}', '${esc(s.name)}', ${s.project_id ? `'${esc(s.project_id)}'` : 'null'}, false`;
-  const archiveArgs = `'${esc(s.scope)}', '${esc(s.name)}', ${s.project_id ? `'${esc(s.project_id)}'` : 'null'}`;
+  const editArgs = `'${window.jsAttr(s.scope)}', '${window.jsAttr(s.name)}', ${s.project_id ? `'${window.jsAttr(s.project_id)}'` : 'null'}, false`;
+  const archiveArgs = `'${window.jsAttr(s.scope)}', '${window.jsAttr(s.name)}', ${s.project_id ? `'${window.jsAttr(s.project_id)}'` : 'null'}`;
   const actionsHTML = (() => {
     if (s.scope === 'archive') {
-      return `<button class="btn-tiny" onclick="restoreSkillAction('${esc(s.name)}')">Restore</button>
-              <button class="btn-tiny danger" onclick="deleteSkillAction('archive', '${esc(s.name)}', null, true)">Delete</button>`;
+      return `<button class="btn-tiny" onclick="restoreSkillAction('${window.jsAttr(s.name)}')">Restore</button>
+              <button class="btn-tiny danger" onclick="deleteSkillAction('archive', '${window.jsAttr(s.name)}', null, true)">Delete</button>`;
     }
     return `<button class="btn-tiny" onclick="openSkillEditor(${editArgs})">Edit</button>
             <button class="btn-tiny" onclick="archiveSkillAction(${archiveArgs})">${s.scope==='global'?'Archive':'Delete'}</button>`;
@@ -775,7 +775,7 @@ function openSkillEditor(scope, name, projectId, isNew) {
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
       <span style="font-size:16px;font-weight:700;color:var(--text)">&#x1F9E9; ${esc(title)}</span>
       <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
-        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+        <button class="modal-close" onclick="closeModalById('${window.jsAttr(modalId)}')" title="Close">&#10005;</button>
       </div>
     </div>
     <div style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:12px">
@@ -789,10 +789,10 @@ function openSkillEditor(scope, name, projectId, isNew) {
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">Scope</label>
         <div style="display:flex;gap:12px;align-items:center">
           <label style="font-size:12px;color:var(--text);display:flex;gap:4px;align-items:center;cursor:${isNew?'pointer':'not-allowed'}">
-            <input type="radio" name="se-scope-${modalId}" value="global" ${scope==='global'?'checked':''} ${isNew?'':'disabled'} onchange="_seToggleProjectPicker('${modalId}')"> Global
+            <input type="radio" name="se-scope-${esc(modalId)}" value="global" ${scope==='global'?'checked':''} ${isNew?'':'disabled'} onchange="_seToggleProjectPicker('${window.jsAttr(modalId)}')"> Global
           </label>
           <label style="font-size:12px;color:var(--text);display:flex;gap:4px;align-items:center;cursor:${isNew?'pointer':'not-allowed'}">
-            <input type="radio" name="se-scope-${modalId}" value="project" ${scope==='project'?'checked':''} ${isNew?'':'disabled'} onchange="_seToggleProjectPicker('${modalId}')"> Project
+            <input type="radio" name="se-scope-${esc(modalId)}" value="project" ${scope==='project'?'checked':''} ${isNew?'':'disabled'} onchange="_seToggleProjectPicker('${window.jsAttr(modalId)}')"> Project
           </label>
           <select id="se-project" style="padding:5px 8px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);${scope==='project'?'':'display:none'}" ${isNew?'':'disabled'}>
             <option value="">— pick a project —</option>
@@ -805,7 +805,7 @@ function openSkillEditor(scope, name, projectId, isNew) {
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">Description (used by the model to decide when to invoke this skill — include TRIGGER conditions)</label>
         <textarea id="se-description" rows="3" placeholder="Use when... TRIGGER on user phrases like..."
-          oninput="_seLintDescription('${modalId}')"
+          oninput="_seLintDescription('${window.jsAttr(modalId)}')"
           style="width:100%;padding:8px 10px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);resize:vertical;font-family:inherit"></textarea>
         <div id="se-lint" style="margin-top:6px;font-size:11px;color:var(--amber);min-height:14px"></div>
       </div>
@@ -816,8 +816,8 @@ function openSkillEditor(scope, name, projectId, isNew) {
       </div>
       <div style="display:flex;gap:8px;align-items:center;justify-content:flex-end">
         <span id="se-status" style="font-size:11px;color:var(--text-faint);margin-right:auto"></span>
-        <button class="btn-secondary" onclick="closeModalById('${modalId}')">Cancel</button>
-        <button class="btn-add" onclick="saveSkillFromEditor('${modalId}', ${isNew?'true':'false'}, '${esc(scope)}', '${esc(name)}', ${projectId?`'${esc(projectId)}'`:'null'})">${isNew?'Create':'Save'}</button>
+        <button class="btn-secondary" onclick="closeModalById('${window.jsAttr(modalId)}')">Cancel</button>
+        <button class="btn-add" onclick="saveSkillFromEditor('${window.jsAttr(modalId)}', ${isNew?'true':'false'}, '${window.jsAttr(scope)}', '${window.jsAttr(name)}', ${projectId?`'${window.jsAttr(projectId)}'`:'null'})">${isNew?'Create':'Save'}</button>
       </div>
     </div>`;
   win.appendChild(content);
@@ -851,7 +851,7 @@ function openSkillEditor(scope, name, projectId, isNew) {
 function _seToggleProjectPicker(modalId) {
   const win = openModals.get(modalId)?.element;
   if (!win) return;
-  const scopeRadio = win.querySelector(`input[name="se-scope-${modalId}"]:checked`);
+  const scopeRadio = win.querySelector(`input[name="${CSS.escape('se-scope-' + modalId)}"]:checked`);
   const sel = win.querySelector('#se-project');
   if (sel) sel.style.display = (scopeRadio?.value === 'project') ? '' : 'none';
 }
@@ -875,7 +875,7 @@ async function saveSkillFromEditor(modalId, isNew, origScope, origName, origProj
   const name = isNew ? (win.querySelector('#se-name')?.value || '').trim() : origName;
   const description = (win.querySelector('#se-description')?.value || '').trim();
   const body = win.querySelector('#se-body')?.value || '';
-  const scopeRadio = win.querySelector(`input[name="se-scope-${modalId}"]:checked`);
+  const scopeRadio = win.querySelector(`input[name="${CSS.escape('se-scope-' + modalId)}"]:checked`);
   const scope = isNew ? (scopeRadio?.value || 'global') : origScope;
   const projectId = isNew
     ? (scope === 'project' ? (win.querySelector('#se-project')?.value || '') : '')
@@ -1031,7 +1031,7 @@ function _quarantineBannerHTML(verdict, retryOnclick) {
   const crashNote = verdict.scan_crashed
     ? `<div style="font-size:11px;color:var(--red);margin-top:6px">Scanner crashed during this scan — quarantined regardless of trust tier. This cannot be forced past; the scan itself failed, not just a finding.</div>`
     : '';
-  const forceBtn = verdict.scan_crashed ? '' : `<button class="btn-secondary" style="margin-top:8px" onclick="${retryOnclick}">Force install anyway</button>`;
+  const forceBtn = verdict.scan_crashed ? '' : `<button class="btn-secondary" style="margin-top:8px" onclick="${esc(retryOnclick)}">Force install anyway</button>`;
   return `<div id="si-quarantine-banner" style="padding:10px 12px;border:1px solid var(--red);background:var(--surface2);border-radius:6px;margin-bottom:10px">
     <div style="font-size:12px;font-weight:600;color:var(--red)">&#x26D4; Import blocked by security scan (trust tier: ${esc(verdict.tier || 'community')})</div>
     <div style="font-size:11px;color:var(--text-faint);margin-top:4px">Quarantined at skills.quarantine/${esc(verdict.quarantine_id || '')} — content preserved, nothing was installed.</div>
@@ -1326,7 +1326,7 @@ async function _doSkillImportFolder(modalId, selectedRelDir, force) {
               <div style="font-size:11px;color:var(--text-faint);font-family:var(--mono)">${esc(c.rel_dir || '(root)')}</div>
               <div style="font-size:11px;color:var(--text-mute);margin-top:2px">${esc(c.description || '')}</div>
             </div>
-            <button class="btn-tiny" onclick="_doSkillImportFolder('${modalId}', '${esc(c.rel_dir).replace(/'/g, "\\'")}')">Install this</button>
+            <button class="btn-tiny" onclick="_doSkillImportFolder('${window.jsAttr(modalId)}', '${window.jsAttr(c.rel_dir)}')">Install this</button>
           </div>
         `).join('')}`;
       _siStatus(modalId, data.plugin ? 'Plugin detected. Choose what to install.' : 'Pick one of the candidates above', 'var(--text-faint)');
@@ -1438,7 +1438,7 @@ async function _doSkillImportGit(modalId) {
             <div style="font-size:11px;color:var(--text-faint);font-family:var(--mono)">${esc(c.rel_dir || '(root)')}</div>
             <div style="font-size:11px;color:var(--text-mute);margin-top:2px">${esc(c.description || '')}</div>
           </div>
-          <button class="btn-tiny" onclick="_doSkillImportGitInstallOne('${modalId}', '${esc(c.rel_dir).replace(/'/g, "\\'")}', '${esc(c.name).replace(/'/g, "\\'")}')">Install this</button>
+          <button class="btn-tiny" onclick="_doSkillImportGitInstallOne('${window.jsAttr(modalId)}', '${window.jsAttr(c.rel_dir)}', '${window.jsAttr(c.name)}')">Install this</button>
         </div>
       `).join('')}`;
     _siStatus(modalId, data.plugin ? 'Plugin cloned. Choose what to install.' : 'Repo cloned. Pick a skill to install.', 'var(--text-faint)');
@@ -1614,7 +1614,7 @@ async function _doSkillImportBrowseSearch(modalId) {
     const projLabel = s.scope === 'project'
       ? ((allProjects || []).find(p => p.id === s.project_id)?.name || s.project_id || 'project')
       : (s.scope === 'archive' ? 'archive' : 'global');
-    const pidArg = s.project_id ? `'${esc(s.project_id)}'` : 'null';
+    const pidArg = s.project_id ? `'${window.jsAttr(s.project_id)}'` : 'null';
     const idAttr = `sib-row-${i}`;
     const scoreLabel = (typeof s.score === 'number' && s.score > 0) ? `score ${s.score}` : '';
     return `<div id="${idAttr}" style="padding:8px 10px;border:1px solid var(--border);border-radius:4px;margin-bottom:6px">
@@ -1625,8 +1625,8 @@ async function _doSkillImportBrowseSearch(modalId) {
       </div>
       <div style="font-size:12px;color:var(--text-mute);margin-top:4px;line-height:1.4">${esc(s.description || '')}</div>
       <div style="display:flex;gap:6px;margin-top:6px;align-items:center">
-        <button class="btn-tiny" onclick="_sibReadBody('${esc(s.scope)}', '${esc(s.name)}', ${pidArg}, '${idAttr}')">Read body</button>
-        <button class="btn-add" style="padding:4px 10px;font-size:11px" onclick="_sibInstallHere('${modalId}', '${esc(s.scope)}', '${esc(s.name)}', ${pidArg})">Install &rarr;</button>
+        <button class="btn-tiny" onclick="_sibReadBody('${window.jsAttr(s.scope)}', '${window.jsAttr(s.name)}', ${pidArg}, '${idAttr}')">Read body</button>
+        <button class="btn-add" style="padding:4px 10px;font-size:11px" onclick="_sibInstallHere('${modalId}', '${window.jsAttr(s.scope)}', '${window.jsAttr(s.name)}', ${pidArg})">Install &rarr;</button>
       </div>
       <div id="${idAttr}-body" style="display:none;margin-top:8px;padding:8px;background:var(--surface2);border-radius:4px;font-family:var(--mono);font-size:11px;white-space:pre-wrap;max-height:240px;overflow-y:auto"></div>
     </div>`;

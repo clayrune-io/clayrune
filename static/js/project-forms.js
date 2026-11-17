@@ -679,11 +679,11 @@ function renderBreadcrumb(currentPath, parentPath) {
     if (i === parts.length - 1) {
       html += `<span class="folder-crumb-current">${esc(part)}</span>`;
     } else {
-      html += `<span class="folder-crumb" onclick="loadDirectory('${esc(segPath)}')">${esc(part)}</span>`;
+      html += `<span class="folder-crumb" onclick="loadDirectory('${window.jsAttr(segPath)}')">${esc(part)}</span>`;
     }
   });
   if (parentPath) {
-    html = `<span class="folder-crumb" onclick="loadDirectory('${esc(parentPath)}')" title="Go up"
+    html = `<span class="folder-crumb" onclick="loadDirectory('${window.jsAttr(parentPath)}')" title="Go up"
              style="font-size:14px;margin-right:4px">&#11176;</span>` + html;
   }
   bc.innerHTML = html;

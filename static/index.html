@@ -14,6 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Clayrune">
+<script src="/static/js/js-attr.js"></script>
 <script>
 // Pop-out chat window: `/?popout=1&p=<project>&s=<session>` is the chat-only view
 // the chat header's "Pop Out" button opens in its own window (see popOutChat in
@@ -1904,7 +1905,7 @@ function renderSidebarProjects() {
   if (!container) return;
   const statusColors = { active: 'var(--green)', blocked: 'var(--red)', waiting: 'var(--amber)', parked: 'var(--text-faint)' };
   container.innerHTML = allProjects.filter(p => !isIncognitoProject(p)).map(p =>
-    `<div class="sidebar-project" onclick="openProjectModal('${esc(p.id)}')">
+    `<div class="sidebar-project" onclick="openProjectModal('${window.jsAttr(p.id)}')">
       <div class="sp-dot" style="background:${statusColors[p.status] || 'var(--text-faint)'}"></div>
       <span class="sp-name">${esc(p.name || p.id)}</span>
     </div>`
@@ -1973,7 +1974,7 @@ function renderFilterMenu() {
     html += '<div style="height:1px;background:var(--border);margin:4px 6px"></div>';
     html += domainsList.filter(d => d.id !== 'general').map(d =>
       `<div class="filter-menu-item${activeFilter===d.id?' active':''}" onclick="setFilter('${esc(d.id)}');toggleFilterDropdown()">
-        <div class="fm-dot" style="background:${d.color||'var(--text-faint)'}"></div>${esc(d.label||d.id)}
+        <div class="fm-dot" style="background:${esc(d.color||'var(--text-faint)')}"></div>${esc(d.label||d.id)}
       </div>`
     ).join('');
   }
@@ -2241,7 +2242,7 @@ function updateStopButtonUI(sessionId, status) {
   const pid = cached && cached.projectId;
   const show = pid && (status === 'running' || status === 'idle' || status === 'error');
   const html = show
-    ? `<button class="btn-stop" onclick="stopAgent('${esc(pid)}','${esc(sessionId)}')">Stop</button>`
+    ? `<button class="btn-stop" onclick="stopAgent('${window.jsAttr(pid)}','${esc(sessionId)}')">Stop</button>`
     : '';
   const main = document.getElementById(`stop-btn-${sessionId}`);
   if (main) main.innerHTML = html;
@@ -3444,12 +3445,12 @@ function renderRunRows(runs, projectId) {
     const isLive = r.status === 'in_progress' || r.status === 'running' || r.status === 'idle';
     let clickAction;
     if (csid) {
-      clickAction = `openTranscriptViewer('${esc(projectId)}','${esc(csid)}','${esc(ts)}')`;
+      clickAction = `openTranscriptViewer('${window.jsAttr(projectId)}','${esc(csid)}','${esc(ts)}')`;
     } else if (isLive) {
       // No csid yet AND the run is alive — user wants to see live output. Jump
       // to the project modal where the active session is rendering instead of
       // showing a misleading "no transcript" toast.
-      clickAction = `_jumpToLiveRun('${esc(projectId)}','${esc(r.session_id || '')}')`;
+      clickAction = `_jumpToLiveRun('${window.jsAttr(projectId)}','${esc(r.session_id || '')}')`;
     } else {
       clickAction = `showToast('No transcript saved for this run (claude session id missing)', 4000)`;
     }

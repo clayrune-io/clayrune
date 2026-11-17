@@ -402,7 +402,7 @@ function tileHTML(p, slotIndex) {
         ? `<div class="tile-task ${live.currentTaskClass}">${esc(live.currentTask)}</div>`
         : '');
 
-  const cardBgStyle = p.modal_color ? ` style="border-color:${p.modal_color.color}"` : '';
+  const cardBgStyle = p.modal_color ? ` style="border-color:${esc(p.modal_color.color)}"` : '';
 
   return `
   <div class="card ${sc} friendly-${fs}" data-id="${esc(p.id)}" data-slot="${slotIndex !== undefined ? slotIndex : ''}"${cardBgStyle}>
@@ -411,7 +411,7 @@ function tileHTML(p, slotIndex) {
         ${(p.pinned_conversations || []).length ? `<span class="pin-indicator" title="Has pinned chat(s)">&#x1F4CC;</span>` : ''}
         ${p.emoji ? `<span class="card-avatar">${esc(p.emoji)}</span>` : ''}
         <span class="project-name">${esc(p.name||p.id)}</span>
-        <span class="domain-tag" style="background:${domCfg.bg};color:${domCfg.color}">${esc(domCfg.label||p.domain||'general')}</span>
+        <span class="domain-tag" style="background:${esc(domCfg.bg)};color:${esc(domCfg.color)}">${esc(domCfg.label||p.domain||'general')}</span>
       </div>
       <div style="display:flex;align-items:center;gap:6px">
         <span class="status-pill friendly-${fs}"><span class="status-dot"></span>${esc(vl(FRIENDLY_TO_VOICE[fs]))}</span>
@@ -456,7 +456,7 @@ function backlogItemsListHTML(p, items, backlog, backlogLoaded) {
     const extraClasses = [
       BACKLOG_CLOSED.includes(item.status) ? 'done' : '',
       item.status && item.status !== 'open' ? `status-${item.status}` : '',
-      `priority-${item.priority||'normal'}`,
+      `priority-${esc(item.priority||'normal')}`,
       isAgent ? 'agent-source' : '',
       isInProgress ? 'agent-in-progress' : '',
     ].filter(Boolean).join(' ');
@@ -467,15 +467,15 @@ function backlogItemsListHTML(p, items, backlog, backlogLoaded) {
       ? `<div class="agent-activity-line">${esc(item.agent_activity)}</div>`
       : '';
     return `
-    <div class="backlog-item ${extraClasses}" data-item-id="${esc(item.id)}">
-      <button class="backlog-check" onclick="toggleDone(event,'${esc(p.id)}','${esc(item.id)}','${item.status}')" title="${BACKLOG_CLOSED.includes(item.status)?'Reopen':'Mark done'}">
+    <div class="backlog-item ${esc(extraClasses)}" data-item-id="${esc(item.id)}">
+      <button class="backlog-check" onclick="toggleDone(event,'${window.jsAttr(p.id)}','${esc(item.id)}','${window.jsAttr(item.status)}')" title="${BACKLOG_CLOSED.includes(item.status)?'Reopen':'Mark done'}">
         ${BACKLOG_CLOSED.includes(item.status) ? '✓' : ''}
       </button>
       <div style="flex:1;min-width:0">
         ${item.key ? `<span class="backlog-num" title="Click to copy ${esc(item.key)}"
           onclick="copyBacklogKey(event,'${esc(item.key)}')">${esc(item.key)}</span>` : ''}
         <span class="backlog-text" contenteditable="true" spellcheck="true" dir="auto"
-          onblur="saveBacklogText(event,'${esc(p.id)}','${esc(item.id)}')"
+          onblur="saveBacklogText(event,'${window.jsAttr(p.id)}','${esc(item.id)}')"
           onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
         >${esc(item.text)}</span>
         ${activityLine}
@@ -484,31 +484,31 @@ function backlogItemsListHTML(p, items, backlog, backlogLoaded) {
         ${agentBadgeHTML}
         ${item.status && item.status !== 'open' && item.status !== 'done'
           ? `<span class="status-badge status-${esc(item.status)}">${esc(String(item.status).replace('_',' '))}</span>` : ''}
-        <span class="priority-badge priority-${item.priority||'normal'}"
-          onclick="cyclePriority(event,'${esc(p.id)}','${esc(item.id)}','${item.priority||'normal'}')"
-          title="Click to change priority">${item.priority||'normal'}</span>
-        ${item.github_issue_number ? `<a class="gh-issue-link" href="https://github.com/${esc(p.github_repo||'')}/issues/${item.github_issue_number}" target="_blank" rel="noopener" title="View on GitHub">#${item.github_issue_number}</a>` : ''}
+        <span class="priority-badge priority-${esc(item.priority||'normal')}"
+          onclick="cyclePriority(event,'${window.jsAttr(p.id)}','${esc(item.id)}','${window.jsAttr(item.priority||'normal')}')"
+          title="Click to change priority">${esc(item.priority||'normal')}</span>
+        ${item.github_issue_number ? `<a class="gh-issue-link" href="https://github.com/${esc(p.github_repo||'')}/issues/${esc(item.github_issue_number)}" target="_blank" rel="noopener" title="View on GitHub">#${esc(item.github_issue_number)}</a>` : ''}
         ${item.source && item.source !== 'dashboard' && !isAgent ? `<span class="backlog-source">${esc(item.source)}</span>` : ''}
-        ${p.project_path && !BACKLOG_CLOSED.includes(item.status) ? `<button class="backlog-dispatch" onclick="dispatchBacklogItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Send to agent">▶</button>` : ''}
+        ${p.project_path && !BACKLOG_CLOSED.includes(item.status) ? `<button class="backlog-dispatch" onclick="dispatchBacklogItem(event,'${window.jsAttr(p.id)}','${esc(item.id)}')" title="Send to agent">▶</button>` : ''}
         <button class="links-btn ${linksN > 0 ? 'has-links' : ''}"
-          onclick="toggleLinksPanel(event,'${esc(p.id)}','${esc(item.id)}')"
+          onclick="toggleLinksPanel(event,'${window.jsAttr(p.id)}','${esc(item.id)}')"
           title="Links to other items">🔗${linksN > 0 ? ' '+linksN : ''}</button>
         <button class="att-btn ${attsN > 0 ? 'has-atts' : ''}"
-          onclick="toggleAttPanel(event,'${esc(p.id)}','${esc(item.id)}')"
+          onclick="toggleAttPanel(event,'${window.jsAttr(p.id)}','${esc(item.id)}')"
           title="Attachments">📎${attsN > 0 ? ' '+attsN : ''}</button>
         <button class="notes-btn ${notesN > 0 ? 'has-notes' : ''}"
-          onclick="toggleNotesPanel(event,'${esc(p.id)}','${esc(item.id)}')"
+          onclick="toggleNotesPanel(event,'${window.jsAttr(p.id)}','${esc(item.id)}')"
           title="Notes">📝${notesN > 0 ? ' '+notesN : ''}</button>
-        <button class="backlog-del" onclick="deleteBacklogItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Delete">✕</button>
+        <button class="backlog-del" onclick="deleteBacklogItem(event,'${window.jsAttr(p.id)}','${esc(item.id)}')" title="Delete">✕</button>
       </div>
       <div class="att-panel${openAttPanels.has(item.id) ? ' open' : ''}" id="att-${esc(item.id)}">
         <div class="att-drop-zone" id="drop-${esc(item.id)}"
           ondragover="attDragOver(event,'${esc(item.id)}')"
           ondragleave="attDragLeave('${esc(item.id)}')"
-          ondrop="attDrop(event,'${esc(p.id)}','${esc(item.id)}')"
+          ondrop="attDrop(event,'${window.jsAttr(p.id)}','${esc(item.id)}')"
           onclick="document.getElementById('file-${esc(item.id)}').click()">
           <input type="file" id="file-${esc(item.id)}" multiple
-            onchange="attFileSelected(event,'${esc(p.id)}','${esc(item.id)}')">
+            onchange="attFileSelected(event,'${window.jsAttr(p.id)}','${esc(item.id)}')">
           Drop files here or click to browse
         </div>
         <div class="att-list" id="attlist-${esc(item.id)}">
@@ -526,8 +526,8 @@ function backlogItemsListHTML(p, items, backlog, backlogLoaded) {
             ${BACKLOG_LINK_TYPES.map(t => `<option value="${t[0]}">${esc(t[1])}</option>`).join('')}
           </select>
           <input type="text" id="linktarget-${esc(item.id)}" placeholder="${esc(_linkPlaceholder(p, backlog))}"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();submitBacklogLink('${esc(p.id)}','${esc(item.id)}')}">
-          <button onclick="submitBacklogLink('${esc(p.id)}','${esc(item.id)}')">Link</button>
+            onkeydown="if(event.key==='Enter'){event.preventDefault();submitBacklogLink('${window.jsAttr(p.id)}','${esc(item.id)}')}">
+          <button onclick="submitBacklogLink('${window.jsAttr(p.id)}','${esc(item.id)}')">Link</button>
         </div>
       </div>
       <div class="notes-panel${openNotesPanels.has(item.id) ? ' open' : ''}" id="notes-${esc(item.id)}">
@@ -536,8 +536,8 @@ function backlogItemsListHTML(p, items, backlog, backlogLoaded) {
         </div>
         <div class="note-input-row">
           <input type="text" id="noteinput-${esc(item.id)}" placeholder="Add a note (date + user/agent code auto-prefixed)"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();submitNote('${esc(p.id)}','${esc(item.id)}')}">
-          <button onclick="submitNote('${esc(p.id)}','${esc(item.id)}')">Add</button>
+            onkeydown="if(event.key==='Enter'){event.preventDefault();submitNote('${window.jsAttr(p.id)}','${esc(item.id)}')}">
+          <button onclick="submitNote('${window.jsAttr(p.id)}','${esc(item.id)}')">Add</button>
         </div>
       </div>
     </div>`;
@@ -645,7 +645,7 @@ function modalContentHTML(p) {
           ${!item.originated ? '<span class="backlog-source">reply</span>' : ''}
         </div>
         <div class="backlog-text" id="social-body-${esc(item.id)}" contenteditable="true" spellcheck="true"
-          onblur="saveSocialBody(event,'${esc(p.id)}','${esc(item.id)}')"
+          onblur="saveSocialBody(event,'${window.jsAttr(p.id)}','${esc(item.id)}')"
         >${esc(item.body)}</div>
         ${item.teaching ? `<div class="social-teaching">${esc(item.teaching)}</div>` : ''}
         ${missingAttribution ? `<div class="social-attr-warn">Missing the line "${esc(SOCIAL_ATTRIBUTION_LINE)}" — Release will be refused until it's added.</div>` : ''}
@@ -654,14 +654,14 @@ function modalContentHTML(p) {
           : ''}
       </div>
       <div class="backlog-meta social-item-actions">
-        <button class="btn-social-edit" onclick="editSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Edit the draft">Edit</button>
+        <button class="btn-social-edit" onclick="editSocialItem(event,'${window.jsAttr(p.id)}','${esc(item.id)}')" title="Edit the draft">Edit</button>
         ${needsChanges
-          ? `<button class="btn-social-restore" onclick="restoreSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Put this back to pending">Restore to pending</button>`
-          : `<button class="btn-social-release" onclick="releaseSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Approve and hand off the copy">Release</button>
+          ? `<button class="btn-social-restore" onclick="restoreSocialItem(event,'${window.jsAttr(p.id)}','${esc(item.id)}')" title="Put this back to pending">Restore to pending</button>`
+          : `<button class="btn-social-release" onclick="releaseSocialItem(event,'${window.jsAttr(p.id)}','${esc(item.id)}')" title="Approve and hand off the copy">Release</button>
         ${item.status === 'approved'
-          ? `<button class="btn-social-posted" onclick="markSocialItemPosted(event,'${esc(p.id)}','${esc(item.id)}')" title="Record that this actually went out, with its link">Mark posted</button>`
+          ? `<button class="btn-social-posted" onclick="markSocialItemPosted(event,'${window.jsAttr(p.id)}','${esc(item.id)}')" title="Record that this actually went out, with its link">Mark posted</button>`
           : ''}
-        <button class="btn-social-pushback" onclick="pushBackSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Send back with a note">Push back</button>`}
+        <button class="btn-social-pushback" onclick="pushBackSocialItem(event,'${window.jsAttr(p.id)}','${esc(item.id)}')" title="Send back with a note">Push back</button>`}
       </div>
     </div>`;
   }).join('') || (socialQueueLoaded
@@ -672,20 +672,20 @@ function modalContentHTML(p) {
     ? `<button class="btn-undo" onclick="performUndo(event)" title="Undo ${undoStack[undoStack.length-1].label}">↩ Undo</button>`
     : '';
   const doneToggle = doneItems.length
-    ? `<button class="toggle-done" onclick="toggleShowDone(event,'${esc(p.id)}')">${showDone ? `Hide ${doneItems.length} done` : `Show ${doneItems.length} done`}</button>`
+    ? `<button class="toggle-done" onclick="toggleShowDone(event,'${window.jsAttr(p.id)}')">${showDone ? `Hide ${doneItems.length} done` : `Show ${doneItems.length} done`}</button>`
     : '';
 
   const modalAccent = p.modal_color ? p.modal_color.color : '';
-  const accentStyle = modalAccent ? `style="--modal-accent:${modalAccent}"` : '';
+  const accentStyle = modalAccent ? `style="--modal-accent:${esc(modalAccent)}"` : '';
 
   return `
     <div class="modal-header" ${accentStyle}>
-      <button class="modal-dashboard-btn" onclick="closeModalById('${esc(p.id)}')" title="Back to the dashboard">
+      <button class="modal-dashboard-btn" onclick="closeModalById('${window.jsAttr(p.id)}')" title="Back to the dashboard">
         <span class="mdb-arrow" aria-hidden="true">&#8592;</span> Dashboard
       </button>
       <div class="modal-window-controls">
-        <button class="modal-menu-btn" onclick="toggleModalMenu(event,'${esc(p.id)}')" title="Menu">&#x22EE;</button>
-        <button class="modal-minimize" onclick="minimizeModal('${esc(p.id)}')" title="Minimize">&#x2015;</button>
+        <button class="modal-menu-btn" onclick="toggleModalMenu(event,'${window.jsAttr(p.id)}')" title="Menu">&#x22EE;</button>
+        <button class="modal-minimize" onclick="minimizeModal('${window.jsAttr(p.id)}')" title="Minimize">&#x2015;</button>
         ${(() => {
           // Maximize / restore — rides the snap system's 'full' zone, so the
           // button and drag-to-top-edge are the same state. Desktop only
@@ -696,51 +696,51 @@ function modalContentHTML(p) {
             ? _maxBtnInner(_full)
             : '<svg width="12" height="12" viewBox="0 0 14 14" fill="none"><rect x="2" y="2" width="10" height="10" rx="1.5" stroke="currentColor" stroke-width="1.3"/></svg>';
           const _t = _full ? 'Restore down' : 'Maximize';
-          return `<button class="modal-maximize" onclick="toggleModalMaximize('${esc(p.id)}')" title="${_t}" aria-label="${_t}">${_inner}</button>`;
+          return `<button class="modal-maximize" onclick="toggleModalMaximize('${window.jsAttr(p.id)}')" title="${_t}" aria-label="${_t}">${_inner}</button>`;
         })()}
-        <button class="modal-close" onclick="closeModalById('${esc(p.id)}')" title="Close">&#10005;</button>
+        <button class="modal-close" onclick="closeModalById('${window.jsAttr(p.id)}')" title="Close">&#10005;</button>
         <div class="modal-menu-dropdown" id="modal-menu-${esc(p.id)}">
           <div class="mc-tabs-in-menu">
-            <button class="modal-menu-item${activeTab==='agent'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','agent')">
+            <button class="modal-menu-item${activeTab==='agent'?' active':''}" onclick="_mcMenuSwitchTab('${window.jsAttr(p.id)}','agent')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-agent"/></svg></span> Agent
             </button>
-            <button class="modal-menu-item${activeTab==='backlog'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','backlog')">
+            <button class="modal-menu-item${activeTab==='backlog'?' active':''}" onclick="_mcMenuSwitchTab('${window.jsAttr(p.id)}','backlog')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-backlog"/></svg></span> Backlog${bl.open ? `<span class="tab-badge" style="margin-left:auto">${bl.open}</span>` : ''}
             </button>
-            <button class="modal-menu-item${activeTab==='social'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','social')">
+            <button class="modal-menu-item${activeTab==='social'?' active':''}" onclick="_mcMenuSwitchTab('${window.jsAttr(p.id)}','social')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-globe"/></svg></span> Social${socialPendingCount ? `<span class="tab-badge" style="margin-left:auto">${socialPendingCount}</span>` : ''}
             </button>
-            <button class="modal-menu-item${activeTab==='agent-log'?' active':''}" data-tab-name="agent-log" onclick="_mcMenuSwitchTab('${esc(p.id)}','agent-log')">
+            <button class="modal-menu-item${activeTab==='agent-log'?' active':''}" data-tab-name="agent-log" onclick="_mcMenuSwitchTab('${window.jsAttr(p.id)}','agent-log')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-log"/></svg></span> Agent Log
             </button>
-            <button class="modal-menu-item${activeTab==='documents'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','documents')">
+            <button class="modal-menu-item${activeTab==='documents'?' active':''}" onclick="_mcMenuSwitchTab('${window.jsAttr(p.id)}','documents')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-plan"/></svg></span> Documents
             </button>
-            <button class="modal-menu-item" onclick="_mcMenuClose();openMediaSurface('${esc(p.id)}')">
+            <button class="modal-menu-item" onclick="_mcMenuClose();openMediaSurface('${window.jsAttr(p.id)}')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-media"/></svg></span> Media
             </button>
-            <button class="modal-menu-item${activeTab==='activity'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','activity')">
+            <button class="modal-menu-item${activeTab==='activity'?' active':''}" onclick="_mcMenuSwitchTab('${window.jsAttr(p.id)}','activity')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-activity"/></svg></span> Activity
             </button>
-            ${window.ProjectTestRuns?.navigationHTML(p.id, activeTab, true) || ''}<button class="modal-menu-item${activeTab==='workflows'?' active':''}" data-tab-name="workflows" onclick="_mcMenuSwitchTab('${esc(p.id)}','workflows')">
+            ${window.ProjectTestRuns?.navigationHTML(p.id, activeTab, true) || ''}<button class="modal-menu-item${activeTab==='workflows'?' active':''}" data-tab-name="workflows" onclick="_mcMenuSwitchTab('${window.jsAttr(p.id)}','workflows')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-workflow"/></svg></span> Workflows
             </button>
             <div class="modal-menu-sep"></div>
           </div>
-          <button class="modal-menu-item" onclick="toggleModalMenuSub(event,'status-sub-${esc(p.id)}')">
+          <button class="modal-menu-item" onclick="toggleModalMenuSub(event,'status-sub-${window.jsAttr(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-status"/></svg></span> Change Status <span style="margin-left:auto;color:var(--text-faint);font-size:11px">&#x25B8;</span>
           </button>
           <div class="modal-menu-sub" id="status-sub-${esc(p.id)}">
-            <button class="modal-menu-sub-item${(p.status||'')==='active'?' active':''}" onclick="setProjectStatus('${esc(p.id)}','active')">
+            <button class="modal-menu-sub-item${(p.status||'')==='active'?' active':''}" onclick="setProjectStatus('${window.jsAttr(p.id)}','active')">
               <span class="modal-menu-sub-dot" style="background:var(--green)"></span> Active</button>
-            <button class="modal-menu-sub-item${(p.status||'')==='waiting'?' active':''}" onclick="setProjectStatus('${esc(p.id)}','waiting')">
+            <button class="modal-menu-sub-item${(p.status||'')==='waiting'?' active':''}" onclick="setProjectStatus('${window.jsAttr(p.id)}','waiting')">
               <span class="modal-menu-sub-dot" style="background:var(--amber)"></span> Waiting</button>
-            <button class="modal-menu-sub-item${(p.status||'')==='blocked'?' active':''}" onclick="setProjectStatus('${esc(p.id)}','blocked')">
+            <button class="modal-menu-sub-item${(p.status||'')==='blocked'?' active':''}" onclick="setProjectStatus('${window.jsAttr(p.id)}','blocked')">
               <span class="modal-menu-sub-dot" style="background:var(--red)"></span> Blocked</button>
-            <button class="modal-menu-sub-item${(p.status||'')==='parked'?' active':''}" onclick="setProjectStatus('${esc(p.id)}','parked')">
+            <button class="modal-menu-sub-item${(p.status||'')==='parked'?' active':''}" onclick="setProjectStatus('${window.jsAttr(p.id)}','parked')">
               <span class="modal-menu-sub-dot" style="background:var(--text-faint)"></span> Parked</button>
           </div>
-          <button class="modal-menu-item" onclick="toggleModalMenuSub(event,'appearance-sub-${esc(p.id)}')">
+          <button class="modal-menu-item" onclick="toggleModalMenuSub(event,'appearance-sub-${window.jsAttr(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-appearance"/></svg></span> Appearance <span style="margin-left:auto;color:var(--text-faint);font-size:11px">&#x25B8;</span>
           </button>
           <div class="modal-menu-sub" id="appearance-sub-${esc(p.id)}" style="min-width:230px">
@@ -751,7 +751,7 @@ function modalContentHTML(p) {
                   const isCurrent = p.modal_color ? (p.modal_color.color === c.color) : (c.label === 'Blue');
                   return `<button style="width:24px;height:24px;border-radius:4px;border:${isCurrent ? '2px solid var(--text)' : '1px solid var(--border)'};background:${c.bg};cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center"
                     title="${c.label}"
-                    onclick="setProjectColor('${esc(p.id)}','${c.color}','${c.bg}')"><span style="width:10px;height:10px;border-radius:2px;background:${c.color}"></span></button>`;
+                    onclick="setProjectColor('${window.jsAttr(p.id)}','${c.color}','${c.bg}')"><span style="width:10px;height:10px;border-radius:2px;background:${c.color}"></span></button>`;
                 }).join('')}
               </div>
             </div>
@@ -759,8 +759,8 @@ function modalContentHTML(p) {
               <div style="font-size:9px;color:var(--text-faint);text-transform:uppercase;letter-spacing:0.5px;padding:2px 8px">Domain</div>
               ${domainsList.map(d => {
                 const cfg = getDomainConfig(d.id);
-                return `<button class="modal-menu-sub-item${(p.domain||'general')===d.id?' active':''}" onclick="saveDomainFromMenu(event,'${esc(p.id)}','${d.id}')">
-                <span class="modal-menu-sub-dot" style="background:${cfg.color}"></span> ${esc(d.label||d.id)}</button>`;
+                return `<button class="modal-menu-sub-item${(p.domain||'general')===d.id?' active':''}" onclick="saveDomainFromMenu(event,'${window.jsAttr(p.id)}','${d.id}')">
+                <span class="modal-menu-sub-dot" style="background:${esc(cfg.color)}"></span> ${esc(d.label||d.id)}</button>`;
               }).join('')}
             </div>
             <div style="border-top:1px solid var(--border);padding:6px 8px">
@@ -769,20 +769,20 @@ function modalContentHTML(p) {
                 ${COLOR_PRESETS.map(c =>
                   `<button style="width:18px;height:18px;border-radius:4px;border:1px solid var(--border);background:${c.bg};cursor:pointer;padding:0;display:flex;align-items:center;justify-content:center"
                     title="${c.label}"
-                    onclick="setDomainColorFromMenu(event,'${esc(p.id)}','${esc(p.domain||'general')}','${c.color}','${c.bg}')"><span style="width:8px;height:8px;border-radius:2px;background:${c.color}"></span></button>`
+                    onclick="setDomainColorFromMenu(event,'${window.jsAttr(p.id)}','${esc(p.domain||'general')}','${c.color}','${c.bg}')"><span style="width:8px;height:8px;border-radius:2px;background:${c.color}"></span></button>`
                 ).join('')}
               </div>
             </div>
             <div style="border-top:1px solid var(--border);padding:4px">
               <input type="text" placeholder="New domain..." style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);font-size:11px;padding:4px 8px;border-radius:4px;outline:none;box-sizing:border-box"
                 onclick="event.stopPropagation()"
-                onkeydown="if(event.key==='Enter'){event.stopPropagation();addDomainFromMenu(event,'${esc(p.id)}',this.value)}">
+                onkeydown="if(event.key==='Enter'){event.stopPropagation();addDomainFromMenu(event,'${window.jsAttr(p.id)}',this.value)}">
             </div>
           </div>
-          <button class="modal-menu-item" onclick="_mcMenuClose();openProjectProfileDialog('${esc(p.id)}')">
+          <button class="modal-menu-item" onclick="_mcMenuClose();openProjectProfileDialog('${window.jsAttr(p.id)}')">
             <span class="menu-icon">${p.emoji ? esc(p.emoji) : '<svg class="menu-svg"><use href="#ic-edit"/></svg>'}</span> Edit Profile&#8230;
           </button>
-          <button class="modal-menu-item" onclick="_mcMenuClose();openAgentSettingsDialog('${esc(p.id)}')" title="Provider-specific project defaults for new work">
+          <button class="modal-menu-item" onclick="_mcMenuClose();openAgentSettingsDialog('${window.jsAttr(p.id)}')" title="Provider-specific project defaults for new work">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-settings"/></svg></span> Providers
           </button>
           ${(() => {
@@ -797,11 +797,11 @@ function modalContentHTML(p) {
             return '';
           })()}
           <div class="modal-menu-sep"></div>
-          <button class="modal-menu-item modal-menu-adv-toggle${_advOpen ? ' expanded' : ''}" onclick="toggleModalMenuAdvanced(event,'${esc(p.id)}')">
+          <button class="modal-menu-item modal-menu-adv-toggle${_advOpen ? ' expanded' : ''}" onclick="toggleModalMenuAdvanced(event,'${window.jsAttr(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-advanced"/></svg></span> Advanced <span class="mmadv-chev" style="margin-left:auto;color:var(--text-faint);font-size:11px">&#x25B8;</span>
           </button>
           <div class="modal-menu-advanced-group${_advOpen ? ' expanded' : ''}" id="modal-menu-adv-group-${esc(p.id)}">
-          <button class="modal-menu-item" onclick="toggleModalMenuSub(event,'gh-sub-${esc(p.id)}')">
+          <button class="modal-menu-item" onclick="toggleModalMenuSub(event,'gh-sub-${window.jsAttr(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-github"/></svg></span> GitHub Sync${p.github_sync_enabled ? `<span style="margin-left:4px;color:var(--green);font-size:11px">&#x2713; ${esc(p.github_repo)}</span>` : '<span style="margin-left:4px;color:var(--text-faint);font-size:11px">not connected</span>'} <span style="margin-left:auto;color:var(--text-faint);font-size:11px">&#x25B8;</span>
           </button>
           <div class="modal-menu-sub" id="gh-sub-${esc(p.id)}" style="min-width:220px">
@@ -810,21 +810,21 @@ function modalContentHTML(p) {
                 Syncing with <strong style="color:var(--accent)">${esc(p.github_repo)}</strong>
                 ${p.github_last_sync ? `<br><span style="font-size:10px">Last sync: ${esc(timeAgoJS(p.github_last_sync))}</span>` : ''}
               </div>
-              <button class="modal-menu-sub-item" onclick="githubSyncNow('${esc(p.id)}')">
+              <button class="modal-menu-sub-item" onclick="githubSyncNow('${window.jsAttr(p.id)}')">
                 &#x21BB; Sync Now</button>
-              <button class="modal-menu-sub-item" style="color:var(--red-text)" onclick="githubDisconnect('${esc(p.id)}')">
+              <button class="modal-menu-sub-item" style="color:var(--red-text)" onclick="githubDisconnect('${window.jsAttr(p.id)}')">
                 &#x2715; Disconnect</button>
             ` : `
               <div style="padding:6px 10px">
                 <input type="text" id="gh-repo-${esc(p.id)}" placeholder="owner/repo" style="width:100%;background:var(--bg);border:1px solid var(--border);color:var(--text);font-size:11px;padding:4px 8px;border-radius:4px;outline:none;box-sizing:border-box"
                   onclick="event.stopPropagation()"
-                  onkeydown="if(event.key==='Enter'){event.stopPropagation();githubConnect('${esc(p.id)}')}">
+                  onkeydown="if(event.key==='Enter'){event.stopPropagation();githubConnect('${window.jsAttr(p.id)}')}">
               </div>
-              <button class="modal-menu-sub-item" onclick="githubConnect('${esc(p.id)}')">
+              <button class="modal-menu-sub-item" onclick="githubConnect('${window.jsAttr(p.id)}')">
                 &#x2713; Connect</button>
             `}
           </div>
-          <button class="modal-menu-item" onclick="toggleModalMenuSub(event,'code-sync-sub-${esc(p.id)}')">
+          <button class="modal-menu-item" onclick="toggleModalMenuSub(event,'code-sync-sub-${window.jsAttr(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-sync"/></svg></span> Code Sync${p.code_sync_enabled ? `<span style="margin-left:4px;color:var(--green);font-size:11px">&#x2713; enabled</span>` : '<span style="margin-left:4px;color:var(--text-faint);font-size:11px">not enabled</span>'} <span style="margin-left:auto;color:var(--text-faint);font-size:11px">&#x25B8;</span>
           </button>
           <div class="modal-menu-sub" id="code-sync-sub-${esc(p.id)}" style="min-width:240px">
@@ -839,67 +839,67 @@ function modalContentHTML(p) {
                 ${p.code_sync_last_fetch ? `<br><span style="font-size:10px">Last fetch: ${esc(timeAgoJS(p.code_sync_last_fetch))}</span>` : ''}
                 ${p.code_sync_last_error ? `<br><span style="color:var(--red-text);font-size:10px">${esc(p.code_sync_last_error)}</span>` : ''}
               </div>
-              <button class="modal-menu-sub-item" onclick="codeSyncNow('${esc(p.id)}')">
+              <button class="modal-menu-sub-item" onclick="codeSyncNow('${window.jsAttr(p.id)}')">
                 &#x21BB; Sync Now</button>
-              <button class="modal-menu-sub-item" onclick="codeSyncShowIncoming('${esc(p.id)}')">
+              <button class="modal-menu-sub-item" onclick="codeSyncShowIncoming('${window.jsAttr(p.id)}')">
                 &#x1F4E5; View Incoming${(p.code_sync_status && p.code_sync_status.incoming_count) ? ` (${p.code_sync_status.incoming_count})` : ''}</button>
-              <button class="modal-menu-sub-item" style="color:var(--red-text)" onclick="codeSyncDisable('${esc(p.id)}')">
+              <button class="modal-menu-sub-item" style="color:var(--red-text)" onclick="codeSyncDisable('${window.jsAttr(p.id)}')">
                 &#x2715; Disable</button>
             ` : `
               <div style="padding:6px 10px;font-size:11px;color:var(--text-dim)">
                 Enables bidirectional code sync via a per-machine sync branch.
                 Read-only spike — no auto-commit yet.
               </div>
-              <button class="modal-menu-sub-item" onclick="codeSyncEnable('${esc(p.id)}')">
+              <button class="modal-menu-sub-item" onclick="codeSyncEnable('${window.jsAttr(p.id)}')">
                 &#x2713; Enable</button>
             `}
           </div>
           <div class="modal-menu-sep"></div>
-          <button class="modal-menu-item mc-adv-memory" onclick="openMemoryModal('${esc(p.id)}')">
+          <button class="modal-menu-item mc-adv-memory" onclick="openMemoryModal('${window.jsAttr(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-memory"/></svg></span> Memory
           </button>
-          <button class="modal-menu-item mc-adv-memory" onclick="openRulesModal('${esc(p.id)}')">
+          <button class="modal-menu-item mc-adv-memory" onclick="openRulesModal('${window.jsAttr(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-rules"/></svg></span> Rules
           </button>
-          <button class="modal-menu-item" onclick="openAllSkillsForProject('${esc(p.id)}')">
+          <button class="modal-menu-item" onclick="openAllSkillsForProject('${window.jsAttr(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-skills"/></svg></span> Skills
           </button>
-          <button class="modal-menu-item" onclick="openProjectExport('${esc(p.id)}')">
+          <button class="modal-menu-item" onclick="openProjectExport('${window.jsAttr(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-backup"/></svg></span> Export
           </button>
-          <button class="modal-menu-item" onclick="openAllMCPForProject('${esc(p.id)}')">
+          <button class="modal-menu-item" onclick="openAllMCPForProject('${window.jsAttr(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-mcp"/></svg></span> MCP servers
           </button>
-          <button class="modal-menu-item" onclick="openAllPersonasForProject('${esc(p.id)}')">
+          <button class="modal-menu-item" onclick="openAllPersonasForProject('${window.jsAttr(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-personas"/></svg></span> Personas
           </button>
-          <button class="modal-menu-item" onclick="_mcMenuClose();openAllHivemindsForProject('${esc(p.id)}')">
+          <button class="modal-menu-item" onclick="_mcMenuClose();openAllHivemindsForProject('${window.jsAttr(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-hivemind"/></svg></span> Hiveminds
           </button>
           </div>
           <div class="modal-menu-sep"></div>
-          <button class="modal-menu-item danger" onclick="deleteProject('${esc(p.id)}')">
+          <button class="modal-menu-item danger" onclick="deleteProject('${window.jsAttr(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-trash"/></svg></span> Delete Project
           </button>
         </div>
       </div>
       <div class="card-title-row">
         <input class="name-edit" type="text" value="${esc(p.name||p.id)}"
-          onblur="saveProjectName('${esc(p.id)}',this)"
+          onblur="saveProjectName('${window.jsAttr(p.id)}',this)"
           onkeydown="if(event.key==='Enter'){this.blur()}"
           oninput="autoSizeNameInput(this)"
         >
-        ${(() => { const cfg = getDomainConfig(p.domain||'general'); return `<span class="domain-tag" style="background:${cfg.bg};color:${cfg.color}">${esc(cfg.label||p.domain||'general')}</span>`; })()}
+        ${(() => { const cfg = getDomainConfig(p.domain||'general'); return `<span class="domain-tag" style="background:${esc(cfg.bg)};color:${esc(cfg.color)}">${esc(cfg.label||p.domain||'general')}</span>`; })()}
       </div>
       <div class="path-row">
         <span class="path-label">Path</span>
         <input class="path-input" type="text" value="${esc(p.project_path||'')}"
           placeholder="No folder selected — click Browse, or type a path"
-          onblur="saveProjectPath('${esc(p.id)}',this)"
+          onblur="saveProjectPath('${window.jsAttr(p.id)}',this)"
           onkeydown="if(event.key==='Enter'){this.blur()}"
         >
-        <button class="btn-browse" onclick="openFolderPicker('${esc(p.id)}')" title="Browse for folder">Browse...</button>
-        ${p.project_path ? `<button class="btn-import" onclick="importFromProject('${esc(p.id)}')" title="Import from CHANGELOG.md">Import</button>` : ''}
+        <button class="btn-browse" onclick="openFolderPicker('${window.jsAttr(p.id)}')" title="Browse for folder">Browse...</button>
+        ${p.project_path ? `<button class="btn-import" onclick="importFromProject('${window.jsAttr(p.id)}')" title="Import from CHANGELOG.md">Import</button>` : ''}
       </div>
       ${p.summary ? `<div class="project-summary" style="margin-top:8px">${esc(p.summary)}</div>` : ''}
       ${p.description ? `<div class="description" style="margin-top:8px">${esc(p.description)}</div>` : ''}
@@ -915,28 +915,28 @@ function modalContentHTML(p) {
       </div>
     </div>
     <div class="modal-tab-bar">
-      <div class="modal-tab ${activeTab==='agent'?'active':''}" onclick="switchModalTab('${esc(p.id)}','agent')">Agent</div>
-      <div class="modal-tab ${activeTab==='backlog'?'active':''}" onclick="switchModalTab('${esc(p.id)}','backlog')">Backlog${bl.open ? `<span class="tab-badge">${bl.open}</span>` : ''}</div>
-      <div class="modal-tab ${activeTab==='social'?'active':''}" onclick="switchModalTab('${esc(p.id)}','social')">Social${socialPendingCount ? `<span class="tab-badge">${socialPendingCount}</span>` : ''}</div>
-      <div class="modal-tab ${activeTab==='agent-log'?'active':''}" data-tab-name="agent-log" onclick="switchModalTab('${esc(p.id)}','agent-log')">Agent Log</div>
-      <div class="modal-tab ${activeTab==='documents'?'active':''}" onclick="switchModalTab('${esc(p.id)}','documents')">Documents</div>
-      <div class="modal-tab ${activeTab==='activity'?'active':''}" onclick="switchModalTab('${esc(p.id)}','activity')">Activity</div>
-      ${window.ProjectTestRuns?.navigationHTML(p.id, activeTab) || ''}<div class="modal-tab ${activeTab==='workflows'?'active':''}" data-tab-name="workflows" onclick="switchModalTab('${esc(p.id)}','workflows')">Workflows</div>
+      <div class="modal-tab ${activeTab==='agent'?'active':''}" onclick="switchModalTab('${window.jsAttr(p.id)}','agent')">Agent</div>
+      <div class="modal-tab ${activeTab==='backlog'?'active':''}" onclick="switchModalTab('${window.jsAttr(p.id)}','backlog')">Backlog${bl.open ? `<span class="tab-badge">${bl.open}</span>` : ''}</div>
+      <div class="modal-tab ${activeTab==='social'?'active':''}" onclick="switchModalTab('${window.jsAttr(p.id)}','social')">Social${socialPendingCount ? `<span class="tab-badge">${socialPendingCount}</span>` : ''}</div>
+      <div class="modal-tab ${activeTab==='agent-log'?'active':''}" data-tab-name="agent-log" onclick="switchModalTab('${window.jsAttr(p.id)}','agent-log')">Agent Log</div>
+      <div class="modal-tab ${activeTab==='documents'?'active':''}" onclick="switchModalTab('${window.jsAttr(p.id)}','documents')">Documents</div>
+      <div class="modal-tab ${activeTab==='activity'?'active':''}" onclick="switchModalTab('${window.jsAttr(p.id)}','activity')">Activity</div>
+      ${window.ProjectTestRuns?.navigationHTML(p.id, activeTab) || ''}<div class="modal-tab ${activeTab==='workflows'?'active':''}" data-tab-name="workflows" onclick="switchModalTab('${window.jsAttr(p.id)}','workflows')">Workflows</div>
       ${(activeTab === 'workflows') ? `<div class="modal-tab-search">
         <input type="text" id="tab-search-${esc(p.id)}" placeholder="Filter..."
           value="${esc(modalSearchQuery[p.id] || '')}"
-          oninput="modalSearchQuery['${esc(p.id)}']=this.value;applyTabFilter('${esc(p.id)}')"
-        >${modalSearchQuery[p.id] ? `<span class="search-clear" onclick="clearTabSearch('${esc(p.id)}')">&#x2715;</span>` : ''}
+          oninput="modalSearchQuery['${window.jsAttr(p.id)}']=this.value;applyTabFilter('${window.jsAttr(p.id)}')"
+        >${modalSearchQuery[p.id] ? `<span class="search-clear" onclick="clearTabSearch('${window.jsAttr(p.id)}')">&#x2715;</span>` : ''}
       </div>` : ''}
     </div>
     <div class="modal-scroll-body${activeTab==='agent'?' agent-active':''}${activeTab==='workflows'?' wf-tab-active':''}">
-      <button type="button" class="modal-back-to-chat" onclick="switchModalTab('${esc(p.id)}','agent')" title="Back to the conversation">&#8592; Back to conversation</button>
+      <button type="button" class="modal-back-to-chat" onclick="switchModalTab('${window.jsAttr(p.id)}','agent')" title="Back to the conversation">&#8592; Back to conversation</button>
       ${window.ProjectTestRuns?.panelHTML(p.id, activeTab) || ''}<div class="modal-tab-content ${activeTab==='backlog'?'active':''}" data-tab="backlog">
         ${!tabOn('backlog') ? '' : `
         <div class="card-section">
           <div class="section-title">
             <span>Backlog ${backlogBadge}</span>
-            ${p.github_sync_enabled && p.github_repo ? `<button class="gh-sync-badge" id="gh-badge-${esc(p.id)}" onclick="githubSyncNow('${esc(p.id)}')" title="Sync with GitHub">&#x21BB; ${esc(p.github_repo)}</button>` : ''}
+            ${p.github_sync_enabled && p.github_repo ? `<button class="gh-sync-badge" id="gh-badge-${esc(p.id)}" onclick="githubSyncNow('${window.jsAttr(p.id)}')" title="Sync with GitHub">&#x21BB; ${esc(p.github_repo)}</button>` : ''}
             ${undoBtn}${doneToggle}
           </div>
           <!-- Search matches key/num/text (backlogItemMatchesQuery, shared with
@@ -952,10 +952,10 @@ function modalContentHTML(p) {
             <div class="backlog-search">
               <input type="text" id="backlog-search-${esc(p.id)}" placeholder="Search # or text..."
                 value="${esc(bvs.query)}"
-                oninput="backlogSearchQuery['${esc(p.id)}']=this.value;refreshBacklogList('${esc(p.id)}')"
-              >${bvs.query ? `<span class="search-clear" onclick="clearBacklogSearch('${esc(p.id)}')">&#x2715;</span>` : ''}
+                oninput="backlogSearchQuery['${window.jsAttr(p.id)}']=this.value;refreshBacklogList('${window.jsAttr(p.id)}')"
+              >${bvs.query ? `<span class="search-clear" onclick="clearBacklogSearch('${window.jsAttr(p.id)}')">&#x2715;</span>` : ''}
             </div>
-            <select class="backlog-sort-select" onchange="setBacklogSort('${esc(p.id)}',this.value)">
+            <select class="backlog-sort-select" onchange="setBacklogSort('${window.jsAttr(p.id)}',this.value)">
               <option value="default"${bvs.sortMode==='default'?' selected':''}>Default</option>
               <option value="num_desc"${bvs.sortMode==='num_desc'?' selected':''}>Ticket # (newest first)</option>
               <option value="num_asc"${bvs.sortMode==='num_asc'?' selected':''}>Ticket # (oldest first)</option>
@@ -971,11 +971,11 @@ function modalContentHTML(p) {
           <div class="backlog-add">
             <textarea spellcheck="true" class="backlog-input" id="backlog-input-${esc(p.id)}" rows="2"
               placeholder="Add action item... (paste/drop images here)"
-              onkeydown="handleInputEnter(event,()=>addBacklogItem('${esc(p.id)}'),'${esc(p.id)}')"
-              onpaste="handleCreatePaste(event,'${esc(p.id)}')"
-              ondragover="createDragOver(event,'${esc(p.id)}')"
-              ondragleave="createDragLeave('${esc(p.id)}')"
-              ondrop="createDrop(event,'${esc(p.id)}')"></textarea>
+              onkeydown="handleInputEnter(event,()=>addBacklogItem('${window.jsAttr(p.id)}'),'${window.jsAttr(p.id)}')"
+              onpaste="handleCreatePaste(event,'${window.jsAttr(p.id)}')"
+              ondragover="createDragOver(event,'${window.jsAttr(p.id)}')"
+              ondragleave="createDragLeave('${window.jsAttr(p.id)}')"
+              ondrop="createDrop(event,'${window.jsAttr(p.id)}')"></textarea>
             <div class="create-previews" id="create-previews-${esc(p.id)}"></div>
             <div style="display:flex;gap:6px;align-items:center">
               <select class="priority-select" id="backlog-pri-${esc(p.id)}">
@@ -983,7 +983,7 @@ function modalContentHTML(p) {
                 <option value="high">High</option>
                 <option value="low">Low</option>
               </select>
-              <button class="btn-add" onclick="addBacklogItem('${esc(p.id)}')">+ Add</button>
+              <button class="btn-add" onclick="addBacklogItem('${window.jsAttr(p.id)}')">+ Add</button>
             </div>
           </div>
           <div class="backlog-list">${backlogItemsHTML}</div>
@@ -1005,9 +1005,9 @@ function modalContentHTML(p) {
             </button>
           </div>
           <div class="social-filter-bar">
-            <button class="social-filter-btn${socialFilter==='pending'?' active':''}" onclick="setSocialFilter('${esc(p.id)}','pending')">Pending</button>
-            <button class="social-filter-btn${socialFilter==='decided'?' active':''}" onclick="setSocialFilter('${esc(p.id)}','decided')">Decided</button>
-            <button class="social-filter-btn${socialFilter==='all'?' active':''}" onclick="setSocialFilter('${esc(p.id)}','all')">All</button>
+            <button class="social-filter-btn${socialFilter==='pending'?' active':''}" onclick="setSocialFilter('${window.jsAttr(p.id)}','pending')">Pending</button>
+            <button class="social-filter-btn${socialFilter==='decided'?' active':''}" onclick="setSocialFilter('${window.jsAttr(p.id)}','decided')">Decided</button>
+            <button class="social-filter-btn${socialFilter==='all'?' active':''}" onclick="setSocialFilter('${window.jsAttr(p.id)}','all')">All</button>
           </div>
           <div class="backlog-list">${socialItemsHTML}</div>
         </div>`}
@@ -1026,8 +1026,8 @@ function modalContentHTML(p) {
             <div class="modal-tab-search">
               <input type="text" id="tab-search-documents-${esc(p.id)}" placeholder="Filter..."
                 value="${esc(modalSearchQuery[p.id] || '')}"
-                oninput="modalSearchQuery['${esc(p.id)}']=this.value;applyTabFilter('${esc(p.id)}')"
-              >${modalSearchQuery[p.id] ? `<span class="search-clear" onclick="clearTabSearch('${esc(p.id)}')">&#x2715;</span>` : ''}
+                oninput="modalSearchQuery['${window.jsAttr(p.id)}']=this.value;applyTabFilter('${window.jsAttr(p.id)}')"
+              >${modalSearchQuery[p.id] ? `<span class="search-clear" onclick="clearTabSearch('${window.jsAttr(p.id)}')">&#x2715;</span>` : ''}
             </div>
           </div>
           ${typeof window.docSearchBoxHTML === 'function' ? window.docSearchBoxHTML(p.id) : ''}
@@ -1043,8 +1043,8 @@ function modalContentHTML(p) {
             <div class="modal-tab-search">
               <input type="text" id="tab-search-activity-${esc(p.id)}" placeholder="Filter..."
                 value="${esc(modalSearchQuery[p.id] || '')}"
-                oninput="modalSearchQuery['${esc(p.id)}']=this.value;applyTabFilter('${esc(p.id)}')"
-              >${modalSearchQuery[p.id] ? `<span class="search-clear" onclick="clearTabSearch('${esc(p.id)}')">&#x2715;</span>` : ''}
+                oninput="modalSearchQuery['${window.jsAttr(p.id)}']=this.value;applyTabFilter('${window.jsAttr(p.id)}')"
+              >${modalSearchQuery[p.id] ? `<span class="search-clear" onclick="clearTabSearch('${window.jsAttr(p.id)}')">&#x2715;</span>` : ''}
             </div>
           </div>
           <div class="log-entries">${logHTML || '<div style="color:var(--text-faint);font-style:italic">No activity yet</div>'}</div>

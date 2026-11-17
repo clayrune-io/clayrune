@@ -668,7 +668,7 @@ function scalOpenDetail(id) {
         <button class="btn-header-action" onclick="scalRunNow('${esc(s.id)}')"
                 title="Dispatch this task now">&#x25B6; Run Now</button>
         ${s.workflow_display
-          ? `<button class="btn-header-action" onclick="scalOpenRuns('${esc(s.id)}','${esc(s.project_id || '')}')">Runs</button>`
+          ? `<button class="btn-header-action" onclick="scalOpenRuns('${esc(s.id)}','${window.jsAttr(s.project_id || '')}')">Runs</button>`
           : ''}
         <button class="btn-header-action" onclick="scalEdit('${esc(s.id)}')">Edit</button>
       </div>

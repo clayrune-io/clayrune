@@ -182,15 +182,15 @@ function _renderMCPRow(s) {
   const shadowBadge = s.shadowed_by_project
     ? '<span style="font-size:10px;background:transparent;color:var(--amber);padding:1px 6px;border:1px solid var(--amber);border-radius:3px;margin-left:4px" title="A project entry of the same name shadows this global">shadowed</span>'
     : '';
-  const editArgs = `'${esc(s.scope)}', '${esc(s.name)}', ${s.project_id ? `'${esc(s.project_id)}'` : 'null'}, false`;
-  const delArgs = `'${esc(s.scope)}', '${esc(s.name)}', ${s.project_id ? `'${esc(s.project_id)}'` : 'null'}`;
+  const editArgs = `'${window.jsAttr(s.scope)}', '${window.jsAttr(s.name)}', ${s.project_id ? `'${window.jsAttr(s.project_id)}'` : 'null'}, false`;
+  const delArgs = `'${window.jsAttr(s.scope)}', '${window.jsAttr(s.name)}', ${s.project_id ? `'${window.jsAttr(s.project_id)}'` : 'null'}`;
   const mtime = s.mtime_iso ? new Date(s.mtime_iso).toLocaleString() : '';
   // Per-project "active" toggle — only present when a single project is selected
   // (server annotates s.active). always_on servers (engram/memory) are locked on.
   const activeToggle = (s.active === undefined) ? '' : (
     s.always_on
       ? `<span class="btn-tiny" style="opacity:.6;cursor:default;border-color:var(--accent);color:var(--accent)" title="Always loaded — provides cross-session memory; can't be disabled">✓ memory</span>`
-      : `<button class="btn-tiny" onclick="_mcpToggleActive('${esc(s.name)}', ${s.active ? 'false' : 'true'})" style="${s.active ? 'color:var(--accent);border-color:var(--accent)' : 'opacity:.65'}" title="${s.active ? 'Loaded for this project — click to disable' : 'Not loaded for this project — click to enable'}">${s.active ? '✓ active' : '○ off'}</button>`
+      : `<button class="btn-tiny" onclick="_mcpToggleActive('${window.jsAttr(s.name)}', ${s.active ? 'false' : 'true'})" style="${s.active ? 'color:var(--accent);border-color:var(--accent)' : 'opacity:.65'}" title="${s.active ? 'Loaded for this project — click to disable' : 'Not loaded for this project — click to enable'}">${s.active ? '✓ active' : '○ off'}</button>`
   );
 
   return `<div class="mcp-row" style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:4px">
@@ -279,11 +279,11 @@ async function openMCPEditor(scope, name, projectId, isNew) {
   // uses the manual form so we don't lose the user's existing config.
   const modeToggle = isNew ? `
     <div style="display:flex;gap:0;margin-bottom:8px;border:1px solid var(--border);border-radius:6px;overflow:hidden;width:fit-content">
-      <button id="me-mode-manual" class="me-mode-btn active" onclick="_mcpEditorSetMode('${modalId}','manual')"
+      <button id="me-mode-manual" class="me-mode-btn active" onclick="_mcpEditorSetMode('${window.jsAttr(modalId)}','manual')"
         style="padding:6px 14px;font-size:12px;background:var(--accent);color:var(--bg);border:none;cursor:pointer;font-weight:600">
         Manual
       </button>
-      <button id="me-mode-url" class="me-mode-btn" onclick="_mcpEditorSetMode('${modalId}','url')"
+      <button id="me-mode-url" class="me-mode-btn" onclick="_mcpEditorSetMode('${window.jsAttr(modalId)}','url')"
         style="padding:6px 14px;font-size:12px;background:var(--surface2);color:var(--text);border:none;border-left:1px solid var(--border);cursor:pointer">
         From URL
       </button>
@@ -293,7 +293,7 @@ async function openMCPEditor(scope, name, projectId, isNew) {
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
       <span style="font-size:16px;font-weight:700;color:var(--text)">&#x1F50C; ${esc(title)}</span>
       <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
-        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+        <button class="modal-close" onclick="closeModalById('${window.jsAttr(modalId)}')" title="Close">&#10005;</button>
       </div>
     </div>
     <div style="padding:4px 24px 20px 28px;display:flex;flex-direction:column;gap:12px">
@@ -334,8 +334,8 @@ async function openMCPEditor(scope, name, projectId, isNew) {
         <div id="me-fields"></div>
         <div id="me-status" style="font-size:11px;color:var(--text-faint);min-height:14px"></div>
         <div style="display:flex;gap:8px;justify-content:flex-end">
-          <button class="btn-secondary" onclick="closeModalById('${modalId}')">Cancel</button>
-          <button class="btn-add" id="me-save" onclick="saveMCPServer('${modalId}', ${isNew})">${isNew?'Create':'Save changes'}</button>
+          <button class="btn-secondary" onclick="closeModalById('${window.jsAttr(modalId)}')">Cancel</button>
+          <button class="btn-add" id="me-save" onclick="saveMCPServer('${window.jsAttr(modalId)}', ${isNew})">${isNew?'Create':'Save changes'}</button>
         </div>
       </div>
       <div id="me-url-mode" style="display:none;flex-direction:column;gap:12px"></div>
@@ -499,8 +499,8 @@ function _mcpUrlRenderInput(modalId, st) {
       </div>
     </div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button class="btn-secondary" onclick="closeModalById('${modalId}')">Cancel</button>
-      <button class="btn-add" id="me-url-preview-btn" onclick="_mcpUrlPreview('${modalId}')">Preview &rarr;</button>
+      <button class="btn-secondary" onclick="closeModalById('${window.jsAttr(modalId)}')">Cancel</button>
+      <button class="btn-add" id="me-url-preview-btn" onclick="_mcpUrlPreview('${window.jsAttr(modalId)}')">Preview &rarr;</button>
     </div>`;
 }
 
@@ -708,7 +708,7 @@ function _mcpUrlRenderPreview(modalId, st) {
             <code style="font-size:12px;min-width:160px">${esc(s.key)}</code>
             <input type="password" data-secret-key="${esc(s.key)}" placeholder="${esc(s.hint)}"
               value="${esc(st.secretValues[s.key] || '')}"
-              oninput="_mcpUrlSecretChange('${modalId}','${esc(s.key)}',this.value)"
+              oninput="_mcpUrlSecretChange('${window.jsAttr(modalId)}','${window.jsAttr(s.key)}',this.value)"
               style="flex:1;padding:5px 8px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
           </div>`).join('')}
       </div>`;
@@ -749,12 +749,12 @@ function _mcpUrlRenderPreview(modalId, st) {
       <div style="flex:1;min-width:160px">
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">Server name</label>
         <input type="text" id="me-url-name" value="${esc(st.name || '')}"
-          oninput="_mcpUrlFieldChange('${modalId}','name',this.value)"
+          oninput="_mcpUrlFieldChange('${window.jsAttr(modalId)}','name',this.value)"
           style="width:100%;padding:6px 10px;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
       </div>
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">Scope</label>
-        <select id="me-url-scope" onchange="_mcpUrlFieldChange('${modalId}','scope',this.value)"
+        <select id="me-url-scope" onchange="_mcpUrlFieldChange('${window.jsAttr(modalId)}','scope',this.value)"
           style="padding:6px 10px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text)">
           <option value="global" ${st.scope==='global'?'selected':''}>Global</option>
           <option value="project" ${st.scope==='project'?'selected':''} ${realProjects.length?'':'disabled'}>Project</option>
@@ -762,7 +762,7 @@ function _mcpUrlRenderPreview(modalId, st) {
       </div>
       <div id="me-url-project-wrap" style="display:${st.scope==='project'?'':'none'}">
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">Project</label>
-        <select id="me-url-project" onchange="_mcpUrlFieldChange('${modalId}','projectId',this.value)"
+        <select id="me-url-project" onchange="_mcpUrlFieldChange('${window.jsAttr(modalId)}','projectId',this.value)"
           style="padding:6px 10px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);max-width:220px">
           ${projOptions || '<option value="">No projects with a path</option>'}
         </select>
@@ -773,10 +773,10 @@ function _mcpUrlRenderPreview(modalId, st) {
       <pre style="margin:6px 0 0;padding:8px 10px;background:var(--surface2);border-radius:4px;font-size:11px;color:var(--text);overflow-x:auto">${esc(cfgPreview)}</pre>
     </details>
     <div style="display:flex;gap:8px;justify-content:space-between;align-items:center">
-      <button class="btn-secondary" onclick="_mcpUrlBack('${modalId}')">&larr; Back</button>
+      <button class="btn-secondary" onclick="_mcpUrlBack('${window.jsAttr(modalId)}')">&larr; Back</button>
       <div style="display:flex;gap:8px">
-        <button class="btn-secondary" onclick="closeModalById('${modalId}')">Cancel</button>
-        <button class="btn-add" onclick="_mcpUrlInstall('${modalId}')">Install &rarr;</button>
+        <button class="btn-secondary" onclick="closeModalById('${window.jsAttr(modalId)}')">Cancel</button>
+        <button class="btn-add" onclick="_mcpUrlInstall('${window.jsAttr(modalId)}')">Install &rarr;</button>
       </div>
     </div>`;
 }
@@ -931,7 +931,7 @@ function _mcpUrlRenderDone(modalId, st) {
       <pre style="margin:6px 0 0;padding:8px 10px;background:#0a0c10;color:#cfd8dc;border-radius:4px;font-size:11px;max-height:200px;overflow:auto;white-space:pre-wrap">${esc(st.log || '')}</pre>
     </details>
     <div style="display:flex;gap:8px;justify-content:flex-end">
-      <button class="btn-add" onclick="closeModalById('${modalId}')">Close</button>
+      <button class="btn-add" onclick="closeModalById('${window.jsAttr(modalId)}')">Close</button>
     </div>`;
 }
 
