@@ -895,8 +895,145 @@ Read, not measured. Smallest fix: `write_json_atomic` for the config; route
 the schedule write through `serialized_write` and skip role rows; take
 `_project_write_lock` around the project write.
 
+### OS48 · high · E/F — the Usage Breakdown panel cannot load for Claude: one request computes for about 100 s, the browser gives up at 25 s, and the cache that was meant to absorb it is invalidated every minute
+`mc/usage_breakdown_aggregate.py:903-953` (the pair loop), `:883-902`,
+`:1287-1295` (`_memoized`), `:1324-1331` (the cache key);
+caller `mc/blueprints/system_routes.py:1470-1471`; client
+`static/js/system-status.js:906-916`.
+`_eligible_intervals` walks every consecutive pair of allowance samples in the
+90-day history (`:903`) and, for each pair, every session's whole segment list
+(`:922-934`): three list scans per session per pair, one of them
+`t not in contained`, which compares dicts. The comment at `:885-887` sized
+this for "~2000 pairs". The store on this install holds 29,046 samples for the
+Claude 7-day window, 1,412 sessions and 24,115 segments, so the loop is about
+29,000 x 24,000 segment tests.
+**Measured** (scratch copy of the store taken with the sqlite backup API,
+source opened read-only, `_scratch/os_ub_profile.py`): fetch 0.30 s, digests
+0.21 s, evidence for all sessions 0.85 s, `filter_facts_in_range` 0.83 s,
+`compute_turn_sizes` 0.05 s, **`_eligible_intervals` 95.76 s** for 28,987
+intervals. The same request against the running server
+(`GET /api/system/usage/breakdown?provider=claude&window_kind=7d`) answered in
+**103.1 s**. The Codex window (4,776 samples) answered in 5.8 s.
+Three things turn a slow function into a feature that does not work:
+1. The client aborts at 25 s and retries once (`system-status.js:906-916`), on
+   the stated assumption that the retry "lands on a warm cache". Both attempts
+   abort; the panel shows its error state.
+2. The cache key includes a digest of the calibration samples (`:1326`). The
+   sampler adds a sample every 60 s while any session runs and every 300 s
+   idle (`usage_breakdown_sampler.py:356-359`), so the key changes more often
+   than one compute takes. A warm hit needs a second request inside the same
+   sampling minute as the end of a 100 s compute.
+3. `_memoized` holds `_memo_lock` across the compute (`:1288-1292`) and the
+   lock is one lock for every key. An aborted request keeps computing, and
+   every later breakdown request, for any provider or window, waits behind it.
+   Each one then starts its own compute with the newer digest. The work is
+   pure Python, so for those 100 s every other request on the server shares
+   the interpreter with it. Pass 4 reported that hovering a provider bar
+   starts two of these requests; that hover is the trigger for this cost.
+Growth: samples and segments both grow with days of history up to the 90-day
+prune, so the cost grows with the square of the history until it levels off.
+This install is at 73 days.
+Smallest fix: sort the segments once by start time and advance a pointer with
+the sample pairs (both lists are time-ordered), so each pair looks only at
+segments that can overlap it; that is linear in pairs plus segments. Then key
+the calibration cache on something that does not change every minute (the
+history up to the previous hour) and compute outside the lock, with a
+per-key in-flight marker.
+Test: none would catch it. `tests/test_usage_breakdown_speed.py` counts sqlite
+connections and cache hits on small fixtures and never runs the pair loop at
+size; its `test_new_allowance_sample_invalidates` (`:160`) pins the
+once-a-minute invalidation as the intended behaviour, so the cache fix must
+change that test.
+Pass 4 `SS4` (two computes per bar hover) is the client half of this.
+
+### OS49 · low · L — engine fallback: a second swap can follow the first, and the availability probe swallows its failure
+`mc/blueprints/agent_routes.py:12753-12758, 12795-12811, 4005-4016`;
+`mc/engine_fallback.py:59-87`.
+Read, not measured (the module is sound; these are in its one caller, cited
+only as far as needed).
+(a) After an allowance swap from vendor A to B (`:12753`), the fallback entry's
+own model goes through `_model_quota_blocked` (`:12795`). If that model is
+blocked too, `_apply_engine_fallback` runs again with B as the blocked vendor
+(`:12806`). The record kept on the session is then "B to C" and the chat line
+carries two prefixes; the first hop is in the activity log and a push only.
+When the first trigger was a model block and not an exhausted allowance, the
+second walk may return A, the vendor the dispatch started on, with a
+different model, because `resolve_fallback` skips only the vendor passed in
+and vendors with an exhaustion record (`engine_fallback.py:75-78`). Every hop
+is logged and pushed, so nothing here is silent; the defect is that the kept
+record names the wrong starting vendor. Smallest fix: allow one swap per
+dispatch (`if _engine_fallback_record: raise EngineFallbackBlocked`).
+(b) `_provider_available_for_fallback` catches every exception from
+`health_check()` and returns False without logging (`:4014-4015`), so a
+fallback entry that is skipped because its probe crashed looks the same as one
+that is signed out. `resolve_fallback` has a logging handler for exactly this
+(`engine_fallback.py:82-85`) that can never fire, because the probe it wraps
+never raises. Project policy: a swallowed subprocess failure must log.
+Test: `tests/test_engine_fallback.py` covers the single swap; not the chain.
+
+### OS50 · low · L — pace routing treats a weekly reading above 100 as no reading
+`mc/engine_pace.py:34-38, 48-51`.
+`_percent` rejects any value outside 0 to 100, so a vendor bar that reports
+more than 100 makes `weekly_window` return None and `decide` keeps the
+original character. **Measured** (real `decide`, alternate configured, reset
+three days out): 86 reroutes, 100 reroutes, 100.5 and 104 stay as asked. The
+reroute stops at the moment the vendor is most over. Whether a vendor ever
+reports above 100 was not determined; the allowance refusal still applies in
+that state, so the effect is a refusal where a reroute was configured.
+Smallest fix: clamp to 100 instead of rejecting. Test: none for this input.
+
+### OS51 · low · L — keep-awake on Linux reports "engaged" for an inhibitor that exited at once, and repeats that every 20 s
+`mc/wake_lock.py:89-105, 131-138, 161-178`.
+Read, not measured (no Linux host; starting the inhibitor is outside this
+review's rules).
+`_engage_subprocess` returns True as soon as `Popen` succeeds. If
+`systemd-inhibit` starts and exits straight away (the session may not take an
+inhibitor lock, or the service is not running), `set_active` logs "engaged".
+On the next tick `_inhibitor_dead()` is true, so it logs "inhibitor process
+died" and engages again: two log lines every 20 s for as long as the setting
+is on, and the machine is free to sleep the whole time. When the binary is
+missing the "not found" line repeats at the same rate (`:99-102`). Nothing in
+the product shows the state; the log is the only place.
+Also: `keep_awake_poll_s` is read once at start (`server.py:3816-3819`), so
+only the on/off flag is live, and a non-numeric value there stops the
+reconciler from starting at all.
+Smallest fix: after `Popen`, wait a short moment and treat an exited child as
+a failed engage; log a repeated failure once until the state changes.
+Windows path **measured**: `SetThreadExecutionState` returned a non-zero
+previous state on engage and on release from a fresh thread, so the two
+"returned 0" checks (`:66, :79`) do not misfire on the first call.
+
+### Engine selection, fallback, pace, run-role projection, wake lock, usage store and sampler: sound
+- `mc/engine_selection.py`: explicit selections never change silently; an
+  unknown provider raises with "No fallback was attempted" (`:137-140`); an
+  inherited foreign model is dropped to the native default and an explicit one
+  raises (`:197-205`).
+- `mc/engine_fallback.py`: off unless the user wrote an order
+  (`:45-47`); a resume never crosses vendors (`agent_routes.py:12750-12752`);
+  the swap is recorded in the activity log, a push, the chat line and the
+  session record from one place (`agent_routes.py:4046-4061`). The constraint
+  "usage-limit handling must never silently fall back to another vendor"
+  holds on every path read.
+- `mc/engine_pace.py`: pure, no I/O, reroutes only to an alternate the user
+  named, never recursively (`:81-84`).
+- `mc/hivemind_run_roles.py`: read-only and fail-closed. `accepted` needs a
+  completed integration, an exact passing review per merged workstream and no
+  workstream moved since it was pinned (`:264-268, 291-301, 318-325`); a
+  projection error returns `unverified`, never green (`:351-360`).
+- `mc/usage_breakdown_store.py`, `mc/usage_breakdown_sampler.py`: writes go
+  through one connection helper in WAL mode with a 30 s busy timeout
+  (`usage_breakdown_store.py:418-423`), the 90-day prune runs in batches
+  (`:848-859`), and the store read for one breakdown request is 0.30 s
+  (measured, in OS48). No finding beyond OS48, which is in the aggregate.
+- `mc/hivemind_native_workflow.py` has no production importer (see
+  Streamlining); it was read at structure level only.
+
 ## Measurements
 
+- OS48: `_scratch/os_ub_profile.py` and `_scratch/os_ub_counts.py`; two timed
+  `GET`s of the breakdown route (Claude 7-day, Codex 7-day).
+- OS50: real `engine_pace.decide`. OS51: one `SetThreadExecutionState`
+  engage/release pair on a scratch thread (per-thread state, cleared on exit).
 - OS45: `_scratch` script, temp agents directory, real `_character_apply`.
 - OS46: `_scratch` script, `prices_path` pointed at a temp file.
 - OS41, OS43: `_scratch` script against `mc.automation_suggestions` with a temp
