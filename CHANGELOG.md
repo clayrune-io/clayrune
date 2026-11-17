@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - The clayrune MCP stdio server speaks UTF-8 on Windows (MC-1179 pass 11, SF8)
+
+- On Windows the server's stdin and stdout used the locale code page (cp1252), so a tool reply with a character outside it (an arrow, an emoji) ended the process with `UnicodeEncodeError` and the session lost all eight tools, and a non-ASCII argument (em dash, curly quotes) reached the handler as mojibake or with a lone surrogate; `_send_message` and `_dispatch_agent` forward that text on.
+- `mc/clayrune_mcp/server.py` `main` now reconfigures stdin to UTF-8 and stdout to UTF-8 with LF newlines before `protocol.serve`.
+- New `tests/test_clayrune_mcp_stdio_encoding.py` starts the real server as `mc/session_mcp_config.py` does, with `PYTHONUTF8` and `PYTHONIOENCODING` removed, against a loopback stub: a reply with an arrow and an emoji comes back intact and a later `ping` is answered; an argument with an em dash and curly quotes reaches the Clayrune route unchanged. Both failed before the fix.
+
 ## [2026-11-16] - Editing a character no longer deletes its Claude Code keys (MC-1179 pass 11, SF17)
 
 - `write_character` rebuilt the frontmatter from seven known keys on every save, so renaming, picking a face, moving, a team overwrite or a description typo-fix removed `tools`, `disallowedTools`, `permissionMode`, `mcpServers`, `hooks` and `color` from an imported subagent (an absent `tools:` means all tools). It now carries every key it does not own from the file being updated, verbatim and in original order (raw lines, because the frontmatter parser cannot round-trip nested maps or lists). Keys it owns are written as before; a new file is written as before.
