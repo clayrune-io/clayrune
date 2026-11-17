@@ -483,5 +483,7 @@ global and project engine defaults are edited in Providers.
   Memory: point them at the Clayrune UI surface, not at the `claude` CLI.
 
 This reference is auto-loaded into your system prompt. For features missing
-here, grep `server.py` for `@app.route` to discover endpoints — or run
-`python tools/regen-api-reference.py` to refresh this file from source.
+here, grep `server.py` and `mc/blueprints/*.py` for `.route(` to discover
+endpoints — or run `python tools/regen-api-reference.py`, which reports routes
+missing from this file and paths here that no longer exist (it never writes
+this file).

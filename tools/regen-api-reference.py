@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""Refresh data/agent_reference/CLAYRUNE_API.md against the live `@app.route`
-decorators in server.py.
+"""Check data/agent_reference/CLAYRUNE_API.md against the route decorators in
+the source.
 
-This tool does NOT overwrite the curated reference. It does two things:
+This tool never writes the curated reference. It does two things:
 
-1. Lists every route registered in server.py.
+1. Lists every route declared in server.py and in mc/blueprints/*.py (any
+   "<name>.route(...)" decorator; a Blueprint's own url_prefix is joined).
+   It reads the source with ast and never imports server, because importing
+   server starts background threads.
 2. Flags drift: routes that exist in code but not in the curated reference,
    and routes referenced in the doc but no longer present in code.
 
@@ -23,6 +26,7 @@ Exit code 0 = clean, 1 = drift detected.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import re
 import sys
@@ -32,7 +36,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SERVER_PY = ROOT / 'server.py'
 DOC = ROOT / 'data' / 'agent_reference' / 'CLAYRUNE_API.md'
 
-ROUTE_RE = re.compile(r"^@app\.route\(\s*['\"]([^'\"]+)['\"](?:\s*,\s*methods\s*=\s*\[([^\]]+)\])?")
+BLUEPRINT_DIR = ROOT / 'mc' / 'blueprints'
 
 # Routes intentionally NOT in the curated reference — UI-only, CF/remote
 # internals, push notifications, walkthrough, internal callbacks. Keep this
@@ -79,21 +83,105 @@ def _shape(path: str) -> str:
     return re.sub(r'<[^>]*>', '<>', path)
 
 
-def scan_routes() -> list[tuple[str, list[str]]]:
-    """Return [(normalized_path, methods)] in source order."""
-    out: list[tuple[str, list[str]]] = []
-    text = SERVER_PY.read_text(encoding='utf-8')
-    for line in text.splitlines():
-        m = ROUTE_RE.match(line.strip())
-        if not m:
+def _source_files() -> list[Path]:
+    return [SERVER_PY] + sorted(BLUEPRINT_DIR.glob('*.py'))
+
+
+def _string_constants(tree: ast.AST) -> dict[str, str]:
+    """Names assigned a single string literal anywhere in the module. A name
+    assigned two different strings is dropped rather than guessed at."""
+    seen: dict[str, str | None] = {}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)):
+            name, val = node.targets[0].id, node.value.value
+            seen[name] = val if seen.get(name, val) == val else None
+    return {k: v for k, v in seen.items() if v is not None}
+
+
+def _resolve(node: ast.AST, consts: dict[str, str]) -> str | None:
+    """Value of a route-path expression: a literal, a module string constant,
+    or those joined with +. Anything else (an imported name) is None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name):
+        return consts.get(node.id)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _resolve(node.left, consts), _resolve(node.right, consts)
+        return None if left is None or right is None else left + right
+    return None
+
+
+def _blueprint_prefixes(tree: ast.AST, consts: dict[str, str]) -> dict[str, str]:
+    """{variable: url_prefix} for x = Blueprint(..., url_prefix=...)."""
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Assign) and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and isinstance(node.value, ast.Call)):
             continue
-        path = _norm(m.group(1))
-        methods_raw = m.group(2) or ''
-        methods = [t.strip().strip("'\"") for t in methods_raw.split(',') if t.strip()]
-        if not methods:
-            methods = ['GET']
-        out.append((path, methods))
+        fn = node.value.func
+        if (fn.id if isinstance(fn, ast.Name) else getattr(fn, 'attr', '')) != 'Blueprint':
+            continue
+        for kw in node.value.keywords:
+            if kw.arg == 'url_prefix':
+                prefix = _resolve(kw.value, consts)
+                if prefix:
+                    out[node.targets[0].id] = prefix
     return out
+
+
+def _methods(call: ast.Call) -> list[str]:
+    for kw in call.keywords:
+        if kw.arg == 'methods' and isinstance(kw.value, (ast.List, ast.Tuple, ast.Set)):
+            found = [e.value for e in kw.value.elts
+                     if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+            if found:
+                return found
+    return ['GET']
+
+
+def scan_routes_detailed(files: list[Path] | None = None):
+    """Return ([(normalized_path, methods)], [unresolved "file:line" strings],
+    [register_blueprint calls that carry a url_prefix this tool cannot apply]).
+    Read from source with ast; nothing is imported."""
+    routes: list[tuple[str, list[str]]] = []
+    unresolved: list[str] = []
+    unapplied: list[str] = []
+    for path in (files if files is not None else _source_files()):
+        try:
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+        except (OSError, SyntaxError, UnicodeDecodeError) as e:
+            unresolved.append(f'{path.name}: unreadable ({e})')
+            continue
+        consts = _string_constants(tree)
+        prefixes = _blueprint_prefixes(tree, consts)
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == 'register_blueprint'
+                    and any(kw.arg == 'url_prefix' for kw in node.keywords)):
+                unapplied.append(f'{path.name}:{node.lineno}')
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for dec in node.decorator_list:
+                if not (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
+                        and dec.func.attr == 'route' and dec.args):
+                    continue
+                value = _resolve(dec.args[0], consts)
+                if value is None:
+                    unresolved.append(f'{path.name}:{dec.lineno}')
+                    continue
+                owner = dec.func.value
+                prefix = prefixes.get(owner.id, '') if isinstance(owner, ast.Name) else ''
+                routes.append((_norm(prefix + value), _methods(dec)))
+    return routes, unresolved, unapplied
+
+
+def scan_routes(files: list[Path] | None = None) -> list[tuple[str, list[str]]]:
+    """Return [(normalized_path, methods)] for server.py and mc/blueprints/."""
+    return scan_routes_detailed(files)[0]
 
 
 def _expand_alternations(path: str) -> list[str]:
@@ -140,7 +228,7 @@ def main() -> int:
     ap.add_argument('--json', action='store_true')
     args = ap.parse_args()
 
-    code = scan_routes()
+    code, unresolved, unapplied = scan_routes_detailed()
     def _excluded(p: str) -> bool:
         if p in EXCLUDED_EXACT:
             return True
@@ -159,6 +247,8 @@ def main() -> int:
     if args.json:
         print(json.dumps({
             'total_routes': len(code),
+            'unresolved': unresolved,
+            'prefix_not_applied': unapplied,
             'documentable_routes': len(code_paths_documentable),
             'documented': sorted(documented),
             'missing_in_doc': missing_in_doc,
@@ -169,8 +259,12 @@ def main() -> int:
             tag = '  ' if _excluded(p) else '* '
             print(f'{tag}{",".join(methods):20s} {p}')
     else:
-        print(f'server.py routes: {len(code)} ({len(code_paths_documentable)} documentable, {len(code) - len(code_paths_documentable)} excluded)')
+        print(f'routes in server.py + mc/blueprints/: {len(code)} ({len(code_paths_documentable)} documentable paths, {len(code_paths_all) - len(code_paths_documentable)} excluded paths)')
         print(f'CLAYRUNE_API.md mentions: {len(documented)} paths')
+        if unresolved:
+            print(f'Not resolved to a path ({len(unresolved)}): ' + ', '.join(unresolved))
+        if unapplied:
+            print('register_blueprint(url_prefix=...) not applied at: ' + ', '.join(unapplied))
         if missing_in_doc:
             print(f'\nMissing in doc ({len(missing_in_doc)}):')
             for p in missing_in_doc:
