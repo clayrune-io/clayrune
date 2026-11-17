@@ -1290,3 +1290,14 @@ def test_model_rollover_waits_for_cost_optimum_and_logs_it(env):
     assert row['threshold'] == 277_349 and row['threshold_reason'] == 'cost_optimal'
     env['join_respawns']()
     assert len(env['spawned']) == 1
+
+
+def test_ap40_first_message_is_the_current_task_when_nothing_later_was_recorded(monkeypatch):
+    from mc import midturn_rollover as mt
+    # A dispatched one-prompt worker never gets note_user_message, so its only
+    # brief must not be labelled "historical; may be long finished".
+    monkeypatch.setattr(mt, '_git', lambda *a: '(clean)')
+    block = mt.build_state_block({'task': 'build the thing'}, '.')
+    assert 'historical; may be long finished' not in block
+    assert '--- First message of this chat (the current task' in block
+    assert 'build the thing' in block

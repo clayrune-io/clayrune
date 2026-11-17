@@ -466,13 +466,17 @@ def build_state_block(session, cwd):
                        or '(none)')
     latest = session.get('_mt_latest_user_msg')
     latest_text = (f"--- Latest user message (current direction) ---\n"
-                   f"{latest or '(not recorded; use the recent conversation)'}\n\n")
+                   f"{latest or '(none recorded after the first message)'}\n\n")
+    # A dispatched one-prompt worker never records a later message, and its
+    # first message IS the task: only call it historical when something later
+    # superseded it (AP40).
+    first_label = ("historical; may be long finished, not the current task"
+                   if latest else "the current task; no later message was recorded")
     return (
         "=== Mid-task rollover state ===\n"
         f"--- Unanswered user messages (answer these first) ---\n{unanswered_text}\n\n"
         f"{latest_text}"
-        f"--- First message of this chat (historical; may be long finished, "
-        f"not the current task) ---\n{task}\n\n"
+        f"--- First message of this chat ({first_label}) ---\n{task}\n\n"
         f"--- Working directory ---\n{cwd}\n"
         f"Branch: {_git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD')}\n\n"
         f"--- git status --short ---\n{_git(cwd, 'status', '--short')}\n\n"
