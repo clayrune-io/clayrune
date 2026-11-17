@@ -74,7 +74,14 @@ def _dec(raw: str | None) -> str:
     out = ""
     for part, enc in decode_header(raw):
         if isinstance(part, bytes):
-            out += part.decode(enc or "utf-8", "replace")
+            try:
+                out += part.decode(enc or "utf-8", "replace")
+            except (LookupError, ValueError):
+                # The charset token is the sender's text. An unknown one
+                # (LookupError) or one with a NUL in it (ValueError) used to
+                # abort the whole fetch and echo the token back; decode as
+                # UTF-8 instead (MC-1179 MB1).
+                out += part.decode("utf-8", "replace")
         else:
             out += part
     return out

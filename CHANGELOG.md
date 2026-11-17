@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Control plane public routes and the mail reader (MC-1179 MB25, MB26, MB1)
+
+- Mail reader (MB1): a sender-chosen charset name in a header (`=?<any text>?B?...?=`) no longer aborts `tools/mail-mcp/read_digest.py`. `_dec` decodes an unknown or NUL-bearing charset as UTF-8, and the fetch-failure envelope reports the exception class name, not `repr(e)`, so no sender text reaches the calling session unlaundered and one message can no longer make every digest read exit 1.
+- Control-plane fixes reach users only when the control plane is next deployed; nothing here was deployed.
+
 ## [2026-11-17] - Agent plumbing, second wave of decided fixes from the pass-10 review (MC-1179)
 
 - Guard hook: the command written into Codex and Gemini hook config uses the call prefix the shell needs, so an interpreter path with a space is no longer a PowerShell parse error that those CLIs read as allow (AP5, new `mc/hook_command_shell.py`).
