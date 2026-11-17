@@ -3,6 +3,7 @@
 ## [2026-11-17] - Control plane accounts: three high findings (MC-1179 pass 5b, MB22, MB23, MB24)
 
 - Control plane: the suspension write to the edge denylist is now actually sent. `CloudflareClient.kv_put` passed `headers={"Content-Type": None}`, which httpx rejects with a TypeError before any request leaves, so `denylist.add` always returned False and a suspended account kept edge access until its token expired. The multipart body and its boundary header are now built on a throwaway request and handed to the real call. 3 new tests (`control_plane/tests/test_cf_kv_put.py`). Reaches users only when the control plane is next deployed (MB24).
+- Control plane: revoking a device no longer deletes other accounts' tunnels. Force cleanup matched `mc-{username}-` as a prefix, so revoking `sam` also deleted the tunnel of the account that owns `sam-dev`, with no error on either side. A tunnel now belongs to a username only if its whole name is `mc-{username}-` plus the fixed 6-character suffix enrolment adds; the same check is in `control_plane/force_cleanup.py`. New `control_plane/app/tunnel_names.py`, 3 new tests. Reaches users only when the control plane is next deployed (MB23).
 
 ## [2026-11-17] - Agent plumbing, second wave of decided fixes from the pass-10 review (MC-1179)
 

@@ -42,6 +42,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from . import cloudflare, firestore as fs, sessions as _sessions
+from .tunnel_names import is_tunnel_of, new_tunnel_name
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -883,7 +884,7 @@ async def _do_enroll_after_auth(
     try:
         cf = _get_cf_client()
 
-        tunnel = await cf.create_named_tunnel(name=f"mc-{username}-{secrets.token_urlsafe(4)}")
+        tunnel = await cf.create_named_tunnel(name=new_tunnel_name(username))
         cf_resources["tunnel_id"] = tunnel["id"]
         cf_resources["tunnel_token"] = tunnel["token"]
 
@@ -1236,11 +1237,12 @@ async def _force_cleanup_for_hostname(
     try:
         acc = await cf.get_account_id()
         tunnels = await cf._call("GET", f"/accounts/{acc}/cfd_tunnel")
-        prefix = f"mc-{username}-"
         for t in (tunnels or []):
             if t.get("deleted_at"):
                 continue
-            if not (t.get("name") or "").startswith(prefix):
+            # Whole-name match, not startswith: `mc-sam-` also prefixes the
+            # tunnel of the account that owns `sam-dev` (MB23).
+            if not is_tunnel_of(t.get("name") or "", username):
                 continue
             if exclude_tunnel_id and t["id"] == exclude_tunnel_id:
                 continue
