@@ -28,6 +28,7 @@ sys.path.insert(0, str(REPO))
 from mc import agent_shim_client as C  # noqa: E402
 from mc import agent_spawn as S  # noqa: E402
 from mc import agent_uncertain_launch as U  # noqa: E402
+from mc.spawn_refusal import PromptCaptureIncomplete  # noqa: E402
 
 from tests.test_agent_shim import wait_for  # noqa: E402
 from tests.test_agent_spawn import _Popen, _on, root  # noqa: E402,F401  (root is a fixture)
@@ -64,12 +65,32 @@ def test_capture_still_raises_a_delivery_exception_without_waiting_out_the_timeo
     assert time.monotonic() - t0 < 5.0
 
 
-def test_capture_gives_up_on_a_writer_that_never_closes(monkeypatch):
+def test_capture_refuses_a_writer_that_never_closes(monkeypatch):
+    """MC-1179 AP32: it used to return the partial capture and launch on it."""
     monkeypatch.setattr(S, '_CAPTURE_WAIT_S', 0.3)
-    cap = S._capture_prompt(lambda h: None, 'cap3', 'codex')
-    assert not cap.done.is_set()
+    held = []
+
+    def deliver(h):
+        held.append(h)                                        # never writes, never closes
+    with pytest.raises(PromptCaptureIncomplete) as info:
+        S._capture_prompt(deliver, 'cap3', 'codex')
+    assert info.value._mc_prechild_refusal is True            # nothing was launched: no unknown outcome
     with pytest.raises(BrokenPipeError):                      # settled False: a late close() fails
-        cap.close()
+        held[0].stdin.close()
+
+
+def test_spawn_engine_proc_never_launches_the_shim_on_a_partial_prompt(root, monkeypatch):
+    """The factory used to call _client.launch with the truncated payload."""
+    monkeypatch.setattr(S, '_CAPTURE_WAIT_S', 0.2)
+    launched = []
+    monkeypatch.setattr(C, 'launch', lambda *a, **k: launched.append(1))
+    monkeypatch.setattr(S, '_popen', lambda *a, **k: pytest.fail('fell back to a plain Popen'))
+    with pytest.raises(PromptCaptureIncomplete) as info:
+        S.spawn_engine_proc(['fake'], session_id='ap32', engine='codex', root=root,
+                            deliver=lambda h: None,
+                            cfg={'agent_survive_restart_enabled': True})
+    assert launched == []
+    assert not getattr(info.value, '_mc_launch_ambiguous', False)   # a definite failure
 
 
 # ───────── 2. fallback: the pipe write must not run on the caller's thread ─────────

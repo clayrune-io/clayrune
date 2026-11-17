@@ -58,6 +58,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from mc import guardrail_hooks as _gh  # noqa: E402
+from mc.hook_command_shell import vendor_hook_shell  # noqa: E402
 from steward import core as _steward_core  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -126,7 +127,8 @@ def fence_command() -> str:
     return _steward_core._fence_command()
 
 
-def guard_command(guard_script: Optional[Path] = GUARD_SCRIPT, python_exe: Optional[str] = None) -> str:
+def guard_command(guard_script: Optional[Path] = GUARD_SCRIPT, python_exe: Optional[str] = None,
+                  shell: Optional[str] = None) -> str:
     """Thin wrapper — see `mc.guardrail_hooks.guard_shell_command`'s
     docstring for the full history (the quoting bug this fixed).
 
@@ -134,7 +136,7 @@ def guard_command(guard_script: Optional[Path] = GUARD_SCRIPT, python_exe: Optio
     a frozen-build caller passes both as `None` so `hook_invocation_tokens`
     takes its `--clayrune-hook process-guard` branch instead of pointing at
     `mc/process_guard.py`, which is bundled bytecode, not a file on disk."""
-    return _gh.guard_shell_command(guard_script, python_exe)
+    return _gh.guard_shell_command(guard_script, python_exe, shell)
 
 
 def _desired_group(cfg: Dict[str, str], command: str) -> Dict[str, Any]:
@@ -185,7 +187,7 @@ def plan_generate(vendor: str, guard_script: Optional[Path] = GUARD_SCRIPT,
     needs to read the real install.
     """
     cfg = VENDOR_CONFIGS[vendor]
-    command = guard_command(guard_script, python_exe)
+    command = guard_command(guard_script, python_exe, vendor_hook_shell(vendor))
     dest = _gh.launch_file_path(vendor, clayrune_home)
     try:
         before = _load_json_object(dest)

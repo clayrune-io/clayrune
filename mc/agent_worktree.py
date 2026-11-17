@@ -50,6 +50,7 @@ from typing import Callable, Iterable
 
 import mc.cold_review_gate as _cold_gate
 import mc.project_sync as _sync
+import mc.vendor_mirror_dirty as _mirror_dirty
 
 # ── Injected helpers (set by register()) ────────────────────────────────────
 
@@ -513,7 +514,7 @@ def has_unmerged_work(project: dict, session_id: str, target_ref: str = '') -> b
         return False
     wts = str(wt)
     try:
-        if _sync._dirty(wts):
+        if _mirror_dirty.dirty_ignoring_mirror(wts, _sync.git_run):
             return True
         ref = target_ref or _base_ref(project)
         ok, _ = _sync.git_run(wts, ['rev-parse', '--verify', ref], timeout=10)
@@ -574,7 +575,7 @@ def _merge_back_locked(project: dict, session_id: str, target_ref: str, owner):
         return 'skipped', 'hivemind worker: lands via its hivemind integration branch'
     wts = str(wt)
     ref = target_ref or _base_ref(project)
-    if _sync._dirty(wts):
+    if _mirror_dirty.dirty_ignoring_mirror(wts, _sync.git_run):
         return 'dirty', 'uncommitted changes in agent worktree'
     ok, _ = _sync.git_run(wts, ['rev-parse', '--verify', ref], timeout=10)
     if not ok:
@@ -931,7 +932,7 @@ def _fingerprint(wt: Path) -> list | None:
     ok, head = _sync.git_run(wts, ['rev-parse', 'HEAD'], timeout=10)
     if not ok:
         return None
-    return [head.strip(), _sync._dirty(wts)]
+    return [head.strip(), _mirror_dirty.dirty_ignoring_mirror(wts, _sync.git_run)]
 
 
 def gc_stale(project: dict, live_session_ids, merge_first: bool = True,
@@ -1024,7 +1025,7 @@ def has_uncommitted(project: dict, session_id: str) -> bool:
     wt = worktree_path(project, session_id)
     if wt is None or not wt.exists():
         return False
-    return _sync._dirty(str(wt))
+    return _mirror_dirty.dirty_ignoring_mirror(wt, _sync.git_run)
 
 
 def dirty_outside_runtime(project: dict, wt: Path) -> bool:
@@ -1038,8 +1039,8 @@ def dirty_outside_runtime(project: dict, wt: Path) -> bool:
     links, so a real file the worker wrote anywhere else still counts.
     """
     specs = [f':(exclude){rel}' for rel in _shared_runtime(project)]
-    ok, out = _sync.git_run(str(wt), ['status', '--porcelain', '--', '.', *specs])
-    return ok and bool(out.strip())
+    ok, out = _sync.git_run(str(wt), [*_mirror_dirty.STATUS_ARGS, '--', '.', *specs])
+    return ok and bool(_mirror_dirty.remaining_dirty(wt, out).strip())
 
 
 def sync_into(project: dict, session_id: str, source_ref: str = 'master'):
@@ -1060,7 +1061,7 @@ def sync_into(project: dict, session_id: str, source_ref: str = 'master'):
     if wt is None or not wt.exists():
         return 'skipped', 'no worktree'
     wts = str(wt)
-    if _sync._dirty(wts):
+    if _mirror_dirty.dirty_ignoring_mirror(wts, _sync.git_run):
         # Uncommitted work in flight — merging would fight the agent's edits.
         return 'skipped', 'worktree dirty'
     ok, _ = _sync.git_run(wts, ['rev-parse', '--verify', source_ref], timeout=10)

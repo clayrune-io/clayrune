@@ -45,6 +45,8 @@ import sys
 import time
 from typing import Dict, List, Set
 
+from mc.sweep_node_script import node_script_under
+
 AGENT_CLI_NAMES = ('claude', 'codex', 'gemini', 'opencode', 'qwen')
 
 # Shells/runtimes that commonly sit BETWEEN a real launcher and the CLI they
@@ -227,7 +229,11 @@ def matched_cli_name(proc, install_dirs):
     cmdline = proc.get('cmdline') or ''
     for name, dirs in (install_dirs or {}).items():
         for d in dirs:
-            if _under_dir(exe, d) or _references_dir(cmdline, d):
+            # MC-1179 AP9: a bare mention of the dir is not enough; a node image
+            # must be running a script out of it. ANDed with the old check, so
+            # this can only narrow what matches.
+            if _under_dir(exe, d) or (_references_dir(cmdline, d)
+                                      and node_script_under(proc, d)):
                 return name
     return None
 

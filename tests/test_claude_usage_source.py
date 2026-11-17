@@ -33,9 +33,11 @@ WINDOWS = {
 def _clean_cache():
     cus._oauth_usage_cache['ts'] = 0.0
     cus._oauth_usage_cache['data'] = None
+    cus._oauth_usage_cache['fail_ts'] = 0.0
     yield
     cus._oauth_usage_cache['ts'] = 0.0
     cus._oauth_usage_cache['data'] = None
+    cus._oauth_usage_cache['fail_ts'] = 0.0
 
 
 def _cfg(monkeypatch, source, doc=None):
@@ -209,3 +211,67 @@ class TestLocalSourceUnchanged:
         from mc.blueprints import system_routes as sr
         assert sr._oauth_usage_cache is cus._oauth_usage_cache
         assert sr._fetch_oauth_usage_limits is cus.fetch_oauth_usage_limits
+
+
+class TestFailureIsCached:
+    """MC-1179 AP55: a failed read used to be re-attempted (6 s timeout) by
+    every caller while the endpoint was down."""
+
+    def _local(self, monkeypatch, tmp_path, urlopen):
+        cred_dir = tmp_path / 'home' / '.claude'
+        cred_dir.mkdir(parents=True)
+        (cred_dir / '.credentials.json').write_text(
+            json.dumps({'claudeAiOauth': {'accessToken': 'tok'}}), encoding='utf-8')
+        monkeypatch.setattr(Path, 'home', classmethod(lambda cls: tmp_path / 'home'))
+        _cfg(monkeypatch, 'local')
+        monkeypatch.setattr(cus.urllib.request, 'urlopen', urlopen)
+
+    def test_a_failed_read_is_not_retried_within_the_ttl(self, monkeypatch, tmp_path):
+        calls = []
+
+        def down(req, timeout=None):
+            calls.append(1)
+            raise OSError('endpoint unreachable')
+        self._local(monkeypatch, tmp_path, down)
+        assert cus.fetch_oauth_usage_limits() is None
+        assert cus.fetch_oauth_usage_limits() is None
+        assert cus.fetch_oauth_usage_limits() is None
+        assert len(calls) == 1
+        assert cus._oauth_usage_cache['ts'] == 0.0      # `ts` stays the last GOOD read
+
+    def test_the_failure_expires_and_the_next_call_retries(self, monkeypatch, tmp_path):
+        calls = []
+
+        def down(req, timeout=None):
+            calls.append(1)
+            raise OSError('endpoint unreachable')
+        self._local(monkeypatch, tmp_path, down)
+        cus.fetch_oauth_usage_limits()
+        cus._oauth_usage_cache['fail_ts'] -= cus._OAUTH_USAGE_FAIL_TTL + 1
+        cus.fetch_oauth_usage_limits()
+        assert len(calls) == 2
+
+    def test_a_later_success_clears_the_failure(self, monkeypatch, tmp_path):
+        state_box = {'up': False}
+
+        class _Resp(io.BytesIO):
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        def flaky(req, timeout=None):
+            if not state_box['up']:
+                raise OSError('endpoint unreachable')
+            return _Resp(json.dumps(WINDOWS).encode())
+        self._local(monkeypatch, tmp_path, flaky)
+        assert cus.fetch_oauth_usage_limits() is None
+        state_box['up'] = True
+        cus._oauth_usage_cache['fail_ts'] -= cus._OAUTH_USAGE_FAIL_TTL + 1
+        assert cus.fetch_oauth_usage_limits() == WINDOWS
+        assert cus._oauth_usage_cache['fail_ts'] == 0.0
+
+    def test_the_manual_refresh_route_busts_the_failure(self):
+        import server  # noqa: F401
+        from mc.blueprints import system_routes as sr
+        src = Path(sr.__file__).read_text(encoding='utf-8')
+        body = src.split('def system_usage_refresh():', 1)[1].split('return system_usage_get()', 1)[0]
+        assert "_oauth_usage_cache['fail_ts'] = 0.0" in body

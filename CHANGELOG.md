@@ -1,5 +1,16 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Agent plumbing, second wave of decided fixes from the pass-10 review (MC-1179)
+
+- Guard hook: the command written into Codex and Gemini hook config uses the call prefix the shell needs, so an interpreter path with a space is no longer a PowerShell parse error that those CLIs read as allow (AP5, new `mc/hook_command_shell.py`).
+- Launch: a spawn the OS refused (missing cwd, a directory or locked file as the target, a non-executable file) is a definite failure and no longer freezes the conversation as an unknown launch; every other spawn error stays unknown and nothing is auto-cleared (AP37, new `mc/spawn_refusal.py`). A prompt capture that never closes now raises instead of launching the CLI on a partial prompt (AP32, latent: shim flag off).
+- Worktrees: the vendor mirror file (AGENTS.md, GEMINI.md, QWEN.md) no longer makes an isolated worktree read as dirty when it is untracked or byte-equal to what the sync wrote (AP43).
+- Usage: a failed Claude usage read is cached for 60 s like its Codex twin, so a down endpoint costs one 6 s timeout a minute, not one per caller (AP55).
+- Agent log: reading the snapshot of a log whose rows all carry an attempt id no longer parses and rewrites the whole file (AP34).
+- CLI updater: while `aider_restricted_adapter_enabled` is on, the daily updater leaves Aider on the audited version (AP58, latent, new `mc/cli_update_pin.py`).
+- Orphan sweep: criterion 1 needs a node image whose script argument is under the CLI package directory; an editor or pager that only mentions the directory no longer matches. It only narrows (AP9, new `mc/sweep_node_script.py`).
+- No route, setting or default changed.
+
 ## [2026-11-17] - Tools and small packages review: second wave (MC-1179 pass 12)
 
 - API reference check: `tools/regen-api-reference.py` now reads every blueprint under `mc/blueprints/` as well as `server.py` (585 routes, not 8), by reading source, never importing the server. Run as it stands it reports 339 routes missing from `CLAYRUNE_API.md` and 6 documented paths with no route; the reference itself was not regenerated. Two lines in the reference no longer tell agents to grep `server.py` or that the tool rewrites the file (TL33).

@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from mc import cli_install, cli_update_retry, process_sweep, qwen_cli_install
+from mc import cli_install, cli_update_pin, cli_update_retry, process_sweep, qwen_cli_install
 from mc.atomic_json import write_json_atomic
 from mc.core import _log
 
@@ -325,6 +325,9 @@ def check_one(name: str, binary: Any, *, in_use_fn: Callable[[str], List[str]],
         if not inst:
             return {**rec, 'status': 'version_unreadable',
                     'detail': '`%s --version` printed no version' % name}
+        pinned = cli_update_pin.pinned_reason(name)
+        if pinned:
+            return {**rec, 'status': 'pinned', 'detail': pinned}
         latest, src = (cached_latest if cached_latest is not None
                        else latest_version(name, binary, run_fn, http_fn))
         rec['latest'], rec['latest_source'] = latest, src

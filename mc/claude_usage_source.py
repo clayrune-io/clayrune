@@ -42,7 +42,13 @@ from mc.core import _log
 # The User-Agent MUST start with `claude-code/` or Anthropic routes the
 # request to an aggressively throttled bucket (persistent 429s).
 _OAUTH_USAGE_TTL = 60.0  # seconds
-_oauth_usage_cache: dict = {'ts': 0.0, 'data': None}
+# A failed read is remembered too (MC-1179 AP55), for the same span the Codex
+# twin uses (`codex_live_usage.PROBE_TTL_S`), so an unreachable endpoint or an
+# expired token costs one 6 s timeout a minute instead of one per caller.
+# `fail_ts` is separate from `ts` because `ts` is the last SUCCESSFUL read's
+# time, which the usage routes report as the bar's epoch.
+_OAUTH_USAGE_FAIL_TTL = 60.0  # seconds
+_oauth_usage_cache: dict = {'ts': 0.0, 'data': None, 'fail_ts': 0.0}
 
 USAGE_SOURCES = ('local', 'runner')
 
@@ -73,12 +79,16 @@ def usage_source() -> str:
 def fetch_oauth_usage_limits():
     """Return the parsed usage windows dict, or None on any failure.
 
-    Cached for ``_OAUTH_USAGE_TTL`` seconds whichever source is selected.
+    Cached for ``_OAUTH_USAGE_TTL`` seconds whichever source is selected; a
+    failure is cached for ``_OAUTH_USAGE_FAIL_TTL``.
     """
     now = _time.time()
     cached = _oauth_usage_cache.get('data')
     if cached is not None and (now - _oauth_usage_cache.get('ts', 0.0)) < _OAUTH_USAGE_TTL:
         return cached
+    failed_at = _oauth_usage_cache.get('fail_ts', 0.0)
+    if failed_at and (now - failed_at) < _OAUTH_USAGE_FAIL_TTL:
+        return None
     if usage_source() == 'runner':
         data = _read_runner_document()
     else:
@@ -86,6 +96,9 @@ def fetch_oauth_usage_limits():
     if data is not None:
         _oauth_usage_cache['ts'] = now
         _oauth_usage_cache['data'] = data
+        _oauth_usage_cache['fail_ts'] = 0.0
+    else:
+        _oauth_usage_cache['fail_ts'] = now
     return data
 
 
