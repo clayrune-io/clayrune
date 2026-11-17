@@ -376,3 +376,60 @@ def test_orphaned_processes_walks_through_wrapper_chain(cvc):
     out = cvc.orphaned_processes(pkg_dir, procs, now=now)
     pids = {p['pid'] for p in out}
     assert pids == {45812}, 'must walk past the alive node/cmd wrappers to find the dead great-grandparent'
+
+
+# ── MC-1179 TL8: an unreadable latest version must not read as "ok" ──────
+
+def _stub_row_inputs(cvc, monkeypatch, inst, latest):
+    monkeypatch.setattr(cvc, 'installed_version', lambda name: (inst, r'C:\fake\npm\codex.cmd'))
+    monkeypatch.setattr(cvc, 'latest_version', lambda pkg: latest)
+    monkeypatch.setattr(cvc, 'shadow_check', lambda name, path: [])
+    monkeypatch.setattr(cvc, 'npm_package_dir', lambda c: None)
+
+
+def test_check_one_unknown_when_latest_unreadable(cvc, monkeypatch):
+    _stub_row_inputs(cvc, monkeypatch, '0.155.1', None)
+    row = cvc.check_one(_fake_cli(cvc))
+    assert row['status'] == 'unknown'
+
+
+def test_check_one_unknown_when_installed_unparseable(cvc, monkeypatch):
+    _stub_row_inputs(cvc, monkeypatch, None, '0.158.0')
+    row = cvc.check_one(_fake_cli(cvc))
+    assert row['status'] == 'unknown'
+
+
+def test_check_one_ok_when_both_versions_read_and_equal(cvc, monkeypatch):
+    _stub_row_inputs(cvc, monkeypatch, '0.158.0', '0.158.0')
+    row = cvc.check_one(_fake_cli(cvc))
+    assert row['status'] == 'ok'
+
+
+def test_check_one_non_npm_cli_without_latest_stays_ok(cvc, monkeypatch):
+    _stub_row_inputs(cvc, monkeypatch, '1.2.3', None)
+    row = cvc.check_one(cvc.CLI('thing', None, []))
+    assert row['status'] == 'ok'
+
+
+# ── MC-1179 TL9: two PATH spellings of one directory are not a shadow ────
+
+def test_shadow_check_ignores_the_same_directory_through_a_link(cvc, tmp_path, monkeypatch):
+    real = tmp_path / 'usr-bin'
+    real.mkdir()
+    (real / 'codex.exe').write_text('x')
+    link = tmp_path / 'bin'
+    try:
+        os.symlink(str(real), str(link), target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip('symlinks not permitted on this machine')
+    monkeypatch.setenv('PATH', os.pathsep.join([str(real), str(link)]))
+    assert cvc.shadow_check('codex', str(real / 'codex.exe')) == []
+
+
+def test_shadow_check_still_reports_a_real_second_copy(cvc, tmp_path, monkeypatch):
+    a, b = tmp_path / 'a', tmp_path / 'b'
+    a.mkdir(); b.mkdir()
+    (a / 'codex.exe').write_text('x')
+    (b / 'codex.exe').write_text('y')
+    monkeypatch.setenv('PATH', os.pathsep.join([str(a), str(b)]))
+    assert len(cvc.shadow_check('codex', str(a / 'codex.exe'))) == 1
