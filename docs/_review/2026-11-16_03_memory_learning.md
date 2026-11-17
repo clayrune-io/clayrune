@@ -149,3 +149,35 @@ Read so far (update): `mc/memory.py:1-6219`.
   it" = `trigger_type == 'manual'` and the seed label equals the configured user
   name. Pass 2 R48 (`/agent/send` is always attended) is the upstream hole.
 
+Read so far (update): `mc/memory.py:1-6955` (whole file).
+
+- K30 `memory.py:6769-6812` the legacy `agent` condense prompt still describes a
+  MANAGED region inside MEMORY.md (sentinels, `## Session Log`, `wm` lines) and
+  tells the agent to keep that structure. After the SESSION_LOG.md split the
+  entries and watermarks are not in MEMORY.md (`_write_curated_only`), the agent
+  is never told SESSION_LOG.md exists, and the integrity guard's sentinel and
+  watermark checks (`:6340`, `:6354`) compare against an empty pre-image. So on
+  a migrated project the agent run can only rewrite curated. With K19 (trigger
+  counts the archive) check whether this fires hourly for nothing. VERIFY the
+  default `condense_mode` and the trigger lines.
+- K31 `memory.py:6909`, `:6923`, `:6931` restore/heal write MEMORY.md with plain
+  `write_text`, outside `_get_mem_write_lock`, minutes after the pre-image was
+  taken; any commit to MEMORY.md in between is overwritten. Non-atomic (C1).
+- K32 `memory.py:6458-6463` + `:6626` a fold `pointer_line` is model output
+  written into the always-loaded curated index. Guards: non-empty, single line,
+  no `clayrune:`. Not required to start `- `, no length cap, no authority check
+  (`_authority_violation` is Distiller-only). Input is Scribe lines, which come
+  from transcripts of any session, unattended included (with K5). Judge against
+  rails 1 and 2: is this an unattended-output to every-prompt path with no
+  human on it? Check whether steward sessions are scribed.
+- K33 `memory.py:6848-6850` agent-mode condense is a `--dangerously-skip-permissions`
+  agent with tools, cwd = project, reading Scribe lines (summaries of untrusted
+  transcripts). `:6840` always the `claude` provider whatever the project uses.
+- K34 `memory.py:6893-6896` the condense session is added to `agent_sessions`
+  and `mgr.session_ids`; no removal in `_run`. Check `_read_agent_stream` and the
+  housekeeping reaper before claiming a leak.
+- K35 `memory.py:6256`, `:6292` refusal markers are a substring test on the
+  summary; one hit in any map chunk fails the whole summary. Open the marker
+  list and test real-looking summaries.
+- K36 `memory.py:6507-6508` swallowed archive read, no log (policy, low).
+
