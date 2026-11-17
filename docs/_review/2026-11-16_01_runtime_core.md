@@ -721,3 +721,88 @@ sandbox denial, `:6628-6633`). Not verified per CLI which terminal errors exit
 - Prompt delivery is verified only for Codex; the other engines log a failed
   stdin write and return a live-looking handle. The code says so
   (`:5621-5623`); recorded here as a known gap, not a new finding.
+
+### 4d. Lines 6977-8242: Codex rollout helpers, `QwenRuntime`, Codex module-level helpers
+
+#### Q1 · high · L, M — Qwen `oneshot` has G1's defect and a worse fallback: the raw protocol stream is returned as the answer
+
+`mc/agent_runtime.py:7998-8014`. Like Gemini's (G1), the exit code is never
+read and `last_error` is never set; here stderr is also sent to `DEVNULL`
+(`:8001`), so the CLI's reason is discarded before anyone could read it. The
+return is `OneshotResult(text=last_text or (r.stdout or '').strip())`: when the
+run produced no assistant text, the *whole stdout* is returned as the transform
+result. With `--output-format stream-json` (`:7937`) that is the JSONL protocol
+itself (`system`/`init`, a `result` with `is_error: true`), handed to Scribe,
+condense, the Distiller or the mail launderer as if it were their output.
+Two more ways a failure becomes content:
+
+- `parse_event` turns any non-JSON stdout line into `ASSISTANT_TEXT`
+  (`:7315-7320`), so a plain-text error printed by the CLI is the "answer";
+- the profile's own enforcement is an abort (`--max-tool-calls 0` exits 55 with
+  `FatalBudgetExceededError`, per the comment at `:7907-7911`), and an aborted
+  run's partial text is returned as a completed transform.
+
+`describe_image` in the same class checks `returncode` and empty text and sets
+`last_error` (`:8059-8062`). The `except Exception: return None` at `:8007` logs
+nothing. Read, not measured: no Qwen CLI was launched.
+**Fix:** as G1; never fall back to raw stdout; keep stderr.
+**Test coverage:** not found for a non-zero exit or an error `result`.
+
+#### Q2 · low · L — text that shares an envelope with a tool call is dropped, and only the first tool call of an envelope is shown
+
+`QwenRuntime.parse_event`, `:7355-7368`: if the assistant envelope has any
+`tool_use` block it returns `TOOL_USE` with the blocks and discards
+`text_parts`. The shared reader then logs `blocks[0]` only (`:6616-6617`) and
+counts one tool call.
+
+**Measured** (pure function, synthetic envelope with one text block and two
+`tool_use` blocks): event type `TOOL_USE`, 2 blocks, the text appears nowhere
+in the payload. The lost text never reaches `turn_text_parts`, so it is also
+missing from the `mc:` block scan and the empty-turn check. Whether qwen-code
+0.23.4 actually emits mixed envelopes was not verified (no CLI launched); the
+parser's own docstring calls the stream Claude-Code-shaped, and that shape
+allows it.
+**Fix:** return the text event and the tool event separately (the reader
+handles a list), and log every block.
+**Test coverage:** not found for a mixed envelope.
+
+#### Q3 · low · L — three unguarded shapes in `parse_event` (measured)
+
+`{"type":"assistant","message":null}` raises `AttributeError`,
+`{"type":"assistant","message":{"content":null}}` raises `TypeError`
+(`:7342`), and `{"type":"result","is_error":true,"error":"quota"}` raises
+`AttributeError` (`:7399-7400`). Each one ends the shared reader (MA2).
+
+#### Q4 · low · M — the Qwen launch environment is assembled in four places
+
+`dispatch` (`:7807-7816`), `write_followup` (`:7863-7876`), `oneshot`
+(`:7992-7997`) and `describe_image` (`:8037-8040`) each rebuild the same
+sequence (suppress-warning variable, settings-auth override, guardrail env,
+defaults file, shell pin, retry budget, fence), and they already differ: the
+follow-up applies `apply_env` and `prepare_env` itself because it bypasses
+`_mode_a_dispatch`. A fix to one (the 2026-09-18 settings-precedence fix is
+described three times in comments) has to be remembered in the others.
+**Fix:** one `_qwen_env(session, *, transform: bool)`.
+
+#### Also in this range
+
+- `_codex_read_meta` caches `(None, None)` for a rollout whose first line could
+  not be read (`:7002-7008`); a finished rollout never changes `(mtime, size)`,
+  so that conversation stays out of its project's list for the process
+  lifetime. Same defect as A3. Its cache also evicts mid-pass (`:7004-7006`,
+  A9).
+- `_CODEX_HOOK_TRUST_NOTICE_SHOWN` (`:8222`) gains one id per Codex session and
+  is never pruned. Bytes per session; noted, not ranked.
+
+#### Sound in lines 6977-8242
+
+- Qwen `write_followup` disowns the old process before killing it
+  (`:7839-7843`), the ordering G2 asks Gemini for.
+- `build_command` fails closed to the deny sentinel on malformed MCP JSON
+  (`:7263-7274`).
+- `_qwen_auth_state` checks the vendor's own settings before generic `OPENAI_*`
+  variables, matching dispatch precedence, and logs its read failures
+  (`:7562-7592`).
+- `codex_model_rejection` requires the exact vendor phrase and, when a status is
+  present, status 400 (`:8172-8183`); `codex_error_is_notice` is an exact-phrase
+  allowlist.
