@@ -8,7 +8,9 @@ release branch has been force-pushed upstream:
 
 That bricks every existing install permanently and silently — observed on a
 clean-VM smoke test. The endpoint now falls back to
-`fetch` + `reset --hard origin/<branch>`.
+`fetch` + `reset --hard origin/<branch>`. Since 2026-11-16 (P43) that reset is
+human-only and refuses a checkout that carries commits never on origin; the
+two recovery tests below therefore post as a human (Origin + passcode).
 
 The two properties worth pinning, and why:
 
@@ -98,8 +100,16 @@ def client(lab, monkeypatch):
     import server
     from mc.blueprints import system_routes as sr
     monkeypatch.setattr(sr, '_APP_DIR', lab['checkout'])
+    # P43 (MC-1179 pass 07): the hard re-sync is human-only (browser Origin +
+    # the retyped passcode). This file is about the recovery mechanics; the
+    # gate itself and the refusals are in test_system_update_local_commits.py.
+    monkeypatch.setattr(sr, '_require_human_passcode', lambda data: None)
     server.app.config['TESTING'] = True
     return server.app.test_client()
+
+
+UI = {'Origin': 'http://localhost:5199'}  # a real browser fetch always carries one
+HUMAN = {'json': {'passcode': 'x'}, 'headers': UI}
 
 
 class TestControl:
@@ -120,7 +130,7 @@ class TestForcePushRecovery:
     def test_force_push_is_recovered(self, client, lab):
         new_tip = force_push_rewrite(lab)
 
-        resp = client.post('/api/system/update')
+        resp = client.post('/api/system/update', **HUMAN)
         assert resp.status_code == 200, resp.get_data(as_text=True)
         body = resp.get_json()
 
@@ -138,7 +148,7 @@ class TestForcePushRecovery:
         """reset --hard touches tracked files only. Adding `git clean` here
         would delete every user project — that is what this pins."""
         force_push_rewrite(lab)
-        assert client.post('/api/system/update').status_code == 200
+        assert client.post('/api/system/update', **HUMAN).status_code == 200
 
         co = lab['checkout']
         assert (co / 'data' / 'projects' / 'p1.json').read_text() == 'MY PROJECT DATA'
