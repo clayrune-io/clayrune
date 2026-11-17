@@ -10,6 +10,10 @@
 
 - Control plane: the suspension write to the edge denylist is now actually sent. `CloudflareClient.kv_put` passed `headers={"Content-Type": None}`, which httpx rejects with a TypeError before any request leaves, so `denylist.add` always returned False and a suspended account kept edge access until its token expired. The multipart body and its boundary header are now built on a throwaway request and handed to the real call. 3 new tests (`control_plane/tests/test_cf_kv_put.py`). Reaches users only when the control plane is next deployed (MB24).
 - Control plane: revoking a device no longer deletes other accounts' tunnels. Force cleanup matched `mc-{username}-` as a prefix, so revoking `sam` also deleted the tunnel of the account that owns `sam-dev`, with no error on either side. A tunnel now belongs to a username only if its whole name is `mc-{username}-` plus the fixed 6-character suffix enrolment adds; the same check is in `control_plane/force_cleanup.py`. New `control_plane/app/tunnel_names.py`, 3 new tests. Reaches users only when the control plane is next deployed (MB23).
+## [2026-11-17] - Runtime core startup (MC-1179 S1, S2)
+
+- Startup backfill: a transcript listed in a real row's `claude_session_ids` (an earlier transcript of a conversation that rolled over or resumed fresh) is no longer re-imported as a fake "interrupted" row. Both the backfill and the commit-side insert guard now read `claude_session_ids` as well as `claude_session_id` (S1, new `known_transcript_ids` in `mc/agent_log_file.py`). Existing duplicate rows are not touched; their cleanup is handed back as a question.
+- Desktop launcher (`app.py`): binds its port (loopback only, as before) before `boot()`, like `server.py`'s `__main__`. A desktop launch beside a running Clayrune is now refused at the bind, with the "another Clayrune is already running" banner, before it can overwrite the running instance's exec token, mark its live runs interrupted, adopt its workflows or rewrite hooks (S2). `_reserve_listeners` takes an optional `loopback_only`.
 
 ## [2026-11-17] - Agent plumbing, second wave of decided fixes from the pass-10 review (MC-1179)
 

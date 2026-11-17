@@ -71,6 +71,27 @@ def all_rows_claimed(rows: Any) -> bool:
         isinstance(r, dict) and r.get('delivery_attempt_id') for r in rows)
 
 
+def known_transcript_ids(rows: Any) -> set[str]:
+    """Every Claude transcript id the log already knows (MC-1179 S1).
+
+    A row's `claude_session_id` is its CURRENT transcript; `claude_session_ids`
+    lists every transcript the conversation has used (one more per context
+    rollover or fresh-session resume). Reading only the first made each earlier
+    transcript look unknown, so the backfill re-imported it as a fake
+    "interrupted" row.
+    """
+    known: set[str] = set()
+    for r in rows if isinstance(rows, list) else []:
+        if not isinstance(r, dict):
+            continue
+        if r.get('claude_session_id'):
+            known.add(r['claude_session_id'])
+        ids = r.get('claude_session_ids')
+        if isinstance(ids, list):
+            known.update(c for c in ids if c and isinstance(c, str))
+    return known
+
+
 def merge_rows(rows: list[dict], before: list[dict], after: list[dict]) -> int:
     original = {r['delivery_attempt_id']: r for r in before}
     inserted_any = False
@@ -81,7 +102,7 @@ def merge_rows(rows: list[dict], before: list[dict], after: list[dict]) -> int:
         if prior is None:
             csid = changed.get('claude_session_id')
             if (csid and changed.get('synthesized') and not changed.get('session_id')
-                    and not any(r.get('claude_session_id') == csid for r in rows)):
+                    and csid not in known_transcript_ids(rows)):
                 inserted = deepcopy(changed)
                 inserted.update(pending_fields({}))
                 rows.insert(0, inserted)

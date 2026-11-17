@@ -478,9 +478,14 @@ def _start_flask(port):
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
 
-    from server import app, boot
+    from server import boot, _reserve_listeners, _serve_reserved
+    # Bind first (MC-1179 S2, same as server.py's __main__, MC-1060): beside a
+    # running Clayrune the bind is refused here, the banner names the holder,
+    # and this thread exits before boot() can overwrite the running instance's
+    # exec token or mark its live runs interrupted. Loopback only, as app.run was.
+    listeners = _reserve_listeners(port, loopback_only=True)
     boot(check_port=False)
-    app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False)
+    _serve_reserved(listeners)
 
 
 # ---------------------------------------------------------------------------
