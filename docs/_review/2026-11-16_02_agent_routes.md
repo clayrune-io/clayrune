@@ -1430,3 +1430,147 @@ unreviewed branch produce the same hold message. Smallest fix: catch
   resume, skips routing; every failure keeps the original character and logs.
 - `session_mcp_config`: incognito and frozen builds get no server; an
   explicit selection is never added to.
+
+---
+
+## 8. Addendum to section 1, closed at the end of the pass
+
+Four leads from the first stretch were parked until their call sites had been
+read. One is a finding, one is cleared, two stay unconfirmed (section 10).
+
+#### R12 · medium · L — the coverage advisory cannot fire on the first turn of a fresh dispatch
+
+`agent_routes.py:4653-4666`, `:12978`, `:11362`.
+
+`_coverage_last_user_message` finds the user's message by scanning `log_lines`
+for a line that starts with `"\n> {label}: "` (`:4662`). Its docstring says
+every site that dispatches or sends a message "already appends the message in
+this exact shape" (`:4656-4659`). Two do not. A fresh Claude dispatch seeds
+the buffer with `"> {label}: {task}"`, no leading newline (`:12978`), and so
+does the non-Claude dispatch (`:11362`). The lookup returns `''`, and
+`advisory_line('', blobs)` is `''`.
+
+Failure: a dispatched task names a file or a URL; the agent answers from a
+different one. That is the case the advisory was built for, and on the first
+turn of a fresh dispatch, which is the only turn most dispatched agents have,
+it is silent. A scheduled dispatch misses twice: its seed line carries the
+scheduler's label, not the user's (`mc/triggered_turns.py:19-21`). Follow-up
+turns work, because every follow-up site appends the newline form.
+
+**Measured** by running the lookup's own expression against the fresh-dispatch
+seed line: it returns `''`.
+
+Smallest fix: keep the turn's message on the session (`session['_turn_ask']`,
+set where the seed line is built) and read that, or match with
+`line.lstrip('\n')`. Test: `tests/test_artifact_coverage.py:146-157` builds its
+fixture from the follow-up shape only, so it passes.
+
+**Cleared:** R18 (install batch markers). The composed command contains both
+the `ok` and the `FAILED` marker text, which would misread if a terminal
+echoed the command. It is launched with `subprocess.Popen(command,
+shell=True)` on pipes (`mc/blueprints/terminal_routes.py:240-246`), which does
+not echo it.
+
+---
+
+## 9. Prior audits: what is still open in this scope
+
+**`docs/_review/2026-09-10_efficiency.md`**
+
+| id | status here | evidence |
+|---|---|---|
+| E1 token floor of the system prompt | not re-measured in this pass | E1d only: the behaviour tail is still 738 bytes (measured); a 245-byte compact form now covers live Mode B turns |
+| E2 project record parsed on hot paths | **open, and wider** | new call sites since: every Read/Edit/Write/Grep tool call on the reader thread (R10), `_register_process` (R9), the per-turn note writer (R23), pace routing (`engine_pace_dispatch.py:37`). `_log_agent_activity` still loads and saves the record per dispatch (`agent_routes.py:11668`). Measured parse: 8.8 ms on the largest record (2.69 MB) |
+| E3 agent log parsed whole, several times per dispatch | **open** | a Claude resume dispatch parses it 6 to 7 times before launch (`:12647`, `:12664`, `:12681`, `:12761`, `:12766`, `:13030`, `:11154`), plus 3 in `mc/launch_transaction.py:86,111,179`; about 6 ms each on a 2 MB log (measured). The all-projects lookup on a trigger-type miss is still there: 26 files, 12.6 MB, 42 ms (measured, R29) |
+| E4 transcript re-parsed when listed | **open** | `/conversations` lists transcripts twice per call (R57); new since: every Mode B turn re-parses the whole chain (R37); a revive parses twice (R31) |
+| F1 `/agent/status` ships every buffer | **open** | 105,765 bytes for 4 sessions, 82% of it `log_lines` and `log_line_ts` (measured, R57) |
+| E5, E6, F2 | outside this scope | `/api/floor`, the `server` import, the dashboard grid |
+
+Nothing in this scope from that review was found fixed.
+
+**`docs/ENTANGLEMENT_AUDIT.md`**
+
+`agent_routes.py` was 17,102 lines and 24 concern groups in the audit. It is
+18,968 lines now, with 58 routes. Split plan 1 has not started: the two
+extractions it names first, the managed-job routes (`:1956`, `:2063`) and
+provider install (`:3188-3345`), are still in the file. One concern has left:
+the router statistics route now lives in
+`mc/blueprints/agent_router_stats_routes.py`. New work since the audit went
+into its own modules (the `delegation_*` set, `session_mcp_*`,
+`engine_pace_dispatch`, `cold_review*`), which is the rule working; the file
+grew by 1,866 lines anyway.
+
+Where the bundle causes a defect, not just merge pressure:
+
+- two stream readers kept in step by hand: R26 (buffer cap in one only), R27
+  (ownership check in one only), R28;
+- Claude and non-Claude paths for the same step that have drifted: R39, R49,
+  R50, R63;
+- five session dict literals (R32) and eighteen unguarded iterations of the
+  session map (R41);
+- the transcript directory list written out four times, two of them wrong for
+  worktree agents (R56);
+- a second copy of a liveness probe pass 1 found wrong (R5).
+
+---
+
+## 10. Coverage
+
+**Read in full:** `mc/blueprints/agent_routes.py` (1-18968),
+`mc/agent_worktree.py` (1-1077), `mc/delegation_delivery.py`,
+`mc/delegation_settlement.py`, `mc/delegation_transcript_reconcile.py`,
+`mc/delegation_waiting.py`, `mc/delegation_wake.py`,
+`mc/delegation_wake_absent.py`, `mc/delegation_retry.py`,
+`mc/merge_review_gate.py`, `mc/cold_review.py`, `mc/cold_review_gate.py`,
+`mc/cold_review_runner.py`, `mc/engine_pace_dispatch.py`,
+`mc/behavior_tail.py`, `mc/session_mcp_config.py`,
+`mc/session_mcp_launch.py`, `mc/session_provenance.py`. Nothing in scope was
+left unread.
+
+**Read in part, to judge a finding:** `mc/agent_runtime.py` (the one-shot
+`:1512-1580`, `:1716-1745`, `:3208-3300`; transcript paths `:2524-2551`; the
+vendor bridge call sites `:9738-9856`), `mc/memory.py` (`:155`, `:4919`,
+`:6169-6271`), `mc/project_sync.py:291-293`, `mc/launch_transaction.py`
+(`:86-241`), `mc/mcp_launch_config.py:25-45`,
+`mc/claude_usage_source.py:68-115`, `mc/blueprints/system_routes.py:890-935`,
+`mc/blueprints/hivemind_routes.py` (`:1060`, `:1199-1343`),
+`mc/blueprints/merge_review_routes.py` (all 68 lines),
+`mc/blueprints/terminal_routes.py:216-246`, `mc/atomic_json.py:143-149`,
+`mc/artifact_coverage.py:183-190`, `mc/triggered_turns.py:19-21`, and the
+tests named under each finding. Client JavaScript was opened only to check
+who reads a payload.
+
+**Limits of this pass:**
+
+- The file was read across several context rollovers. The first one lost
+  about a dozen unsaved candidates from lines 1-4733; from then on every
+  candidate was written to a notes file when seen. Section 1 is therefore the
+  thinnest: those lines were read, but some first-read observations were not
+  recovered.
+- No test was run. "No test would catch it" means the tests were searched and
+  read, not executed.
+- Every measurement is from one Windows install, with its data sizes.
+  Counts that describe this install (worktree directories, gc cache entries,
+  database rows) are evidence, not constants.
+- E1 (prompt token floor) was not re-measured.
+
+**Leads not confirmed, reported as such and not as findings:**
+
+- **R11** `agent_routes.py:4547-4571` — `_hook_blocked_before` retries a
+  512 KB transcript tail read ten times, 0.1 s apart, on the reader thread
+  when a message uuid is not in the main transcript.
+  `_track_stop_hook_boundary` (`:4573-4612`) does not look at
+  `parent_tool_use_id`, so a sub-agent's messages can reach it, and their
+  records may live in a side transcript. Whether a sub-agent stream ever
+  produces the "text-only message, then a new message id" shape that arms the
+  check was not established.
+- **R33** `agent_routes.py:13964`, `:14492`, `:8654`, `:7896` — two requests
+  that revive the same purged session id at once both find no live session,
+  and `_refuse_duplicate_spawn` excludes the session's own id. Whether the
+  launch reservation (`mc/launch_transaction.py:222-234`) stops the second
+  spawn was not traced to the end.
+
+**Cleared after checking:** R18 (above); R35, the workflow latch set before
+the send, is backstopped by the 30 s reconcile tick; R36, the reader taking
+the manager lock, writes on a helper thread. R8 was folded into R38 and R21
+into R39.
