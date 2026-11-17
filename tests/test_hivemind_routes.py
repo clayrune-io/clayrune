@@ -904,3 +904,13 @@ class TestOrchestratorSlot:
         with pytest.raises(es.EngineSelectionError):
             client.hm._hm_dispatch_orchestrator(hm_id, 'synthesize')
         assert hm_id not in client.state._hivemind_orchestrating
+
+
+# ── MC-1179 OS32: a non-numeric limit is the default, not a 500 ──────────────
+
+class TestNonNumericLimit:
+    def test_bus_history_and_findings_ignore_a_bad_limit(self, client):
+        hm_id = _create(client)['hivemind']['id']
+        assert client.get(f'/api/hivemind/{hm_id}/bus/history?limit=abc').status_code == 200
+        assert client.get(
+            f'/api/hivemind/{hm_id}/knowledge/findings?ws_id=ws_001&limit=abc').status_code == 200

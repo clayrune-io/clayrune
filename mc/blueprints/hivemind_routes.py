@@ -216,6 +216,15 @@ def _hm_list_workstreams(hivemind_id):
     return result
 
 
+def _hm_int_arg(name, default):
+    """An integer query argument; a missing or non-numeric one is `default`
+    (MC-1179 OS32: a bare int() answered `?limit=abc` with a 500)."""
+    try:
+        return int(request.args.get(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
 def _hm_unreadable_workstream_files(hivemind_id):
     """Names of workstream files that exist but do not parse.
 
@@ -1622,7 +1631,7 @@ def hivemind_bus_history(hivemind_id):
     manifest = _hm_load_manifest(hivemind_id)
     if not manifest:
         return jsonify({'error': 'not found'}), 404
-    limit = int(request.args.get('limit', 100))
+    limit = _hm_int_arg('limit', 100)
     messages = _hm_read_bus_messages(hivemind_id, last_n=limit)
     return jsonify(messages)
 
@@ -1714,7 +1723,7 @@ def hivemind_knowledge_findings(hivemind_id):
         return jsonify({'error': 'not found'}), 404
     ws_id = request.args.get('ws_id', '')
     if ws_id:
-        last_n = int(request.args.get('limit', 50))
+        last_n = _hm_int_arg('limit', 50)
         return jsonify(_hm_read_findings(hivemind_id, ws_id, last_n))
     return jsonify(_hm_read_all_findings(hivemind_id))
 
