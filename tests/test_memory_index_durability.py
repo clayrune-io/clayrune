@@ -78,7 +78,7 @@ def test_atomic_write_text_fsyncs_before_replace(tmp_path, monkeypatch):
 
     assert calls == ['fsync', 'replace']
     assert target.read_text(encoding='utf-8') == 'payload'
-    assert not list(tmp_path.glob('.MEMORY.md.tmp*'))
+    assert not list(tmp_path.glob('.MEMORY.md.*tmp*'))
 
 
 # ── (2) no-op rewrite skipped ────────────────────────────────────────────────

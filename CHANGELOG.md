@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Two threads writing one file through `_atomic_write_text` no longer tear it (MC-1179 C1)
+
+- `mc.core._atomic_write_text` named its temp file `.{name}.tmp{pid}`: unique per process, not per call. Two threads writing one target shared a temp file, truncated each other's data, and the second `replace` raised `FileNotFoundError`. Measured in the review: 4,471 of 45,505 reads of the target returned content that was neither payload. 32 call sites use it (memory files, distiller artifacts, `process_ledger`'s `mc_child_pids.json`).
+- The temp name is now `.{name}.{random}.tmp{pid}`, opened with `'x'`, and unlinked if the write or replace fails. The `.tmp{pid}` tail is kept, so `sweep_orphan_tmpfiles` still matches it, and it still does not end in `.json`. File mode and newline handling are unchanged (no `mkstemp`, so no 0600 on POSIX).
+- Tests: new `tests/test_core_atomic_write_concurrency.py` (4 tests, 3 failed on the old code). `tests/test_memory_index_durability.py`: the "no temp left behind" glob widened to the new name shape (the old glob would have matched nothing). Finding: `docs/_review/2026-11-16_01_runtime_core.md` C1.
+
 ## [2026-11-17] - Uploaded HTML and SVG can no longer run script on the app's origin through /api/attachments and /api/serve-image (MC-1179 P56)
 
 - An `.html` attached to a backlog item came back from `/api/attachments/<name>` as `text/html`, `inline`, with no `nosniff` and no CSP, and an `.svg` with a `<script>` came back the same way from `/api/serve-image`. Opened by link, either was a first-party page with a same-origin `fetch()` against every API (over the tunnel, in the signed-in session). `/api/serve-file` already refused this; these two routes did not.

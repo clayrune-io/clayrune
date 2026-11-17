@@ -10,6 +10,7 @@ This module must never import server.py.
 
 import builtins as _builtins
 import os
+import secrets
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -65,15 +66,31 @@ def _atomic_write_text(path, text, encoding='utf-8'):
     The temp file is flushed and fsynced BEFORE the replace (MC-1085, same as
     atomic_json.write_json_atomic): without it the rename can reach disk
     while the data pages are still dirty, and a bugcheck leaves the target
-    zero-filled at full length (MEMORY.md, 2026-10-06, 20,458 NUL bytes)."""
+    zero-filled at full length (MEMORY.md, 2026-10-06, 20,458 NUL bytes).
+
+    The temp name is `.{name}.{random}.tmp{pid}` (MC-1179 C1): per CALL, not
+    per process, so two threads writing one target never share a temp file
+    (they used to truncate each other's and the second replace raised
+    FileNotFoundError). The `.tmp{pid}` tail still matches
+    sweep_orphan_tmpfiles; 'x' mode refuses a name that already exists."""
     from mc.atomic_json import replace_with_retry
     path = Path(path)
-    tmp = path.with_name(f'.{path.name}.tmp{os.getpid()}')
-    with open(tmp, 'w', encoding=encoding) as f:
-        f.write(text)
-        f.flush()
-        os.fsync(f.fileno())
-    replace_with_retry(str(tmp), path)
+    tmp = path.with_name(
+        f'.{path.name}.{secrets.token_hex(6)}.tmp{os.getpid()}')
+    try:
+        with open(tmp, 'x', encoding=encoding) as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        replace_with_retry(str(tmp), path)
+    except BaseException:
+        # Names are per call now, so a leaked temp would accumulate instead
+        # of being overwritten by the next write.
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def sweep_orphan_tmpfiles(roots, max_age_hours=24):
