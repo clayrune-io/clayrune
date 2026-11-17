@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Require human confirmation for every Skills mutation (MC-1182)
+
+- All eleven Skills mutations now refuse unattended callers, then require the existing dashboard passcode check: create, update, delete/archive, restore, paste/folder/Git/plugin import, staged install/cancel, and quarantine discard. Read/search routes stay open.
+- Skills editor and import actions reuse the shared passcode modal, including forced scanner retries and cross-project copies. Cancelling confirmation preserves the staging picker.
+- The shared Distiller authority check refuses authority-expanding descriptions or bodies before skill writes, folder/staging copies, archive restore, or any plugin instruction copy. A scanner force flag cannot bypass it. Server-internal checksum-aware built-in startup installation remains independent of HTTP confirmation.
+- Branch candidate for review; no merge, push, deployment or server restart.
+
 ## [2026-11-16] - Choose Claude rollover limits by model and fresh context (MC-1178)
 
 - Known Claude models with a measured fresh-session floor use a cache-cost optimum, at least the global limit and 60,000 tokens above the floor, capped at half the model window. Haiku 5.5 also caps at its 100,000-token price step; hard caps win over the global lower bound but never drop below the floor plus 60,000 tokens.

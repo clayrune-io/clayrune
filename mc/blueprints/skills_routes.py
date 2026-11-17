@@ -17,6 +17,7 @@ from flask import Blueprint, jsonify, request
 
 from mc import state
 from mc.core import _log
+from mc.skill_mutation_gate import require_skill_mutation
 
 import mc.mcp as _mcp
 import mc.skills as _skills
@@ -124,6 +125,9 @@ def read_skill_route(scope, name):
 
 @bp.route('/api/skills', methods=['POST'])
 def create_skill_route():
+    refusal = require_skill_mutation()
+    if refusal is not None:
+        return refusal
     data = request.get_json() or {}
     name = (data.get('name') or '').strip()
     description = (data.get('description') or '').strip()
@@ -157,6 +161,9 @@ def create_skill_route():
 
 @bp.route('/api/skills/<scope>/<name>', methods=['PUT'])
 def update_skill_route(scope, name):
+    refusal = require_skill_mutation()
+    if refusal is not None:
+        return refusal
     if scope not in ('global', 'project'):
         return jsonify({'error': 'can only update global or project scope'}), 400
     data = request.get_json() or {}
@@ -185,6 +192,9 @@ def update_skill_route(scope, name):
 
 @bp.route('/api/skills/<scope>/<name>', methods=['DELETE'])
 def delete_skill_route(scope, name):
+    refusal = require_skill_mutation()
+    if refusal is not None:
+        return refusal
     if scope not in ('global', 'project', 'archive'):
         return jsonify({'error': 'scope must be global, project, or archive'}), 400
     project_id = request.args.get('project_id')
@@ -211,6 +221,9 @@ def delete_skill_route(scope, name):
 
 @bp.route('/api/skills/archive/<name>/restore', methods=['POST'])
 def restore_skill_route(name):
+    refusal = require_skill_mutation()
+    if refusal is not None:
+        return refusal
     try:
         result = _skills.restore_skill(name)
         return jsonify(result)
@@ -218,6 +231,8 @@ def restore_skill_route(name):
         return jsonify({'error': str(e)}), 404
     except FileExistsError as e:
         return jsonify({'error': str(e)}), 409
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
 
 
 @bp.route('/api/skills/search')
@@ -268,6 +283,9 @@ def import_skill_paste_route():
     there is no separate "release" endpoint; the client just resends with the
     flag set once the human has reviewed the findings.
     """
+    refusal = require_skill_mutation()
+    if refusal is not None:
+        return refusal
     data = request.get_json() or {}
     content = data.get('content') or ''
     scope = (data.get('scope') or 'global').strip()
@@ -311,6 +329,9 @@ def import_skill_folder_route():
     caller re-invokes with selected_rel_dir. force=true re-submits past a
     prior scan block (MC-912) — see import_skill_paste_route's docstring.
     """
+    refusal = require_skill_mutation()
+    if refusal is not None:
+        return refusal
     data = request.get_json() or {}
     path = (data.get('path') or '').strip()
     scope = (data.get('scope') or 'global').strip()
@@ -367,6 +388,9 @@ def import_skill_git_route():
     derived server-side from the clone URL (skill_import_guard.classify_git_trust)
     and bound to the staging dir — a request body cannot claim 'trusted'.
     """
+    refusal = require_skill_mutation()
+    if refusal is not None:
+        return refusal
     data = request.get_json() or {}
     url = (data.get('url') or '').strip()
     ref = (data.get('ref') or '').strip() or None
@@ -441,6 +465,9 @@ def import_full_plugin_route():
     is always 'community'. force=true re-submits past a prior scan block —
     see import_skill_paste_route's docstring.
     """
+    refusal = require_skill_mutation()
+    if refusal is not None:
+        return refusal
     data = request.get_json() or {}
     staging_id = (data.get('staging_id') or '').strip()
     path = (data.get('path') or '').strip()
@@ -492,6 +519,9 @@ def import_skill_git_install_route():
     force=true re-submits past a prior scan block (MC-912) — see
     import_skill_paste_route's docstring.
     """
+    refusal = require_skill_mutation()
+    if refusal is not None:
+        return refusal
     data = request.get_json() or {}
     staging_id = (data.get('staging_id') or '').strip()
     rel_dir = data.get('rel_dir', '')
@@ -537,6 +567,9 @@ def import_skill_git_install_route():
 @bp.route('/api/skills/import/git/cancel', methods=['POST'])
 def import_skill_git_cancel_route():
     """Discard a staging dir without installing anything."""
+    refusal = require_skill_mutation()
+    if refusal is not None:
+        return refusal
     data = request.get_json() or {}
     staging_id = (data.get('staging_id') or '').strip()
     if not staging_id:
@@ -581,6 +614,9 @@ def read_skill_quarantine_route(qid):
 
 @bp.route('/api/skills/quarantine/<qid>', methods=['DELETE'])
 def discard_skill_quarantine_route(qid):
+    refusal = require_skill_mutation()
+    if refusal is not None:
+        return refusal
     try:
         ok = _guard.discard_quarantine(qid)
     except ValueError as e:
