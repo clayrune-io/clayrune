@@ -3,7 +3,7 @@
 // PROPRIETARY AND CONFIDENTIAL.
 // Copyright (c) 2026 Clayrune. All rights reserved.
 //
-// See `02-attestation-protocol.md` §5.
+// See `02-attestation-protocol.md` §5 (operator-internal; not published in this repository).
 
 use serde::Deserialize;
 

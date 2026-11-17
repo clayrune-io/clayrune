@@ -28,8 +28,8 @@ zeroize      = { version = "1", features = ["zeroize_derive"] }
 sysinfo      = "0.31"           # parent-PID liveness check
 
 [build-dependencies]
-# `client_secret.rs` is generated at build time from CLIENT_SECRET_KEY_ID +
-# CLIENT_SECRET_PRIV env vars set by the build pipeline (`05-` §3.1).
+# `client_secret.rs` is generated into OUT_DIR at build time from CLIENT_SECRET_KEY_ID +
+# CLIENT_SECRET_PRIV_HEX env vars set by the build pipeline (`05-build-pipeline.md` §3.1 (operator-internal; not published in this repository)); both or neither.
 # See build.rs.
 
 [profile.release]

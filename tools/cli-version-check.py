@@ -122,10 +122,10 @@ def _prefix_fallback(name):
     a version auditor that silently omits a CLI is the failure it exists to
     catch. MC's own runtimes probe these same locations.
     """
-    rc, out = _npm(['config', 'get', 'prefix'], timeout=30)
     roots = []
-    if rc == 0 and out and not out.startswith('undefined'):
-        roots.append(out.strip())
+    prefix = _npm_prefix()
+    if prefix:
+        roots.append(prefix)
     roots.append(os.path.join(os.path.expanduser('~'), '.npm-global'))
     for root in roots:
         for rel in (name + '.cmd', name + '.exe', name,
@@ -194,12 +194,21 @@ def shadow_check(name, resolved_path):
     return others
 
 
+_NPM_PREFIX_CACHE = {}
+
+
 def _npm_prefix():
-    """npm's configured global install prefix, or None if npm can't answer."""
-    rc, out = _npm(['config', 'get', 'prefix'], timeout=30)
-    if rc == 0 and out and not out.startswith('undefined'):
-        return out.strip()
-    return None
+    """npm's configured global install prefix, or None if npm can't answer.
+
+    Asked once per run (main() clears the cache): the prefix does not change
+    within a run, and every npm CLI's package dir, aside dir and PATH fallback
+    used to spawn its own `npm config get prefix`.
+    """
+    if 'v' not in _NPM_PREFIX_CACHE:
+        rc, out = _npm(['config', 'get', 'prefix'], timeout=30)
+        ok = rc == 0 and out and not out.startswith('undefined')
+        _NPM_PREFIX_CACHE['v'] = out.strip() if ok else None
+    return _NPM_PREFIX_CACHE['v']
 
 
 def update_argv(cli, path):
@@ -661,6 +670,7 @@ def main():
     ap.add_argument('--host', default=DEFAULT_HOST,
                     help=f'Clayrune server base URL (default: {DEFAULT_HOST})')
     args = ap.parse_args()
+    _NPM_PREFIX_CACHE.clear()
 
     if args.model_upgrades:
         report = model_upgrades_check(args.host, args.apply)

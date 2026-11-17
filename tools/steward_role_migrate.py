@@ -179,6 +179,22 @@ def revision(row: dict, project: dict, charter: dict) -> str:
     return hashlib.sha256(blob.encode('utf-8')).hexdigest()[:16]
 
 
+def drift_revision(row: dict, project: dict, charter: dict) -> str:
+    """Like revision() but blind to what the documented workflow changes after a
+    migration: activating the role (`enabled`) and the steward updating its own
+    charter item (`text`, `status`). What is left moves only when someone edits
+    the role itself, which is what the rollback drift guard is for."""
+    config = {k: v for k, v in config_of(row).items() if k != 'enabled'}
+    material = {
+        'schedule': config,
+        'charter': {'id': charter.get('id')},
+        'project': {k: project.get(k) for k in
+                    ('steward_mode', 'steward_assignment', 'default_character')},
+    }
+    blob = json.dumps(material, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+    return hashlib.sha256(blob.encode('utf-8')).hexdigest()[:16]
+
+
 def active_sessions(api: Any, row: dict) -> list[dict]:
     """Sessions this schedule started that have not finished. Unknown = active."""
     body = _get(api, f'/api/project/{row["project_id"]}/agent/status', 'agent status')
@@ -291,7 +307,7 @@ def write_snapshot(directory: Path, plan: dict, now: Callable[[], datetime]) -> 
             'pre_revision': plan['revision'], 'old_row': plan['old_row'],
             'role': plan['role'], 'character': plan['character'],
             'charter_before': plan['charter']['current_text'],
-            'charter_changed': False, 'post_revision': None}
+            'charter_changed': False, 'post_revision': None, 'post_drift_revision': None}
     _write_json(path, body)
     return path
 
@@ -372,7 +388,9 @@ def apply_migration(api: Any, args: argparse.Namespace, *, now: Callable[[], dat
         done.append('bound the role (disabled)')
         after = find_schedule(api, sid)
         project = find_project(api, pid)
-        snap['post_revision'] = revision(after, project, find_charter(project, plan['role']['charter_item_id']))
+        charter_after = find_charter(project, plan['role']['charter_item_id'])
+        snap['post_revision'] = revision(after, project, charter_after)
+        snap['post_drift_revision'] = drift_revision(after, project, charter_after)
         _write_json(snap_path, snap)
     except MigrationError as exc:
         exc.args = (f'{exc.args[0]}. Done so far: {"; ".join(done) or "nothing"}. '
@@ -410,7 +428,13 @@ def plan_rollback(api: Any, args: argparse.Namespace) -> dict:
     project = find_project(api, row['project_id'])
     charter = find_charter(project, row['steward_role']['charter_item_id'])
     cur = revision(row, project, charter)
-    drifted = bool(snap.get('post_revision')) and cur != snap['post_revision']
+    if snap.get('post_drift_revision'):
+        drifted = drift_revision(row, project, charter) != snap['post_drift_revision']
+    else:
+        # Snapshot written before drift_revision existed: only the full revision was
+        # recorded, which also moves on activation, so this fallback keeps the old
+        # (over-eager) behaviour for those files rather than guessing.
+        drifted = bool(snap.get('post_revision')) and cur != snap['post_revision']
     return {'snapshot': snap, 'row': row, 'task': task, 'task_source': 'file' if args.task_file else 'snapshot',
             'warnings': task_warnings(task), 'drifted': drifted, 'revision': cur,
             'enabled_now': bool(row.get('enabled')), 'active_sessions': active_sessions(api, row),

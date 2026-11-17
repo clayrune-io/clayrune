@@ -36,7 +36,9 @@ More injection shapes for tools that don't read env vars:
                             {{user:name}} placeholder is resolved in place
                             (no flag needed)
 
-Child output is scrubbed of any dispensed value before it is echoed, so a
+Child output is scrubbed of any dispensed value before it is echoed (stdout to
+stdout, stderr to stderr, kept apart so a caller piping stdout is not handed
+the child's warnings), so a
 chatty tool that prints its own password can't leak it into the transcript.
 Pass --raw to stream through unmodified (needed for interactive commands).
 When the vault is passphrase-locked in this process, --raw and --unset run the
@@ -65,6 +67,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -323,7 +326,7 @@ def main(argv: list[str] | None = None) -> int:
         proc = subprocess.Popen(
             cmd, env=env,
             stdin=subprocess.PIPE if stdin_value is not None else None,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             text=True, encoding='utf-8', errors='replace', bufsize=1)
     except OSError as e:
         return _cannot_start(cmd[0], e)
@@ -340,18 +343,35 @@ def main(argv: list[str] | None = None) -> int:
     # stdout is cp1252 by default and raises UnicodeEncodeError on those —
     # which killed the passthrough mid-stream and threw away the child's exit
     # code. Never let re-encoding the child's output be the thing that fails.
-    try:
-        sys.stdout.reconfigure(errors='replace')  # type: ignore[union-attr]
-    except Exception:
-        pass
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors='replace')  # type: ignore[union-attr]
+        except Exception:
+            pass
 
     # Line-buffered passthrough so output still arrives progressively; each
-    # line is scrubbed of any value the vault has dispensed this process.
+    # line is scrubbed of any value the vault has dispensed this process. The
+    # child's stderr has its own reader and goes to OUR stderr with the same
+    # scrub (MC-1179 TL6), so `... | jq` sees only stdout; a thread, not a
+    # shared pipe, because two blocking readers on one thread would deadlock a
+    # child that fills the pipe it is not being read from.
+    err_thread = None
+    if proc.stderr is not None:
+        err_thread = threading.Thread(target=_pump, args=(proc.stderr, sys.stderr), daemon=True)
+        err_thread.start()
     if proc.stdout is not None:
-        for line in proc.stdout:
-            sys.stdout.write(_scrub(line))
-            sys.stdout.flush()
-    return proc.wait()
+        _pump(proc.stdout, sys.stdout)
+    code = proc.wait()
+    if err_thread is not None:
+        err_thread.join(timeout=5)
+    return code
+
+
+def _pump(source, sink) -> None:
+    """Copy `source` to `sink` a line at a time, scrubbed of dispensed values."""
+    for line in source:
+        sink.write(_scrub(line))
+        sink.flush()
 
 
 def _cannot_start(program: str, exc: OSError) -> int:

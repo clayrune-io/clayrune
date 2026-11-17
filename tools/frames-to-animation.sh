@@ -72,10 +72,6 @@ if [ -z "$OUT" ]; then
     OUT="$DIR/${STEM}.${FORMAT}"
 fi
 
-# Compute fps from milliseconds-per-frame. ffmpeg expects frame rate, not
-# frame duration. fps = 1000 / duration_ms.
-FPS=$(awk -v d="$DURATION_MS" 'BEGIN{printf "%.4f", 1000.0 / d}')
-
 # Build a temp concat list. Using `concat` demuxer rather than glob/pattern
 # so the user can pass arbitrary filenames in any order without renaming.
 CONCAT_LIST=$(mktemp --suffix=.txt 2>/dev/null || mktemp -t ftal)
@@ -102,12 +98,15 @@ for f in "$@"; do
     # The final entry needs to be repeated without a duration to stick on
     # screen long enough for ffmpeg to finalize -- standard concat-demuxer trick.
     DURATION_S=$(awk -v d="$DURATION_MS" 'BEGIN{printf "%.4f", d / 1000.0}')
-    printf "file '%s'\nduration %s\n" "$ABS" "$DURATION_S" >> "$CONCAT_LIST"
+    # A single quote in a file name must be written as '\'' inside the quoted
+    # concat-list entry, or the entry ends early and ffmpeg rejects the list.
+    ESC="${ABS//\'/\'\\\'\'}"
+    printf "file '%s'\nduration %s\n" "$ESC" "$DURATION_S" >> "$CONCAT_LIST"
 done
 # Re-append the last frame without a duration to satisfy ffmpeg's concat
-# demuxer (it ignores duration on the very last entry otherwise).
-LAST_ABS=$(tail -2 "$CONCAT_LIST" | head -1 | sed "s/^file '//; s/'$//")
-printf "file '%s'\n" "$LAST_ABS" >> "$CONCAT_LIST"
+# demuxer (it ignores duration on the very last entry otherwise). $ESC still
+# holds the last frame's already-escaped path.
+printf "file '%s'\n" "$ESC" >> "$CONCAT_LIST"
 
 # Encode per format. Each branch tuned for visual quality vs file size at
 # small mascot sizes (64-256 px square).

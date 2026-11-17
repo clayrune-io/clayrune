@@ -84,6 +84,10 @@ fi
 
 say() { printf '\n\033[1;36m==>\033[0m %s\n' "$1"; }
 die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$1" >&2; exit 1; }
+# Temp files this run makes (the entitlements plist, the notarization zip's
+# directory) are removed on any exit, including a die().
+ENTITLEMENTS=""; SUBMIT_DIR=""
+trap 'rm -f "${ENTITLEMENTS:-}"; rm -rf "${SUBMIT_DIR:-}"' EXIT
 
 # ── Preflight ───────────────────────────────────────────────────────────────
 [ -d "$APP" ] || die "App not found: $APP
@@ -130,7 +134,8 @@ codesign --verify --strict "$APP" || die "codesign --verify failed."
 
 # ── 3. Notarize ─────────────────────────────────────────────────────────────
 say "Zipping for notarization"
-SUBMIT_ZIP="$(mktemp -d)/Clayrune-submit.zip"
+SUBMIT_DIR="$(mktemp -d)"
+SUBMIT_ZIP="$SUBMIT_DIR/Clayrune-submit.zip"
 ditto -c -k --keepParent "$APP" "$SUBMIT_ZIP"
 
 say "Submitting to Apple's notary service (waits ~2-5 min)…"
@@ -145,9 +150,11 @@ fi
 # ── 4. Staple the ticket + final Gatekeeper check ───────────────────────────
 say "Stapling ticket"
 xcrun stapler staple "$APP"
-GK_INFO="$(spctl -a -t exec -vvv "$APP" 2>&1)"
+# `|| true`: under `set -e` a rejected assessment (spctl exits non-zero) would
+# end the script at this assignment, before the output that says why is printed.
+GK_INFO="$(spctl -a -t exec -vvv "$APP" 2>&1)" || true
 grep -q "source=Notarized Developer ID" <<<"$GK_INFO" \
-  || die "Gatekeeper assessment did not report 'Notarized Developer ID'."
+  || die "Gatekeeper assessment did not report 'Notarized Developer ID'. spctl said: $GK_INFO"
 
 # ── 5. Zip the STAPLED app + safe uninstaller for distribution ──────────────
 # (the zip we submitted is stale — the ticket got stapled into the .app after.)

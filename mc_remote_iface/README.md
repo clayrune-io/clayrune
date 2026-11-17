@@ -8,7 +8,7 @@ outside the user's network. The reference implementation is `mc_remote`
 (proprietary, talks to clayrune.io). Forks may ship their own provider
 against Tailscale, ngrok, Cloudflare, their own infra, etc. This README
 is the contract such a fork implements. Public-facing platform design
-lives in `docs/remote-access/` (12 docs); this file is the *code seam*.
+lives in `docs/remote-access/`; of the numbered docs only 07, 08 and 09 are published in this repository, the rest are operator-internal. This file is the *code seam*.
 
 ## The seam
 
@@ -72,7 +72,7 @@ non-blocking; delegate long work to background threads.
 
 `ProviderStatus` (frozen): `enrolled, online, hostname, username,
 last_seen, error_code, error_message, connecting, down_seconds, cloudflared`. `error_code` is one
-of `docs/remote-access/error-codes` values or `None`.
+of the reference provider's error codes (`error_codes.md` (operator-internal; not published in this repository)) or `None`.
 
 `cloudflared` is an optional cached update-status dictionary (default `None`)
 passed through `/api/remote/status`. It reports installed/latest/minimum
@@ -102,7 +102,7 @@ the exact states core expects before writing a provider.
 2. `register_provider(MyProvider())` at import time in your module's
    `__init__`.
 3. Make `status()`/`get_caps()` cheap and non-blocking.
-4. Map your errors onto `docs/remote-access/` error codes for consistent
+4. Map your errors onto the reference provider's error codes (`error_codes.md` (operator-internal; not published in this repository)) for consistent
    client-side localization.
 5. Test against core by importing your module before first
    remote-access request; verify all four `MC_DEV_REMOTE_STUB` states
@@ -117,4 +117,4 @@ license note in the repo root `README.md`). Forks implementing this
 contract are first-class — that is the point of the seam.
 
 — Cross-referenced from `README.md` and
-`docs/remote-access/01-architecture.md` §3.1.
+`docs/remote-access/01-architecture.md` §3.1 (operator-internal; not published in this repository).

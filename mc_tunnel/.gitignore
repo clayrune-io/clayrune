@@ -2,11 +2,7 @@
 # Cargo.lock IS committed — mc_tunnel is a binary, so a pinned lockfile gives
 # reproducible + auditable builds (cargo audit). (un-ignored 2026-06-09, D8)
 
-# When build.rs runs with real CLIENT_SECRET_PRIV_HEX env var, it overwrites
-# src/client_secret.rs with a file containing the embedded private key.
-# That MUST NEVER be committed. The placeholder version of this file is
-# version-controlled (the IS_DEV_BUILD = true variant); a real-build version
-# matching IS_DEV_BUILD = false is what we ignore.
-#
-# Discipline: after every release build, run `git checkout src/client_secret.rs`
-# to restore the placeholder before committing.
+# build.rs writes the embedded client secret (the real private-key seed in a
+# release build) to $OUT_DIR/client_secret.rs, which is under /target above.
+# There is no client_secret.rs in src/ any more; do not add one. If a build
+# ever puts that file back in src/, it is a bug, and it would hold the key.
