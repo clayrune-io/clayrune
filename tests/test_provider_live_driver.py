@@ -769,3 +769,21 @@ def test_mixed_workflow_samples_each_step_session_not_just_its_final_doc():
         'a step session with no sample is UNAVAILABLE usage, which downgrades '
         'an all-PASS cell to INCONCLUSIVE')
     assert "'context_tokens': sess.get('context_tokens')" in body
+
+
+# ── MC-1179 TL41 / TL42 ─────────────────────────────────────────────────────
+
+def test_mcp_receipt_needs_a_tool_line_not_the_prompt_echo():
+    echo = '> codex: Call the MCP tool named fixture_token (server clayrune_fixture) and reply'
+    assert not D.mcp_tool_receipt(echo + '\nthe token is abc123', 'fixture_token')
+    called = echo + '\n[tool: mcp__clayrune_fixture__fixture_token] {}\nabc123'
+    assert D.mcp_tool_receipt(called, 'fixture_token')
+
+
+def test_only_naming_no_cell_is_a_usage_error_not_a_green_empty_run(capsys):
+    with pytest.raises(SystemExit) as e:
+        D.parse(['--vendor', 'codex', '--only', 'guardrial'])
+    assert e.value.code == 2
+    assert 'guardrial' in capsys.readouterr().err
+    ok_id = D.CELLS[0].id
+    assert D.parse(['--vendor', 'codex', '--only', ok_id]).only == ok_id

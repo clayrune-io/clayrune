@@ -621,6 +621,12 @@ _SHELL_TOOLS = {'bash', 'powershell', 'run_shell_command', 'shell'}
 _KILL_SUCCEEDED = re.compile(r'has been terminated|SUCCESS:\s*The process', re.I)
 
 
+def mcp_tool_receipt(log: str, tool: str) -> bool:
+    """Did MC log a `[tool: ...]` line for `tool`? The prompt echo at the top of the
+    log names the tool too, so a plain substring search is always true."""
+    return any(_TOOL_LINE.match(l) and tool in l for l in (log or '').splitlines())
+
+
 def shell_tool_attempts(log: str, text: str, command: str):
     """(attempted, tool_lines) — did the agent actually INVOKE a shell tool
     with `command`?
@@ -1117,7 +1123,7 @@ def run_mcp(ctx: Ctx, run: CellRun) -> None:
     text = ctx.reply_text(s)
     log = '\n'.join(s.get('log_lines') or [])
     run.ok('tool_result_in_reply', e in text, text[:160])
-    run.ok('tool_receipt_in_transcript', 'fixture_token' in log.replace(text, ''), 'a tool-call record, not just the reply')
+    run.ok('tool_receipt_in_transcript', mcp_tool_receipt(log, 'fixture_token'), 'a tool-call record, not just the reply')
     run.artifacts.update({'mcp_reply': text, 'mcp_log': log[:3000]})
     run.claims.append(G.Claim('fixture tool returned the token', 'mcp_reply', e))
 
@@ -1646,6 +1652,9 @@ def parse(argv=None):
     ap.add_argument('--allow-scribe-claude', action='store_true')
     ap.add_argument('--keep-home', action='store_true')
     a = ap.parse_args(argv)
+    unknown = [i for i in a.only.split(',') if i and i not in {c.id for c in CELLS}]
+    if unknown:
+        ap.error(f'--only names no such cell: {", ".join(unknown)}')  # exit 2, not a silent empty run
     if not a.journal_dir:
         a.journal_dir = str(REPO_ROOT / 'docs' / '_journal' / 'provider-live' / a.vendor)
     return a
