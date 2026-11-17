@@ -628,3 +628,96 @@ resumes with `--resume <id>` (`:5294`), and filters MCP servers through
 - `auth_probe` is the only path that spends a live call; `health_check` only
   reads the cache it left (`:4367-4372`).
 - The tool-name map is bounded at 64 entries (`:5072-5074`).
+
+### 4c. Lines 5434-6977: shared Mode A dispatch, reader, interrupt; usage and cost helpers
+
+#### MA1 · high · L — Stop on any Mode A engine except Gemini is recorded as a crash
+
+`_mode_a_interrupt`, `mc/agent_runtime.py:6844-6852`, kills the process first
+and sets `status = 'stopped'` afterwards. `_kill_pid` is synchronous
+(`taskkill /F /T`, `:3683-3685`), so the reader's `finally` runs while the
+status is still `'running'`. `_mode_a_reader` decides on that alone (`:6791`):
+it sets `status = 'error'`, appends `[<engine> exited with code N]` and a
+`[hint]` from `explain_exit_error` (`:6818-6826`), and fires `on_process_exit`
+(`:6836`). Six runtimes use this function for both `interrupt` and `stop`
+(`:7893-7897`, `:9881-9885`, `:10469-10473`, `:10831-10835`, `:11140-11144`,
+`:11467-11471`: Qwen, Codex, OpenCode, Goose, Aider, Kiro).
+
+**Measured** (scratch script: a sleeping Python child, the real
+`_mode_a_reader` and `_mode_a_interrupt`, a stub runtime), 5 runs of 5:
+
+```
+final status: stopped | on_process_exit saw (rc, status): [(1, 'error')]
+log_lines: ['hello', '[fake exited with code 1]', '[hint] HINT-FROM-EXPLAIN', '[interrupted]']
+```
+
+So every user Stop puts a crash line and a troubleshooting hint ("not logged
+in", "rate limit", whatever the tail happens to match) in the chat, and the
+exit callback runs with `status == 'error'`. That callback is
+`_runtime_log_completion` (`agent_routes.py:10613`): it writes a
+`[runtime-error] provider=… model=… ts=…` line, the line the quota-failure scan
+parses, and calls `_log_agent_completion` on a session that reads `error` at
+that moment. The in-memory status ends as `stopped` only because the
+interrupt's write lands last.
+
+`GeminiRuntime.interrupt` documents this exact race and fixes it (`:5330-5336`:
+flag and status before the kill, and its reader checks `_interrupted` at
+`:5209`). The shared path was not given the same fix.
+**Fix:** in `_mode_a_interrupt` set `_interrupted`, `status` and
+`last_status_change_time` before `_kill_pid`; in the reader's `finally` skip
+the exit line, hint and error status when `_interrupted` is set; clear the flag
+at the start of the next turn.
+**Test coverage:** none found that runs the reader and the interrupt against a
+real child; a mocked `_kill_pid` cannot show it.
+
+#### MA2 · low · L — G4 applies to the shared reader too, and it knows the hazard
+
+`_mode_a_reader` has the same one-`try`-around-the-loop shape (`:6551-6731`)
+and the same unbounded `proc.wait()` (`:6734`). It isolates the raw-capture
+callback explicitly because "a failed durable write must not leave the provider
+blocked on a full stdout pipe" (`:6560-6563`), but every other statement in the
+loop can end the read the same way: `Path(fp).name` in `_format_tool_activity`
+when `file_path` is not a string (`:6428-6429`), `qs[0].get` when a question is
+not a dict (`:6448`), `int(v or 0)` on a carried usage value (`:6543`),
+`int(usage.get('input_tokens') or 0)` in `normalize_context_tokens`
+(`:6005-6007`). In the Gemini reader, `gemini_chat_files` sorts by
+`x.stat().st_mtime` outside its `try` (`:5730`), so a chat file removed between
+the glob and the sort raises out of the `TURN_END` branch and skips
+`on_turn_end` (`:5117-5124`).
+**Fix:** as G4; plus `isinstance` guards in the formatter.
+
+#### MA3 · low · L — the final status is the exit code only
+
+`:6797` (and `:5213` for Gemini): `'completed' if rc == 0 else 'error'`. An
+`ERROR`, `AUTH_ERROR` or `ALLOWANCE_EXHAUSTED` event sets `turn_error_seen`,
+whose only effect is to *suppress* the empty-turn check (`:6798`). A CLI that
+reports a failed turn in its stream and still exits 0 therefore finishes as
+`completed`, with the one check that could have caught it turned off. The
+file's own comments record two CLIs that keep rc 0 through a failure (Codex
+sandbox denial, `:6628-6633`). Not verified per CLI which terminal errors exit
+0; read, not measured.
+**Fix:** `status = 'error'` when `turn_error_seen and not visible reply text`.
+
+#### MA4 · low · E — the `mc:` fence check is quadratic here as well
+
+`:6607`, same expression as G7.
+
+#### Sound in lines 5434-6977
+
+- `_require_prompt_delivered` disowns the process before killing it, so the
+  reader does not write a status for a turn the caller reports failed
+  (`:5550-5556`). (This is the pattern MA1 and G2 lack.)
+- `codex_turn_context_tokens` re-reads the whole rollout each turn. **Measured**
+  on synthetic rollouts: 1.3 ms at 2 MB, 6.6 ms at 10 MB, 28 ms at 41 MB (the
+  substring pre-filter at `:5864` does the work); a miss costs the two 0.2 s
+  sleeps. Not a finding.
+- `accumulate_result_cost` keeps a per-process baseline and treats a total that
+  goes backwards as a restart (`:6332-6342`); `accumulate_result_turns` sums and
+  rejects bool and negative values (`:6370-6374`).
+- `note_api_retry` rate-limits the status line to one per wait or per 300 s and
+  still stamps `last_output_time` on every event (`:6157-6174`).
+- Non-JSON stray output is kept, protocol JSON a runtime declines is dropped
+  (`:6592-6603`).
+- Prompt delivery is verified only for Codex; the other engines log a failed
+  stdin write and return a live-looking handle. The code says so
+  (`:5621-5623`); recorded here as a known gap, not a new finding.
