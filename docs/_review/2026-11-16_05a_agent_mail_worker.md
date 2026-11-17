@@ -207,3 +207,21 @@ Notes are terse on purpose; each is re-verified and expanded when moved to
   (`docs/AGENT_MAIL_PULL_CONTRACT.md:120`), not a defect. Key rotation path is
   complete: `owner-management.js:14,326,396` approve, then
   `pull-key-rotate-http.js:157`.
+- ADDENDUM RECEIVED (Dave, mid-pass): add a required "Backlog cross-check"
+  section after the feature table. Source: GET
+  `/api/project/mission_control/backlog`, statuses open / in_progress /
+  blocked, items whose subject is this region (skip MC-1179 to MC-1183).
+  Classes: DONE / PARTLY DONE / NOT DONE / OBSOLETE or DUPLICATE / NEEDS A
+  HUMAN, each with key, five-word subject, class, evidence. No PATCH, no note.
+  Final message also lists the keys classed DONE or OBSOLETE. Not yet started.
+- C19 (growth, low; folds into C1) `owner-registry.js:151`
+  `releaseAddressStatements` has no caller (grep of source: definition only;
+  `test/owner-registry.test.js` is its one user). An abandoned signup leaves
+  its `pull_installs`, `pull_generations` and `pull_addresses` rows for good;
+  `pull-retention.js` does not list those tables either. Bounded by 10 fresh
+  signups a day (`signup-http.js:18`). By contract a retry uses a new install
+  id (`docs/AGENT_MAIL_PULL_CONTRACT.md:260`), so `signup-http.js:216` refusing
+  the old id is intended.
+- C8 CONFIRMED: `PullLedger.expire/purgeDetails/purgeDedupe/cursor`
+  (`pull-ledger.js:316-352`) have no source caller; only
+  `test/pull-ledger.test.js`.
