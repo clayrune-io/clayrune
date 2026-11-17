@@ -57,6 +57,7 @@ async def _run(username: str, *, zone_root: str, dry_run: bool, keep_username: b
     # Lazy imports — let argparse fail fast on bad args before pulling deps.
     try:
         from control_plane.app import cloudflare, firestore as fs
+        from control_plane.app.tunnel_names import is_tunnel_of
     except Exception as e:
         _print("ERROR", f"failed to import control_plane.app: {e}")
         return 2
@@ -103,11 +104,10 @@ async def _run(username: str, *, zone_root: str, dry_run: bool, keep_username: b
     # 3. Tunnels named mc-<username>-*
     try:
         tunnels = await cf._call("GET", f"/accounts/{acc}/cfd_tunnel") or []
-        prefix = f"mc-{username}-"
         for t in tunnels:
             if t.get("deleted_at"):
                 continue
-            if not (t.get("name") or "").startswith(prefix):
+            if not is_tunnel_of(t.get("name") or "", username):  # not startswith: MB23
                 continue
             _print("TUNNEL", f"{'WOULD delete' if dry_run else 'deleting'} {t['id']} (name={t.get('name')})")
             if not dry_run:

@@ -369,11 +369,20 @@ class CloudflareClient:
         not JSON — it is the one CF call in this client that isn't a JSON body."""
         acc = await self.get_account_id()
         path = f"/accounts/{acc}/storage/kv/namespaces/{namespace_id}/values/{key}"
+        # The client's default headers carry a JSON Content-Type, and httpx does not
+        # treat `headers={"Content-Type": None}` as "unset" — it raises TypeError
+        # before sending (MB24), which silently disabled the suspension denylist.
+        # Let httpx encode the multipart body on a throwaway request, then hand
+        # its body and its boundary-bearing Content-Type to the real call.
+        multipart = httpx.Request(
+            "PUT", "http://kv.invalid/",
+            files={"value": (None, value), "metadata": (None, "{}")},
+        )
         try:
             r = await self._client.request(
                 "PUT", path,
-                files={"value": (None, value), "metadata": (None, "{}")},
-                headers={"Content-Type": None},  # let httpx set the multipart boundary
+                content=multipart.read(),
+                headers={"Content-Type": multipart.headers["Content-Type"]},
             )
         except httpx.HTTPError as e:
             raise CloudflareAPIError(f"network error: {e}", status=0, endpoint=path) from e
