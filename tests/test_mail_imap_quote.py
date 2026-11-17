@@ -162,7 +162,7 @@ def test_fetch_messages_routes_through_server_gmail_search():
 
     class FakeM:
         def select(self, *a, **k):
-            pass
+            return "OK", [b"1"]
 
         def uid(self, *a):
             raise AssertionError("fetch_messages must not build its own SEARCH")

@@ -56,3 +56,23 @@ def gmail_search(M, query: str):
     if typ != "OK":
         typ, data = uid_search(M, "TEXT", query)
     return typ, data
+
+
+def safe_uid(uid) -> bytes:
+    """A message uid is digits only. imaplib joins arguments into the command
+    line unquoted, so a uid with CRLF in it is several IMAP commands (MC-1179
+    TL19); anything but one run of digits is refused."""
+    text = str(uid).strip()
+    if not (text.isascii() and text.isdigit()):
+        raise ValueError("uid must be a number")
+    return text.encode()
+
+
+def safe_mailbox(name: str) -> str:
+    """A mailbox name as an IMAP quoted-string. imaplib sends a bare name as
+    separate atoms, so `[Gmail]/All Mail` was BAD and CRLF in a name was an
+    injection (MC-1179 TL19). A name that cannot travel quoted is refused."""
+    name = str(name)
+    if not name or needs_literal(name):
+        raise ValueError("mailbox name must be non-empty printable ASCII")
+    return quote(name)

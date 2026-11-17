@@ -33,7 +33,7 @@ from pathlib import Path
 # read_digest.py loads this file by path, so its directory is not necessarily
 # on sys.path; the sibling helper has to be reachable either way.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from imap_quote import gmail_search  # noqa: E402
+from imap_quote import gmail_search, safe_mailbox, safe_uid  # noqa: E402
 
 CONFIG_PATH = Path.home() / ".clayrune" / "night-mail.json"
 IMAP_HOST = "imap.gmail.com"
@@ -136,12 +136,27 @@ def _body_text(msg: Message) -> str:
 
 
 # ── tool implementations ───────────────────────────────────────────────────
+def _imap_text(data) -> str:
+    """The server's answer to a refused command, as one short line."""
+    try:
+        parts = [p.decode("utf-8", "replace") if isinstance(p, bytes) else str(p)
+                 for p in (data or [])]
+    except Exception:
+        parts = [repr(data)]
+    return " ".join(parts)[:200] or "no detail"
+
+
 def tool_list_recent(count: int = 10, mailbox: str = "INBOX") -> str:
     count = max(1, min(int(count), 50))
+    mailbox_arg = safe_mailbox(mailbox)
     M = _connect()
     try:
-        M.select(mailbox, readonly=True)
+        typ, data = M.select(mailbox_arg, readonly=True)
+        if typ != "OK":
+            return f"(cannot open mailbox {mailbox}: {_imap_text(data)})"
         typ, data = M.uid("SEARCH", None, "ALL")
+        if typ != "OK":
+            return f"(listing failed: {_imap_text(data)})"
         ids = data[0].split() if data and data[0] else []
         recent = ids[-count:][::-1]
         rows = [_headers(M, u) for u in recent]
@@ -161,9 +176,14 @@ def tool_search_email(query: str, count: int = 20) -> str:
     count = max(1, min(int(count), 50))
     M = _connect()
     try:
-        M.select("INBOX", readonly=True)
+        typ, data = M.select("INBOX", readonly=True)
+        if typ != "OK":
+            return f"(cannot open INBOX: {_imap_text(data)})"
         # Gmail full search syntax (from:, subject:, newer_than:1d, has:attachment…)
         typ, data = gmail_search(M, query)
+        if typ != "OK":
+            # A refused search carries the server's error text, not ids.
+            return f"(search failed: {_imap_text(data)})"
         ids = data[0].split() if data and data[0] else []
         hits = ids[-count:][::-1]
         rows = [_headers(M, u) for u in hits]
@@ -180,10 +200,14 @@ def tool_search_email(query: str, count: int = 20) -> str:
 
 
 def tool_read_email(uid: str, mailbox: str = "INBOX") -> str:
+    uid_bytes = safe_uid(uid)
+    mailbox_arg = safe_mailbox(mailbox)
     M = _connect()
     try:
-        M.select(mailbox, readonly=True)
-        typ, d = M.uid("FETCH", str(uid).encode(), "(RFC822)")
+        typ, sel = M.select(mailbox_arg, readonly=True)
+        if typ != "OK":
+            return f"(cannot open mailbox {mailbox}: {_imap_text(sel)})"
+        typ, d = M.uid("FETCH", uid_bytes, "(RFC822)")
         if typ != "OK" or not d or not d[0]:
             return f"(no message with uid {uid} in {mailbox})"
         msg = message_from_bytes(d[0][1])
@@ -282,6 +306,8 @@ def _serve():
             req = json.loads(line)
         except Exception:
             continue
+        if not isinstance(req, dict):
+            continue  # a JSON line that is not an object (`[]`, `1`) is not a request
         method = req.get("method")
         rid = req.get("id")
         if method == "initialize":
