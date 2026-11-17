@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import re
 
-_ID_RE = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}')
+# A leading underscore is admitted: reserved project ids are `_ideas` and
+# `_incognito`. A leading `.` or `-` is not (dotfiles, option-shaped names).
+_ID_RE = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}')
 
 
 def valid_id(value) -> bool:
-    """True for a plain id: starts alphanumeric, then letters, digits, `_`, `.`
+    """True for a plain id: starts alphanumeric or `_`, then letters, digits, `_`, `.`
     or `-`, at most 64 characters, and no `..` anywhere."""
     return (isinstance(value, str) and _ID_RE.fullmatch(value) is not None
             and '..' not in value)
