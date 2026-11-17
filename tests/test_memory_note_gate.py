@@ -147,12 +147,17 @@ def test_unattended_caller_is_stamped_unattended(env):
     assert 'origin: unattended' in env.read('p1', 'alpha')
 
 
-def test_browser_origin_header_is_interactive_even_with_unattended_running(env):
+def test_browser_origin_header_is_written_but_stamped_by_session_state(env):
+    # Was `..._is_interactive_even_with_unattended_running`, which pinned ML6:
+    # the header alone bought the `interactive` stamp. It still spares the
+    # request a refusal; the stamp follows the running session
+    # (tests/test_memory_note_origin_stamp.py has the full table).
     env.session('s1', 'p1', 'schedule')
     r = env.client.post('/api/project/p1/memory/note',
                         json={'slug': 'alpha', 'content': note()},
                         headers={'Origin': 'http://localhost:5199'})
-    assert r.get_json()['origin'] == 'interactive'
+    assert r.status_code == 201
+    assert r.get_json()['origin'] == 'unattended'
 
 
 # ── missing / unparseable frontmatter ────────────────────────────────────────

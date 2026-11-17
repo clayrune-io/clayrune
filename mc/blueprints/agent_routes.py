@@ -145,6 +145,7 @@ from mc import worktree_lifecycle as _worktree_lifecycle  # MC-1165: resume vs w
 from mc import isolated_launch as _isolated_launch  # MC-1165 r4: the one launch directory rule
 import mc.cold_review_runner as _cold_review_runner  # MC-1165: cold review before merge-back
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
+import mc.unattended_consumer as _unattended_consumer  # ML4: who is READING (_UNATTENDED_LOOP_RULE)
 from mc import native_followup_context as _native_followup_context
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
 import mc.turn_clock as _turn_clock          # per-turn "Now ... since your last reply" stamp + gap briefing
@@ -5133,7 +5134,8 @@ def _roster_block(project, port, session_id=''):
 
 def _build_agent_context(project, incognito=False, task='', character_body='',
                          character_name='', session_id='', character_skills=None,
-                         source='', provider='', model='', job_shape='', consumer_unattended=None):
+                         source='', provider='', model='', job_shape='', consumer_unattended=None,
+                         trigger_type=None):
     """Build system prompt context for the agent.
 
     `job_shape` ('conversation' | 'task', backlog 8ead5755) is the caller's
@@ -5536,7 +5538,9 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # itself already self-disables for unattended trigger types, which a
     # dispatched worker's session effectively is.
     _explicit_unattended = consumer_unattended is True
-    consumer_unattended = bool(consumer_unattended or _distiller.is_unattended_task(task))
+    consumer_unattended = _unattended_consumer.for_context_build(
+        consumer_unattended, task, session_id=session_id, sessions=agent_sessions,
+        trigger_type=trigger_type)
     if not incognito and not _task_shape and state.CONFIG.get('memory_mint_triggers_enabled', False):
         try:
             from mc.memory import unresolved_mint_block as _render_mint
@@ -7973,7 +7977,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                                        character_skills=_revive_char_skills,
                                        source=_revive_source, job_shape=_revive_job_shape,
                                        provider=entry.get('provider') or '',
-                                       model=revive_model)
+                                       model=revive_model,
+                                       trigger_type=entry.get('trigger_type', 'manual'))
         _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
             pp, 'claude', claude_sid, project_id, session_id,
             reason=_af_reason, detail=_af_detail)
@@ -7997,7 +8002,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
                                            character_skills=_revive_char_skills,
                                            source=_revive_source, job_shape=_revive_job_shape,
                                            provider=entry.get('provider') or '',
-                                           model=revive_model)
+                                           model=revive_model,
+                                           trigger_type=entry.get('trigger_type', 'manual'))
         except Exception as e:
             _log(f"[revive] {project_id}: context rebuild failed: {e}")
 
@@ -13058,7 +13064,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             p, incognito=incognito, task=task,
             character_body=character_body, character_name=_char_agent_name,
             session_id=_planned_sid, character_skills=_char_skills,
-            source=source, job_shape=_job_shape, provider=provider_name, model='')
+            source=source, job_shape=_job_shape, provider=provider_name, model='',
+            trigger_type=trigger_type)
     elif model_override:
         # Composer "Model" picker, or the character's pinned model: an explicit
         # choice either way, so the auto-router is bypassed entirely. The
@@ -13077,7 +13084,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                        session_id=_planned_sid,
                                        character_skills=_char_skills,
                                        source=source, job_shape=_job_shape,
-                                       provider=provider_name, model=model_override)
+                                       provider=provider_name, model=model_override,
+                                       trigger_type=trigger_type)
     else:
         # context_builder runs IN PARALLEL with the auto-router's classifier
         # (_dispatch_with_routing_parallel, RC-2 latency constraint) — the
@@ -13094,7 +13102,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                     p, incognito=incognito, task=task,
                     character_body=character_body, character_name=_char_agent_name,
                     session_id=_planned_sid, character_skills=_char_skills,
-                    source=source, job_shape=_job_shape, provider=provider_name, model=''),
+                    source=source, job_shape=_job_shape, provider=provider_name, model='',
+                    trigger_type=trigger_type),
                 streaming=use_streaming, effort_override=_char_effort,
                 character_skills=_char_skills))
         if max_turns_override is not None:

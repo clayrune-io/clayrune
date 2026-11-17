@@ -3305,7 +3305,17 @@ def _rewrite_frontmatter_field(text, field, value):
     Matching is anchored to line-start so `generated:`'s indented `by`/`at`
     children (which also contain ':') are never mistaken for a top-level key.
     No-op (returns `text` unchanged) if the file has no frontmatter block.
+
+    Raises ValueError for a value the frontmatter parser would read as more
+    than one line. The parser (`mc/skills.py` `parse_skill_md`) splits with
+    `str.splitlines()` and keeps the LAST value of a repeated key, so a line
+    break in `value` is a second, caller-chosen frontmatter line that wins:
+    `a\\norigin: interactive` re-stamped an unattended note (ML5). The test is
+    the parser's own split, not a list of two characters, because
+    `splitlines()` also breaks on \\x0b, \\x0c, \\x1c-\\x1e, \\x85, U+2028, U+2029.
     """
+    if value and str(value).splitlines() != [str(value)]:
+        raise ValueError('frontmatter value must be a single line')
     m = _FRONTMATTER_BLOCK_RE.match(text)
     if not m:
         return text
@@ -3331,6 +3341,13 @@ def resolve_mint(project, filename, verdict, candidate=''):
     never-unresolved note is a no-op, not a way to fabricate an edge on an
     arbitrary note by filename.
 
+    `candidate` is a request field and ends up in the note's frontmatter, so
+    it is closed to the note's OWN `mint_candidates` (the list the question
+    offered, verbatim): anything else raises ValueError and nothing is
+    written. Empty stays allowed, as before. This is what keeps the answer
+    from carrying a second frontmatter line such as `origin: interactive`
+    (ML5); `_rewrite_frontmatter_field` refuses a multi-line value as well.
+
     Takes the same per-project topic write lock `write_topic_note` uses, and
     re-checks the sentinel inside it (TOCTOU — two answers racing the same
     question must not both apply).
@@ -3344,13 +3361,20 @@ def resolve_mint(project, filename, verdict, candidate=''):
     path = mem_dir / name
     if path.resolve().parent != mem_dir.resolve():
         raise ValueError('not a topic note filename')
+    if not isinstance(candidate, str):
+        raise ValueError('candidate must be a string')
+    candidate = candidate.strip()
     project_id = project.get('id', '') if isinstance(project, dict) else ''
     with _get_mem_write_lock(f'topic:{project_id}'):
         if not path.is_file():
             return False
         text = path.read_text(encoding='utf-8', errors='replace')
-        if _note_frontmatter(text).get('supersedes') != 'unresolved':
+        fm = _note_frontmatter(text)
+        if fm.get('supersedes') != 'unresolved':
             return False
+        offered = [c.strip() for c in fm.get('mint_candidates', '').split(',') if c.strip()]
+        if candidate and candidate not in offered:
+            raise ValueError("candidate is not one of this note's mint_candidates")
         if verdict == 'supersedes':
             text = _rewrite_frontmatter_field(text, 'supersedes', candidate)
         else:

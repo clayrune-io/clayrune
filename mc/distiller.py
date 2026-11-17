@@ -44,6 +44,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Callable, cast
 
+from mc import skill_stats_file as _stats_file  # ML8: unreadable is never "empty" (stdlib-only leaf)
+
 # ── Injected helpers (set by register()) ─────────────────────────────────────
 
 _data_root: Path | None = None        # data/projects/
@@ -450,21 +452,31 @@ def _skill_stats_summary_path(project_id: str) -> Path:
 
 
 def _read_skill_stats(project_id: str) -> dict:
-    """Read under lock; return empty schema on missing/corrupt. Never raises."""
-    p = _skill_stats_path(project_id)
-    if not p.exists():
-        return _empty_stats()
+    """Read under lock. The empty schema when there is NO file.
+
+    Raises `SkillStatsUnreadable` when the file is there and cannot be used
+    (ML8). It used to answer the empty schema for that too, "preserving file
+    untouched", and every caller that writes is a read-modify-write, so the
+    next counter bump saved the empty schema over every recorded "no". A
+    caller that only reads decides its own fail-closed answer; a caller that
+    writes uses `_read_skill_stats_for_update`. Rule: `mc/skill_stats_file.py`.
+    """
+    data = _stats_file.load(_skill_stats_path(project_id), log=_log)
+    return _empty_stats() if data is None else data
+
+
+def _read_skill_stats_for_update(project_id: str) -> dict:
+    """`_read_skill_stats` for a read-modify-write: caller MUST hold
+    `_get_skill_stats_lock` and is about to `_write_skill_stats`.
+
+    A corrupt file is moved aside (kept byte for byte, logged) and the empty
+    schema returned. A file that could not be READ, or could not be moved,
+    raises: the write must not happen, the file may be good.
+    """
     try:
-        return json.loads(p.read_text(encoding='utf-8') or '{}')
-    except json.JSONDecodeError:
-        # Torn-write recovery posture (§4.9): structured warning, never
-        # silently re-initialize (Seat 3 v1.1 Cond 4 inherited).
-        if _log:
-            _log(f"[distiller] _skill_stats.json parse failure for "
-                 f"project_id={project_id} — preserving file untouched, "
-                 f"returning empty schema for this read")
-        return _empty_stats()
-    except Exception:
+        return _read_skill_stats(project_id)
+    except _stats_file.SkillStatsUnreadable as e:
+        _stats_file.start_fresh_after(e, log=_log)
         return _empty_stats()
 
 
@@ -505,14 +517,17 @@ def _increment_counter(project_id: str, key: str, n: int = 1) -> None:
         return
     try:
         with _get_skill_stats_lock(project_id):
-            stats = _read_skill_stats(project_id)
+            stats = _read_skill_stats_for_update(project_id)
             stats['counters'][key] = int(stats['counters'].get(key, 0)) + n
             if ('error' in key or 'skip' in key or 'refuse' in key):
                 stats.setdefault('counters_last', {})[key] = (
                     _now_iso() if _now_iso else '')
             _write_skill_stats(project_id, stats)
-    except Exception:
-        pass
+    except _stats_file.SkillStatsUnreadable:
+        pass  # logged once by the reader; a bump is not worth a line per dispatch
+    except Exception as e:
+        if _log:
+            _log(f"[distiller] counter bump {key!r} failed for {project_id}: {e}")
 
 
 _VOCAB_MISS_CAP = 100  # per-project ring buffer of dropped-phrase samples
@@ -548,7 +563,7 @@ def _record_vocab_miss(project_id: str, phrase: str) -> None:
     reason, token = _vocab_oov(phrase)
     try:
         with _get_skill_stats_lock(project_id):
-            stats = _read_skill_stats(project_id)
+            stats = _read_skill_stats_for_update(project_id)
             counters = stats.setdefault('counters', {})
             counters[TELEM_VOCABULARY_MISS] = \
                 int(counters.get(TELEM_VOCABULARY_MISS, 0)) + 1
@@ -561,8 +576,11 @@ def _record_vocab_miss(project_id: str, phrase: str) -> None:
             if len(misses) > _VOCAB_MISS_CAP:
                 del misses[:-_VOCAB_MISS_CAP]   # keep newest N
             _write_skill_stats(project_id, stats)
-    except Exception:
-        pass
+    except _stats_file.SkillStatsUnreadable:
+        pass  # logged once by the reader
+    except Exception as e:
+        if _log:
+            _log(f"[distiller] vocab-miss record failed for {project_id}: {e}")
     _structured_log(
         f"vocab_miss:project_id={project_id}:reason={reason}:"
         f"token={token}:phrase={phrase}")
@@ -1134,7 +1152,7 @@ def _commit_signals(project_id: str, signals: list[dict]) -> None:
     if not signals:
         return
     with _get_skill_stats_lock(project_id):
-        stats = _read_skill_stats(project_id)
+        stats = _read_skill_stats_for_update(project_id)
         stats['signals'].extend(signals)
         _cold_archive_old_signals(project_id, stats)
         _write_skill_stats(project_id, stats)
@@ -1241,8 +1259,14 @@ def _aggregate_per_project(project_id: str, project: dict,
                 gsupp = _read_skill_stats(
                     _GLOBAL_SUPPRESSION_PID).get('suppressions', {}) or {}
             suppressions = {**gsupp, **suppressions}  # project decision wins
-        except Exception:
-            pass
+        except Exception as e:
+            # Fail CLOSED (ML8): a global store that cannot be read may hold a
+            # "no" for any of these, so nothing is proposed this run. This was
+            # `pass`: unreadable meant "nothing was ever rejected globally".
+            if _log:
+                _log(f"[distiller] global skill_stats unreadable, proposing "
+                     f"nothing for {project_id} this run: {e}")
+            return []
         outbox = stats.get('outbox', {}) or {}
         # Rescue stranded preferences. The current-session-only loop would never
         # re-evaluate preferences captured under the old recurrence-3 gate
@@ -1390,13 +1414,16 @@ def _within_cost_cap(project_id: str, project: dict) -> bool:
                 f"date={today}:tokens_used={used}:cap_value={cap}"
             )
             with _get_skill_stats_lock(project_id):
-                stats = _read_skill_stats(project_id)
+                stats = _read_skill_stats_for_update(project_id)
                 stats['cap_hits'] = int(stats.get('cap_hits', 0)) + 1
                 stats['cap'] = cap
                 _write_skill_stats(project_id, stats)
             return False
-    except Exception:
-        pass
+    except _stats_file.SkillStatsUnreadable:
+        pass  # logged once by the reader; same answer as before (within budget)
+    except Exception as e:
+        if _log:
+            _log(f"[distiller] cost-cap check failed for {project_id}: {e}")
     return True
 
 
@@ -1408,7 +1435,7 @@ def _cross_project_walk_debounced(project_id: str) -> bool:
     sess_cap = int(_cfg('distiller_cross_project_walk_debounce_session_count', 5))
     secs_cap = int(_cfg('distiller_cross_project_walk_debounce_seconds', 600))
     with _get_skill_stats_lock(project_id):
-        stats = _read_skill_stats(project_id)
+        stats = _read_skill_stats_for_update(project_id)
         last_ts = stats.get('last_walk_ts') or ''
         last_sess = int(stats.get('last_walk_session_count', 0))
         last_epoch = _iso_to_epoch(last_ts) if last_ts else 0.0
@@ -1638,8 +1665,15 @@ def _is_suppressed(project_id: str, exact: str, kind: str) -> bool:
                 supp = _read_skill_stats(pid).get('suppressions', {}).get(key)
             if supp and supp.get('decision') == 'no':
                 return True
-        except Exception:
-            continue
+        except _stats_file.SkillStatsUnreadable:
+            # Fail CLOSED (ML8): a store that cannot be read may hold this
+            # "no". This was `continue`, i.e. unreadable meant "never rejected".
+            return True   # logged once by the reader
+        except Exception as e:
+            if _log:
+                _log(f"[distiller] suppression lookup failed for {pid} "
+                     f"({key}), treating as suppressed: {e}")
+            return True
     return False
 
 
@@ -1830,7 +1864,7 @@ def _generate_and_write_artifact(project_id: str, project: dict,
         cast(Callable[[Path, str], None], _atomic_write_text)(target_path, body)
         # Outbox marker (D7) — under lock, after successful artifact land
         with _get_skill_stats_lock(project_id):
-            stats = _read_skill_stats(project_id)
+            stats = _read_skill_stats_for_update(project_id)
             stats.setdefault('outbox', {})[f"{candidate['exact']}:{kind}"] = {
                 'last_proposed_at': cast(Callable[[], str], _now_iso)(),
                 'last_proposed_path': str(target_path),
@@ -2228,8 +2262,18 @@ def record_push(project_id: str, body: dict) -> tuple[dict, int]:
         return {'accepted': False, 'reason': 'oov_phrase'}, 400
     exact, coarse = fp
     key = f"{exact}:{kind}"
+    try:
+        return _record_push_decision(project_id, key, kind, decision, exact, coarse)
+    except _stats_file.SkillStatsUnreadable as e:
+        # The decision was NOT recorded; saying "accepted" would be a "no"
+        # that binds nothing (ML8). The file is left exactly as it is.
+        return {'accepted': False, 'reason': 'stats_unreadable', 'detail': e.reason}, 503
+
+
+def _record_push_decision(project_id: str, key: str, kind: str, decision: str,
+                          exact: str, coarse: str) -> tuple[dict, int]:
     with _get_skill_stats_lock(project_id):
-        stats = _read_skill_stats(project_id)
+        stats = _read_skill_stats_for_update(project_id)
         if decision == 'no':
             stats.setdefault('suppressions', {})[key] = {
                 'decided_at': cast(Callable[[], str], _now_iso)(),
@@ -2258,7 +2302,13 @@ def record_push(project_id: str, body: dict) -> tuple[dict, int]:
 
 def get_distiller_stats(project_id: str) -> dict:
     """GET /api/project/<id>/distiller-stats handler."""
-    stats = _read_skill_stats(project_id)
+    unreadable = ''
+    try:
+        stats = _read_skill_stats(project_id)
+    except _stats_file.SkillStatsUnreadable as e:
+        # A view only reads: the file is left as it is, and the zeros below are
+        # labelled as "could not read", not reported as a clean store (ML8).
+        stats, unreadable = _empty_stats(), e.reason
     window_days = int(_cfg('distiller_window_days', 30))
     window_sigs = _filter_window(stats.get('signals', []), window_days)
     cap = int(_cfg('distiller_cost_cap_tokens_per_project_per_day', 100000))
@@ -2287,6 +2337,7 @@ def get_distiller_stats(project_id: str) -> dict:
         'suppressions': len(stats.get('suppressions', {})),
         'outbox_entries': len(stats.get('outbox', {})),
         'last_walk_ts': stats.get('last_walk_ts'),
+        'stats_unreadable': unreadable,
     }
 
 
@@ -2750,7 +2801,7 @@ def _suppress_artifact(art: dict, source: str) -> bool:
     try:
         key = f"{exact}:{kind}"
         with _get_skill_stats_lock(pid):
-            stats = _read_skill_stats(pid)
+            stats = _read_skill_stats_for_update(pid)
             stats.setdefault('suppressions', {})[key] = {
                 'decided_at': _now_iso() if _now_iso else '',
                 'decision': 'no',
@@ -2758,7 +2809,9 @@ def _suppress_artifact(art: dict, source: str) -> bool:
             }
             _write_skill_stats(pid, stats)
         return True
-    except Exception:
+    except Exception as e:
+        if _log:
+            _log(f"[distiller] rejection of {key} was NOT recorded for {pid}: {e}")
         return False
 
 
