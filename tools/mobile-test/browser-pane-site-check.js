@@ -5,7 +5,7 @@
 //   (a) a session an agent launched at 1280x800 (desktop HTML already loaded) is
 //       RELOADED as the mobile site when the phone attaches;
 //   (b) a pane opened FROM the phone is mobile before its first navigation.
-// Usage: node tools/mobile-test/_emu_site_check.js [url ...]
+// Usage: node tools/mobile-test/browser-pane-site-check.js [url ...]
 const CDP = require('chrome-remote-interface');
 const fs = require('fs');
 const path = require('path');

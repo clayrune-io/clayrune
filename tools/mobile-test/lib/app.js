@@ -48,10 +48,11 @@ async function ensureProject(projectId) {
   const arr = Array.isArray(data) ? data : (data.projects || []);
   if (arr.some((p) => p.id === projectId)) return false;
   try { fs.mkdirSync(TEST_DIR, { recursive: true }); } catch (_) {}
+  let created = true;
   await httpPostJson(`${HOST_API}/api/project/${projectId}`, {
     name: 'Mobile Test', domain: 'general', status: 'active', project_path: TEST_DIR,
-  }).catch(() => {});
-  return true;
+  }).catch((e) => { created = false; console.warn(`could not create project '${projectId}': ${e.message}`); });
+  return created;
 }
 
 // Authoritative server view of a session (includes log_lines[]).
