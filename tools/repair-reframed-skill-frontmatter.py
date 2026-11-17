@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -95,7 +96,7 @@ def _iter_skill_md(scope: str) -> list[tuple[str, Path]]:
         if global_dir.is_dir():
             out += [('global', p) for p in sorted(global_dir.glob('*/SKILL.md'))]
     if scope in ('project', 'both'):
-        data_dir = REPO_ROOT / 'data' / 'projects'
+        data_dir = Path(os.environ.get('MC_DATA_DIR') or REPO_ROOT) / 'data' / 'projects'
         if data_dir.is_dir():
             for project_id, pp in _iter_project_paths(data_dir):
                 skills_dir = pp / '.claude' / 'skills'
@@ -224,6 +225,17 @@ def analyze(path: Path) -> dict | None:
     }
 
 
+def _yaml_scalar(v: str) -> str:
+    """`v` as a one-line YAML scalar. The reader strips quotes, so a restored
+    description with `: ` or ` #` in it (a sentence lifted from the body) would
+    otherwise be written bare and the skill would stop parsing (MC-1179 TL31).
+    A JSON double-quoted string is valid YAML."""
+    if (v == '' or ': ' in v or ' #' in v or v != v.strip() or v.endswith(':')
+            or v[0] in "\"'[]{}&*!|>%@`#,?-" or '\n' in v):
+        return json.dumps(v, ensure_ascii=False)
+    return v
+
+
 def apply_fix(path: Path, finding: dict) -> None:
     text = path.read_text(encoding='utf-8', errors='replace')
     fm, body = _split_real_frontmatter(text)  # type: ignore[misc]
@@ -232,7 +244,7 @@ def apply_fix(path: Path, finding: dict) -> None:
     fm['description'] = finding['proposed_description']
     lines = ['---']
     for k, v in fm.items():
-        lines.append(f'{k}: {v}')
+        lines.append(f'{k}: {_yaml_scalar(str(v))}')
     lines.append('---')
     new_text = '\n'.join(lines) + '\n\n' + body
     tmp = path.with_suffix('.md.tmp')
@@ -275,7 +287,7 @@ def main() -> int:
         return 0
 
     for f in findings:
-        print(f"[{f['scope_label']}] {f['name']}")
+        print(f"[{f['scope_label']}] {f.get('name', Path(f['path']).parent.name)}")
         print(f"  path: {f['path']}")
         if 'error' in f:
             print(f"  ! {f['error']}")
@@ -291,7 +303,7 @@ def main() -> int:
                   f"line(s) from the top")
         print()
 
-    fixable = [f for f in findings if f['fixable']]
+    fixable = [f for f in findings if f.get('fixable')]
     print(f'{len(findings)} file(s) flagged, {len(fixable)} auto-fixable '
           f'(have a real TRIGGER line to restore), '
           f'{len(findings) - len(fixable)} need a human rewrite.')

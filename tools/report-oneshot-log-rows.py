@@ -85,11 +85,13 @@ def main() -> int:
     ids = args.projects or sorted(
         f.name[:-len('_agent_log.json')] for f in projects_dir.glob('*_agent_log.json'))
     cap = 500
+    # The server reads <data root>/config.json (server.py CONFIG_PATH); there is no data/config.json.
+    config_path = Path(os.environ.get('MC_DATA_DIR') or REPO_ROOT) / 'config.json'
     try:
-        cap = int(json.loads((REPO_ROOT / 'data' / 'config.json').read_text(
+        cap = int(json.loads(config_path.read_text(
             encoding='utf-8')).get('agent_log_max_entries', 500) or 0)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f'[report-oneshot] cannot read {config_path}: {e}; using cap={cap}', file=sys.stderr)
     print(f'READ-ONLY report over {projects_dir} (agent_log_max_entries={cap})\n')
     print(f'{"project":32s} {"rows":>5s} {"synth":>6s} {"oneshot":>8s} {"real-syn":>9s} {"no-tx":>6s}  at-cap')
     tot: Counter = Counter()
