@@ -335,3 +335,36 @@ Read so far (update): `mc/memory_turn.py`, `mc/memory_push.py` (both whole).
 - K86 `memory_push.py:357`, `:366` `already = fname in turn_delivered` compares a
   file name against a set of uids (`memory_turn._uid_of`); for archive/managed
   hits they differ, so the "already delivered" column is wrong where it matters.
+
+Read so far (update): `mc/memory_fts.py`, `mc/memory_delivery.py`,
+`mc/memory_state_trigger.py` (all whole).
+
+- K80 CONFIRMED by reading: `agent_routes.py:5536` the dispatch gate is
+  `consumer_unattended or is_unattended_task(task)`; grep shows only the steward
+  paths pass `True` (`scheduler_routes.py:536`, `:554`,
+  `steward_role_dispatch.py:396`). None of the dispatch call sites
+  (`agent_routes.py:11455`, `:13058`, `:13075`, `:13094`, `:7966`, `:7990`,
+  `hivemind_worker.py:292`) passes it. Writers stamp with
+  `is_unattended_session` (`trigger_type != 'manual'`, `distiller.py:1667-1681`).
+  So a scheduled or dispatched session without the steward marker is an
+  unattended WRITER and an attended READER at dispatch: rail 2 has no human on
+  either side for schedule-to-schedule and dispatch-to-dispatch loops. The live
+  refresh (`memory_turn.py:401`) uses session provenance, so the same session
+  flips to unattended consumer on turn 2.
+- K87 `memory_fts.py:301-356` `cold_search` has no origin filter and
+  `memory_turn.py:441` passes no `exclude_session_ids`: the cold probe can hand
+  an unattended consumer an excerpt of any unattended session's transcript, or
+  the live session's own earlier message (rail 2, narrow: only when the warm
+  floor returns nothing). Index is built at startup only (`server.py:1735`).
+- K88 `memory_fts.py:186-189` an incognito transcript is re-recorded
+  (`DELETE` + upsert) on every build with no `_already_indexed` check. Low.
+  `:231-232` a non-dict agent-log entry raises, is logged by the caller, and
+  the file is retried every build. Low.
+- K89 `memory_delivery.py:92-137` every recorded search (each dispatch, each
+  live turn via `memory_turn.py:415`) reads and rewrites the whole stats JSON
+  (indent 2, sorted) under one process-wide lock; `units` is keyed by content
+  hash and never pruned. `read_stats` returns `{}` on a corrupt file and
+  `record` then writes fresh counters over it (K42 class, but logged). `tasks`
+  counts search calls (turns), not tasks. Measure the file read-only.
+- Sound: `memory_state_trigger.py` (bare-filename guard, frontmatter only,
+  bounded read); `memory_fts.py` incognito exclusion fails closed.
