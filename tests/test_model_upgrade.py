@@ -175,6 +175,26 @@ class TestPricesStore:
         with pytest.raises(ValueError):
             mu.set_price('codex', 'gpt-6-sol', -1.0, 10.0)
 
+    @pytest.mark.parametrize('bad', [float('inf'), float('nan')])
+    def test_set_price_rejects_non_finite(self, monkeypatch, tmp_path, bad):
+        # MC-1179 OS46: inf/nan pass a `< 0` check and defeat the price gate.
+        monkeypatch.setattr(mu, 'clayrune_home', lambda: tmp_path)
+        with pytest.raises(ValueError):
+            mu.set_price('codex', 'gpt-6-sol', bad, 10.0)
+        with pytest.raises(ValueError):
+            mu.set_price('codex', 'gpt-6-sol', 1.0, bad)
+        assert mu.get_price('codex', 'gpt-6-sol') is None
+
+    def test_global_apply_leaves_config_intact_when_the_dump_fails(self, tmp_path):
+        # MC-1179 OS47: the old writer opened the file 'w' first, so an
+        # unserializable value truncated the install's whole config.
+        path = tmp_path / 'config.json'
+        path.write_text('{"keep": true}', encoding='utf-8')
+        cfg = {'keep': True, 'bad': object()}
+        with pytest.raises(TypeError):
+            mu._global_apply(cfg, path)('gpt-6-sol')
+        assert json.loads(path.read_text(encoding='utf-8')) == {'keep': True}
+
     def test_get_price_missing_is_none(self, monkeypatch, tmp_path):
         monkeypatch.setattr(mu, 'clayrune_home', lambda: tmp_path)
         assert mu.get_price('codex', 'no-such-model') is None
