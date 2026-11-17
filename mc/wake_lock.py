@@ -57,6 +57,18 @@ _ES_SYSTEM_REQUIRED = 0x00000001
 _lock = threading.Lock()
 _engaged = False
 _proc: Optional[subprocess.Popen] = None   # mac/linux inhibitor process
+# MC-1179 OS51: how long a freshly spawned inhibitor must stay alive before it
+# counts as engaged, and the last engage failure logged (a repeat of the same
+# failure is logged once until engaging works or the failure changes).
+_SETTLE_S = 0.2
+_last_engage_failure = ""
+
+
+def _log_engage_failure(message: str) -> None:
+    global _last_engage_failure
+    if message != _last_engage_failure:
+        _last_engage_failure = message
+        _log(message, flush=True)
 
 
 def _engage_windows() -> bool:
@@ -95,13 +107,22 @@ def _engage_subprocess(cmd: list[str], bind_stdin: bool = False) -> bool:
         _proc = subprocess.Popen(
             cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             stdin=(subprocess.PIPE if bind_stdin else subprocess.DEVNULL))
+        # An inhibitor that exits at once (no session lock available, service
+        # down) is a failed engage, not an engaged one.
+        time.sleep(_SETTLE_S)
+        code = _proc.poll()
+        if code is not None:
+            _proc = None
+            _log_engage_failure(
+                f"[wake-lock] {cmd[0]} exited immediately (code {code}) — "
+                "cannot inhibit sleep on this system")
+            return False
         return True
     except FileNotFoundError:
-        _log(f"[wake-lock] {cmd[0]} not found — cannot inhibit sleep on this system",
-             flush=True)
+        _log_engage_failure(f"[wake-lock] {cmd[0]} not found — cannot inhibit sleep on this system")
         return False
     except Exception as e:
-        _log(f"[wake-lock] engage failed: {e}", flush=True)
+        _log_engage_failure(f"[wake-lock] engage failed: {e}")
         return False
 
 
@@ -160,7 +181,7 @@ def _release() -> bool:
 
 def set_active(active: bool) -> None:
     """Engage the wake lock iff `active`; release it otherwise. Idempotent."""
-    global _engaged
+    global _engaged, _last_engage_failure
     with _lock:
         # Child-liveness: a held POSIX lock whose inhibitor died is a silent
         # lie — clear the flag so the branch below re-engages this tick.
@@ -170,6 +191,7 @@ def set_active(active: bool) -> None:
         if active and not _engaged:
             if _engage():
                 _engaged = True
+                _last_engage_failure = ""
                 _log("[wake-lock] engaged — automatic system sleep prevented "
                      "while Clayrune runs", flush=True)
         elif not active and _engaged:

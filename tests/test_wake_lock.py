@@ -21,6 +21,8 @@ def _stub_os(monkeypatch):
     monkeypatch.setattr(wake_lock, "_log", lambda message, **kw: calls["logs"].append(message))
     monkeypatch.setattr(wake_lock, "_engaged", False)
     monkeypatch.setattr(wake_lock, "_proc", None)
+    monkeypatch.setattr(wake_lock, "_SETTLE_S", 0)
+    monkeypatch.setattr(wake_lock, "_last_engage_failure", "")
     yield calls
 
 
@@ -194,6 +196,21 @@ def test_missing_posix_tool_logs_failure(monkeypatch, _stub_os):
     monkeypatch.setattr(wake_lock.subprocess, "Popen", missing)
     assert wake_lock._engage_subprocess(["caffeinate", "-i"]) is False
     assert any("caffeinate not found" in line for line in _stub_os["logs"])
+
+
+def test_inhibitor_that_exits_at_once_is_a_failed_engage_logged_once(monkeypatch, _stub_os):
+    """MC-1179 OS51: Popen succeeding is not engaged; the failure repeats every
+    tick but is logged once until the state changes."""
+    monkeypatch.setattr(wake_lock.subprocess, "Popen",
+                        lambda cmd, **kw: types.SimpleNamespace(stdin=None, poll=lambda: 1))
+    monkeypatch.setattr(wake_lock.sys, "platform", "linux")
+    monkeypatch.setattr(wake_lock, "_engage", _REAL_ENGAGE)
+    for _ in range(3):
+        wake_lock.set_active(True)
+    assert wake_lock._engaged is False
+    assert wake_lock._proc is None
+    assert sum("exited immediately" in l for l in _stub_os["logs"]) == 1
+    assert not any("engaged" in l and "prevented" in l for l in _stub_os["logs"])
 
 
 @pytest.mark.parametrize("pipe_error,timeout", [(False, False), (True, False), (False, True)])
