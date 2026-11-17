@@ -225,3 +225,41 @@ Notes are terse on purpose; each is re-verified and expanded when moved to
 - C8 CONFIRMED: `PullLedger.expire/purgeDetails/purgeDedupe/cursor`
   (`pull-ledger.js:316-352`) have no source caller; only
   `test/pull-ledger.test.js`.
+- Progress (after rollover 3): the drafted final text was lost at a failed
+  write; rebuilding from these notes. Re-verified so far:
+  - Deploy entry is `production.js:2-3` (`wrangler.toml.example:7`), which
+    re-exports `worker.js` and `PullSocketMailbox`. Module reachability from it
+    (measured, import-graph script): never loaded in production =
+    `legacy-error-boundary.js` (10), `legacy-transport-hooks.js` (39),
+    `legacy-transport-http.js` (53), `replay.js` (70), `pull-retention.js`
+    (181, C1), `edge-vendor.js` (80, a CLI tool, keep).
+  - `worker.js:5-6` imports only `isLifecyclePath` and `isEnrollmentPath`; the
+    two modules behind them and 17 more are loaded for two path predicates
+    (`worker.js:57-60` answers 410 for all of them). Cutting those two edges
+    makes 1,247 more lines unreachable: `lifecycle.js` 256,
+    `enrollment-http.js` 219, `enrollment.js` 169, `delivery-proof.js` 140,
+    `destination-provisioning.js` 72, `delivery-capability.js` 70,
+    `cp-client.js` 61, `destination-cloudflare.js` 58, `code-mail.js` 55,
+    `enrollment-begin-proof.js` 47, `enrollment-preflight.js` 44,
+    `enrollment-grant.js` 41, `enrollment-provider.js` 33,
+    `enrollment-reservations.js` 28, `enrollment-challenge.js` 16,
+    `response-signing.js` 16, plus `edge-policy.js` 110 (kept: it is the
+    vendored entry of `edge-vendor.manifest.json`, with `delivery-capability.js`,
+    `enrollment-transcript.js`, `signing.js`).
+  - Legacy `Ledger` (`ledger.js`): live code reaches only `limit` (`:25-30`),
+    `pull` (`:14`), `stmt/first/run` (`:15-17`). No live caller for
+    `registration`, `recipient`, `claimNonce`, `reserveIngress`, `reject`,
+    `thread`, `intent`, `reserveSend`, `finishSend`, `enqueue`, `reconcile`,
+    `due`, `claim`, `settle` (`ledger.js:18-24,31-159`, about 125 lines).
+  - C2 confirmed (`ledger.js:25-30`, one row per bucket per window, deleter
+    only `ledger.js:131`).
+  - C4 extended: `pull_audit` is capped at 10,000 rows (`ledger-pull.js:119-121`)
+    and its only deleter is `pull-retention.js:78` (unwired). After 10,000
+    rejections no audit row is ever written again, only the day counter.
+  - C5 confirmed (`ingress.js:58`).
+  - C10 MEASURED (scratch script against `strip.js`): a text/plain body with a
+    NUL byte returns `{ok:true, has_text:true}` with the NUL kept
+    (`strip.js:390-395` trims whitespace only). `pull-ledger.js:147` refuses it
+    (`invalid_request`), `ingress-pull.js:74-78` renames that to
+    `storage_unavailable` and throws, `worker.js:95-97` rethrows: the mail is
+    failed at SMTP as a storage fault instead of dropped with a reason.
