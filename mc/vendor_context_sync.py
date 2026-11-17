@@ -39,6 +39,13 @@ def _rewritten_body(source_text: str, vendor_label: str) -> str:
     return _H1_RE.sub(f'# Clayrune — {vendor_label} project notes', source_text, count=1)
 
 
+def expected_mirror_text(source_text: str, context_file_name: str) -> str:
+    """The exact text `sync_vendor_context_file` writes for `source_text`."""
+    source_hash = hashlib.sha256(source_text.encode('utf-8')).hexdigest()
+    body = _rewritten_body(source_text, _vendor_label(context_file_name))
+    return f'{MARKER_PREFIX}{source_hash}{MARKER_SUFFIX}\n{body}'
+
+
 def sync_vendor_context_file(project_root: str, context_file_name: Optional[str],
                               *, log: Optional[Callable[[str], None]] = None) -> None:
     """Ensure `<project_root>/<context_file_name>` mirrors `CLAUDE.md`.
@@ -97,5 +104,4 @@ def sync_vendor_context_file(project_root: str, context_file_name: Optional[str]
         # adoption falls through to the write below, which attaches the marker.
 
     from mc.core import _atomic_write_text
-    new_text = f'{MARKER_PREFIX}{source_hash}{MARKER_SUFFIX}\n{expected_body}'
-    _atomic_write_text(target, new_text)
+    _atomic_write_text(target, expected_mirror_text(source_text, context_file_name))
