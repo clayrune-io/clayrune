@@ -22,17 +22,22 @@ one-time extraction, and stays around so the same export can be re-run.
 
 Output: <out-dir>/<item-id>-<slug>.md, one per item that has notes, plus an
 INDEX.md. Read-only against the live server — it never mutates the backlog.
+
+Re-running is safe (MC-1179 TL14): a journal that already exists is never
+rewritten. Only notes whose timestamp heading is not in it yet are appended,
+and an item's existing journal is found by its id, so a changed item text does
+not start a second file. `--index-only` regenerates INDEX.md and touches no
+journal.
 """
 
 import argparse
 import json
-import re
 import sys
 import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from backlog_journal_common import is_auto_note, journal_name  # noqa: E402
+from backlog_journal_sync import find_journals, sync_journal  # noqa: E402
 
 DEFAULT_HOST = 'http://localhost:5199'
 
@@ -44,45 +49,10 @@ def fetch(host, project_id):
 
 
 def write_journal(out_dir, item):
-    notes = item.get('notes') or []
-    if not notes:
-        return None
-    iid = item.get('id') or 'unknown'
-    text = (item.get('text') or '').strip()
-    title = ' '.join(text.split())[:90]
-    path = out_dir / journal_name(item)
-
-    lines = [
-        f'# {title}',
-        '',
-        f'- Backlog item: `{iid}`  ({item.get("priority") or "normal"} / {item.get("status") or "open"})',
-        f'- Notes: {len(notes)}  ({sum(1 for n in notes if is_auto_note(n))} written by unattended cycles)',
-        '',
-        'Append-only log for this item. Unattended agents write HERE, never to the',
-        'backlog note API — see AGENT_RULES.md. Newest entries go at the bottom.',
-        '',
-        '## Item text at export',
-        '',
-        '```',
-        text,
-        '```',
-        '',
-        '## Log',
-        '',
-    ]
-    for n in notes:
-        ts = n.get('ts') or n.get('created') or ''
-        code = n.get('agent_code') or 'user'
-        kind = 'unattended' if is_auto_note(n) else 'interactive'
-        body = (n.get('text') or '').rstrip()
-        lines += [f'### {ts}  ·  {code}  ·  {kind}', '', body, '']
-        if len(n.get('text') or '') >= 1999:
-            lines += ['> NOTE: this entry is exactly at the old 2000-byte backlog cap — '
-                      'it was almost certainly truncated mid-sentence at write time and '
-                      'the tail is not recoverable.', '']
-
-    path.write_text('\n'.join(lines), encoding='utf-8')
-    return path
+    """Create the item's journal, or append its new notes to the one that
+    exists. Never rewrites a journal (MC-1179 TL14). Returns the path, or None
+    when the item has no notes and no journal."""
+    return sync_journal(out_dir, item)[0]
 
 
 def main():
@@ -92,6 +62,8 @@ def main():
     ap.add_argument('--out', default='docs/_journal')
     ap.add_argument('--live-only', action='store_true',
                     help='export only open/in_progress/blocked items')
+    ap.add_argument('--index-only', action='store_true',
+                    help='regenerate INDEX.md only; create, append to or modify no journal')
     args = ap.parse_args()
 
     out_dir = Path(args.out)
@@ -102,8 +74,19 @@ def main():
         items = [i for i in items if i.get('status') in ('open', 'in_progress', 'blocked')]
 
     written, agent_written, index = 0, 0, []
+    created = appended = unchanged = 0
     for it in items:
-        p = write_journal(out_dir, it)
+        if args.index_only:
+            found = find_journals(out_dir, it) if it.get('notes') else []
+            p = found[0] if found else None
+        else:
+            p, outcome, _ = sync_journal(out_dir, it)
+            if outcome == 'created':
+                created += 1
+            elif outcome == 'appended':
+                appended += 1
+            elif outcome == 'unchanged':
+                unchanged += 1
         if p:
             written += 1
             n = it.get('notes') or []
@@ -150,7 +133,13 @@ def main():
         idx.append(f'| {n} | {status} | `{iid}` {title} | [{fname}]({fname}) |')
     (out_dir / 'INDEX.md').write_text('\n'.join(idx) + '\n', encoding='utf-8')
 
-    print(f'wrote {written} journal files (+{agent_written} agent-written already on disk) + INDEX.md to {out_dir}')
+    if args.index_only:
+        print(f'index only: INDEX.md written to {out_dir}; no journal touched '
+              f'({written} items with notes indexed, +{agent_written} agent-written)')
+    else:
+        print(f'journals: {created} created, {appended} got appended notes, '
+              f'{unchanged} left alone (+{agent_written} agent-written, not in the '
+              f'export); INDEX.md written to {out_dir}')
     return 0
 
 

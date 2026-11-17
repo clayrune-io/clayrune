@@ -93,6 +93,7 @@ datas = [
     (R('tools', 'test-run.py'), 'tools'),
     (R('tools', 'test_run_launcher.py'), 'tools'),
     (R('tools', 'test_run_transport.py'), 'tools'),
+    (R('tools', 'test_run_procgroup.py'), 'tools'),
     (R('tools', 'test_run_pytest.py'), 'tools'),
     (R('tools', 'test_run_node.py'), 'tools'),
     # Built-in agent characters (Claydo) installed into ~/.claude/agents/ at

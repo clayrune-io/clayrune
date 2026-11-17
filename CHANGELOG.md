@@ -1,5 +1,21 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Test launcher ends the whole process group on timeout or cancel (MC-1179 TL1)
+
+- `tools/test-run.py` ended only the direct child on a timeout or cancel, so a `--shell` unit, `npm`, pytest-xdist workers or a smoke's browser kept running, holding ports and files, while the run was reported `timeout`; the surviving grandchild also held the output pipes, so the tail was lost (`output_drain_incomplete`). Measured before the change: a unit whose grandchild sleeps then writes a marker still wrote it after the launcher had returned.
+- Each unit now starts in its own group (new `tools/test_run_procgroup.py`). POSIX: `start_new_session` and `os.killpg`. Windows: a Job Object with kill-on-job-close, the child created suspended, assigned, then resumed, so it contains only processes this launcher started and no PID is looked up afterwards. Timeout and cancel end the whole group; the pumps then see EOF and the output written before the kill is kept.
+- A unit that exits on its own is untouched (the Windows job's kill-on-close is cleared before its handle is closed). If a group cannot be set up, the unit runs ungrouped, only the direct child is ended on timeout, and a `child_group_unavailable` diagnostic is recorded. On POSIX a terminal Ctrl-C no longer reaches the child directly; the launcher turns it into a group kill.
+- Tests: new `tests/test_test_run_procgroup.py` (6 tests). `docs/TEST_RUN_LAUNCHER.md` no longer says there is no tree supervisor.
+- Branch candidate for review; no merge, push or server restart.
+
+## [2026-11-16] - Journal export never rewrites a journal (MC-1179 TL14)
+
+- Re-running `tools/backlog-journal-export.py` rebuilt every journal of an item with notes from the notes alone, so text an agent had appended to `docs/_journal/<id>-<slug>.md` (gitignored, no other copy) was lost with exit 0. A journal that exists is now never rewritten: it is created only when absent, and otherwise only the notes whose `(timestamp, agent_code)` heading is not already in it are appended; every other byte, and the mtime of an untouched file, stays. New logic is in `tools/backlog_journal_sync.py`.
+- The item's journal is found by its id prefix before any name is derived, so a changed item text appends to the old-slug file instead of creating a second one (this does not fix TL15; the filename is still derived from the text when no journal exists).
+- New `--index-only` regenerates `INDEX.md` and touches no journal. The summary line now reads `journals: N created, M got appended notes, K left alone`.
+- Tests: new `tests/test_backlog_journal_export.py` (11 tests, synthetic items in a temp directory). Not run against the live backlog or `docs/_journal`.
+- Branch candidate for review; no merge, push or server restart.
+
 ## [2026-11-16] - Tools: nothing operator-specific in the memory-eval probes, the mobile-test adb path or two READMEs (MC-1179 pass 12, TL26)
 
 - Transcript lookup: new `tools/memory-eval/_checkout.py` finds this checkout's session directories from the path encoding `mc.memory._encode_project_path` already gives (plus the CLI's `_`/`.` flattened variants and the per-agent worktree directories), instead of `'mission-control' in <dir name>`. `delivery_backfill.py`, `pin_suite.py`, `scorer_ab.py`, `retrieval_probe.py` and `fact_canary_probe.py` use it; a clone under any folder name finds its own sessions. When no directory matches, the tool says "no transcript directory found for this checkout" and stops (`fact_canary_probe.py` prints "NOT MEASURED" for that one section) instead of reporting 0 tasks as a result. Run from an agent worktree, "this checkout" is the project's own checkout.

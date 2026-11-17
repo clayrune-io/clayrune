@@ -19,6 +19,7 @@ import threading
 import time
 from typing import Any, BinaryIO
 
+from test_run_procgroup import start as start_group
 from test_run_transport import LocalClient, Telemetry, TransportError
 from test_run_pytest import PytestProgress
 from test_run_node import NodeProgress, node_script
@@ -201,12 +202,16 @@ def execute(spec: Unit, client: LocalClient, project: str, cancelled: threading.
             telemetry: Telemetry, key: str) -> dict:
     try:
         started = time.monotonic()
-        proc = subprocess.Popen(spec.argv, cwd=spec.cwd, env=spec.env, shell=False,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # Own group, so a timeout or cancel ends the unit's descendants too.
+        proc, group = start_group(spec.argv, cwd=spec.cwd, env=spec.env, shell=False,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except OSError as exc:
         warn('child_start_failed_' + type(exc).__name__)
         events(telemetry, key, event('diagnostic', code='child_start_failed', capture='partial'))
         return result(127 if isinstance(exc, FileNotFoundError) else 126)
+    if not group.contained:
+        warn('child_group_unavailable')
+        events(telemetry, key, event('diagnostic', code='child_group_unavailable', capture='partial'))
     # Immediately register the captured PID. Registration failure cannot change
     # the command's result; the local command already runs under caller policy.
     try:
@@ -226,7 +231,7 @@ def execute(spec: Unit, client: LocalClient, project: str, cancelled: threading.
         if cancelled.is_set() or (spec.timeout is not None and time.monotonic() - started >= spec.timeout):
             termination = 'cancelled' if cancelled.is_set() else 'timeout'
             try:
-                proc.kill()  # Only the child Popen PID this launcher created.
+                group.kill()  # The group this launcher created for the child, never a PID lookup.
             except OSError as exc:
                 warn('child_kill_failed_' + type(exc).__name__)
                 # Never mint terminal evidence if the child has not exited.
@@ -238,6 +243,7 @@ def execute(spec: Unit, client: LocalClient, project: str, cancelled: threading.
             heartbeat = time.monotonic()
         time.sleep(0.02)
     code = proc.wait()
+    group.release()  # A unit that exited on its own is left as it was.
     deadline = time.monotonic() + 1
     for pump in pumps:
         pump.join(max(0, deadline - time.monotonic()))
