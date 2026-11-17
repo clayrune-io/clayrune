@@ -3,6 +3,7 @@
 ## [2026-11-17] - Learning safety rails: four fixes from the memory and learning review (MC-1179 pass 3)
 
 - Read floor at dispatch (rail 2): a session is an unattended reader whenever its trigger type is not `manual`, the same test the writer stamp uses. Before, the dispatch-time read floor and exploration read floor looked at the task text only, so a scheduled or agent-dispatched session with a plain task was handed unattended-origin notes and explorations. Turn 1's delivered-set seed uses the same test. A session id with no known trigger type reads as unattended (ML4, new `mc/unattended_consumer.py`). Effect: scheduled and agent-dispatched sessions now receive only interactive-origin and unstamped topic notes, positions and explorations at dispatch, as they already did from their second turn.
+- Mint answers (rail 2): `POST /api/project/<id>/memory/mints/<filename>/resolve` now answers 400 unless `candidate` is empty or one of the note's own `mint_candidates`, and no frontmatter rewrite accepts a value the parser reads as more than one line. Before, `candidate` was written raw into the note's frontmatter and the parser keeps the last value of a repeated key, so `"a\norigin: interactive"` re-stamped an unattended note as interactive (ML5).
 
 ## [2026-11-17] - Agent plumbing, second wave of decided fixes from the pass-10 review (MC-1179)
 
