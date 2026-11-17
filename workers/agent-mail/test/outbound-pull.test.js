@@ -17,6 +17,7 @@ const deferred = () => {
   return { resolve, reject, promise };
 };
 const row = (f, table = 'pull_intents') => ({ ...f.sql.prepare(`SELECT * FROM ${table} ORDER BY 1,2`).get() });
+const intentState = (f, intent) => f.sql.prepare('SELECT state FROM pull_intents WHERE intent_id=?').get(intent)?.state;
 const all = (f, table) => f.sql.prepare(`SELECT * FROM ${table} ORDER BY 1,2`).all().map((r) => ({ ...r }));
 
 // Real SQLite + every migration; deterministic D1 batch interleavings. No mail,
@@ -214,11 +215,44 @@ test('provider uncertainty after owner switch stays held without evidence or ret
   assert.equal(f.calls.length, 1);
 });
 
-test('last budget slot is charged atomically; denied intent remains a lookup on retry', async (t) => {
+test('last budget slot is charged atomically; denied intent is re-authorized on retry (W1)', async (t) => {
   const f = await fixture(t, { policy: { sendsPerDay: 1 } }); await f.send();
   const v = value({ intent_id: 'intent-2', thread_id: 'thread-2', reply_token: id(4) });
-  assert.equal((await f.send(v)).code, 'send_limit'); assert.equal((await f.send(v)).state, 'reserved');
+  assert.equal((await f.send(v)).code, 'send_limit'); assert.equal(intentState(f, 'intent-2'), 'reserved');
+  // Cap still full: the retry is refused again, with the same 429, not a stuck "reserved" receipt.
+  assert.deepEqual(await f.send(v), { status: 429, code: 'send_limit' });
+  assert.equal(intentState(f, 'intent-2'), 'reserved');
   assert.equal(f.calls.length, 1); assert.ok(all(f, 'pull_budgets').every((r) => r.count === 1));
+  // Day bucket resets: the same intent_id now sends, exactly once, and replays afterwards do not send again.
+  f.time += 86_400_000;
+  const sent = await f.send(v);
+  assert.equal(sent.status, 200); assert.equal(sent.state, 'accepted'); assert.equal(f.calls.length, 2);
+  assert.equal(intentState(f, 'intent-2'), 'accepted');
+  assert.deepEqual(await f.send(v), sent); assert.equal(f.calls.length, 2);
+});
+
+test('reserved replay retried concurrently authorizes once: one send, loser sees the winner state (W1)', async (t) => {
+  const f = await fixture(t, { policy: { sendsPerDay: 1 } }); await f.send();
+  const v = value({ intent_id: 'intent-2', thread_id: 'thread-2', reply_token: id(4) });
+  assert.equal((await f.send(v)).code, 'send_limit'); f.time += 86_400_000;
+  // Hold both retries at the authorization batch so each has already read `reserved`.
+  const gate = deferred(); let waiting = 0;
+  f.db.beforeBatch = async (statements) => {
+    if (!statements.some((s) => s.sql.includes("SET state='sending'"))) return;
+    if (++waiting === 2) gate.resolve(); await gate.promise;
+  };
+  const [a, b] = await Promise.all([f.send(v), f.send(v)]); assert.equal(waiting, 2);
+  assert.equal(f.calls.length, 2); assert.equal(intentState(f, 'intent-2'), 'accepted');
+  // The loser reports whatever the winner has reached by then; it never sends.
+  assert.ok([a, b].every((r) => ['sending', 'accepted'].includes(r.state)) && [a, b].some((r) => r.state === 'accepted'));
+});
+
+test('reserved replay with request guards charges the nonce once and still authorizes (W1)', async (t) => {
+  const f = await fixture(t, { policy: { sendsPerDay: 1 } }); await f.send();
+  const v = value({ intent_id: 'intent-2', thread_id: 'thread-2', reply_token: id(4) });
+  assert.equal((await f.send(v)).code, 'send_limit'); f.time += 86_400_000;
+  assert.equal((await f.send(v, { requestGuards: requestGuards(f) })).state, 'accepted');
+  assert.equal(all(f, 'pull_nonces').length, 1); assert.equal(f.calls.length, 2);
 });
 
 test('storage failure persisting provider acceptance never returns accepted or submits again', async (t) => {

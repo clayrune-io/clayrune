@@ -12,6 +12,7 @@ export const MANAGEMENT_PATHS = Object.freeze(['/v1/pull/management/start', '/v1
   '/mail/link', '/mail/link/confirm', '/mail/manage', '/mail/logout']);
 const START = MANAGEMENT_PATHS[0];
 const PURPOSES = ['owner_change', 'key_recovery', 'resume', 'rotate', 'delete'];
+const UNSERVED_PURPOSES = Object.freeze(['key_recovery', 'delete']);
 const FIELDS = ['op_id', 'flow_id', 'purpose', 'candidate_key_id', 'candidate_public_key',
   'candidate_signature', 'flow_secret_hash', 'fence_hash'];
 const HEADERS = ['version', 'direction', 'key_id', 'install_id', 'generation', 'owner_generation',
@@ -90,6 +91,9 @@ function browserSecret(request) {
  * as SignupHTTP. trustedSource comes from the edge, never a forwarding header.
  */
 export class OwnerManagementHTTP extends SignupHTTP {
+  // Purposes the start route refuses until their /mail/* handler exists. An
+  // instance field so tests of the dormant machinery can clear it; production never does.
+  unservedPurposes = UNSERVED_PURPOSES;
   async response(auth, path, value, status = 200) {
     if (!auth) return Response.json(value, { status, headers });
     const raw = bytes(JSON.stringify(value));
@@ -173,6 +177,10 @@ export class OwnerManagementHTTP extends SignupHTTP {
   async start(auth, v) {
     valid(exact(v, FIELDS) && match(I, v.op_id) && match(I, v.flow_id) && PURPOSES.includes(v.purpose)
       && match(ID, v.candidate_key_id) && match(H, v.flow_secret_hash) && match(H, v.fence_hash));
+    // The confirmation form posts to /mail/key-recovery and /mail/delete, and no
+    // handler serves either (the owner would click a real emailed link into a 404).
+    // Refuse here, before any mail is queued or any budget is charged.
+    valid(!this.unservedPurposes.includes(v.purpose));
     const proof = bytes(JSON.stringify(['clayrune-mail-pull-candidate', '1', this.serviceOrigin, v.purpose,
       v.flow_id, auth.install_id, auth.generation, auth.owner_generation, v.candidate_key_id,
       v.candidate_public_key, v.fence_hash, v.flow_secret_hash]));

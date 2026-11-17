@@ -21,6 +21,7 @@ import { PullFenceHTTP, FENCE_PATH } from './pull-fence-http.js';
 import { PullKeyRotateHTTP, KEY_ROTATE_PATH } from './pull-key-rotate-http.js';
 import { ingress } from './ingress.js';
 import { sweep } from './pull-sweep.js';
+import { retain } from './pull-retention.js';
 import { deliverControlMail } from './control-mail-delivery.js';
 
 const HTTP_ROUTES = [
@@ -99,10 +100,10 @@ export function createWorker({ clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS
     },
     async scheduled(_event, env) {
       if (env.MAIL_ENABLED !== 'true') return;
-      // Two independent jobs: the pull notification sweep and the signup control
-      // mail consumer. Each runs even if the other fails; a failure is surfaced
-      // only after both have had their turn.
-      let swept, control, failure;
+      // Three independent jobs: the pull notification sweep, the signup control
+      // mail consumer and metadata retention. Each runs even if another fails; a
+      // failure is surfaced only after all have had their turn.
+      let swept, control, retention, failure;
       try {
         swept = await sweep({ ledger: new Ledger(env.MAIL_DB).pull({ clock }), wake: wake(env) });
       } catch {
@@ -119,8 +120,17 @@ export function createWorker({ clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS
           failure ??= new Error('agent_mail_control_delivery_failed');
         }
       }
+      // One bounded slice (<=100 rows of one family) per tick, every tick: the
+      // cursor visits each of its 16 families once per 16 ticks. Gating it to
+      // hourly would cut that to ~150 rows/day/family, below the nonce growth rate.
+      try {
+        retention = await retain({ ledger: new Ledger(env.MAIL_DB).pull({ clock }) });
+      } catch {
+        console.error('[agent-mail] pull_retention_failure');
+        failure ??= new Error('agent_mail_retention_failed');
+      }
       if (failure) throw failure;
-      return { ...swept, control };
+      return { ...swept, control, retention };
     },
   };
 }

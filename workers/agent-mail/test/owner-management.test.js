@@ -57,7 +57,9 @@ async function keypair() {
     publicKey: base64url(await crypto.subtle.exportKey('raw', pair.publicKey)),
     privateKey: base64url(await crypto.subtle.exportKey('pkcs8', pair.privateKey)) };
 }
-async function fixture(t, purpose = 'owner_change') {
+// `production` keeps the real start-route refusal of unserved purposes (W2). Every other
+// test exercises the dormant key_recovery/delete machinery, so it clears the refusal.
+async function fixture(t, purpose = 'owner_change', { production = false } = {}) {
   const db = new D1(); t.after(() => db.sql.close());
   const current = await keypair(); const replacement = await keypair(); const service = await keypair();
   const owner = await ownerIdentity('Private.Owner+tag@EXAMPLE.com');
@@ -66,6 +68,7 @@ async function fixture(t, purpose = 'owner_change') {
   f.config = { db, serviceOrigin: ORIGIN, domain: 'clayrune.example', verificationMail: mail,
     serviceKeyId: 'service-key', servicePrivateKey: service.privateKey, clock: () => f.time };
   f.http = new OwnerManagementHTTP(f.config);
+  if (!production) f.http.unservedPurposes = [];
   db.sql.prepare(`INSERT INTO pull_installs(install_id,generation,owner_generation,state,owner_hash,owner_address,
     address_local,key_id,public_key,consent_version,created_ms,updated_ms) VALUES(?,7,3,?,?,?,?,'current',?,'v1',?,?)`)
     .run(id(1), purpose === 'resume' ? 'frozen' : 'active', owner.owner_hash, owner.owner_address, 'm' + 'a'.repeat(29), current.publicKey, NOW - 1000, NOW - 1000);
@@ -156,6 +159,23 @@ function revoke(f, { flow = id(2), at = f.time - 1, n = 90, mode = 'revoke' } = 
     f.db.sql.prepare("UPDATE pull_installs SET state='disabled',updated_ms=?").run(at);
     f.db.sql.prepare("UPDATE pull_generations SET state='fenced',fenced_ms=?").run(at);
   }
+}
+
+// W2: nothing serves /mail/key-recovery or /mail/delete, so starting either must
+// not mail a link that 404s. Refused before any mail is queued or budget charged.
+for (const purpose of ['key_recovery', 'delete']) {
+  test(`${purpose} start is refused with no mail, flow, nonce or budget written (W2)`, async (t) => {
+    const f = await fixture(t, purpose, { production: true });
+    const before = ['pull_flows', 'pull_operations', 'pull_nonces', 'pull_tokens', 'pull_control_outbox', 'pull_budgets']
+      .map((name) => rows(f, name));
+    const r = await call(f);
+    assert.equal(r.response.status, 400); assert.equal(r.result.code, 'invalid_request');
+    assert.equal(r.result.request_id, f.value.op_id);
+    assert.deepEqual(['pull_flows', 'pull_operations', 'pull_nonces', 'pull_tokens', 'pull_control_outbox', 'pull_budgets']
+      .map((name) => rows(f, name)), before);
+    assert.equal(rows(f, 'pull_control_outbox').length, 0);
+    assert.equal(rows(f, 'pull_budgets').length, 0);
+  });
 }
 
 for (const purpose of ['resume', 'key_recovery']) {
