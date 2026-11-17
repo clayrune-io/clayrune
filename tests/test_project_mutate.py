@@ -191,7 +191,11 @@ def test_github_setup_does_not_undo_a_concurrent_edit(env):
     env.monkeypatch.setattr(env.pr._gh_sync, 'validate_repo', lambda repo: (True, None))
     env.monkeypatch.setattr(env.pr._gh_sync, 'sync_project', lambda pid: (True, 'ok'))
     race = _race(env, _writer_a(env))
-    r = env.client.post('/api/project/proj1/github/setup', json={'repo': 'o/r'})
+    from mc.blueprints import local_auth as la
+    la._local_auth_set_passcode('mutate-test-proof')
+    r = env.client.post('/api/project/proj1/github/setup',
+                        json={'repo': 'o/r', 'passcode': 'mutate-test-proof'},
+                        headers={'Origin': 'http://localhost:5199'})
     assert r.status_code == 200 and race.join() == []
     _a_changes_survived(env)
     assert _disk(env)['github_repo'] == 'o/r'

@@ -411,7 +411,7 @@ fence refusals remain in force; MCP wiring does not authorize an engine launch.
 
 | Verb | Path | Purpose |
 |---|---|---|
-| POST | `/api/project/<project_id>/github/setup` | Connect a GitHub repo. |
+| POST | `/api/project/<project_id>/github/setup` | Connect a GitHub repo. Human-only (passcode); agents get 403. |
 | POST | `/api/project/<project_id>/github/disconnect` | Disconnect. |
 | POST | `/api/project/<project_id>/github/sync` | Trigger a sync now. |
 | GET | `/api/project/<project_id>/github/status` | Read sync state. |

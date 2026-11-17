@@ -653,8 +653,8 @@ def test_backlog_note_append(client):
 
 def test_github_setup_happy_and_status(client):
     _seed(client)
-    r = client.post('/api/project/tproj/github/setup',
-                    json={'repo': 'owner/repo'})
+    r = _human_project_post(client, '/api/project/tproj/github/setup',
+                            json={'repo': 'owner/repo'})
     assert r.status_code == 200
     assert ('validate', 'owner/repo') in client.gh_calls
     assert len(client.started_threads) == 1   # initial sync queued
@@ -668,11 +668,11 @@ def test_github_setup_happy_and_status(client):
 
 def test_github_setup_malformed_and_invalid(client):
     _seed(client)
-    assert client.post('/api/project/tproj/github/setup',
-                       json={}).status_code == 400
+    assert _human_project_post(client, '/api/project/tproj/github/setup',
+                               json={}).status_code == 400
     client.fake_gh.validate_ok = (False, 'no such repo')
-    r = client.post('/api/project/tproj/github/setup',
-                    json={'repo': 'bad/repo'})
+    r = _human_project_post(client, '/api/project/tproj/github/setup',
+                            json={'repo': 'bad/repo'})
     assert r.status_code == 400 and r.get_json()['error'] == 'no such repo'
 
 
@@ -696,7 +696,8 @@ def test_github_disconnect(client):
 
 def test_code_sync_lifecycle(client):
     _seed(client)
-    assert client.post('/api/project/tproj/code-sync/enable').status_code == 200
+    assert _human_project_post(client, '/api/project/tproj/code-sync/enable',
+                               json={}).status_code == 200
     assert client.get('/api/project/tproj/code-sync/status').get_json() == {
         'state': 'in-sync', 'project': 'tproj'}
     assert client.post('/api/project/tproj/code-sync/sync').status_code == 200
@@ -705,7 +706,8 @@ def test_code_sync_lifecycle(client):
     assert client.post('/api/project/tproj/code-sync/dismiss',
                        json={}).status_code == 400
     assert client.post('/api/project/tproj/code-sync/disable').status_code == 200
-    assert client.post('/api/project/nope/code-sync/enable').status_code == 404
+    assert _human_project_post(client, '/api/project/nope/code-sync/enable',
+                               json={}).status_code == 404
 
 
 def test_code_sync_rate_limited_429(client):
