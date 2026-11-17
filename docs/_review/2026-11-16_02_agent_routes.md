@@ -1160,3 +1160,125 @@ The two rail fetches are event-driven and coalesced in flight, not on a timer
 - **Guardian state checks** (`:18763-18826`): every status write re-checks the
   process identity and the respawn window under the lock; eviction re-runs its
   predicate under the lock; the stuck-flag nudges fire once per episode.
+
+---
+
+## 6. `mc/agent_worktree.py`
+
+Read in full (1-1077), with `_sync._dirty` (`mc/project_sync.py:291-293`) and
+the landing call site `agent_routes.py:1784-1808`.
+
+#### R59 · high · L — one stray untracked file in the shared data folder makes every agent worktree "dirty", so nothing lands and nothing is cleaned up
+
+`mc/agent_worktree.py:577` (also `:516`, `:934`, `:1063`).
+
+`merge_back` asks `_sync._dirty(wts)` and returns `'dirty'` before it looks at
+a single commit. `_sync._dirty` is `git status --porcelain`, untracked files
+included (`project_sync.py:291-293`). Every agent worktree links
+`data/projects` to the main checkout's directory, so whatever is untracked and
+not ignored in the MAIN tree's `data/projects` shows up in every worktree's
+status. The module knows this: `dirty_outside_runtime` (`:1030-1042`) exists
+for exactly that reason, and its docstring says "a plain `_sync._dirty` marks
+every worker dirty". Only the Hivemind integration
+(`hivemind_integration.py:230`, `hivemind_integration_cycle.py:181,186`) and
+the display layer (`preserved_worktrees.py:445-459`) call it. The four gates
+that decide what happens to an ordinary agent's work still use the plain one:
+
+| line | gate | effect when the leak is present |
+|---|---|---|
+| `:577` | `merge_back` | returns `'dirty'`; nothing merged |
+| `:516` | `has_unmerged_work` | `True`; `remove` refuses (`:844-845`) |
+| `:934` | `_fingerprint` | the gc cache records "dirty" |
+| `:1063` | `sync_into` | skipped |
+
+**Measured**, in this review's own worktree, which has no uncommitted change of
+its own: `git status --porcelain` prints one line, a 0-byte
+`data/projects/.<project>_agent_log.json.<rand>.tmp<pid>`. That name is the
+temp file `mc/atomic_json.py:149` creates beside its target; a process killed
+between `mkstemp` and the rename leaves it, and `.gitignore:16-25` covers
+`*.json`, `*_agent_log.json`, `*_agent_log.lock` and one `.jsonl` pattern, not
+this. `git check-ignore` on it returns 1. So while that file exists, every
+isolated agent on the install ends its turn with "Agent worktree needs manual
+merge (dirty)" (`agent_routes.py:1799-1804`), and the gc keeps the worktree.
+On this install the worktree root held 270 directories and the gc cache 669
+entries, 661 of them flagged dirty. That count is a ceiling, not an
+attribution: some of those were dirty for their own reasons.
+
+Smallest fix: call `dirty_outside_runtime(project, wt)` at the four lines
+above. Separately, have `atomic_json` sweep its own orphaned temp files, or
+add `data/projects/.*.tmp*` to `.gitignore`; either removes this trigger but
+not the class.
+
+Test: none. `tests/test_hivemind_worktree_isolation.py` covers
+`dirty_outside_runtime` on the Hivemind path; no test puts an untracked file
+in the main tree's `data/projects` and then calls `merge_back`.
+
+#### R60 · medium · L — the gc cache claims an unchanged worktree cannot change verdict, and it can
+
+`mc/agent_worktree.py:924-926` (docstring), `:977-982`, `:1007-1012`.
+
+The cache key is the worktree's own `[HEAD, dirty]`. The verdict also depends
+on things outside the worktree: the base ref (the branch was merged by hand
+since, so it is now removable), the main tree being dirty (`:604`, `'skipped'`)
+or on another branch (`:607`), and a conflict that someone has since resolved.
+All of those come back from `remove()` as a `refused:` message, and only
+`deferred:` is excluded from caching (`:1007`). The startup pass runs with
+`use_cache=True` (`server.py:1351`). Result: a worktree refused once for a
+reason that has since gone away stays "preserved" until its own HEAD moves,
+which for a finished session is never.
+
+The cache is also never pruned: 669 entries against 270 directories
+(**measured**, read-only).
+
+Smallest fix: add the base ref's SHA to the fingerprint, and do not cache a
+refusal whose reason is about the main tree. Drop entries whose directory is
+gone at save time. Test: none found for a verdict that changes with the base.
+
+#### R61 · medium · L — a repository whose default branch is not `master` strands every agent's work, silently
+
+`mc/agent_worktree.py:528-532`, `:579-581`; `agent_routes.py:1787-1808`.
+
+`_base_ref` falls back to the literal `'master'`. Nothing detects the
+repository's real default branch; `worktree_base_branch` is a setting
+(`project_safety_settings.py:22`) the user has to know to set. On a `main`
+repository with no setting, `merge_back` returns `('skipped', 'unknown base
+ref master')`. The call site handles `clean`, `nothing`, `conflict`, `dirty`
+and the three review states; `'skipped'` falls through every branch, so there
+is no activity line and no log line. `has_unmerged_work` then returns `True`
+(`:519-521`), so the worktree is never removed either. The same silence
+covers the "main tree dirty" and "main tree is on another branch" skips
+(`:604`, `:607`). The module docstring (`:546-547`) names stranded work as the
+failure the feature exists to prevent.
+
+Smallest fix: an `else` at `agent_routes.py:1808` that logs the status and
+detail to the activity feed; and resolve the base from
+`git symbolic-ref refs/remotes/origin/HEAD` (falling back to the main tree's
+current branch) before the literal. Test: none for `'skipped'` at the call
+site.
+
+#### Lesser findings
+
+- **low · L** `:873-879` — the removal fallback runs
+  `shutil.rmtree(ignore_errors=True)` and then returns `(True, 'removed')`
+  whatever is left on disk; the branch is deleted regardless.
+- **low · L** `:634-641` — any merge failure is labelled `conflict`, including
+  a timeout and "untracked working tree file would be overwritten".
+- **low · L** `:474-476` — `create()` returns an existing worktree without
+  re-running `link_runtime` or `retarget_mcp`. A crash between `git worktree
+  add` and the link step leaves a worktree with no runtime links for the rest
+  of its life.
+- **low · L** `:401-409` — `retarget_mcp` is a plain substring replace of the
+  main path. A sibling directory that shares the prefix is rewritten too; a
+  path that differs only in drive-letter case is not matched and the function
+  still returns `True`.
+- **low · M** `:906`, `:918` — `_load_gc_cache` and `_save_gc_cache` swallow
+  JSON state-file errors with no log (project policy: log).
+
+#### Sound in this file
+
+`sever_links` never descends into a link and refuses when the walk cannot be
+verified; `prepare_delete` precedes every delete; `archive_scratch` verifies
+sizes and refuses on failure; `has_unmerged_work` fails closed on any
+exception; the merge lands the reviewed SHA and the hold is re-checked inside
+the landing environment (`:621-624`); every path built from a session id goes
+through `_SAFE_ID`.
