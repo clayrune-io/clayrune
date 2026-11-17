@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Connecting a GitHub repo and turning on code sync are human-only (MC-1179 pass 11 / SF22)
+
+- SF22: `POST /api/project/<id>/github/setup` and `POST /api/project/<id>/code-sync/enable` checked only that the project existed. One call from any local process saved the repo, started a sync thread that created GitHub issues from backlog items and their notes (25 at once, 25 more every five minutes), or pushed a branch carrying local commits. Reproduced in `tests/test_project_publish_gate.py` against the real `github_sync` and the conftest fake `gh`: a bare POST, one made during a running dispatch session, and a no-Origin POST carrying the passcode all answered 200, saved the repo, queued the thread and reached `gh repo view` (13 of the 18 new tests failed before the fix).
+- New `mc/project_publish_gate.py`: `require_human_publish(data, action)` refuses an unattended caller or an attributed agent caller (`is_unattended_caller()`, `is_agent_caller()`, so a forged Origin or a valid passcode cannot talk past it) with 403 `human_only`, then requires the retyped dashboard passcode through `_require_human_passcode`, the same helper the backup restore and workflow routes use. `require_human_routing_write` was not used: it only fires on routing keys. Both routes call it first, before the project lookup, `validate_repo`, any save or any thread.
+- `static/js/project-actions.js`: `githubConnect` and `codeSyncEnable` now go through `humanProofFetch` with a prompt that says what will be published; a cancelled prompt changes nothing. `github/disconnect` and `code-sync/disable` stay open. The only other callers of the two routes are the menu buttons in `render-core.js`, which call those two functions.
+- Rewritten to the new contract (they posted with no Origin and no passcode): the `github/setup` and `code-sync/enable` calls in `tests/test_project_routes.py` (4 tests) and `test_github_setup_does_not_undo_a_concurrent_edit` in `tests/test_project_mutate.py`.
+- Not touched: SF23, SF24, SF25, SFL57. Branch candidate for review; no merge, push or server restart.
+
 ## [2026-11-16] - Single-field project writers no longer undo another writer's edit (MC-1179 pass 07 / P55)
 
 - P55: the lost-update guard restored rows another writer added but not rows it changed or deleted, so a writer holding an older copy of the record put back an item that had been closed or deleted. Reproduced with two writers on one record (A closes item one and deletes item two, B saves an activity entry): item one read `open` again and item two was back, with nothing logged. Six of the new tests failed that way before the fix.

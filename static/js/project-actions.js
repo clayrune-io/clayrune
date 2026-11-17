@@ -178,13 +178,18 @@ async function githubConnect(projectId) {
   }
   document.querySelectorAll('.modal-menu-dropdown.open').forEach(d => d.classList.remove('open'));
   try {
-    const res = await fetch(API_BASE + `/api/project/${projectId}/github/setup`, {
+    // Human-only (SF22): this starts creating public-facing GitHub issues from
+    // the backlog and its notes. A cancelled prompt resolves null: do nothing.
+    const result = await humanProofFetch(API_BASE + `/api/project/${projectId}/github/setup`, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({repo})
+    }, {
+      title: 'Connect GitHub repo',
+      description: `Connecting ${repo} publishes this project's backlog items, including their notes, as GitHub issues there (25 now, 25 more every five minutes). Re-enter your dashboard passcode to confirm.`,
     });
-    const data = await res.json();
-    if (data.error) { alert(data.error); return; }
+    if (result === null) return;
+    const data = result.body;
+    if (!result.ok || data.error) { alert(data.message || data.error || ('HTTP ' + result.status)); return; }
     await refreshSilent();
   } catch (e) { alert('Connection failed: ' + e.message); }
 }
@@ -215,9 +220,18 @@ async function githubSyncNow(projectId) {
 async function codeSyncEnable(projectId) {
   document.querySelectorAll('.modal-menu-dropdown.open').forEach(d => d.classList.remove('open'));
   try {
-    const res = await fetch(API_BASE + `/api/project/${projectId}/code-sync/enable`, {method: 'POST'});
-    const data = await res.json();
-    if (data.error) { alert('Enable failed: ' + data.error); return; }
+    // Human-only (SF22): enabling pushes a branch carrying this project's
+    // local commits to its git remote. A cancelled prompt resolves null.
+    const result = await humanProofFetch(API_BASE + `/api/project/${projectId}/code-sync/enable`, {
+      method: 'POST',
+      body: JSON.stringify({})
+    }, {
+      title: 'Turn on code sync',
+      description: "Turning on code sync pushes a branch with this project's local commits to its git remote. Re-enter your dashboard passcode to confirm.",
+    });
+    if (result === null) return;
+    const data = result.body;
+    if (!result.ok || data.error) { alert('Enable failed: ' + (data.message || data.error || ('HTTP ' + result.status))); return; }
     await refreshSilent();
   } catch (e) { alert('Enable failed: ' + e.message); }
 }

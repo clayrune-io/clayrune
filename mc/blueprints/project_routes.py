@@ -60,6 +60,7 @@ from mc.project_record_path import is_plain_project_id, project_record_path
 from mc.project_safety_settings import refuse_agent_safety_write
 from mc import steward_role_writes as _role_writes
 from mc.project_routing_guard import require_human_routing_write
+from mc.project_publish_gate import require_human_publish
 from mc.core import _atomic_write_text, _log, file_type, now_iso, path_is_within, record_backlog_status_change, time_ago
 from mc.state import (
     _backlog_sync_lock,
@@ -2147,11 +2148,14 @@ def reject_social_queue_item(project_id, item_id):
 
 @bp.route('/api/project/<project_id>/github/setup', methods=['POST'])
 def github_setup(project_id):
-    """Validate repo, save config, trigger initial sync."""
+    """Validate repo, save config, trigger initial sync. Human-only (SF22)."""
+    data = request.get_json(silent=True) or {}
+    refusal = require_human_publish(data, 'connect a GitHub repo')
+    if refusal is not None:
+        return refusal
     p = load_project(project_id)
     if p is None:
         return jsonify({'error': 'not found'}), 404
-    data = request.get_json() or {}
     repo = (data.get('repo') or '').strip()
     if not repo:
         return jsonify({'error': 'repo required'}), 400
@@ -2226,7 +2230,11 @@ def github_status(project_id):
 @bp.route('/api/project/<project_id>/code-sync/enable', methods=['POST'])
 def code_sync_enable(project_id):
     """Turn on code sync for a project. Creates the hidden worktree on
-    the sync branch and pushes it to the remote (best-effort)."""
+    the sync branch and pushes it to the remote (best-effort). Human-only (SF22)."""
+    refusal = require_human_publish(request.get_json(silent=True) or {},
+                                    'turn on code sync')
+    if refusal is not None:
+        return refusal
     if load_project(project_id) is None:
         return jsonify({'error': 'not found'}), 404
     ok, msg = _proj_sync.enable(project_id)
