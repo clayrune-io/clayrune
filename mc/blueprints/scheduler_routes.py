@@ -66,7 +66,7 @@ import mc.github_sync as _gh_sync
 import mc.project_sync as _proj_sync
 import mc.distiller as _distiller           # exploration read-floor (steward cycle refresh)
 from mc import workflows as _wf             # MC-871 Q4: a schedule may invoke a workflow run
-from mc.blueprints.workflow_routes import _refuse_if_agent_caller as _refuse_workflow_agent_caller  # MC-1188
+from mc import workflow_human_gate as _wf_gate  # MC-1188: human-only workflow schedule/run
 from mc import memory as _mem            # memory read-floor (steward cycle refresh)
 from mc import isolated_launch as _isolated_launch  # MC-1165 r6: typed revival refusal
 from mc import engine_fallback as _engine_fallback  # MC-961: blocked-run pointer on a timer fire
@@ -1580,7 +1580,7 @@ def create_schedule():
     if (data.get('workflow_id') or '').strip():
         # Scheduling a workflow is a human act (MC-1188); plain task schedules
         # stay open to agents.
-        refusal = _refuse_workflow_agent_caller()
+        refusal = _wf_gate.refuse_if_agent_caller()
         if refusal:
             return refusal
     sched, err = create_schedule_from_spec(data)
@@ -1597,6 +1597,15 @@ def update_schedule(schedule_id):
     sched = next((s for s in schedules if s['id'] == schedule_id), None)
     if not sched:
         return jsonify({'error': 'not found'}), 404
+    # MC-1188: a row that IS a workflow schedule, or would BE one after this
+    # edit, is human-only -- so an agent cannot convert one into a task
+    # schedule either. Pausing (enabled=false and nothing else) is open to any
+    # caller: stopping a misbehaving schedule is the safe direction.
+    if ((sched.get('workflow_id') or (data.get('workflow_id') or '').strip())
+            and not _wf_gate.is_pause_only(data, sched)):
+        refusal = _wf_gate.refuse_if_agent_caller()
+        if refusal:
+            return refusal
     if data.get('billing', 'auto') not in ('auto', 'subscription'):
         return jsonify({'error': 'billing must be auto or subscription'}), 400
     # Same reason as create: a type nothing can schedule turns a working row
@@ -1611,11 +1620,6 @@ def update_schedule(schedule_id):
     # both at create time.
     target_task = (data.get('task', sched.get('task', '')) or '').strip()
     target_workflow_id = (data.get('workflow_id', sched.get('workflow_id', '')) or '').strip()
-    if target_workflow_id:
-        # Merged row carries a workflow: editing it is a human act (MC-1188).
-        refusal = _refuse_workflow_agent_caller()
-        if refusal:
-            return refusal
     if bool(target_task) == bool(target_workflow_id):
         return jsonify({
             'error': 'exactly one of task or workflow_id is required'}), 400
@@ -1705,7 +1709,7 @@ def schedule_run_now(schedule_id):
     workflow_id = sched.get('workflow_id', '')
     if workflow_id:
         # Human-only (MC-1188). The cadence fire does not come through here.
-        refusal = _refuse_workflow_agent_caller()
+        refusal = _wf_gate.refuse_if_agent_caller()
         if refusal:
             return refusal
         # Same branch the cadence fire takes (MC-871 Q4) — "Run Now" is an

@@ -22,6 +22,7 @@ from typing import Callable, Optional
 
 from flask import Blueprint, jsonify, request
 
+from mc import workflow_human_gate as _human_gate
 from mc import workflows as _wf
 # MC-995: the same retyped-dashboard-passcode gate the vault-lock routes use
 # (secrets_routes.py), generalized here — one shared helper, not a copy per
@@ -182,9 +183,12 @@ def run_workflow(workflow_id):
     """Manual trigger + 'Run Now' (later phases). Human-only (MC-1188): a run
     dispatches tooled agents with characters, and a caller with `curl` could
     otherwise restart a workflow as soon as the one-live-run guard cleared.
-    Same refusal as definition CRUD and decisions. The scheduler's own fire
-    path calls `start_run` directly, not this route, so it is unaffected."""
-    refusal = _refuse_if_agent_caller()
+    Gated by `workflow_human_gate` (browser Origin + managed-agent attribution,
+    no passcode) because the dashboard calls this on every Run click; the
+    stronger passcode gate stays on definition CRUD and decisions. The
+    scheduler's own fire path calls `start_run` directly, not this route, so it
+    is unaffected."""
+    refusal = _human_gate.refuse_if_agent_caller()
     if refusal:
         return refusal
     try:

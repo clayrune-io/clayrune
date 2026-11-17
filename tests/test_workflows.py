@@ -936,15 +936,23 @@ def test_decision_succeeds_with_origin_header(wf):
     assert resp.get_json()['run']['status'] == 'completed'
 
 
-def test_run_endpoint_refused_for_agent_callers_and_open_to_human_ones(wf):
+def test_run_endpoint_refused_for_agent_callers_and_open_to_human_ones(wf, monkeypatch):
     """MC-1188 (was `test_run_endpoint_not_gated_for_agent_callers`, which pinned
-    the opposite): a run dispatches tooled agents, so it is human-only like
-    definition CRUD."""
+    the opposite): a run dispatches tooled agents, so an agent may not start one.
+    The gate is Origin + managed-agent attribution, no passcode."""
+    from mc import caller_attribution as ca
+    monkeypatch.setattr(ca, 'attribute_caller', lambda *a, **k: ca.Attribution(ca.UNATTRIBUTED))
     doc = wf.m.create_workflow(_doc('runnable', [_agent('only')]))
-    resp = wf.client.post(f"/api/workflows/{doc['id']}/run")  # no Origin header
-    assert resp.status_code == 403
+    url = f"/api/workflows/{doc['id']}/run"
+
+    assert wf.client.post(url).status_code == 403                      # no Origin
+    monkeypatch.setattr(ca, 'attribute_caller',
+                        lambda *a, **k: ca.Attribution(ca.ATTRIBUTED, session_id='s', pid=1))
+    assert wf.client.post(url, headers=UI_HEADERS).status_code == 403  # Origin, but a managed agent
     assert wf.m.list_runs(doc['id']) == [] and wf.dispatch.calls == []
-    ok = wf.client.post(f"/api/workflows/{doc['id']}/run", headers=UI_HEADERS)
+
+    monkeypatch.setattr(ca, 'attribute_caller', lambda *a, **k: ca.Attribution(ca.UNATTRIBUTED))
+    ok = wf.client.post(url, headers=UI_HEADERS)                       # browser, no passcode in the body
     assert ok.status_code == 200
     assert len(wf.dispatch.calls) == 1
 
