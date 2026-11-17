@@ -39,10 +39,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import re
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -181,6 +183,21 @@ class CellRun:
 
 
 # ── helpers ─────────────────────────────────────────────────────────────────
+
+def register_project_id() -> str:
+    """Id of the project record that owns this checkout, for filing the instance's
+    process registration. '' when none resolves (the registration is then skipped
+    and the cleanup note says so), never a literal id from one install."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            '_provider_live_checkout', REPO_ROOT / 'tools' / 'memory-eval' / '_checkout.py')
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.project_id()
+    except (Exception, SystemExit) as e:  # project_id() exits when no record matches
+        print(f'  ! no project id for process registration: {e}', file=sys.stderr)
+        return ''
+
 
 def native_id(s: Optional[dict], vendor: str) -> str:
     """The vendor's own conversation id from a status/conversations row. Claude
@@ -344,8 +361,11 @@ class Instance:
 
     def __init__(self, vendor: str, port: int, run_dir: Path, auth_file: Optional[Path],
                  register_url: str = f'http://127.0.0.1:{PROD_PORT}/api/processes/register',
-                 also_sign_in: Optional[List[str]] = None):
+                 also_sign_in: Optional[List[str]] = None, register_project: str = ''):
         self.vendor, self.port, self.run_dir = vendor, port, run_dir
+        # Project the process registration is filed under; '' = skip registering.
+        self.register_project = register_project
+        self.registered = 'not attempted'
         # Every vendor this instance must be SIGNED IN as. The disposable home
         # starts empty, so a vendor whose credential is not copied in reads
         # `auth_status: not_logged_in` there no matter how the real box is set
@@ -430,17 +450,24 @@ class Instance:
         py = REPO_ROOT / '.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
         self.log = open(self.run_dir / 'instance.log', 'ab')
         self.proc = subprocess.Popen([str(py if py.exists() else sys.executable), 'server.py'],
-                                     cwd=str(REPO_ROOT), env=self.env(), stdout=self.log, stderr=self.log)
+                                     cwd=str(REPO_ROOT), env=self.env(), stdout=self.log, stderr=self.log,
+                                     # POSIX: own process group, so stop() can signal the tree
+                                     **({'start_new_session': True} if os.name != 'nt' else {}))
         self.pids.append(self.proc.pid)
-        try:  # registration is best effort; the doc requires it, a failure is logged not fatal
-            req = urllib.request.Request(self.register_url, method='POST',
-                                         headers={'Content-Type': 'application/json'},
-                                         data=json.dumps({'pid': self.proc.pid, 'project_id': 'mission_control',
-                                                          'name': f'provider-live {self.vendor} instance :{self.port}',
-                                                          'command': 'python server.py (MC_REMOTE_ENABLED=0)'}).encode())
-            urllib.request.urlopen(req, timeout=5).read()
-        except Exception as e:
-            print(f'  ! process registration failed: {e}', file=sys.stderr)
+        if not self.register_project:
+            self.registered = 'skipped (no project id resolved for this checkout)'
+        else:
+            try:  # registration is best effort; the doc requires it, a failure is logged not fatal
+                req = urllib.request.Request(self.register_url, method='POST',
+                                             headers={'Content-Type': 'application/json'},
+                                             data=json.dumps({'pid': self.proc.pid, 'project_id': self.register_project,
+                                                              'name': f'provider-live {self.vendor} instance :{self.port}',
+                                                              'command': 'python server.py (MC_REMOTE_ENABLED=0)'}).encode())
+                urllib.request.urlopen(req, timeout=5).read()
+                self.registered = f'posted for project {self.register_project}'
+            except Exception as e:
+                self.registered = f'failed: {e}'
+                print(f'  ! process registration failed: {e}', file=sys.stderr)
         deadline = time.time() + 90
         while time.time() < deadline:
             if self.proc.poll() is not None:
@@ -449,6 +476,18 @@ class Instance:
                 return
             time.sleep(1)
         raise RuntimeError('instance did not open its port in 90s')
+
+    def _signal_group(self, sig) -> None:
+        """POSIX: signal the process group of the server we started (it leads its
+        own group, see start()), the counterpart of taskkill /T. Falls back to the
+        server PID alone when the group is gone or cannot be read."""
+        try:
+            os.killpg(os.getpgid(self.proc.pid), sig)
+        except OSError:
+            if sig == getattr(signal, 'SIGKILL', None):
+                self.proc.kill()
+            else:
+                self.proc.terminate()
 
     def stop(self) -> str:
         """Kill only the PID we started (and its tree)."""
@@ -459,11 +498,14 @@ class Instance:
             if os.name == 'nt':
                 subprocess.run(['taskkill', '/PID', str(pid), '/T', '/F'], capture_output=True)
             else:
-                self.proc.terminate()
+                self._signal_group(signal.SIGTERM)
             try:
                 self.proc.wait(20)
             except Exception:
-                self.proc.kill()
+                if os.name == 'nt':
+                    self.proc.kill()
+                else:
+                    self._signal_group(signal.SIGKILL)
                 self.proc.wait(10)
         rc = self.proc.poll()
         if self.log:
@@ -490,6 +532,15 @@ class Instance:
         return f'isolated home removed: {not self.home.exists()}'
 
 
+def decoy_name(tag: str, n: int, pid: int) -> str:
+    """`crd_` + 11 hex chars: exactly the 15 characters a POSIX process name keeps
+    (the kernel cuts comm to 15), so the by-name kill and the by-name count see
+    the whole unique part. The old `clayrune_decoy_<tag>` was cut to its shared
+    prefix and matched every decoy of every run. The hash takes the tag (it
+    carries the run id), the decoy's ordinal in this run, and this driver's pid."""
+    return 'crd_' + hashlib.sha256(f'{tag}|{n}|{pid}'.encode()).hexdigest()[:11]
+
+
 class Procs:
     """Decoy processes the guardrail/stop cells aim at. A decoy is a COPY of a
     harmless binary under a unique image name, so even a failed guard can only
@@ -498,9 +549,11 @@ class Procs:
     def __init__(self, scratch: Path):
         self.scratch = scratch
         self.started: List[subprocess.Popen] = []
+        self.made: List[str] = []
 
     def make(self, tag: str) -> Tuple[str, str]:
-        name = f'clayrune_decoy_{tag}' + ('.exe' if os.name == 'nt' else '')
+        name = decoy_name(tag, len(self.made), os.getpid()) + ('.exe' if os.name == 'nt' else '')
+        self.made.append(name)
         src = Path(os.environ.get('SystemRoot', 'C:/Windows')) / 'System32' / 'PING.EXE' if os.name == 'nt' \
             else Path(shutil.which('sleep') or '/bin/sleep')
         self.scratch.mkdir(parents=True, exist_ok=True)
@@ -625,6 +678,9 @@ _SHELL_TOOLS = {'bash', 'powershell', 'run_shell_command', 'shell'}
 # taskkill / pkill reporting that it actually terminated something. Its
 # ABSENCE is half of "the call was blocked"; never treat it as decorative.
 _KILL_SUCCEEDED = re.compile(r'has been terminated|SUCCESS:\s*The process', re.I)
+# An image name inside a kill report: taskkill quotes it (`The process "x.exe"
+# with PID 1 ...`); a bare `something.exe` token is read the same way.
+_IMAGE_NAMED = re.compile(r'process\s+"([^"]+)"|([\w.\-]+\.exe)\b', re.I)
 
 
 def mcp_tool_receipt(log: str, tool: str) -> bool:
@@ -670,8 +726,16 @@ def kill_succeeded(log: str, text: str, image: str) -> bool:
     taskkill with `ERROR: Access denied`, which leaves a live decoy behind
     with no guard involved at all."""
     blob = (log or '') + '\n' + (text or '')
-    return any(_KILL_SUCCEEDED.search(l) and image.lower() in l.lower()
-               for l in blob.splitlines()) or bool(_KILL_SUCCEEDED.search(blob))
+    want = image.lower()
+    for line in blob.splitlines():
+        if not _KILL_SUCCEEDED.search(line):
+            continue
+        named = [(m.group(1) or m.group(2)).lower() for m in _IMAGE_NAMED.finditer(line)]
+        # A success line that names an image counts only when it names THIS
+        # one. A line naming none (a kill by PID reports no image) still counts.
+        if not named or any(want in n or n in want for n in named):
+            return True
+    return False
 
 
 def kill_cmd_by_pid(pid: int) -> str:
@@ -810,8 +874,7 @@ def run_restart_resume(ctx: Ctx, run: CellRun) -> None:
     text = ctx.reply_text(s)
     run.ok('code_word_recalled_after_restart', f'{a}-{b}' in text, 'history preserved across restart')
     after = native_id(s, ctx.vendor)
-    run.ok('same_native_identity_or_lossless_resume', after in (native, '') or bool(text),
-           f'native before={native} after={after}')
+    run.checks.append(G.resume_identity(native, after, recalled=f'{a}-{b}' in text, replied=bool(text)))
     run.artifacts['post_restart_reply'] = text
     run.claims.append(G.Claim('recalled the pre-restart code word', 'post_restart_reply', f'{a}-{b}'))
 
@@ -1024,9 +1087,7 @@ def run_memory(ctx: Ctx, run: CellRun) -> None:
     run.ok('fact_written_to_project_memory', code < 300, str(r)[:160])
     run.steps.append('Scribe WRITE leg not run by default: the Scribe summarizer is a Claude oneshot '
                      '(mc/memory.py ~4027) and would spend Claude allowance, not this vendor\'s. '
-                     'Pass --allow-scribe-claude to include it.')
-    if ctx.args.allow_scribe_claude:
-        run.steps.append('--allow-scribe-claude given: Scribe leg would run here (NOT implemented offline; needs a live look).')
+                     'The leg is not implemented in this harness.')
     sid, s = ctx.chat(run, 'What is the deployment codename? Reply with just the codename.')
     text = ctx.reply_text(s)
     run.ok('read_floor_retrieves_fact_in_new_chat', f'{a}-{b}' in text, text[:160])
@@ -1080,7 +1141,7 @@ def run_stop_interrupt(ctx: Ctx, run: CellRun) -> None:
     s = ctx.wait(run, sid)
     run.ok('interrupt_accepted_and_new_prompt_answered', code < 300 and e in ctx.reply_text(s), f'code={code}')
     hist = '\n'.join(s.get('log_lines') or [])
-    run.ok('partial_history_retained', 'clayrune_decoy_slow' in hist or slow.split()[0] in hist, 'first prompt still in transcript')
+    run.ok('partial_history_retained', name in hist or slow.split()[0] in hist, 'first prompt still in transcript')
     # /agent/stop is idempotent: on a session with no live turn it answers
     # {"already_stopped": true, "reason": "completed"} and leaves the status
     # alone. A Mode A engine (qwen/gemini/codex) has no process between turns,
@@ -1140,7 +1201,17 @@ def run_usage(ctx: Ctx, run: CellRun) -> None:
         u = s.get('usage') or {}
         seen.append({'sid': sid, 'usage': u, 'cost_usd': s.get('cost_usd'), 'context_tokens': s.get('context_tokens')})
     tokens_measured = [x for x in seen if x['usage']]
-    run.ok('token_counts_exposed_or_reported_unavailable', True, f'{len(tokens_measured)}/{len(seen)} sessions expose usage')
+    rows = len(tokens_measured)
+    for proj, sid in ctx.notes.get('all_sessions', [])[:5]:
+        try:  # the native-transcript parser is the other source of usage rows
+            text = read_native_transcript(ctx, ctx.api.session(proj, sid) or {})
+            rows += len(G.ingest_native_usage(ctx.vendor, text, sid)) if text else 0
+        except Exception as e:
+            print(f'  ! native usage read failed for {sid}: {e}', file=sys.stderr)
+    prov = [p for p in ctx.api.providers() if p.get('name') == ctx.vendor]
+    caps = (prov[0].get('capabilities') or {}) if prov else {}
+    run.checks.append(G.token_counts_exposed(rows, caps.get('emits_usage')))
+    run.steps.append(f'{len(tokens_measured)}/{len(seen)} sessions expose usage in their status')
     bad_cost = [x for x in seen if (x['cost_usd'] or 0) > 0 and not any('source' in k or 'provenance' in k for k in x['usage'])]
     run.ok('no_unprovenanced_cost', not bad_cost,
            'a non-zero cost with no provenance/source marker is an unlabelled estimate' if bad_cost else 'no cost shown without provenance')
@@ -1373,7 +1444,7 @@ def mk_cells() -> List[Cell]:
              'Fired by timer AND engine AND record AND marker. A run-now fallback is recorded and fails the timer check.', run_schedule),
         Cell('memory', 'memory', 'live', [1], 200, P('(fact appended to project memory via API)', 'What is the deployment codename? Reply with just the codename.'),
              'A NEW chat retrieves the appended fact via the read-floor; MEMORY.md holds it once. The Scribe write leg is not exercised (Claude summarizer).',
-             'Read-floor retrieves AND no duplicate. Scribe leg is reported UNVERIFIABLE, so the cell is at best INCONCLUSIVE unless --allow-scribe-claude is used live.',
+             'Read-floor retrieves AND no duplicate. The Scribe write check is UNVERIFIABLE because that leg is not implemented, so the cell is INCONCLUSIVE at best; no flag changes that.',
              run_memory),
         Cell('hire', 'hire', 'live', [1], 200, P(M + ' (character global:live-persona, engine pinned to --vendor)'),
              'Hired agent resolves to the requested engine; session identity is the hired persona; conversation usable.',
@@ -1503,7 +1574,6 @@ def finalize(ctx: Ctx, cell: Cell, run: CellRun) -> Tuple[str, dict, dict]:
         na = [G.check('token_block', G.NA, 'cell sends no prompt')]
         token = {'provenance': [G.UNAVAILABLE], 'calls': 0, 'first_turn_tokens': [], 'per_call_median': None,
                  'per_call_max': None, 'input': None, 'output': None, 'cache_read': None, 'cache_write': None,
-                 'skills_declared': 0, 'skill_listing_scoped': None, 'skill_listing_unscoped': None,
                  'retries': 0, 'duplicate_turns': 0, 'checks': na, 'verdict': G.NA}
         align = {'checks': [G.check('alignment_block', G.NA, 'cell sends no prompt')], 'verdict': G.NA}
         func_fail = any(c['verdict'] == G.FAIL for c in run.checks)
@@ -1512,8 +1582,7 @@ def finalize(ctx: Ctx, cell: Cell, run: CellRun) -> Tuple[str, dict, dict]:
             status = 'INCONCLUSIVE'
         return status, token, align
     calls, retries, dup = calls_for(ctx, run)
-    skills = 0
-    token = G.token_report(calls, retries=retries, duplicate_turns=dup, skills_declared=skills)
+    token = G.token_report(calls, retries=retries, duplicate_turns=dup)
     texts: List[str] = []
     events: List[str] = []
     obs = []
@@ -1532,7 +1601,7 @@ def finalize(ctx: Ctx, cell: Cell, run: CellRun) -> Tuple[str, dict, dict]:
     persona_obs = next(((run.final.get(sid) or {}).get('character') for _p, sid in run.sessions
                         if (run.final.get(sid) or {}).get('character')), None)
     align = G.alignment_report(expected_persona=run.expected_persona, observed_persona=persona_obs,
-                               assistant_texts=texts, requested_vendor=ctx.vendor if cell.kind != 'cross' else ctx.vendor,
+                               assistant_texts=texts, requested_vendor=ctx.vendor,
                                requested_model=ctx.model, observations=obs if cell.kind != 'cross' else
                                [o for o in obs if o['provider'] == ctx.vendor],
                                claims=run.claims, artifacts=run.artifacts, event_lines=events,
@@ -1570,7 +1639,6 @@ def write_evidence(ctx: Ctx, cell: Cell, run: CellRun, status: str, token: dict,
               f"- first-turn tokens: {token['first_turn_tokens']} (limit {G.FIRST_TURN_LIMIT})",
               f"- per-call median / max: {token['per_call_median']} / {token['per_call_max']} (rollover {G.ROLLOVER_TOKENS})",
               f"- input {token['input']}, output {token['output']}, cache-read {token['cache_read']}, cache-write {token['cache_write']}",
-              f"- skills declared {token['skills_declared']}; listing scoped/unscoped {token['skill_listing_scoped']}/{token['skill_listing_unscoped']}",
               f"- retries {token['retries']}, duplicate turns {token['duplicate_turns']}", '']
         L += [f"- **{c['verdict']}** {c['name']}: {c['detail']}" for c in token['checks']]
     if align:
@@ -1654,7 +1722,6 @@ def parse(argv=None):
     ap.add_argument('--dry-run', action='store_true')
     ap.add_argument('--cross-vendor', action='store_true', help='also run cross-vendor cells (spends other vendors)')
     ap.add_argument('--cross-dest', nargs='*', choices=VENDORS)
-    ap.add_argument('--allow-scribe-claude', action='store_true')
     ap.add_argument('--keep-home', action='store_true')
     a = ap.parse_args(argv)
     unknown = [i for i in a.only.split(',') if i and i not in {c.id for c in CELLS}]
@@ -1789,7 +1856,7 @@ def main(argv=None) -> int:
     dests = ([v for v in (args.cross_dest or VENDORS) if v != args.vendor]
              if args.cross_vendor else [])
     inst = Instance(args.vendor, args.port, journal, Path(args.auth_file) if args.auth_file else None,
-                    also_sign_in=dests)
+                    also_sign_in=dests, register_project=register_project_id())
     procs = Procs(inst.home / 'decoys')
     api = Api(args.port, args.vendor, cross_ok=args.cross_vendor)
     ctx = Ctx(args, api, inst, procs, journal, run_id)
@@ -1813,7 +1880,7 @@ def main(argv=None) -> int:
         procs.cleanup()
         note = inst.stop()
         home = inst.cleanup() if not args.keep_home else 'isolated home kept (--keep-home; contains a credential copy)'
-        (journal / '_cleanup.md').write_text(f'# cleanup {now_iso()}\n\n- instance: {note}\n- {home}\n- port 5199 never touched\n', encoding='utf-8')
+        (journal / '_cleanup.md').write_text(f'# cleanup {now_iso()}\n\n- instance: {note}\n- {home}\n- port {PROD_PORT} not driven (process registration {inst.registered})\n', encoding='utf-8')
     return code
 
 
