@@ -24,6 +24,12 @@ from mc.delegation_settlement import SettlementStore, authorize_absence
 
 RESTART_UNCERTAIN_ERROR = 'provider submission status unknown after restart'
 
+# Set on an agent-log row whose turn finished with the spawner latch already
+# spent and no event committed for it: the live path decided that turn owed its
+# spawner no wake (a human or an agent follow-up that did not name
+# notify_session, a self-started wake). `recover_outbox` must never rebuild it.
+WAKE_NOT_OWED_KEY = 'delegation_wake_not_owed'
+
 # What `last_error` of an 'uncertain' inbox row means, as a closed set so the
 # status list can say why without echoing free text. Prefix match, first hit
 # wins; the second field says whether the parent was provably never handed the
@@ -64,6 +70,13 @@ class DeliveryBlocked(RuntimeError):
 
 class DeliveryUncertain(RuntimeError):
     """A provider submission may have happened; never replay automatically."""
+
+
+class ConflictingEventIdentity(ValueError):
+    """An event id already stored under a different project, parent or payload.
+
+    Still a ValueError: every caller that caught the old bare ValueError keeps
+    working. Recovery catches this one alone, to skip the row and go on."""
 
 
 class DeliveryNotHandedOff(DeliveryUncertain):
@@ -332,7 +345,7 @@ class DeliveryStore(SettlementStore):
             if old is not None:
                 if (old['project_id'], old['parent_session_id'], old['payload']) != (project_id, parent_session_id, encoded):
                     db.execute('ROLLBACK')
-                    raise ValueError('conflicting completion event identity')
+                    raise ConflictingEventIdentity('conflicting completion event identity')
                 db.execute('COMMIT')
                 return 'duplicate'
             cur = db.execute(
@@ -364,7 +377,7 @@ class DeliveryStore(SettlementStore):
             if old is not None:
                 if (old['project_id'], old['parent_session_id'], old['payload']) != (project_id, parent_session_id, encoded):
                     db.execute('ROLLBACK')
-                    raise ValueError('conflicting completion event identity')
+                    raise ConflictingEventIdentity('conflicting completion event identity')
                 db.execute('COMMIT')
                 return False
             cur = db.execute(
@@ -732,11 +745,15 @@ class DeliveryStore(SettlementStore):
     def recover_outbox(self, entries: list[dict[str, Any]], project_id: str) -> int:
         """Rebuild missing notifications from the durable agent log source."""
         recovered = 0
+        conflicts: list[str] = []
         for entry in entries:
             parent = (entry.get('spawned_by_session_id') or '').strip()
             child = (entry.get('session_id') or '').strip()
             if (not parent or not child or entry.get('incognito') or
                     entry.get('status') not in ('completed', 'error', 'stopped')):
+                continue
+            if entry.get(WAKE_NOT_OWED_KEY):
+                # The turn finished without owing its spawner a wake (MC-1196).
                 continue
             exact = entry.get('delegation_completion')
             if not isinstance(exact, dict):
@@ -745,9 +762,36 @@ class DeliveryStore(SettlementStore):
                 continue
             event_id = exact.get('event_id') or event_id_for_turn(
                 child, int(entry.get('delegation_turn', 1)))
-            if self.enqueue(event_id, project_id, parent, exact):
-                recovered += 1
+            try:
+                if self.enqueue(event_id, project_id, parent, exact):
+                    recovered += 1
+            except ConflictingEventIdentity:
+                # MC-1196: the stored event wins and stays untouched. Skip this
+                # row and keep going: one conflict used to abort the whole log,
+                # leaving every later row unexamined.
+                conflicts.append(event_id)
+        if conflicts:
+            more = f' (+{len(conflicts) - 3} more)' if len(conflicts) > 3 else ''
+            _log(f'[delegation-delivery] log recovery skipped {len(conflicts)} row(s) of '
+                 f'project {project_id} with a conflicting completion event identity: '
+                 f'{", ".join(conflicts[:3])}{more}')
         return recovered
+
+    def committed_payload(self, event_id: str, project_id: str,
+                          parent_session_id: str) -> Optional[dict[str, Any]]:
+        """The completion payload already committed to the outbox for this
+        event under this project and parent, or None (absent or a different
+        project/parent). Read-only."""
+        with self._db() as db:
+            row = db.execute("SELECT project_id,parent_session_id,payload FROM outbox"
+                             " WHERE event_id=?", (event_id,)).fetchone()
+        if row is None or (row['project_id'], row['parent_session_id']) != (project_id, parent_session_id):
+            return None
+        try:
+            value = json.loads(row['payload']).get('payload')
+        except (TypeError, ValueError, AttributeError):
+            return None
+        return value if isinstance(value, dict) else None
 
 
 def event_id_for_turn(child_session_id: str, turn_number: int) -> str:
