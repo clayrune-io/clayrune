@@ -148,13 +148,18 @@ def test_a_known_condition_goes_quiet_and_re_arms_when_it_changes(env):
     assert not [f for f in again if f['hash'] not in seen], \
         'the same finding would be reported a second week running'
 
-    # The count moves -> the finding is materially different -> it re-arms.
+    # The counts creep inside the same 10% band -> still the same condition.
     for _ in range(50):
         deliv.record(P, [{'uid': 'hot.md', 'file': 'hot.md', 'cls': 'topic',
                           'head': 'hot'}])
     _, third = r.collect(mem, P)
-    assert [f for f in third if f['hash'] not in seen], \
-        'the finding changed and stayed silent'
+    assert not [f for f in third if f['hash'] not in seen],         'live counts moving inside one band re-raised a standing flag (MC-1179 TL28)'
+
+    # The rate falls to a different band -> materially different -> it re-arms.
+    for _ in range(150):
+        deliv.record(P, [])
+    _, fourth = r.collect(mem, P)
+    assert [f for f in fourth if f['hash'] not in seen],         'the finding changed band and stayed silent'
 
 
 # ── it reports, it never edits ──────────────────────────────────────────────

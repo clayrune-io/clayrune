@@ -112,9 +112,15 @@ def indexed_notes(m, project):
     return keys
 
 
-def finding(kind, subject, detail, evidence):
-    """A finding plus the hash that keeps it from being raised twice."""
-    h = hashlib.sha256(f'{kind}|{subject}|{detail}'.encode('utf-8')).hexdigest()[:16]
+def finding(kind, subject, detail, evidence, band=''):
+    """A finding plus the hash that keeps it from being raised twice.
+
+    The hash is kind|subject|band, NOT the detail text: the detail embeds live
+    counts ("20/189 deliveries") that move with every dispatch, so hashing it
+    re-raised every standing condition each week (MC-1179 TL28). `band` is the
+    coarse step the finding is in (a rate rounded down to 10%), so it re-arms
+    only when the condition is materially different."""
+    h = hashlib.sha256(f'{kind}|{subject}|{band}'.encode('utf-8')).hexdigest()[:16]
     return {'kind': kind, 'subject': subject, 'detail': detail,
             'evidence': evidence, 'hash': h}
 
@@ -151,7 +157,8 @@ def collect(m, project):
         out.append(finding(
             'promote', uid, f'{n}/{tasks} deliveries ({100.0 * n / tasks:.0f}%)',
             'fetched constantly with no line in the resident index — every one '
-            'of those retrievals spent a slot re-discovering it'))
+            'of those retrievals spent a slot re-discovering it',
+            band=int(10 * n / tasks)))
 
     # 2. a position that has become furniture
     for uid, rec in units.items():
@@ -165,7 +172,8 @@ def collect(m, project):
             f'{n}/{tasks} tasks ({100.0 * n / tasks:.0f}%)',
             'a standing ruling in this many prompts is riding tasks it has '
             'nothing to say about. Narrow it with an explicit `triggers:` list '
-            '— see the rarity gate in _position_trigger_max_df'))
+            '— see the rarity gate in _position_trigger_max_df',
+            band=int(10 * n / tasks)))
 
     # 3. gone dark
     for uid, meta in sorted(corpus.items()):
@@ -189,7 +197,8 @@ def collect(m, project):
             f'{100.0 * share:.1f}% of delivered slots (reopen above '
             f'{100.0 * ARCHIVE_SHARE_REOPEN:.0f}%)',
             'the standing position says the quota is inert because dedupe '
-            'removed the flood. This is its expires_when — re-open it'))
+            'removed the flood. This is its expires_when — re-open it',
+            band=int(10 * share)))
     return tasks, out
 
 
