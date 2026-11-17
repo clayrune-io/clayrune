@@ -1,5 +1,14 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - An unreadable MCP config file is refused, no longer treated as empty and overwritten (MC-1179 pass 11 / SF1)
+
+- `~/.claude.json` and a project's `.mcp.json` were read through a helper that returned `{}` for a missing file, an empty file, a read error and a parse error alike; every writer then replaced the file with only `mcpServers`. A UTF-8 BOM (Windows PowerShell 5.1, Notepad), a half-written file or a sharing violation was enough, and for `~/.claude.json` the Claude Code account and settings state went with it.
+- New `mc/mcp_config_file.py`: `read_strict` (absent or empty -> `{}`; present but unreadable, unparseable or not an object -> `McpConfigUnreadable`) and `read_lenient` (same, but an empty answer plus one log line per file and reason). Files are decoded as `utf-8-sig`, so a BOM file now reads as the file it is. `McpConfigUnreadable` is an `OSError`, so the Desk Connect registration paths that catch `(OSError, ValueError)` keep their structured failure.
+- `mc/mcp.py`: `_write_global_servers`, `_write_project_servers` and the existence checks in `write_server` and `delete_server` read strictly and refuse, leaving the file byte-identical (nothing is moved, renamed or rewritten). `delete_server` on an unreadable file now says so instead of "not found". Listing and lookup still show an empty list for an unreadable file and log the reason once. The boot-time built-in install skips an unreadable global or project file, reports its built-ins under `error`, and writes no marker.
+- `POST`, `PUT` and `DELETE /api/mcp...` answer 409 with a message naming the file when it cannot be read; the URL-install stream reports the same message as its error frame.
+- Not changed: the Gemini settings sync (`~/.gemini/settings.json`) reads through the lenient reader, as before, so an unreadable Gemini file is still replaced; it now at least parses a BOM.
+- Tests: `tests/test_mcp_config_unreadable.py` (26 cases, temp files only).
+
 ## [2026-11-16] - MCP "Add from URL" preview is gated and uses the hardened clone and scan (MC-1179 pass 11 / SF2)
 
 - `POST /api/mcp/url/preview` now starts with `refuse_unattended`, like the other write routes in `mcp_routes.py`, so an unattended agent session can no longer point it at a repository (or an npm name or JSON URL). No passcode is asked on preview: it registers nothing, and `POST /api/mcp/url/install` behind it still asks.

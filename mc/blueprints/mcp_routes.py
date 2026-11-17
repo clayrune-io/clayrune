@@ -100,6 +100,12 @@ def list_mcp_route():
     return jsonify(items)
 
 
+def _config_unreadable(e):
+    """409 naming the file: the config exists but cannot be read, so nothing was written (SF1)."""
+    _log(f'[mcp] write refused: {e}', flush=True)
+    return jsonify({'error': str(e), 'path': str(e.path)}), 409
+
+
 @bp.route('/api/mcp/<scope>/<name>')
 def read_mcp_route(scope, name):
     if scope not in ('global', 'project'):
@@ -154,6 +160,8 @@ def create_mcp_route():
         return jsonify(rec), 201
     except FileExistsError as e:
         return jsonify({'error': str(e)}), 409
+    except _mcp.McpConfigUnreadable as e:
+        return _config_unreadable(e)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
 
@@ -188,6 +196,8 @@ def update_mcp_route(scope, name):
             overwrite=True,
         )
         return jsonify(rec)
+    except _mcp.McpConfigUnreadable as e:
+        return _config_unreadable(e)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
 
@@ -208,6 +218,8 @@ def delete_mcp_route(scope, name):
     try:
         result = _mcp.delete_server(scope=scope, name=name, project_path=project_path)
         return jsonify(result)
+    except _mcp.McpConfigUnreadable as e:
+        return _config_unreadable(e)
     except FileNotFoundError as e:
         return jsonify({'error': str(e)}), 404
     except ValueError as e:
