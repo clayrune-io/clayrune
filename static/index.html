@@ -1475,10 +1475,7 @@ function _preserveOpenBacklogs(fresh) {
 // Mutates `fresh` in place; returns it.
 function _preserveOpenSocial(fresh) {
   const openIds = new Set([...openModals.keys()].filter(id => !id.startsWith('__')));
-  // The Desk hosts the same hydrated rows on its Queue surface, so it must
-  // preserve them across a poll exactly as the old standalone pane did -
-  // otherwise every 30s refresh empties the Queue tab under the user.
-  const allSocialOpen = openModals.has('__all_social') || openModals.has('__desk');
+  const allSocialOpen = openModals.has('__all_social');
   if (!openIds.size && !allSocialOpen) return fresh;
   const prevFull = {};
   for (const p of allProjects) {
@@ -1576,7 +1573,7 @@ document.addEventListener('DOMContentLoaded', () => {
   _mcDomReady = true;
   if (_mcRenderQueued) { _mcRenderQueued = false; render(); }
 }, { once: true });
-function render() { if (!_mcDomReady) { _mcRenderQueued = true; return; } renderStats(); renderProjects(); renderListView(); renderFeed(); if (typeof renderBeacon === 'function') renderBeacon(); renderSidebarProjects(); applyViewMode(); renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); if (openModals.has('__all_backlog')) renderAllBacklog(); if (openModals.has('__all_social')) renderAllSocial(); if (openModals.has('__desk') && typeof renderDesk === 'function') renderDesk(); if (openModals.has('__all_hivemind')) renderAllHiveminds(); }
+function render() { if (!_mcDomReady) { _mcRenderQueued = true; return; } renderStats(); renderProjects(); renderListView(); renderFeed(); if (typeof renderBeacon === 'function') renderBeacon(); renderSidebarProjects(); applyViewMode(); renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); if (openModals.has('__all_backlog')) renderAllBacklog(); if (openModals.has('__all_social')) renderAllSocial(); if (openModals.has('__all_hivemind')) renderAllHiveminds(); }
 
 window.addEventListener('resize', () => { if (!_mcDomReady) return; renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); renderProjects(); });
 
@@ -4264,9 +4261,9 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/social-actions.js"></script>
 <script type="module" src="/static/js/cross-backlog.js"></script>
 <script type="module" src="/static/js/cross-social.js"></script>
-<script type="module" src="/static/js/desk.js"></script>
-<!-- Desk v1 (MC-977, R0 plan T0a). Behind the `desk_v1` flag (default off);
-     every desk-v1-*.js/.css tag is added here, up front, so no later ticket
+<script type="module" src="/static/js/desk-open.js"></script>
+<!-- Desk v1 (MC-977, R0 plan T0a). The only Desk (the legacy screen and the
+     `desk_v1` switch were removed, MC-1179 pass 04); every desk-v1-*.js/.css tag is added here, up front, so no later ticket
      touches index.html (ground rule 2). Fixtures/store/kit before the shell before
      the surface stubs — load order only matters for readability here, since
      the shell resolves each surface's render function lazily at nav time.

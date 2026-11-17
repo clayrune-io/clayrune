@@ -209,13 +209,14 @@ function renderAllSocial() {
 //   • renderAllSocial — the central render() calls it, guarded by
 //     `openModals.has('__all_social')`; also called by openAllSocial and by
 //     _hydrateAllSocial's progressive fill.
-//   • _hydrateAllSocial — the Desk's Queue surface (desk.js) hosts these same
-//     rows, and ES modules do not share top-level names across files.
+//   • _hydrateAllSocial — was shared with the legacy Desk's Queue surface
+//     (desk.js, deleted); nothing outside this file reads it any more.
 window._hydrateAllSocial = _hydrateAllSocial;
 window._allSocialFilter = _allSocialFilter;
 window.openAllSocial = openAllSocial;
 window.renderAllSocial = renderAllSocial;
 
-// Shared with desk.js — static/js/*.js are ES modules, so a top-level name is
-// not global; cross-file use needs an explicit window bridge.
+// Was shared with the legacy desk.js (deleted); nothing outside this file reads
+// it any more. static/js/*.js are ES modules, so a top-level name is not
+// global; cross-file use needs an explicit window bridge.
 window.deferRepaintWhileTyping = deferRepaintWhileTyping;

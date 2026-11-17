@@ -38,8 +38,6 @@ await page.route('**/*', route => {
   if (path === '/api/remote/sessions') return route.fulfill({ json: { sessions: [{ session_id: 'sid', label: sessionLabel }] } });
   if (path.startsWith('/api/skills')) return route.fulfill({ json: skillResponse });
   if (path.startsWith('/api/mcp/')) return route.fulfill({ json: { config: {}, transport: 'stdio' } });
-  if (path.startsWith('/api/desk/platforms')) return route.fulfill({ json: {} });
-  if (path === '/api/desk/voices') return route.fulfill({ json: [{ name: sessionLabel, platform: sessionLabel }] });
   if (path === '/api/mobile-pair/tokens') return route.fulfill({ json: { tokens: [{ token_id: 'token', label: sessionLabel }] } });
   if (path === '/api/steward/loop-health') return route.fulfill({ json: { enabled: [{ project_id: sessionLabel, project: 'Fixture', cadence_minutes: 60 }] } });
   if (path === '/api/steward-role/assignments') return route.fulfill({ json: { assignments: [{ project_id: sessionLabel, project_name: 'Fixture', charter_text: 'Fixture', schedule_id: 'schedule', interval_minutes: 60 }], blockers: [] } });
@@ -220,21 +218,6 @@ try {
       if (request?.url !== '/api/skills/global/' + encodeURIComponent(name) || request.data.body !== 'Preserve this body') throw Error('SK1 editor save lost its identity or body');
       window.closeModalById(id);
       done.push('SK1 editor modal id and radio attributes');
-      await window.deskPlatformRules(name);
-      const deskId = '__desk_platform_' + name;
-      const deskWin = openModals.get(deskId)?.element;
-      if (!deskWin) throw Error('DK4 rules modal absent');
-      await clickAndCapture(deskWin, 'button[onclick^="deskSavePlatformRules"]', 'deskSavePlatformRules', [name]);
-      await clickAndCapture(deskWin, '.modal-close', 'closeModalById', [deskId]);
-      window.closeModalById(deskId);
-      done.push('DK4 platform rules modal handlers');
-      await window.deskVoices();
-      const voices = openModals.get('__desk_voices').element;
-      await clickAndCapture(voices, '.desk-destination-btn', 'deskVoiceDestination', [voiceLabel]);
-      await clickAndCapture(voices, '.desk-platform-btn', 'deskPlatformRules', [voiceLabel]);
-      await clickAndCapture(voices, '.desk-seed-btn', 'deskSeedVoice', [voiceLabel]);
-      window.closeModalById('__desk_voices');
-      done.push('FE4 voice name and DK4 platform badge');
     } finally { window.humanProofFetch = oldProof; }
     return done;
   }, sessionLabel);

@@ -641,9 +641,11 @@ def _load_config():
         'habit_report_enabled': True,
         'habit_complaint_exclusion_enabled': True,
 
-        # Desk v1 is the default workspace (Home -> campaign -> item).
-        # Live data has been the default since R1-W S10. While enabled,
-        # legacy Desk views stay read-only; turning this off restores them.
+        # Desk v1 is the only Desk (Home -> campaign -> item); the legacy screen
+        # was deleted (MC-1179 pass 04). The frontend no longer reads this, so
+        # an old saved `false` does nothing. The key stays so old config.json
+        # files load, so a stale browser tab's save is still accepted, and
+        # because mc/desk_capture.py waits for it to be a boolean on the page.
         'desk_v1': True,
         # Desk v1 R1-W (MC-1021, docs/desk_v1/R1W_WIRING_PLAN.md S0/S10). Picks
         # the v1 store's source: ON = `GET /api/desk/workspace` (the live

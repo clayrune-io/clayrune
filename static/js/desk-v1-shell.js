@@ -3,11 +3,9 @@
 // surface is a plain `deskV1Render<X>(el, params)` global this file calls —
 // none of them touch index.html or this router.
 //
-// Reuses the SAME modal slot legacy desk.js opens ('__desk', desk.js's
-// DESK_MODAL_ID) — desk.js's openDesk() branches here instead of building its
-// own modal when the flag is on, so there is only ever one Desk window. The
-// literal string is duplicated rather than imported (no cross-module import
-// exists in static/js); desk.js's own constant is the source of truth.
+// Owns the `__desk` modal slot. openDesk() (desk-open.js) calls deskV1Open()
+// here; there is only ever one Desk window. (The legacy desk.js, which used to
+// share this slot, was deleted in MC-1179 pass 04.)
 (function () {
   const MODAL_ID = '__desk';
 

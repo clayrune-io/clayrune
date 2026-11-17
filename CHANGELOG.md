@@ -1,5 +1,15 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - The legacy Desk screen is gone; Desk v1 is the only Desk (MC-1179 pass 04)
+
+- Deleted `static/js/desk.js` (2,361 lines; 37 of its 39 window names had no caller while `desk_v1` was on), `static/js/desk-impact-link-seam.js` (the legacy queue's tracked-link seam, only loaded by `desk.js`) and 643 + 11 lines of `.desk-*` CSS in `app.css` and `desk-window-maximize.css` that no remaining file names. Net 3,093 lines removed in this commit.
+- `openDesk` moved to `static/js/desk-open.js` (first commit of this change) and now calls `deskV1Open()` unconditionally; `render()` no longer re-renders the old screen; `_preserveOpenSocial` no longer keeps the Desk's Queue rows.
+- The **Desk v1** switch is gone from Settings. `desk_v1` stays in `_load_config()` defaults and `_CONFIG_EDITABLE_KEYS` so old `config.json` files load and a stale tab's save is accepted, but nothing reads it: an install that had it `false` now sees the same Desk as one with `true`. `mc/desk_v1_default.py` is unchanged. `desk_v1_live` is untouched (it picks the v1 store's data source, not the old screen).
+- No server route was removed: every `/api/desk/*` route is still called by Desk v1, tests or workflows.
+- `docs/USER_GUIDE.md` and `docs/DESK_V1_DEFAULT.md` updated.
+- Smokes: deleted `tools/smoke/desk.mjs` (it drove only the old four-tab screen). Its two checks that still hold were ported into `desk-v1-harness.mjs`: the sidebar and the mobile drawer both read "The Desk", and the Desk opens the v1 shell even when `/api/config` reports `desk_v1: false` (that tone now runs with `false`). `inline-handler-escaping.mjs` lost its two legacy-Desk cases (`deskPlatformRules`, `deskVoices`); v1 has no inline handler that carries a record name. `desk-v1-exit.mjs` no longer lists `desk.mjs`.
+- Tests: `tests/test_desk_v1_flag.py` now pins that `openDesk` does not read `desk_v1`, that `desk.js` and its script tag are gone, and that the Settings row is gone.
+
 ## [2026-11-17] - Two threads writing one file through `_atomic_write_text` no longer tear it (MC-1179 C1)
 
 - `mc.core._atomic_write_text` named its temp file `.{name}.tmp{pid}`: unique per process, not per call. Two threads writing one target shared a temp file, truncated each other's data, and the second `replace` raised `FileNotFoundError`. Measured in the review: 4,471 of 45,505 reads of the target returned content that was neither payload. 32 call sites use it (memory files, distiller artifacts, `process_ledger`'s `mc_child_pids.json`).
