@@ -32,7 +32,7 @@ port = int(sys.argv[1])
 tmp = Path(sys.argv[2])
 tmp.mkdir(parents=True, exist_ok=True)
 
-from flask import Flask  # noqa: E402
+from flask import Flask, request  # noqa: E402
 from mc.blueprints import browser_routes as br  # noqa: E402
 from mc.state import browser_sessions  # noqa: E402
 
@@ -90,6 +90,21 @@ def _crash(sid):
         return {'error': 'unknown session'}, 404
     s['proc'].kill()
     return {'ok': True}
+
+
+@app.route('/_harness/raw_resize/<sid>', methods=['POST'])
+def _raw_resize(sid):
+    # MC-1197: resize the active tab's window the way a page or Chromium itself
+    # can (no stop+start after it, unlike the pane's own fit), so a smoke can
+    # check the reader's Page.frameResized re-arm delivers a frame at the new size.
+    s = browser_sessions.get(sid)
+    if not s:
+        return {'error': 'unknown session'}, 404
+    b = request.get_json(silent=True) or {}
+    win = s['cdp'].request('Browser.getWindowForTarget', {'targetId': s['active_target_id']})
+    s['cdp'].request('Browser.setWindowBounds', {'windowId': win['windowId'],
+                     'bounds': {'width': int(b.get('w', 1136)), 'height': int(b.get('h', 700))}})
+    return {'ok': True, 'frame_seq': s.get('frame_seq', 0)}
 
 
 @app.route('/_harness/session/<sid>')
