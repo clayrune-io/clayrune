@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - The Inbox records a push the moment it is raised, not when it is delivered (MC-1179 pass 11, SF15 follow-up)
+
+- The SF15 change moved all of `_notify_push`, Inbox row included, onto the delivery worker, so a push waiting behind a stalled push service had no Inbox row yet, and a push dropped by the full queue (or pending at process exit) never got one.
+- `_queue_push` in `mc/blueprints/push_mobile.py` now writes the Inbox row on the caller's thread, as before the queue existed, and queues only the network delivery (`log_inbox=False`).
+- One new test in `tests/test_push_delivery_queue.py`: with delivery blocked and the queue full, all three pushes have their Inbox row at once and the delivery job writes no second row. It fails on the previous code.
+
 ## [2026-11-17] - A stalled push service can no longer freeze an agent's output reader (MC-1179 pass 11, SF15)
 
 - `_handle_push_signal` runs on the agents' stream-reader threads and delivered inline: one `webpush` call per subscribed device with no timeout (pywebpush's default is none), so an endpoint that accepted the connection and never answered held the reader that reads the CLI's output; the session stopped showing anything and nothing was logged.

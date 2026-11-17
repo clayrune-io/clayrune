@@ -215,3 +215,24 @@ def test_a_failed_delivery_logs_the_endpoint_host_only(stub, exc_kind):
     assert 'push.example.test' in joined
     for secret in ('SECRETTOKEN', '/wpush/v2', 'PKEYMATERIAL', 'AUTHSECRET', 'PRIVATEKEY'):
         assert secret not in joined, secret
+
+
+def test_the_inbox_row_is_written_at_once_even_when_delivery_is_stalled_or_dropped(stub, fresh_queue, monkeypatch):
+    """The Inbox is the history of what pushed: it is written on the caller's
+    thread, once per push, and never by the deferred delivery job."""
+    rows = []
+    monkeypatch.setattr(pm, '_append_notification', lambda **kw: rows.append(kw))
+    fresh_queue(max_pending=1)
+    stub.block = True
+    pm._handle_push_signal('p', 's', _result('first'))     # taken by the worker, stuck in webpush
+    assert stub.entered.acquire(timeout=5)
+    assert [r['body'] for r in rows] == ['first']           # written before delivery finished
+    pm._handle_push_signal('p', 's', _result('second'))    # fills the queue
+    pm._handle_push_signal('p', 's', _result('third'))     # dropped: queue full
+    assert [r['body'] for r in rows] == ['first', 'second', 'third']
+    assert any('queue full' in line for line in stub.logs)
+    stub.block = False
+    stub.release.set()
+    assert _wait(lambda: len(stub.calls) == 2)
+    time.sleep(0.05)
+    assert len(rows) == 3, 'the delivery job wrote a second Inbox row'

@@ -527,10 +527,20 @@ def _notify_push(title: str, body: str, *, url: str = '',
     }
 
 
-def _queue_push(title: str, body: str, **kwargs) -> None:
+def _queue_push(title: str, body: str, *, url: str = '', project_id: str = '',
+                session_id: str = '', kind: str = 'agent') -> None:
     """Hand one push to the delivery worker. The result of `_notify_push` is
-    dropped, as it was when it was called inline (nothing read it)."""
-    _push_queue.submit(lambda: _notify_push(title, body, **kwargs))
+    dropped, as it was when it was called inline (nothing read it).
+
+    The Inbox row is written HERE, on the caller's thread, as it was before the
+    queue existed: the Inbox is the history of what pushed, so it must not wait
+    behind a stalled push service or vanish with a push the full queue drops.
+    Only the network delivery is deferred."""
+    _append_notification(title=title, body=body, url=url, kind=kind,
+                         project_id=project_id, session_id=session_id)
+    _push_queue.submit(lambda: _notify_push(
+        title, body, url=url, project_id=project_id, session_id=session_id,
+        kind=kind, log_inbox=False))
 
 
 def _handle_push_signal(project_id: str, session_id: str, msg: dict) -> None:
