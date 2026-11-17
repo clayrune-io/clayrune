@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - One app-wide table of every mutating route and the gate on it (MC-1179 pass 08 / T8-3)
+
+- New `tests/route_gate_matrix_data.py` (data only): one row per (method, rule) of `server.app.url_map` that is not GET/HEAD/OPTIONS (422 rows), each with `gate` (`passcode` 100, `human_only` 5, `unattended_refused` 41, `open` 276) and evidence. A gated row names the helper that enforces it; an `open` row quotes the stated reason and where it was found, or says exactly `UNDECIDED` (161 rows) with a one-clause note of what the route changes.
+- New `tests/test_route_gate_matrix.py` (79 cases): the table equals the route table both ways, every row has a known gate and evidence, UNDECIDED rows stay under `UNDECIDED_CEILING` (161, may only go down), and every `passcode`/`human_only` row is probed live (75 of 105) with no proof and must answer 403. The probe arms tripwires on subprocess.Popen/run, os.kill/execv/_exit, shutil.rmtree and urllib urlopen first, so a misclassified row fails instead of acting; `open` and `unattended_refused` rows are never requested. 30 gated rows are excluded from the probe with a per-row reason (the view answers on input validation or missing state before its gate).
+- No gate was added, removed or changed; nothing under `mc/`, `static/` or `server.py` was touched, and the 38 stubbed fixtures are as they were.
+
 ## [2026-11-17] - The Inbox records a push the moment it is raised, not when it is delivered (MC-1179 pass 11, SF15 follow-up)
 
 - The SF15 change moved all of `_notify_push`, Inbox row included, onto the delivery worker, so a push waiting behind a stalled push service had no Inbox row yet, and a push dropped by the full queue (or pending at process exit) never got one.
