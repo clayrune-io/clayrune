@@ -5,7 +5,7 @@
  * this Node process and its owned Playwright Chromium.
  */
 import http from 'node:http';
-import {readFileSync} from 'node:fs';
+import {existsSync, readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {chromium} from 'playwright';
@@ -69,15 +69,18 @@ function openTerminalPopout(projectId, sessionId, command, isPty){
   win.innerHTML='<div class="modal-content" style="width:100%;height:100%;background:#0a0c10"></div>';
   document.getElementById('modal-layer').appendChild(win);
 }
-</script><script src="/static/js/first-run.js"></script><script src="/static/js/provider-auth.js"></script><script>window._realSettingsProviderTerminalLogin=settingsProviderTerminalLogin;window.settingsProviderTerminalLogin=stubTerminalLogin;</script><script>startFirstRun();</script>`;
+</script><script type="module" src="/static/js/first-run.js"></script><script type="module" src="/static/js/provider-auth.js"></script><script type="module">window._realSettingsProviderTerminalLogin=window.settingsProviderTerminalLogin;window.settingsProviderTerminalLogin=stubTerminalLogin;startFirstRun();</script>`;
+// first-run.js and provider-auth.js are ES modules in the real page (static/index.html
+// loads them type="module"); first-run.js imports its sibling modules, so this stub loads
+// them the same way and serves whatever they import. As classic scripts the import line is
+// a SyntaxError, startFirstRun never exists and "Get started" never renders.
 
 let server, browserServer, browser, page;
 try {
   server = http.createServer((req, res) => {
     const path = decodeURIComponent((req.url || '').split('?')[0]);
     if (path === '/') { res.writeHead(200, {'content-type': 'text/html'}); return res.end(pageHTML); }
-    if (path === '/static/js/first-run.js') { res.writeHead(200, {'content-type': 'text/javascript'}); return res.end(readFileSync(resolve(root, 'static/js/first-run.js'))); }
-    if (path === '/static/js/provider-auth.js') { res.writeHead(200, {'content-type': 'text/javascript'}); return res.end(readFileSync(resolve(root, 'static/js/provider-auth.js'))); }
+    if (/^\/static\/js\/[\w.-]+\.js$/.test(path) && existsSync(resolve(root, path.slice(1)))) { res.writeHead(200, {'content-type': 'text/javascript'}); return res.end(readFileSync(resolve(root, path.slice(1)))); }
     if (path === '/static/css/app.css') { res.writeHead(200, {'content-type': 'text/css'}); return res.end(readFileSync(resolve(root, 'static/css/app.css'))); }
     if (path === '/api/agent/providers') { res.writeHead(200, {'content-type': 'application/json'}); return res.end(JSON.stringify(providers)); }
     // F7: "Install selected" is ONE batch request for every selected vendor.

@@ -18,8 +18,15 @@ import vm from 'node:vm';
 // covered in the browser smoke). The one piece of logic that file checked
 // which is NOT flow-dependent and NOT covered elsewhere is this file: whether
 // the connections step skips itself on a fresh tour (F4, steps[1].skip()).
+// first-run.js is an ES module (it imports setup-model-preferences.js and
+// setup-update-ping-step.js); a vm script cannot parse `import`. Same loader as
+// agent-stream-dedupe.mjs / provider-neutral-rail-cache.mjs: strip the import
+// lines, run the rest as a script. A name the stripped imports provided that
+// the SETUP_STEPS literal touches while it is built (UPDATE_PING_SETUP_STEP) is
+// handed in through the vm context instead; none is on the skip() path.
 const source = ['first-run.js', 'provider-auth.js']
-  .map(f => readFileSync(new URL('../../static/js/' + f, import.meta.url), 'utf8')).join('\n');
+  .map(f => readFileSync(new URL('../../static/js/' + f, import.meta.url), 'utf8')
+    .replace(/^import [^;]*;[ \t]*$/gm, '')).join('\n');
 const validation = {textContent: ''};
 
 // F4: on a FRESH tour the connections step is skipped only when the saved
@@ -32,7 +39,7 @@ function freshSkip(provider) {
     window: {addEventListener() {}},
     document: {getElementById: () => validation, addEventListener() {}},
     _globalConfig: {default_provider: 'claude'}, _agentProviders: [provider],
-    esc: String, API_BASE: '',
+    esc: String, API_BASE: '', UPDATE_PING_SETUP_STEP: {id: 'update-ping'},
   });
   vm.runInContext(source + '\nglobalThis.steps = SETUP_STEPS;', c);
   return c.steps[1].skip();

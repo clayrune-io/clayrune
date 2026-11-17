@@ -9,7 +9,7 @@
  *   2. Gemini Connect     -> no username field at all, "Gemini API key", billing hint; saves username "".
  *   3. Edit               -> a connected engine's Edit opens the form as an edit (PATCH), same labels.
  *      (Since MC-1062/14 the Connections screen has no per-engine Connect or Replace key button: the form is opened here
- *       by vault name with the engine's `credential` spec, and Connections is checked only for its Add service / Change connection.)
+ *       by vault name with the engine's `credential` spec, and Connections is checked only for its Add service / Edit.)
  *   4. Plain Add          -> stock form (2. Username - optional / Value) until a known vault name is typed
  *                            (openai-api -> OpenAI labels), and back to stock for any other name.
  *
@@ -22,6 +22,8 @@ import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { loadFixtures, workspaceFromFixtures } from './desk-v1-fixture-api.mjs';
 import { loadStaticJsCss } from './_static.mjs';
+// The saved-connection button's word comes from the product's own vocabulary file, so a rename there cannot strand this check.
+import { ConnectionWords } from '../../static/js/desk-v1-connection-words.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -208,8 +210,8 @@ async function edit(browser) {
   const srv = { secrets: [{ name: 'gemini-api', username: '', scope: 'global', allow_unattended: true, description: '' }], writes: [], googleReady: true };
   const { ctx, page, pageErrors } = await newPage(browser, srv, { width: 1440, height: 900 });
   await openConnections(page, 'google');
-  check((await txt(page, '[data-conn-detail="engine:google"] [data-saved-change]')) === 'Change connection' && !(await page.$('[data-conn-engine="google"] [data-engine-guide]')),
-    'a connected engine offers Change connection (the wizard), not Connect or Replace key on the card', 'google buttons');
+  check((await txt(page, '[data-conn-detail="engine:google"] [data-saved-change]')) === ConnectionWords.buttons.edit && !(await page.$('[data-conn-engine="google"] [data-engine-guide]')),
+    `a connected engine offers ${ConnectionWords.buttons.edit} (the wizard), not Connect or Replace key on the card`, 'google buttons');
   await openEngineEditor(page, 'google', false);
   await page.waitForSelector(form, { timeout: 8000 });
   await settle(page, () => document.getElementById('sec-value-name').textContent === 'Gemini API key');
