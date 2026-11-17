@@ -250,7 +250,7 @@ re-checks what the previous three just read. It runs at the top of every
 message (`:193`), in every `drain` (`:144`) and inside every `send` (`:50`),
 which adds a fifth read for event frames (`:51-54`). Counted by read, not
 measured: a resume that pages 10 events is about 130 D1 calls, all inside
-`blockConcurrencyWhile` (`:38,191`), so the socket handles nothing else
+`blockConcurrencyWhile` (`:38,190`), so the socket handles nothing else
 meanwhile.
 
 Smallest fix: drop the empty `atomic` in `current()` (the following real batch
