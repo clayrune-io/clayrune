@@ -667,8 +667,73 @@ one of those tests the running server, not the merged tree
 (`hivemind_integration.py:69-91` runs it in the integration worktree). Count
 measured, effect read.
 
+### OS38 · medium · L — every agent with a live session is listed as its own sibling, at the top
+`mc/blueprints/coordination_routes.py:347-362` excludes the caller by
+`my_session_id`. The only caller passes `project.get('_coord_session_id') or ''`
+(`agent_routes.py:5673-5675`), and nothing in `mc/` or `server.py` ever sets
+that key (searched; one hit, the read). So the id is always empty, the
+exclusion at `:361` never fires, and a session whose context is rebuilt while
+it is `running` or `idle` (a resume, a rollover, a hand-off) gets its own task
+back as an "open intention". Its overlap with itself is the maximum, so it
+takes the first of the three slots under a header that says not to duplicate
+that agent's work. **Measured**: scratch script, one live session, the same
+task: with `''` the session is returned (score 4); with its id passed it is
+excluded. **Observed** in this review session's own system prompt: its first
+SIBLING ACTIVITY line was this pass's own dispatch. Smallest fix: pass the
+`session_id` argument `_build_agent_context` already has. Tests: none sets or
+reads the key.
+
+### OS39 · medium · M (security) — `/coord/publish` puts unbounded, unvalidated text into other agents' system prompts, and one malformed event blinds the feed for everyone
+`coordination_routes.py:612-638`. The route stores `agent` (`:628`) and
+`targets` (`:631`) as sent: no length limit, no type check, no check that
+coordination is enabled. `sibling_activity` keeps a completion even at zero
+overlap (`:401-402`), cuts only `summary` to 200 characters (`:391`), and
+`render_readfloor` prints `agent` and the first six `targets` whole
+(`:434-437`) under a trusted-looking header inside the system prompt of every
+other agent on the project (`agent_routes.py:5672-5678`). Any local caller,
+including an agent that has just read a hostile page, can therefore write
+kilobytes of its own text into its siblings' system prompts, and with two
+words copied from a likely task it is promoted to the `OVERLAPS your task`
+line (`:438-440`). **Measured**: one planted event produced an 8,270-character
+block with the conflict marker.
+Second half: `targets` that is not a list of strings raises inside the single
+`try` that wraps the whole function (`:355`, `:385-387`, `:405-407`), so the
+feed returns `[]` for every agent until that event leaves the last 100 lines
+or turns six hours old. **Measured**: `targets: 5` → `can only join an
+iterable` → empty feed. Smallest fix: in the route require
+`targets` to be a list of at most 20 strings of at most 200 characters, cap
+`agent` and `summary`, refuse when disabled; in the reader, skip a bad event
+instead of failing the call. Tests: `tests/test_coordination*.py` cover the
+happy path only.
+
+### OS40 · low · L/E — coordination: what is written and never read, and what is never trimmed
+- An explicit `intention` is stored and pushed (`:621-637`) but the read-floor
+  takes intentions only from live sessions (`:359-375`) and skips every stored
+  event that is not a `completion` (`:380`): publishing an intention changes
+  no agent's prompt.
+- `mc/blueprints/topics_routes.py:309-323` appends `TOPICS_REFRESHED` rows
+  (no `type` key) to the same log; nothing in coordination reads them. On the
+  live install they are 1,184 of 4,766 lines (**measured**, counts only), and
+  they share the 100-line window `_read_events` gives the read-floor.
+- `/coord/stream`, `_push_sse` and `_sse_queues` (`:49-51`, `:191-197`,
+  `:672-699`) have no consumer: `static/` never names the path and the MCP
+  tools use `roster`, `events` and `publish` only (`mc/clayrune_mcp/tools.py`).
+- `events.jsonl` is append-only with no trim (`:112-116`): 1.9 MB on the live
+  install; every context build reads all of it (`:119-138`), 3.2 ms
+  (**measured**, read-only timing), plus two git processes (`:278`, `:235`)
+  under the project lock.
+- Completions come from `HEAD` of the project path (`:229-234`, `:274`). With
+  worktree isolation on (it is on the live install), an agent's commits are
+  invisible to its siblings until they are merged into the main checkout.
+- `_read_events` (`:130-131`) and `_load_state` (`:177-178`) swallow a
+  state-file read without a log line; an unreadable `state.json` then reads as
+  "never reconciled", republishes the last five commits and drops the
+  interrupt dedup list (`:286-313`).
+
 ## Measurements
 
+- OS38, OS39: `_scratch` script importing the coordination module with a temp
+  `COORD_DIR` and a stub session manager; results quoted in the findings.
 - OS24, OS25, OS26, OS27: `_scratch` script driving the real blueprint through a
   Flask test client on a temp directory; results quoted in the findings.
 - `GET /api/hivemind/list` on the live install: 26 runs, 144 KB, 0.10-0.16 s
