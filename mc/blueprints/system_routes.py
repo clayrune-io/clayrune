@@ -37,7 +37,7 @@ from mc.usage_breakdown_aggregate import _same_reset as _ub_same_reset  # MC-998
 from mc.usage_breakdown_aggregate import reset_drop_starts as _ub_reset_drop_starts
 from mc import slash_commands as slash_cmds
 from mc.atomic_json import write_json_atomic
-from mc import update_requirements
+from mc import update_requirements, update_resync_guard
 from mc.vault_restart_handover import spawn_replacement
 from mc.provider_env_scope import claude_child_env, relaunch_env
 from mc.core import _atomic_write_text, _log, now_iso, path_is_within, time_ago
@@ -2669,6 +2669,7 @@ def system_update():
         return jsonify({'error': f'git status failed: {status_out}'}), 500
 
     stash_ref = ''
+    human_verified = False  # set once the retyped passcode has been checked this request
     if status_out:
         if not want_stash:
             return jsonify({
@@ -2687,6 +2688,7 @@ def system_update():
         refusal = _require_human_passcode(data)
         if refusal is not None:
             return refusal
+        human_verified = True
         rc_pre, pre_sha = _git(['rev-parse', '--short', 'HEAD'], repo_root)
         stash_msg = f"clayrune-auto-stash {now_iso()} {pre_sha if rc_pre == 0 else 'unknown'}"
         # No -u: this only shelves TRACKED changes (the dirty-check above is
@@ -2719,14 +2721,40 @@ def system_update():
                 'stashed': stash_ref,  # changes already set aside: tell the user where
             }), 500
 
-        rc_b, branch = _git(['rev-parse', '--abbrev-ref', 'HEAD'], repo_root)
-        branch = (branch or '').strip() if rc_b == 0 else ''
-        if not branch or branch == 'HEAD':
-            branch = 'master'  # detached HEAD → land on the release channel
-        rc_v, _ = _git(['rev-parse', '--verify', '--quiet',
-                        f'refs/remotes/origin/{branch}'], repo_root)
-        if rc_v != 0:
-            branch = 'master'
+        # P43 (MC-1179 pass 07): the reset below drops any commit that exists
+        # only in this checkout, and on a local-only branch repoints it at
+        # origin/master. Refuse before touching anything; nothing is reset.
+        resync = update_resync_guard.assess_resync(_git, repo_root)
+        if resync['refusal']:
+            r = resync['refusal']
+            _log(f"[update] hard re-sync refused ({r['reason']}, "
+                 f"local_commits={r['local_commits']}); checkout left as it was", flush=True)
+            return jsonify({**r, 'stashed': stash_ref}), 409
+        branch = resync['target']
+
+        # The reset is human-only, same checks as the stash branch above. The
+        # plain fast-forward pull stays open; only this fallback is gated.
+        if _is_agent_caller():
+            return jsonify({
+                'error': ('re-syncing the checkout after an upstream force-push is '
+                          'human-only: an agent must never hard-reset the install. '
+                          'Use Settings > Update in the dashboard.'),
+                'stashed': stash_ref,
+            }), 403
+        if not human_verified:
+            if not (isinstance(data.get('passcode'), str) and data['passcode'].strip()):
+                return jsonify({
+                    'error': 'resync_needs_confirmation',
+                    'needs_passcode': True,
+                    'message': ('The release branch was rewritten upstream, so a plain pull '
+                                'cannot update this checkout. Re-enter your dashboard passcode '
+                                'to reset it onto origin/' + branch + ' (no local commits '
+                                'would be lost).'),
+                    'stashed': stash_ref,
+                }), 403
+            refusal = _require_human_passcode(data)
+            if refusal is not None:
+                return refusal
 
         rc_r, reset_out = _git(['reset', '--hard', f'origin/{branch}'],
                                repo_root, timeout=60)

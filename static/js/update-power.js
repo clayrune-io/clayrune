@@ -233,8 +233,24 @@ async function performClayruneUpdate() {
   btn.textContent = 'Pulling...';
   hint.textContent = 'Running git pull...';
   try {
-    const res = await fetch(API_BASE + '/api/system/update', { method: 'POST' });
-    const data = await res.json();
+    let res = await fetch(API_BASE + '/api/system/update', { method: 'POST' });
+    let data = await res.json();
+    // P43: after an upstream force-push the server needs the retyped passcode
+    // before it will hard-reset the checkout. Ask for it, then send the same
+    // POST again; every other refusal (e.g. the 409 about unpushed local
+    // commits) falls through to the message below, which is the server's own.
+    if (res.status === 403 && data.error === 'resync_needs_confirmation') {
+      const proof = await humanProofFetch(API_BASE + '/api/system/update', {
+        method: 'POST',
+        body: JSON.stringify({}),
+      }, {
+        title: 'Re-sync Clayrune',
+        description: data.message || 'Re-enter your dashboard passcode to reset this install onto the release branch.',
+      });
+      if (proof === null) { btn.disabled = false; btn.textContent = 'Update now'; hint.textContent = 'Update cancelled.'; return; }
+      res = { ok: proof.ok, status: proof.status };
+      data = proof.body;
+    }
     if (!res.ok || !data.ok) {
       hint.textContent = (data.error || `Update failed (${res.status})`) + (data.detail ? ' — ' + data.detail.split('\n')[0] : '');
       btn.textContent = 'Failed';
