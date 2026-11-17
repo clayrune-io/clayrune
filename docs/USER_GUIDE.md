@@ -2014,8 +2014,15 @@ campaign's **Posts** before creating a version. Articles continue to use
 **Edit article**. Restore an archived piece before editing it. In demo
 mode, **Saved in demo only** means the change stays in the demo data.
 
-In a campaign's **Posts**, use a post's three-dot menu for **Archive** or
-**Delete post**. **Archived** finds whole archived posts, including empty
+In a campaign's **Posts**, use a post's three-dot menu for **Skip**, **Archive** or
+**Delete post**. Live **Skip** saves each unfinished version before changing its
+display; a refusal shows the server's reason and leaves that version unchanged.
+Other versions are still attempted. Undo can restore a skipped drafting, planned
+or needs-review version through the server. An approved or scheduled version
+cannot return to its previous state here, so skipping it has no Undo.
+**Move to another channel** and Duplicate for articles, images or videos are
+disabled in live mode until connected. Post duplication remains available.
+**Archived** finds existing whole archived posts, including empty
 ones; **Restore post** returns the post and each suspended version to its
 previous state. Published history stays intact. Restore an archived post
 before editing it. **Undo** in the Desk header reverses a delete; deleting

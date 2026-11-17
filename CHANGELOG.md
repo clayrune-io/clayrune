@@ -5,6 +5,13 @@
 - Adding or duplicating a person with another step's inspector open no longer replaces that step's persona with the temporary empty loading option. Persona writes resume after the roster loads, including an intentional choice of Project default.
 - Added a hermetic browser regression covering palette drag, node/trigger insertion, duplication, explicit selections and a delayed roster response. WB2-WB4 have separate causes and remain outside this change.
 - Branch candidate for review; no merge, push, deployment or server restart.
+## [2026-11-16] - Persist campaign card Skip before changing its display (MC-1183 / DV10)
+
+- Live card Skip now PATCHes every non-terminal version through the existing Review route; before this it only changed the browser's copy and was lost on reload. Refusals retain that version's state and show the server's reason; other versions are still attempted.
+- Archive is unchanged: it already saved through the whole-post archive route, which the Archived filter and Restore post depend on.
+- Undo persists the prior drafting, planned or needs-review state. States requiring approval cannot be restored through PATCH and explicitly offer no Undo. No approval, scheduling or publishing route is added.
+- Move and non-post Duplicate are disabled in live mode with a not-connected explanation; connected post duplication and demo actions remain available.
+- Hermetic campaign-menu regression smoke covers persistence/reload, refusal, Undo, repeated clicks and disconnected actions.
 
 ## [2026-11-16] - Require human confirmation for every Skills mutation (MC-1182)
 
