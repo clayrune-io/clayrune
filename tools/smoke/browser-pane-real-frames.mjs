@@ -12,7 +12,11 @@
 //   3. The launch registered its Chromium with the process tracker (with
 //      the real _register_process signature) — the orphan-on-restart root.
 //   4. Profile dir already held by a leftover Chromium (what a server
-//      restart leaves behind): the pane must still render real frames.
+//      restart leaves behind). Since 7d02bfda the launch REFUSES an untracked
+//      holder (a debugging port is not proof it is ours: another Clayrune
+//      server may own it): the error names the holder's pid, the holder is
+//      NOT closed, and once its owner (this smoke) ends it the same pane
+//      opens and renders real frames.
 //   5. Second launch of the same profile (Chromium restores an about:blank
 //      tab per relaunch) + an OAuth-style popup: the pane shows the page
 //      and then the popup, never a restored blank tab.
@@ -228,10 +232,37 @@ try {
       try { if ((await fetch(`http://127.0.0.1:${orphanPort}/json/version`)).ok) break; } catch {}
       await new Promise(r => setTimeout(r, 200));
     }
-    const page = await openPane();
-    await typeUrlAndExpectFrames(page, 'profile held by a leftover Chromium');
+    // The launch is posted straight to the backend: the pane's own open path only alert()s the refusal.
+    const launch = page => page.evaluate(() => fetch('/api/browser/launch', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ project_id: 'smoke', url: 'about:blank', profile: 'main' }),
+    }).then(async r => ({ ok: r.ok, status: r.status, body: await r.json().catch(() => ({})) })));
+    const page = await browser.newPage({ viewport: { width: 1300, height: 900 } });
+    await page.goto(BASE + '/');
+    const refused = await launch(page);
+    if (!refused.ok && refused.body.error && refused.body.error.includes(`pid ${orphan.pid}`)
+        && /in use by another browser process/.test(refused.body.error)) {
+      ok(`profile held by a leftover Chromium: launch refused, names the holder (${refused.body.error.slice(0, 90)})`);
+    } else fail(`profile held: expected a refusal naming pid ${orphan.pid}, got ${JSON.stringify(refused)}`);
+    let alive = true; try { process.kill(orphan.pid, 0); } catch { alive = false; }
+    if (alive && (await fetch(`http://127.0.0.1:${orphanPort}/json/version`).then(r => r.ok, () => false))) ok('the leftover Chromium was not closed by the refused launch');
+    else fail('the refused launch closed or killed a Chromium it does not own');
+    // The owner (this smoke) ends its own process, by the PID it started; the same launch then works.
+    try { process.kill(orphan.pid); } catch {}
+    let relaunched = null; const tEnd = Date.now() + 15000;
+    while (Date.now() < tEnd) {
+      relaunched = await launch(page);
+      if (relaunched.ok) break;
+      await page.waitForTimeout(300);
+    }
+    if (relaunched && relaunched.ok) ok('once the holder is gone, the same profile launches');
+    else fail(`profile still refused 15s after its holder exited: ${JSON.stringify(relaunched)}`);
     await stopAll(page);
     await page.close();
+    const pane = await openPane();
+    await typeUrlAndExpectFrames(pane, 'profile freed by its owner');
+    await stopAll(pane);
+    await pane.close();
   }
 } finally {
   await browser.close();

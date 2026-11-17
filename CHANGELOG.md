@@ -1,5 +1,14 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Four stale smokes brought to the current contract, and the Desk exit gate split (MC-1179 pass 08 / T8-2 follow-up)
+
+- Test-only; nothing under `mc/` or `static/` changed. Of the six smokes the one runner reported red: four were stale or day-dependent, one is split, one (`browser-pane-binary-stream`) is NOT fixed (intermittent under CPU load, cause not found).
+- `agent-read-request-ui`: section B drove the per-connection "Agents may read" editor that `fc28e2d7` (2026-10-28) stopped mounting; it now asserts the editor is absent from a pane connection's detail and that opening it writes no policy.
+- `agent-time-tag`: an undated line is dated "now", so the live-SSE block only passed on the fixture day (2026-11-05); the browser clock is pinned to it.
+- `browser-pane-real-frames`: section 4 expected the pane to close a leftover Chromium on the `main` profile; `7d02bfda` made that a refusal on purpose. It now asserts the refusal names the holder pid and the pane renders once the holder is gone.
+- `browser-pane-mobile-typing`: the tap was computed from a frame the pane was not yet mapping through (the mobile frame flaps for 1-2.5 s after launch); it now waits for the frame to settle. The harness session state gains `frame_guard_since`.
+- `desk-v1-exit` -> `desk-v1-exit-sweeps` (new, 8.6 s): the A1/A12/A15 sweeps moved out of the aggregate that re-ran 21 other smokes serially (> 240 s). The aggregate is kept, with no checks of its own.
+
 ## [2026-11-17] - 21 mutating routes now refuse agent and unattended callers (MC-1179 pass 08 / T8-3 follow-up, gate batch 1)
 
 - New `mc/human_only_gate.py` (`@human_only('<action>')`, `refuse_non_human`): the attribution-only gate. It is the two checks `require_human_publish` is built from, `is_unattended_caller()` and `project_safety_settings.is_agent_caller()` (no browser Origin, or the peer process descends from a managed agent), with no passcode, no prompt and no UI change. A refusal is 403 `{"error": "human_only"}` and runs first in the view.
