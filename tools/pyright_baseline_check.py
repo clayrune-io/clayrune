@@ -97,6 +97,10 @@ def parse_report(text: str) -> dict[str, Any]:
     report = json.loads(text[start:])
     if "generalDiagnostics" not in report:
         raise ValueError("pyright JSON has no generalDiagnostics")
+    summary = report.get("summary")
+    if isinstance(summary, dict) and summary.get("filesAnalyzed") == 0:
+        # Include paths that match nothing give an empty, valid-looking report.
+        raise ValueError("pyright analysed 0 files (check the include paths)")
     return report
 
 
