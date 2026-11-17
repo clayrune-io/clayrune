@@ -2318,7 +2318,9 @@ function _renderLedger() {
 
 // ── Interop: these are ES modules, so top-level names are NOT global.
 //    Same rationale as cross-social.js's block. ──
-window.openDesk = openDesk;
+// The public `openDesk` lives in desk-open.js, which falls back to this when
+// Desk v1 is off.
+window.openLegacyDesk = openDesk;
 window.deskTab = deskTab;
 window.deskHarvest = deskHarvest;
 window.deskDraft = deskDraft;
