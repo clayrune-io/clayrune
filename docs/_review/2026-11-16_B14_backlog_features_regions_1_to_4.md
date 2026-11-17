@@ -22,7 +22,99 @@ a backlog item meets one. New findings from this pass use the prefix **BX**.
 
 ## Feature table (lens 4)
 
-(in progress)
+Passes 1 to 4 were written before the feature lens was added, so this table is
+the lens-4 result for all four regions. "Basis" says how the verdict was
+reached: **traced** means the entry point and the state change were opened in
+this pass; **pass N** means the verdict rests on that report's finding, whose
+lines were opened there and not re-opened here. Finding ids without the BX
+prefix belong to the four earlier reports.
+
+Verdicts: **works** (as documented) / **defect** (works with a defect) /
+**cannot** (cannot work as written) / **undetermined**.
+
+### Runtime core and agent routes
+
+| # | Feature | Main path | Most likely failure path | Verdict | Basis |
+|---|---|---|---|---|---|
+| F1 | Start a chat with an agent | `POST .../agent/dispatch` (`mc/blueprints/agent_routes.py:13540`) attributes the caller, applies pace routing, calls `_dispatch_agent_internal` (`:12551`), returns `session_id` | CLI missing: 500 with an install message (`:13652-13653`). Context build fails on a non-Claude engine: the agent launches with no rules, persona or memory (R39) | defect (R39, R47) | traced |
+| F2 | Send a follow-up message | `POST .../agent/send` (`:13751`) appends the user line (`:13883`) and writes to the engine through the delivery seam (`mc/agent_runtime.py:5509-5560`) | Engine write fails: now refused, not reported sent (MC-1168). A failed non-Claude follow-up still answers `ok: true` on one branch (R49); the browser shows a refused send as sent (CV2) | defect (R49, CV2, R48) | traced |
+| F3 | Stop an agent | `POST .../agent/stop` (`:15461`) sets `stopped` under the project lock (`_stop_session`, `:15250-15271`), kills the tree off-lock (`:15274-15285`) | On six non-Claude engines the stop is recorded as a crash with a hint (MA1); `stdin.close()` runs under the lock (R53) | defect (MA1, R53) | traced; MA1 from pass 1 |
+| F4 | Interrupt and redirect mid-turn | `POST .../agent/interrupt` (`:15511`), respawn, `_finish_interrupt_respawn` (`:15496-15509`) | A follow-up during a running turn is logged as a crash on Gemini, OpenCode, Goose, Aider, Kiro (G2, X1) | defect (G2, X1) | pass 1 |
+| F5 | Resume a past conversation | Dispatch with `resume_conversation_id`; Mode B revival writes the message through the delivery seam and undoes the revive on failure (`agent_routes.py:8200-8226`) | Resuming by an earlier id of a rolled chain falls back to the project default engine (R42); working directory gone: 409 refusal (`:13642-13644`) | defect (R42) | traced; R42 from pass 2 |
+| F6 | Live chat stream in the browser | `GET .../agent/stream` (`:14181`) feeds `connectAgentStream` (`static/js/resume-preview.js:825`) | Reconnect catch-up drops repeated lines and shows the wrong ones (FE1); one stream per running session with no ceiling (FE5) | defect (FE1, FE5) | pass 4 |
+| F7 | Status poll and chat rail | `GET .../agent/status` (`:16254`) read by `fetchAgentStatus` (`static/js/conversation.js:6108`) | Ships every session buffer per poll (R57, FE6); any JSON body is trusted (CV8) | defect (R57, FE6) | pass 2, pass 4 |
+| F8 | Context rollover at a turn boundary | `_context_tokens_over_threshold` (`:12183-12195`) with `threshold_for` (`mc/rollover_threshold.py:100`), then `_auto_fresh_trigger` (`:12199`) | Handoff lists finished children as running (R44); a pin under the fresh floor is honoured for models outside the table (BX1) | defect (R44, BX1) | traced |
+| F9 | Mid-turn rollover | `note_main_tokens` and `should_roll` (`mc/midturn_rollover.py:298-343`), `_maybe_midturn_roll` (`agent_routes.py:15943`); off by default (`:86`) | Background jobs die with the old process tree: now reported per job, not prevented (MC-1149 phase 1) | works, within its flag (BX1 applies) | traced |
+| F10 | Agent asks the user a question (`mc:question`) | `apply_mc_tool_blocks` queues the question; the card posts the answer back as the next message | Logs "ignored" after it has queued (A7, cosmetic) | works | pass 1; route not re-opened |
+| F11 | Plan approval card | `approvePlan` (`static/js/conversation.js:5323`) | Replaying an old ExitPlanMode line re-arms approval (CV3) | defect (CV3) | pass 4 |
+| F12 | Dispatch a child and get its report back | `notify_session` on dispatch (`:13582`, `:13609`); delivery loop hands the completion to the spawner; waiting marker in the chat (`static/js/report-waiting.js:22-35`) | Delivery loop re-validates every completion ever recorded each 5 s (R51); receipt reconciler re-reads transcripts (R54) | defect (R51, cost only) | traced entry; pass 2 |
+| F13 | Agent worktree and merge back | `merge_back` (`mc/agent_worktree.py:535`), landing gate (`:608-613`), cold review hold (`mc/cold_review_gate.py`) | One stray untracked file in shared data makes every worktree read dirty, so nothing lands (R59, live when found); a default branch not named `master` strands every branch (R61) | defect (R59, R61) | traced gate; pass 2 |
+| F14 | Non-Claude engines run a turn | Runtime registry in `mc/agent_runtime.py`; shared Mode A reader | Stop and follow-up bookkeeping (MA1, X1, G2); OpenCode and Goose never use the resume they declare, each follow-up is a new native session with a 20-line tail (X4); a failed turn that exits 0 is `completed` (MA3) | defect (MA1, X4, MA3) | pass 1 |
+| F15 | Tool-free model calls (Scribe, condense, summaries) | `ClaudeRuntime.oneshot` and the per-engine equivalents | Timeout does not hold on Windows through the `.cmd` shim (A2); Qwen and Gemini return a failed run as an answer (Q1, G1) | defect (A2, Q1, G1) | pass 1 |
+| F16 | Long background job for an agent | `POST .../agent/<sid>/job` (`:1956`), status `GET` (`:2063`); completion wakes the session; open jobs block restart (`mc/blueprints/system_routes.py:1746`) | Server restart kills the job: now a listed blocker (MC-1160) | works | traced entry; MC-1160 |
+| F17 | Restart, update, startup recovery | Restart blockers, then the boot passes in `server.py` | Startup backfill re-imports each earlier transcript of a rolled chat as a fake interrupted row (S1); desktop launch beside a running instance overwrites its exec token (S2) | defect (S1, S2) | pass 1 |
+| F18 | Agent survives a server restart | `mc/agent_shim*.py`, adoption at boot | Flag `agent_survive_restart_enabled` is `False` (`mc/agent_shim_client.py:45`) | cannot, as shipped (off by design; MC-1150) | traced flag only |
+| F19 | Incognito chat | `incognito` on dispatch (`:13547`) | Unreadable registry rebuilt from empty, un-marking earlier incognito transcripts (A4); unreadable project record replaced with a blank one (R3) | defect (A4, R3) | pass 1, pass 2 |
+| F20 | Pace-aware engine reroute | `_engine_pace_dispatch.prepare` (`:13610-13614`), disclosure prefixed to the task (`:13616-13618`), returned in the response (`:13656`) | The 20-hour quota block lasts about an hour and a later success does not clear it (R43) | defect (R43) | traced |
+| F21 | Empty turn is not "completed" | `mc/empty_turn.py` from the readers (`mc/agent_runtime.py:4972-4975`, `:6499-6505`) | Gemini branch untested by the item's own account | works (not run live) | traced call sites |
+| F22 | Per-chat model pin | `POST .../agent/<sid>/model` (`:13659`) | The browser reports success on a refused request (CV6) | defect (CV6) | pass 4 |
+| F23 | Transcript view, search, documents | Transcript routes (`:16621`, `:16952`, `:16997`), search (`:17295`), documents (`:18307`) | Conversation id from the URL goes into a file path unchecked (R55); a scan exception caches an empty result so documents vanish (A3); search skips worktree folders (R56) | defect (R55, A3, R56) | pass 1, pass 2 |
+
+### Memory and learning
+
+| # | Feature | Main path | Most likely failure path | Verdict | Basis |
+|---|---|---|---|---|---|
+| F24 | Session summary into memory (Scribe) | Turn end or close, Scribe call, archive and index commit | A task with a newline in its first 80 characters loses its summary at the next commit: 1,226 of 7,727 entries (ML15); Scribe call runs under the project lock (R38) | defect (ML15, R38) | pass 3, pass 2 |
+| F25 | Relevant memory delivered to a session | Read floor at dispatch and per turn | A scheduled or agent-dispatched session is treated as an attended reader and receives unattended-origin notes (ML4, ML9) | defect (ML4, ML9) | pass 3 |
+| F26 | Index stays within its byte budget (condense) | `_index_byte_trigger` (`mc/memory.py:4418-4423`) fires the structured condense under the floor | The shipped-default `agent` condense mode fires on a trigger that cannot clear and launches an agent with a prompt for a layout that no longer exists (ML16) | cannot, in the default mode (ML16); works in structured mode | traced trigger; pass 3 |
+| F27 | Standing positions | Position route writes, firing on subject, weekly review | A position recorded through the route is always stamped `unattended`, so no steward run sees one: 0 of 115 (ML12) | defect (ML12) | pass 3 |
+| F28 | Habit statement becomes a note | Terminal Scribe: `_habit_source_statements` (`mc/memory.py:5929-5971`) into `_scribe_classify_habits` (`:6179`) | Every message after the first is stored in a shape the reader skips (BX2) | defect (BX2) | traced, measured |
+| F29 | Distiller proposes, human promotes or rejects | `POST /api/distiller/promote` (`mc/blueprints/distiller_routes.py:111`), `reject` (`:215`) | Promote never runs the authority guard (ML2); the guard is a phrase list, 7 of 9 paraphrases pass (ML3); reject has no caller check (ML11); the pre-generation "no" check never matches for skills (ML10) | defect (ML2, ML3, ML10, ML11) | pass 3 |
+| F30 | Install, edit, delete a skill | `POST /api/skills` (`mc/blueprints/skills_routes.py:126`), `PUT` (`:162`), `DELETE` (`:193`); editor `saveSkillFromEditor` (`static/js/skills-panel.js:871`) | Any caller can install a global skill, no human check (ML1, blocker); the editor Save drops other frontmatter and a failed load turns Save into a wipe (SK4) | defect (ML1, SK4) | pass 3, pass 4 |
+| F31 | Import a skill from Git, folder, paste | Import routes (`skills_routes.py:276-567`), quarantine (`:599-615`) | "Force install anyway" is dead for every Git import (SK3); picking a nested skill fails on Windows (SK2) | defect (SK2, SK3) | pass 4 |
+| F32 | Continuity across sessions | Continuity record written at close, origin line and liveness marks at start (`mc/session_provenance.py:44`, `mc/continuity_liveness.py:77`) | `write_continuity` is an unlocked read-modify-write (ML17) | defect (ML17) | traced marks; pass 3 |
+| F33 | Mid-task memory push | Push observer on file tool calls | Report mode by design: it delivers nothing, runs a search on the reader thread per call, and wrote an uncapped 129.6 MB log (ML24) | cannot deliver (report mode); cost defect (ML24) | pass 3 |
+| F34 | Topic notes and memory note route | Note routes, `resolve_mint` | A request field is written raw into frontmatter, a newline re-stamps the note `interactive` (ML5); `slug` goes into a path unchecked (ML14) | defect (ML5, ML6, ML14) | pass 3 |
+
+### Frontend
+
+| # | Feature | Main path | Most likely failure path | Verdict | Basis |
+|---|---|---|---|---|---|
+| F35 | Dashboard boot and project grid | `index.html` boot, project poll, `openProjectModal` (`static/js/modal-manager.js:208`) | Stored fields written into markup unescaped, script runs on render (FE13, blocker); every load fetches the whole Desk (FE21) | defect (FE13, FE21) | pass 4 |
+| F36 | Composer: type, attach, send | `dispatchAgent` (`static/js/resume-preview.js:305`), `uploadAgentImages` (`static/js/composer-extras.js:460`) | Upload fails: the message is sent anyway without the attachment (CV7); a message restored after a failed send is erased by the next rebuild (FE14) | defect (CV7, FE14, CV2) | pass 4 |
+| F37 | Chat tabs: pin and close | Tab controls in the chat header | The controls exist only in markup that is never rendered (CV5) | cannot (CV5) | pass 4 |
+| F38 | Floor: figures, hire, un-hire | Floor render, hire drag, un-hire handler | An agent's self-chosen name runs as script on click (FE2); un-hire takes a persona name inside a quoted handler (CV1) | defect (FE2, CV1) | pass 4 |
+| F39 | Workflow builder | Canvas edit and save | Adding a person blanks the persona of the step whose editor is open (WB1, blocker, measured) | defect (WB1) | pass 4 |
+| F40 | Settings | Section render, save, human gate | Removing any push device unsubscribes this browser (ST2); the sign-in session "rename" link is broken markup (ST1). No field exists for `context_rollover_by_character`, `verify_command` or `cold_review_required` (this pass) | defect (ST1, ST2) | pass 4; gaps checked here by grep |
+| F41 | Skills panel | List, editor, browse other projects | "Install" from another project copies the text and reports installed (SK5); frontmatter name reaches quoted handlers (SK1) | defect (SK1, SK4, SK5) | pass 4 |
+| F42 | MCP server manager | List, per-project toggle, edit | Double-click on a toggle turns every server off (MC3); Edit then Save rewrites the entry from a lossy form (MC4); env-var name from a repo runs on first keystroke (MC1) | defect (MC1, MC3, MC4) | pass 4 |
+| F43 | Backup, export, restore | Backup panel | Export with the vault included cannot be submitted, the button never re-enables (BK3); a failed size preview retries in a tight loop (BK2) | cannot, for vault export (BK3); defect otherwise | pass 4 |
+| F44 | First-run setup | Setup steps, provider sign-in terminal | "Back up now" writes to the old default, not the chosen destination (FR2); closing a re-run saves steps never shown (FR3) | defect (FR2, FR3) | pass 4 |
+| F45 | Schedule calendar | Calendar render from schedules | A weekly schedule is never placed on the calendar (SC1, measured) | cannot, for weekly schedules (SC1) | pass 4 |
+| F46 | Mobile layout | `static/js/mobile.js`, `sizeAgentChat` | Inbox badge resets on every project close (MB1); pane height after keyboard close is unverified on a device (MC-988) | defect (MB1); undetermined for MC-988 | pass 4; needs a device |
+| F47 | Installed app update | `forceUpdateServiceWorker` (`static/js/installed-app-update.js:3`), streams paused around `update()` (`:16`) | A blocked update: timeout and action recovery are covered by the fixture the item cites | works in a browser tab; undetermined when installed | traced; needs a device |
+| F48 | Browser pane (frontend half) | `openBrowserPane`, input forwarding | Can open twice at once (BP2); the fallback project is a hardcoded id (BP1); a pop-out re-opens and can stop the main window's session (BP3) | defect (BP1, BP2, BP3) | pass 4 |
+| F49 | Pop-out chat window | `POST /api/popout/claim` (`mc/blueprints/popout_routes.py:73`), `release` (`:96`) | Mac bridge never run on a Mac (MC-1027); BP3 above | undetermined on Mac; defect (BP3) | traced routes; pass 4 |
+| F50 | Stop-hook draft collapse | Collapse rule at `static/js/rich-text.js:407` | A short hook follow-up hiding the answer: fixed by MC-1028, not seen live | works (not seen live) | traced rule |
+| F51 | Report-waiting marker | Status poll paints it (`static/js/conversation.js:6136`) | The rebuild erased it 150 ms after paint: fixed by `c14c4725`; not observed on a real busy parent | works (not seen live) | traced |
+| F52 | Vault unlock link and popup | `static/js/rich-text.js:237-238`, `static/js/vault-unlock-popup.js:3` | Card stays "locked" after unlock: fixed by `30cff5cb`, `ddfcf287`; re-test not recorded | works (not seen live) | traced |
+| F53 | Desk (frontend half) | `static/js/desk-v1-*.js` | Skip and Move change only the browser copy in live mode, a skipped post still publishes (DV10, blocker); autosave writes storyboard A into B (DV1); edits keyed by paragraph position (DV6) | cannot, for Skip in live mode (DV10); defect otherwise | pass 4 |
+| F54 | Usage breakdown screen | System status view | Fetched for views that do not show it and every 60 s for the life of the tab (SS1) | defect (SS1, cost) | pass 4 |
+
+### Feature totals
+
+54 features. **Works: 8** (F9, F10, F16, F21, F47 in a tab, F50, F51, F52; four of
+them not seen live). **Works with a defect: 39.** **Cannot work as written: 7**
+(F18 by design, F26 in the default mode, F33 by design, F37, F43 vault export,
+F45 weekly, F53 Skip). Two of the 39 carry an undetermined half that needs a
+device (F46, F49).
+
+What the owner should take from it: the main loop (start, send, stream, stop,
+resume, roll) works every day and every step of it carries a finding, mostly
+about what is recorded or shown rather than what runs. The features that do
+not work at all are small and specific, and four of the seven are one-line
+classes of fix (CV5, BK3, SC1, DV10). The two blockers that sit on an ordinary
+path are ML1 and FE13.
 
 ## Backlog cross-check
 
@@ -39,7 +131,7 @@ owner-side acceptance (device test, UI look, product call) keeps the item open.
 
 | Item | Status | Subject | Class | Evidence and smallest next step |
 |---|---|---|---|---|
-| MC-1178 | open | Rollover thrash, per-character pin | PARTLY DONE | Parts (1) and (2) are on master: `d124f33e`, `1cfb6d82`. `mc/rollover_threshold.py:57-96` resolves a per-model cost optimum and ignores a pin below fresh floor + 60k (measured: Fable 5.2, floor 90k, pin 100k gives 277,349, reason `pin_ignored_below_floor`); the roll log records character, model and floor (`mc/midturn_rollover.py:502-523`). Left: the guard is skipped whenever the model is not in `MODEL_TABLE` (BX1); part (3) Settings warning and part (4) a Settings field for `context_rollover_by_character` do not exist (no hit for the key anywhere under `static/`); the "rollover paused" chat notice was replaced by a once-per-pin log line (`rollover_threshold.py:52-54`), which the user never sees. Smallest next step: apply the floor guard on the no-table branch (`rollover_threshold.py:76-77`), then the Settings field. |
+| MC-1178 | open | Rollover thrash, per-character pin | PARTLY DONE | Parts (1) and (2) are on master: `d124f33e`, `1cfb6d82`. `mc/rollover_threshold.py:56-97` resolves a per-model cost optimum and ignores a pin below fresh floor + 60k (measured: Fable 5.2, floor 90k, pin 100k gives 277,349, reason `pin_ignored_below_floor`); the roll log records character, model and floor (`mc/midturn_rollover.py:502-523`). Left: the guard is skipped whenever the model is not in `MODEL_TABLE` (BX1); part (3) Settings warning and part (4) a Settings field for `context_rollover_by_character` do not exist (no hit for the key anywhere under `static/`); the "rollover paused" chat notice was replaced by a once-per-pin log line (`rollover_threshold.py:50-53`), which the user never sees. Smallest next step: apply the floor guard on the no-table branch (`rollover_threshold.py:77-78`), then the Settings field. |
 | MC-1174 | open | Stall guard outside /goal | NOT DONE | No code: no module, flag or hook names a stall guard (`grep` for `stall_guard` / `MC-1174` under `mc/`, `static/`, `server.py` finds only unrelated text). The item's own open question (where plan state lives) is a design decision, so the smallest next step is that decision, not a fix. |
 | MC-1168 | in_progress | Delivery reported when nothing written | DONE | Both halves are on master: `8551e4a1`, `0c39990e`, `51d0e400`. (A) Codex follow-up now goes through `_start_prompt_delivery` and `_require_prompt_delivered` (`mc/agent_runtime.py:5509-5560`, used at `:9858-9863`), which raises `PromptDeliveryError` instead of returning. (B) Mode B revival writes through the same seam and, on failure, rejects the gate, undoes the revive and raises `ReviveDeliveryError` (`mc/blueprints/agent_routes.py:8200-8226`). Ten `tests/test_runtime_delivery_truth*.py` files plus `tests/mc1168_r12/`. The item text still says "Tobin dispatched". |
 | MC-1165 | in_progress | Cold reviewer on each handoff | DONE (code), NEEDS A HUMAN | `mc/cold_review.py`, `mc/cold_review_gate.py`, `mc/cold_review_runner.py` are on master (`c9e21f9b`, `d1bba7a8` and nine earlier rounds), wired into `merge_back` through `mc/agent_worktree.py:51` and `mc/merge_review_gate.py:177,218`. Opt-in per project (`cold_review_required`, human-only in `mc/project_safety_settings.py`). No Settings control for it exists under `static/` (no hit for the key), so turning it on is a config edit. Owner: decide which projects require it. |
@@ -73,7 +165,7 @@ owner-side acceptance (device test, UI look, product call) keeps the item open.
 | MC-988 | blocked | Mobile pane stays half height | PARTLY DONE, NEEDS A HUMAN | The item's state line (2026-09-29) is out of date: `fc65e53c` (2026-10-02, on master) moved the recovery decision into the resize event itself and fixed the diagnostic so it can fire. Five MC-988 commits are on master. Whether the bug is gone can only be judged on the owner's fold phone. If it has not recurred since 2026-10-02, close. |
 | MC-976 | blocked | Browser pane parity phase 2 | DONE (code), NEEDS A HUMAN | All five commits on master; all eight gaps built per the item. Browser pane is outside regions 1 to 4 (not traced). Left: upload, right-click and Ctrl+F on a real device. Not blocked on code. |
 | MC-975 | blocked | Codex unattended sandbox on Windows | NEEDS A HUMAN | Part A (`2c36bfa8`, `57a10c9`) on master. Part B is an upstream runner crash; the probe kit (`2492b181`, `d0cdbbe`) is deliberately unmerged. Reopen condition is a codex-cli upgrade plus an elevated probe run, both owner-side. The item was parked at codex-cli 0.160.1; if the installed CLI is newer, the probe is due. |
-| MC-964 | in_progress | Memory overhaul, retrieval failures | PARTLY DONE | Steps A to F and T1 to T5 are on master (`2d80a26d` to `684cd9f2`, `c5f4c25b`, `bf1e8bc5`). The two follow-ups the item names are both still present in code: BX2 (`mc/memory.py:5964`, the terminal habit classifier never sees a follow-up message) and BX3 (`mc/log_lines_trim.py:23-24`, any output line starting with `> ` is pinned forever). Smallest next step: `line.lstrip()` in `_habit_source_statements`, and require the user label in `is_user_line`. Related: R26 (pass 2), the trim runs in one reader only. |
+| MC-964 | in_progress | Memory overhaul, retrieval failures | PARTLY DONE | Steps A to F and T1 to T5 are on master (`2d80a26d` to `684cd9f2`, `c5f4c25b`, `bf1e8bc5`). The two follow-ups the item names are both still present in code: BX2 (`mc/memory.py:5963`, the terminal habit classifier never sees a follow-up message) and BX3 (`mc/log_lines_trim.py:22-23`, any output line starting with `> ` is pinned forever). Smallest next step: `line.lstrip()` in `_habit_source_statements`, and require the user label in `is_user_line`. Related: R26 (pass 2), the trim runs in one reader only. |
 | MC-944 | open | Memory V2 spec, ten steps | PARTLY DONE (tracked twice) | Steps 1 to 4 (`58fe56b`, `69faf88`), 6 (`dcd7685d`, `5eecaeb7`), 7 (`d858a1fd`, `0a421134`), 8 (`64b300c9` to `fd462034`) and 10 (`6b7e6471`) have commits on master. No commit names step 9 (measure each gate's false-positive rate), and every gate still ships in report mode, so nothing the spec added blocks anything yet. The item says its remainder is driven from MC-964 Step F: one of the two should carry the open work, not both. |
 | MC-916 | open | Provenance checking for memory writes | NOT DONE | Spec only (`docs/MEMORY_PROVENANCE_SPEC.md`, `b5f5d954` on master). No memory module implements it. The item names its own next step (a graded classifier sample before code). Pass 3's ML findings on unauthenticated memory writes are the defect this item would close. |
 | MC-903 | open | Named agent that gets wiser | PARTLY DONE | Phases 1 to 4: all seven named commits on master. Phase 5 (episodic search) has no code: no file under `mc/` mentions it. The item notes the deferral it depended on now has its telemetry, so the next step is a decision to build or drop, not a fix. |
@@ -142,9 +234,9 @@ phase 5).
 
 ### BX1 — rollover pin floor guard is skipped for any model outside the Claude table (medium, lens 2)
 
-`mc/rollover_threshold.py:76-77`. When `inputs_for_session()` returns `None`
+`mc/rollover_threshold.py:77-78`. When `inputs_for_session()` returns `None`
 the function returns `max(MIN_THRESHOLD, pin)` and never compares the pin with
-the fresh floor. `mc/rollover_model_table.py:70-76` recognises only canonical
+the fresh floor. `mc/rollover_model_table.py:72-78` recognises only canonical
 Claude ids (optional date suffix and `[1m]`), so an alias or a model newer than
 the table falls through.
 
@@ -170,7 +262,7 @@ still follows from it; the fix has to change that test.
 
 ### BX2 — the terminal habit classifier never sees a follow-up message (high, lens 2)
 
-`mc/memory.py:5962-5965`. `_habit_source_statements` keeps a line only when
+`mc/memory.py:5962-5964`. `_habit_source_statements` keeps a line only when
 `line.startswith('> ')`. The first message of a chat is stored in that shape
 (`mc/blueprints/agent_routes.py:10893`, `:12978`), but every later message is
 stored as `"\n> {label}: {message}\n"` (`agent_routes.py:13883`, `:14581`,
@@ -185,7 +277,7 @@ The send-time observer (`agent_routes.py:7471`, `mc/habit_report.py`) does see
 follow-ups, but it is report mode: it writes a candidate row and mints
 nothing.
 
-`mc/log_lines_trim.py:23-24` handles the same two shapes correctly with
+`mc/log_lines_trim.py:22-23` handles the same two shapes correctly with
 `line.lstrip()`, and its docstring names both, so the two readers of one
 convention disagree.
 
@@ -196,10 +288,10 @@ journal lists this as an open follow-up; it is still open on master.
 
 ### BX3 — the chat-buffer trim pins every line that starts with "> " (low, lens 1)
 
-`mc/log_lines_trim.py:23-24`, `:33`. `is_user_line` is true for any string
+`mc/log_lines_trim.py:22-23`, `:35`. `is_user_line` is true for any string
 whose stripped text starts with `"> "`. Agent output that opens with a
 markdown blockquote matches, so those lines are counted as the human's and
-survive every trim (`pinned`, `:33`). On a long chat with an agent that quotes
+survive every trim (`pinned`, `:35`). On a long chat with an agent that quotes
 often, the buffer the cap exists to bound grows without limit, and the quoted
 lines are also offered to nothing useful: the classifier filters them out by
 label. Read, not measured.
