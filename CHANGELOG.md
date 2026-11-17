@@ -1,5 +1,18 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Orchestration and scheduling review: the medium and low findings that needed no decision (MC-1179 pass 09)
+
+- Scheduler/steward: a `schedules.json` that will not parse is logged instead of read as "no schedules" (OS3). The legacy steward enable half was already closed.
+- Coordination: an agent is no longer listed as its own sibling (OS38). `/coord/publish` bounds what reaches other agents' prompts and one bad event no longer blinds the feed (OS39). Unreadable coordination state and event-log reads log (OS40).
+- Automation suggestions: an unreadable suggestion store is no longer overwritten with every latched "no" forgotten (OS41).
+- Question channel: an answer that fails to post is kept for retry (OS19), the reply poller retires its caches for answered questions (OS20), and an unparseable credentials file logs (OS21).
+- Allowance: "429" in a Gemini/Qwen error counts only as a whole number, so a stray digit run no longer blocks a vendor for 24 hours (OS23).
+- Hivemind: hivemind and workstream ids are checked before they become file paths (OS27, new `mc/hivemind_ids.py`). The orchestrator slot is always released and an orchestrator engine that cannot resolve is refused at create, before anything is saved (OS28). An unreadable workstream file logs and holds the run open instead of letting it close as complete (OS30). A non-numeric `?limit` on bus history and findings is the default, not a 500 (OS32). Hold reasons and docstrings no longer name an operator persona (OS37).
+- Model upgrade: the price store refuses `inf`/`nan` (OS46); a global-default upgrade writes `config.json` atomically (OS47).
+- Engine fallback: a crashed availability probe is logged (OS49).
+- Keep awake (Linux/macOS): an inhibitor that exits at once is a failed engage, and a repeated engage failure is logged once (OS51).
+- Not changed (needs a decision, or too large for this pass): OS2, OS4-OS6, OS7-OS11, OS14, OS17, OS18, OS22, OS29, OS31, OS34, OS36, OS42, OS43, OS50, and the remaining halves of OS23, OS28, OS32, OS39, OS40, OS46, OS47, OS49. Efficiency items OS12, OS13, OS15, OS35, OS44 skipped.
+
 ## [2026-11-17] - Workflow toolbar: buttons that add a block no longer look like buttons that do something
 
 - Action, Approval gate and Wait (which drop a block on the canvas) looked identical to Undo, Redo, Reset, Check workflow, Update and Run now. The toolbar is now three groups with a rule between each: Undo / Redo / Reset | a muted "Add" label then Action / Approval gate / Wait | Check workflow / Update / Run now.
