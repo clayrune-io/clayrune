@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Control plane public routes and the mail reader (MC-1179 MB25, MB26, MB1)
+
+- Mail reader (MB1): a sender-chosen charset name in a header (`=?<any text>?B?...?=`) no longer aborts `tools/mail-mcp/read_digest.py`. `_dec` decodes an unknown or NUL-bearing charset as UTF-8, and the fetch-failure envelope reports the exception class name, not `repr(e)`, so no sender text reaches the calling session unlaundered and one message can no longer make every digest read exit 1.
+- Connect page callback (MB26): `/v1/signin/start` and `/v1/signin/complete` no longer accept a callback a browser would send off the machine. `http://evil.example\@127.0.0.1/api/mc-callback` parsed as host 127.0.0.1 in Python and as `evil.example` in a browser, and `signin/complete` appended the enrollment token and device id to it. The check now refuses a backslash, `@`, whitespace or control character, a bad port, a query or a fragment, and the stored intent and the redirect are rebuilt from the parsed host, port and path (new `control_plane/app/connect_page_safety.py`). A callback written before this fix is refused at `signin/complete` with `bad_callback`.
+- Connect page (MB25): `GET /v1/connect` now refuses a `pub` that is not 32-byte base64 (400) before rendering it, writes `<`, `>`, `&` in the three reflected values as `\uXXXX` so a value cannot close the inline script, and sends a per-response nonce Content-Security-Policy (`script-src` nonce plus gstatic and apis.google.com, `connect-src 'self'` plus the Google endpoints, `frame-src` the Firebase auth domain, no `base-uri`/`form-action`/framing). Before, `pub=</script><script>alert(1)</script>` ran on the control plane's own origin. The page's Google sign-in popup could not be exercised here (no live Google); check it in a browser on the first deploy.
+- Control-plane fixes reach users only when the control plane is next deployed; nothing here was deployed.
+
 ## [2026-11-17] - Agent plumbing, second wave of decided fixes from the pass-10 review (MC-1179)
 
 - Guard hook: the command written into Codex and Gemini hook config uses the call prefix the shell needs, so an interpreter path with a space is no longer a PowerShell parse error that those CLIs read as allow (AP5, new `mc/hook_command_shell.py`).

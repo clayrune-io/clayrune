@@ -115,7 +115,7 @@ def run(query: str, count: int, mailbox: str, model: str, timeout: int,
     try:
         messages = fetch_fn()
     except Exception as e:
-        return ({'ok': False, 'error': 'imap_fetch_failed', 'detail': repr(e),
+        return ({'ok': False, 'error': 'imap_fetch_failed', 'detail': type(e).__name__,
                   'guidance': ('The IMAP fetch itself failed before laundering ran. '
                                'Do not fall back to a different mail-reading path — '
                                'report the failure.')}, 1)
