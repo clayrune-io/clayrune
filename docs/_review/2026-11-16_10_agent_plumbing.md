@@ -614,4 +614,141 @@ carry live evidence: the state block this session was handed.
   per launch (read-only `ls`). The context sync never overwrites a
   hand-authored mirror (`vendor_context_sync.py:90-95`).
 
+### N19. `mc/cli_update.py` (478), `cli_update_retry.py` (36), `cli_install.py` (135), `blueprints/cli_update_routes.py` (18): read fully; daemon and in-use probe at `system_routes.py:412-459`
+
+- **AP46 (L, medium) `cli_update.py:347-357`** — check, then update, with
+  nothing in between. `check_one` asks "is anything using this CLI" once
+  (`:347-352`) and then runs the updater for up to 600 s (`:357`,
+  `UPDATE_TIMEOUT_S`). No flag says "this CLI is being replaced", and no
+  launch path asks: the only readers of this module outside its own route are
+  `provider_summary` for the provider row (`agent_routes.py:2523`) and the Qwen
+  install text (grep over `mc/`, `server.py`). A dispatch, a scheduled run or a
+  follow-up that starts that CLI during the window launches a binary that is
+  half written, which is the MC-991 case (`:17-19`) entered from the other
+  side: on Windows the updater's rename then fails on the now-running exe, and
+  the new session's spawn fails with access-denied or "not a valid
+  application". Those are exactly the errors **AP37** classes as an ambiguous
+  launch, so the conversation that lost the race is refused for good. Read,
+  not measured (needs a real updater run). Fix: an `updating` set under
+  `_lock`, set before `:357` and cleared after `:358`; the spawn factory waits
+  or refuses with a retryable message while the name is in it. No test covers
+  a launch during an update: every test drives `check_one` with a fixed
+  `in_use_fn`.
+- **AP47 (L, low) `cli_update.py:151-153`** — a failed `--version` is read as
+  a version if its error text holds three dotted numbers. The condition
+  `rc == 0 or out` is true for any non-empty output, and `_run` puts the argv
+  into its timeout text (`:127`). Measured (scratch, injected `run_fn`): a
+  timeout whose argv path is `.../.nvm/versions/node/v20.11.1/bin/codex`
+  returns installed version `20.11.1`, and `check_one` then stores
+  `up_to_date` against a latest of `0.158.0`. So a CLI that hangs on
+  `--version` under an nvm prefix is reported healthy and current for 23
+  hours, every day. The same reader produces `installed_after` (`:358`), so a
+  binary broken by an update can read as "updated". Fix: `_ver(out) if rc ==
+  0 else None`. `tests/test_cli_update*.py` to check; the stubs return clean
+  version strings.
+- **AP48 (L, low) `system_routes.py:427-434`** (the in-use probe this module
+  is given) — a registered process counts as "using" a CLI when the CLI's
+  name appears as a word in its name or command preview, and a path segment
+  that starts with a dot passes the word test: any registered long-running
+  process whose command line contains a `.claude`, `.codex` or `.gemini`
+  directory blocks that CLI's update for as long as it lives. It fails
+  toward not updating, so it is safe; it is also silent starvation, shown
+  only as "Update waiting ... Retries hourly". Read, not measured. Fix: match
+  the resolved binary path or the install root (`install_root`, `:255`), not a
+  word.
+- **AP49 (E, low) `blueprints/cli_update_routes.py:14-18`** — the POST runs
+  the whole pass on the request thread: per CLI up to 60 s for `--version`,
+  60 s for `npm view`, 600 s for the updater and 60 s to re-read the version,
+  times six CLIs. The caller is a scheduled script; a pass that updates one
+  npm CLI outlives any ordinary HTTP timeout and the script reports a failure
+  for a pass that succeeded. `run_once` already refuses a second concurrent
+  pass (`:384`), so the route could start the pass on a thread and return the
+  snapshot. Read, not measured.
+- Sound: an unknown install method is reported, never guessed (`:338-342`);
+  enumeration failure counts as "in use" (`:349-350`); nothing is killed; the
+  hourly retry keeps the daily registry answer instead of asking again
+  (`cli_update_retry.py:27-36`); the state file is outside the project-records
+  directory and written atomically; `install_method` resolves the symlink
+  before reading the path (`cli_install.py:86-90`).
+- Live state on this install (read-only): Claude was one patch behind and
+  `skipped_in_use` because idle persistent sessions hold the binary, last
+  updated two days earlier. The design works; on an install where a chat is
+  always open the update only lands in a gap.
+
+### N20. `mc/mac_update.py` (568, read fully), routes `system_routes.py:2211-2262`, `:2278-2324`, `:2560-2628`
+
+- **AP50 (L, medium) `mac_update.py:75`, `:429-439` with
+  `system_routes.py:2289`, `:2211-2243`** — the swap helper decides "the new
+  app is up" by polling `/api/system/update/status`, and on a frozen install
+  that route makes two GitHub requests (8 s timeout each, no cache) before it
+  returns the local commit the helper is waiting for. The helper allows 60 s
+  from launch (`wait_up_s`), which must also cover first-launch verification
+  of a new bundle and the server boot. On a slow, captive or offline network
+  each answer costs up to 16 s; if boot plus one answer exceeds 60 s the
+  helper stops the new app (`:450`), restores the old one and records "the
+  new version did not start", for an update that was fine. Every poll that
+  does get through also spends the unauthenticated GitHub API allowance the
+  update check itself depends on. Read, not measured (no macOS host). Fix: a
+  local-only probe (the bundled build info, no network) for the helper, or
+  have the status route skip the remote fetch when asked. No test runs the
+  helper against a slow status route: `tests/test_mac_update*.py` stub the
+  HTTP answer.
+- **AP51 (E, low) `mac_update.py:517`, `:539`, `:451`** — nothing sweeps a
+  stale staging directory. A crash or force-quit during the download leaves
+  `.clayrune-update-<stamp>` (the zip, later the extracted app) beside the
+  bundle; grep over `mc/`, `app.py`, `server.py` finds no reader of these
+  names outside this module. Hidden, a few hundred megabytes each, in the
+  applications folder. Fix: at `start_job`, remove siblings matching the
+  staging pattern older than a day.
+- Process hygiene, checked because the brief asks: `stop_new_app` (`:379-395`)
+  signals processes it did not start by PID. It selects them by exact
+  executable path equal to the bundle it has just moved into place, after the
+  old app's PID is confirmed gone, and only on the rollback path. That is a
+  path match on a path the helper owns, not an image-name kill. Not a finding.
+- Sound: nothing is replaced before codesign, Gatekeeper notarization, team
+  and bundle-id gates pass (`:202-232`); the running app must itself be signed
+  or the job stops before the download (`:520`); the download is HTTPS only,
+  size-capped and hashed while streaming (`:275-297`); deletion targets are
+  checked to be inside the bundle's parent (`:364-369`); the route is
+  human-only with the passcode re-typed (`system_routes.py:2575-2583`); the
+  app's shutdown has a 10 s hard exit (`system_routes.py:2048-2052`), so the
+  job cannot sit in `restarting` for ever.
+
+### N21. `mc/claude_projects_scan.py` (213, read fully), `blueprints/claude_import_routes.py` (40, read fully), `blueprints/agent_router_stats_routes.py` (70, read fully)
+
+- **AP52 (E, medium) `claude_projects_scan.py:165-181`** — the scan pays full
+  price for every transcript directory before it asks the one question that
+  discards most of them. Per directory: a glob, a `stat` per transcript, a
+  sort, then up to 256 KB read from the newest transcript and a regex over it
+  (`:167-175`); only then `is_agent_worktree(cwd)` (`:179`). Clayrune itself
+  creates one transcript directory per agent worktree. **Measured** on this
+  install, calling `scan()` read-only: 5,718 directories, 26.7 s, 188
+  candidates; 1,357 were dropped as worktrees and 640 as missing folders
+  after their transcripts had been read. The route runs it synchronously on a
+  request thread (`claude_import_routes.py:31`) and the dialog awaits it
+  (`static/js/claude-import.js:50`). On a fresh install the directory is small
+  and this is instant, which is the case the feature was written for; on any
+  install that has dispatched isolated agents for a few weeks the dialog
+  hangs for tens of seconds. Fix: skip a directory whose NAME contains the
+  encoded worktree segment (`--clayrune-agents-`) before any I/O, and read
+  the head in 16 KB first (the `cwd` is on the first lines). No test has more
+  than a handful of directories.
+- **AP53 (L, low) `claude_projects_scan.py:198-200`** — when two transcript
+  directories resolve to one folder, the second adds its session count but is
+  never checked for being the registered or the newest spelling; harmless.
+  What is not harmless: 188 "candidates" on this install. Most are scratch
+  and temp folders a CLI was once started in. The list is capped at 300 and
+  sorted by recency, so the dialog is usable, but "import your projects"
+  offers every directory an agent ever ran a nested CLI in. Labelled a
+  product note, not a defect.
+- **AP54 (M, low) `agent_router_stats_routes.py:53-56`** — `int(v or 0)` on a
+  value read from a state file: one non-numeric counter in any project's
+  router-stats file makes the whole aggregate route return 500. The file read
+  two lines up is guarded (`:46-49`, silently); the arithmetic is not.
+- Sound: the scan reads only the head of a transcript and never writes; a
+  folder that is the home directory, a filesystem root, the install itself or
+  already registered is dropped and counted (`:179-194`); there is no add
+  route, so an import goes through the same create-project checks as a
+  hand-added project (`claude_import_routes.py:8-11`).
+
 <!-- APPEND-HERE -->
