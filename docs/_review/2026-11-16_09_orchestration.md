@@ -254,6 +254,136 @@ offset, so the first fire after a daylight-saving change is one hour off
 (computed the day before with the old offset). It self-corrects on the next
 compute.
 
+### OS16 · high · F/L — a question mail that fails to send is lost: one attempt, no retry, nothing in the chat, no other alert
+`mc/question_channel.py:309-310` (the qid is marked delivered BEFORE any send),
+`:389-398` (a `False` from `_send_email` writes one server-log line and returns),
+`:217-233`. The grace timer is the only delivery attempt. There is no second
+timer, the guardian's stuck-question branch only appends a line to the chat
+buffer (`agent_routes.py:18914-18921`), and no push is raised for a question
+(searched `agent_routes.py`). A later boundary for the same question returns at
+`:280` because the qid is already in `_delivered`.
+Reachable on a default install: `question_channel` defaults to `email`
+(`server.py:183`), and with no mail credentials the mailer exits 2
+(`tools/night-review/send_mail.py:305-310`). So on any install that never set up
+mail, every unattended `mc:question` goes nowhere and the run parks for good;
+on a configured install the same happens for the length of any SMTP outage.
+The design reference says the channel must reach a human; the failure path
+reaches a log file.
+Smallest fix: on a failed send, remove the qid from `_delivered`, append a chat
+line that says the question was NOT sent and why, raise the existing web push,
+and re-arm the timer with a backoff. Test: `tests/test_question_channel.py`
+covers a successful send and the attended skip; a failed send is not asserted
+(to confirm when tests are read).
+
+### OS17 · medium · L — the reply half of the question channel does not survive a restart, and says nothing
+`question_channel.py:83-93` (`_outbox`, `_delivered`, `_answered` are process
+memory), `:531-533` (an unknown qid returns with no log), `:639-643` (the poller
+does not even open the mailbox when `_outbox` is empty). The mail body tells the
+reader it may be answered days later and that the agent "stays parked until it
+is answered" (`:145-146`, `:198-199`). A server restart between the question
+and the reply (normal on an install that restarts to take updates) makes the
+reply a no-op: no resume, no log line, no bounce. The agent-mail channel has a
+durable owner record for exactly this (`:282-291`); the legacy SMTP channel,
+which is the default, has none.
+Smallest fix: persist `{qid, project_id, session_id, message_id, to, questions}`
+next to the schedules file at send time and load it at start; log an
+unmatched `q:` reply.
+
+### OS18 · medium · L — a mailed multi-question form cannot be answered correctly, and a one-word reply can pick an option the reader did not choose
+`question_channel.py:161-175` numbers options from 1 inside EACH question;
+`:423-435` indexes one flat list across all questions; `_answer` sends a single
+label (`:456-459`). **Measured** (scratch script, pure function): for a
+two-question form, reply `2` returns question 1's second option and question 2
+is never answered; question 2's options are reachable only as `3` and `4`,
+which the mail does not show. The loose match at `:442-444` accepts any
+substring either way: reply `the`, `e` or `old` to the options "Delete the old
+backups" / "Keep them" returns "Delete the old backups". `1.` and `ok` return
+nothing (left open, logged only).
+Smallest fix: for more than one option-bearing question say in the mail that it
+must be answered in the app (the free-text branch at `:190-195` already does
+this) and refuse to match; drop the substring pass or require the reply to
+equal a label after stripping punctuation; accept a trailing `.` or `)` on a
+number.
+
+### OS19 · low · L — an answer that fails to post is consumed
+`question_channel.py:553-556` marks the qid answered, `:589` calls `_answer`,
+and a non-2xx or an exception (`:462-471`) returns `False` without removing it.
+`poll_replies` excludes answered ids (`:640-641`), so the reply is never tried
+again and the session stays parked. The two "no match" branches do discard
+(`:584-585`, `:599-600`); the failed-post branch is the one that does not.
+
+### OS20 · low · E — the reply poller logs in to the mailbox every two minutes for as long as one mailed question stays unanswered, and the caches are only retired by a loop that is off by default
+`question_channel.py:639-662`: while any legacy entry is in `_outbox` and not
+answered, each poll opens an IMAP session and downloads up to 30 full messages.
+An entry leaves `_outbox` only through `retention.retire`
+(`question_channel_retention.py:142-182`), whose one caller is the agent-mail
+recovery loop (`mc/agent_mail_recovery.py:375`), started only when
+`agent_mail_supervisor_enabled` is true (`server.py:3822-3825`, default off).
+On a default install nothing retires: one abandoned question means 720 logins a
+day until the next restart, and the three caches grow for the life of the
+process (the module docstring at `question_channel_retention.py:5` says they
+"used to grow forever"; with the supervisor off they still do).
+Fix: call `retention.retire()` from the poller loop.
+
+### OS21 · low · M — `_creds()` swallows a state-file read
+`question_channel.py:623-628`: `except Exception: return None`. A credentials
+file that exists but does not parse reads as "mail not configured", silently.
+Project policy: a JSON state load must log.
+
+### OS22 · low · E — the limit-resume store is re-read and re-validated under an OS file lock on every operation, at least twice per turn of every session, and its rows are never pruned
+`mc/limit_resume.py:116-142` (`_transaction` reloads and validates the whole
+file), `:421-422` (`new_turn` → `clear`, every non-internal turn of every
+session, from `mc/launch_transaction.py:252`), `:371` (`hold_completion` →
+`get`, every turn and exit boundary). `limit_resume_dispatch.tick` adds
+`2 + 2N` reads every 30 s for N rows (`:53,62,117,119`).
+Rows that stay for ever, each with a full copy of the session's `log_lines`
+(`:176-177`): an acknowledged continuation (`submitted` → `active`, `:208`)
+with no deferred success is matched by none of the prune paths
+(`prune_completed` needs `completion_done`, `:295`); `cancel` keeps the whole
+snapshot (`:276`); a waiting row whose project was deleted is skipped on every
+tick (`limit_resume_dispatch.py:83-84`). Only a later human turn in the same
+session clears one (`:418-422`).
+**Measured** (read-only, live install): 2 rows, both `cancelled`, 24 KB, six
+days old. The cost is small today and grows with every unattended session that
+hits a limit.
+Fix: drop `active` rows without `completion_done` at the turn boundary that
+finds them, trim the snapshot on `cancel` as `close` does (`:286-288`), and
+cache the parsed file by `(mtime, size)`.
+Related: `new_turn` calls `_store.clear` with no guard (`:421-422`); a lock
+wait over 1 s (`:126-139`) or a file damaged after boot raises inside
+`start_turn.advance` and fails that send. Read, not measured.
+
+### OS23 · medium · L — one Gemini or Qwen error whose text contains "429", "quota" or "rate limit" blocks that vendor on every project for 24 hours
+`mc/allowance_state.py:52-53` (`_TEXT_HINTS`), `:518-539`, `:550-560`.
+A match records the vendor exhausted with no reset time; such a record "never
+auto-clears; needs a success" (`:188-189`), and a refused vendor cannot have
+one. Gemini and Qwen have no probe (`mc/allowance_probe.py:17-22`), so the only
+exits are the 24-hour unverified transition and its single trial run
+(`mc/allowance_unverified.py:36`, `:93-99`) or the manual "I topped up" control.
+**Measured** (scratch script, pure function): `detect('gemini', …)` and
+`detect('qwen', …)` return a hit for the error text "Tool failed: read 1429
+bytes then EOF" (`'429'` inside a number), for "see quota docs", and for an
+ordinary per-minute throttle ("HTTP 429 Too Many Requests: 15 requests per
+minute"), which is a wait of one minute, not an allowance.
+Same hazard class as pass 1 X6 and G5 (exit-hint classifiers); this is the
+half that writes durable state.
+Smallest fix: match `429` on a word boundary and require one of the allowance
+phrases next to it; for a hit with no reset time and no structured field, set
+a short expiry (minutes) instead of none, so a throttle heals by itself.
+Test: `tests/test_allowance_state.py` (to confirm) asserts the hints match;
+nothing asserts a non-allowance error is left alone.
+
+## Measurements
+
+- OS1: `_compute_next_run` for an `interval` row of 60 minutes whose `last_run`
+  is 3 hours old returns now + 5.0 s; with no `last_run`, now + 5.0 s
+  (scratch script against the real function). The loop ticks every 30 s, so a
+  failed interval row is due again on every tick.
+- OS11: `cron` with an unparseable expression → `None`; `once` with no
+  `run_at` → `None`; `daily` with `time: "bogus"` → 09:00 local;
+  `daily` with `time: "25:00"` raises `ValueError` (same script).
+- OS18, OS23: see the findings.
+
 ## Streamlining candidates
 
 ## Sound (notes)
