@@ -18,12 +18,16 @@ import datetime as _dt
 import hashlib
 import logging
 import os
-from urllib.parse import urlencode, urlparse
+import secrets
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from . import build_info, firestore as fs
+from .connect_page_safety import (
+    canonical_callback, content_security_policy, json_for_script, valid_device_pub,
+)
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -36,29 +40,18 @@ FB_API_KEY     = os.environ.get("FB_API_KEY", "")
 FB_AUTH_DOMAIN = os.environ.get("FB_AUTH_DOMAIN", "clayrune.firebaseapp.com")
 FB_PROJECT_ID  = os.environ.get("FB_PROJECT_ID", "clayrune")
 
-# Allowed callback hosts: only loopback is permitted as the redirect target so
-# we can't be turned into an open redirect that exfiltrates enrollment tokens.
-_ALLOWED_CALLBACK_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
-
 # Username policy mirror (kept in sync with routes_account.py:_USERNAME_RE).
 _USERNAME_RE_STR = r"^[a-z0-9](-?[a-z0-9])*$"
 
 
 def _is_safe_callback(url: str) -> bool:
-    """True iff `url` is `http://(127.0.0.1|localhost):<port>/api/mc-callback`."""
-    if not url:
-        return False
-    try:
-        u = urlparse(url)
-    except Exception:
-        return False
-    if u.scheme != "http":
-        return False
-    if (u.hostname or "").lower() not in _ALLOWED_CALLBACK_HOSTS:
-        return False
-    if u.path != "/api/mc-callback":
-        return False
-    return True
+    """True iff `url` is `http://(127.0.0.1|localhost)[:<port>]/api/mc-callback`.
+
+    Only loopback is permitted as the redirect target so we can't be turned
+    into an open redirect that exfiltrates enrollment tokens; the judgement
+    (and why urlparse alone is not enough) lives in connect_page_safety.
+    """
+    return canonical_callback(url) is not None
 
 
 @router.get("/health", tags=["public"])
@@ -101,20 +94,36 @@ async def connect_page(
             "request_id": "x",
         })
 
-    # Embed values via JSON to keep escaping sane; values are public (Firebase
-    # web config + the user-supplied query params).
-    import json as _json
+    # `pub` is rendered into an inline script: refuse anything that is not the
+    # 32-byte base64 key /v1/signin/complete would demand later anyway.
+    if not valid_device_pub(pub):
+        raise HTTPException(status_code=400, detail={
+            "code": "bad_envelope",
+            "message": "Invalid device public key.",
+            "request_id": "x",
+        })
+
+    # Embed values via JSON; json_for_script also escapes < > & so a value can
+    # never close the element it sits in. The CSP nonce is substituted FIRST so
+    # a query-parameter value containing the placeholder cannot reach it.
+    csp_nonce = secrets.token_urlsafe(16)
     cfg = {
         "apiKey": FB_API_KEY,
         "authDomain": FB_AUTH_DOMAIN,
         "projectId": FB_PROJECT_ID,
     }
-    html = _CONNECT_HTML.replace("__FB_CFG__", _json.dumps(cfg)) \
-                        .replace("__PUB__",      _json.dumps(pub)) \
-                        .replace("__NONCE__",    _json.dumps(nonce)) \
-                        .replace("__CALLBACK__", _json.dumps(callback)) \
-                        .replace("__USERNAME_RE__", _json.dumps(_USERNAME_RE_STR))
-    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+    html = _CONNECT_HTML.replace("__CSP_NONCE__", csp_nonce) \
+                        .replace("__FB_CFG__", json_for_script(cfg)) \
+                        .replace("__PUB__",      json_for_script(pub)) \
+                        .replace("__NONCE__",    json_for_script(nonce)) \
+                        .replace("__CALLBACK__", json_for_script(canonical_callback(callback))) \
+                        .replace("__USERNAME_RE__", json_for_script(_USERNAME_RE_STR))
+    return HTMLResponse(content=html, headers={
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": content_security_policy(csp_nonce, FB_AUTH_DOMAIN),
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 @router.post("/signin/start", tags=["public"])
@@ -138,7 +147,8 @@ async def signin_start(
             "message": "nonce, pub, and callback are required.",
             "request_id": "x",
         })
-    if not _is_safe_callback(callback):
+    callback_clean = canonical_callback(callback)
+    if callback_clean is None:
         raise HTTPException(status_code=400, detail={
             "code": "bad_callback",
             "message": "Callback URL must be http://(127.0.0.1|localhost):<port>/api/mc-callback",
@@ -154,7 +164,7 @@ async def signin_start(
     db.collection(fs.COL_ENROLL_INTENTS).document(nonce_hash).set({
         "csrf_nonce_hash": nonce_hash,
         "device_pub_hash": pub_hash,
-        "callback": callback,
+        "callback": callback_clean,
         "created_at": now,
         "expires_at": expires,
     })
@@ -235,8 +245,8 @@ async def signin_complete(
             "message": "Sign-in token doesn't match this MC instance.",
             "request_id": "x",
         })
-    callback = intent.get("callback") or ""
-    if not _is_safe_callback(callback):
+    callback = canonical_callback(intent.get("callback") or "")
+    if callback is None:
         raise HTTPException(status_code=400, detail={
             "code": "bad_callback",
             "message": "Stored callback URL is invalid.",
@@ -369,7 +379,7 @@ _CONNECT_HTML = r"""<!doctype html>
     <div class="footer">Clayrune</div>
   </div>
 
-<script type="module">
+<script type="module" nonce="__CSP_NONCE__">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
   from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
