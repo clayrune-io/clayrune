@@ -28,3 +28,13 @@ def is_prechild_refusal(exc: BaseException) -> bool:
         return (getattr(exc, 'winerror', None) == _WINERROR_BAD_EXE_FORMAT
                 or exc.errno == errno.ENOEXEC)
     return False
+
+
+class PromptCaptureIncomplete(OSError):
+    """The prompt stream was not closed in time, so the prompt may be truncated.
+
+    Raised by the spawn factory before any shim or CLI is launched (MC-1179
+    AP32), which is why it carries the same no-child proof as a refused Popen:
+    nothing exists to be unsure about, and the caller is told delivery failed.
+    """
+    _mc_prechild_refusal = True
