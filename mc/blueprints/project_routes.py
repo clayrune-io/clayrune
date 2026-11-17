@@ -53,6 +53,7 @@ from mc import engine_selection
 from mc import provider_preferences
 from mc import state
 from mc.human_only_gate import human_only
+from mc.inline_safety import send_untrusted_file
 from mc.ui_field_validation import validate_project_fields, validate_backlog_fields
 from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
@@ -2404,7 +2405,7 @@ def serve_attachment(stored_name):
     att_path = UPLOADS_DIR / safe
     if not att_path.exists():
         abort(404)
-    return send_file(str(att_path), as_attachment=False)
+    return send_untrusted_file(str(att_path))
 
 
 _IMAGE_EXTS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp',
@@ -2434,7 +2435,7 @@ def serve_image():
         abort(404)
     if not _image_path_allowed(real):
         abort(403)
-    return send_file(real, as_attachment=False, max_age=3600)
+    return send_untrusted_file(real, max_age=3600)
 
 
 def _image_path_allowed(real: str) -> bool:
