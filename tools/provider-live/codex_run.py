@@ -212,7 +212,9 @@ def marker_prompt(a: str, b: str) -> str:
 
 def split_turns(log_lines: List[str]) -> Tuple[List[str], List[str]]:
     """(assistant reply segments, event lines) from a session's log_lines. User
-    echoes start with '>'; bracketed lines are system events."""
+    echoes start with '>'; bracketed lines are system events, and so is a
+    `[tool: X] <preview>` line (it does not end in a bracket, but it is a tool
+    call, not assistant prose)."""
     replies: List[str] = []
     events: List[str] = []
     cur: List[str] = []
@@ -225,7 +227,7 @@ def split_turns(log_lines: List[str]) -> Tuple[List[str], List[str]]:
             if cur:
                 replies.append('\n'.join(cur))
                 cur = []
-        elif s.startswith('[') and s.endswith(']'):
+        elif (s.startswith('[') and s.endswith(']')) or _TOOL_LINE.match(s):
             events.append(s)
         else:
             cur.append(line)
@@ -1534,7 +1536,8 @@ def finalize(ctx: Ctx, cell: Cell, run: CellRun) -> Tuple[str, dict, dict]:
                                requested_model=ctx.model, observations=obs if cell.kind != 'cross' else
                                [o for o in obs if o['provider'] == ctx.vendor],
                                claims=run.claims, artifacts=run.artifacts, event_lines=events,
-                               allowance_display=allowance, blocked=run.blocked, tool_events=None,
+                               allowance_display=allowance, blocked=run.blocked,
+                               tool_events=sum(1 for e in events if _TOOL_LINE.match(e)),
                                depth_asked=run.depth_asked)
     func_fail = any(c['verdict'] == G.FAIL for c in run.checks)
     func_unver = any(c['verdict'] == G.UNVERIFIABLE for c in run.checks)
