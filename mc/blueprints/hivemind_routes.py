@@ -57,6 +57,7 @@ import mc.hivemind_ids as _hm_ids
 import mc.hivemind_roster as _hm_roster
 import mc.hivemind_run_roles as _hm_run_roles
 import mc.hivemind_worker as _hm_worker
+import mc.hivemind_ws_liveness as _hm_liveness
 import mc.project_sync as _sync
 from mc import engine_selection, obs, state
 from mc.atomic_json import write_json_atomic
@@ -1883,7 +1884,23 @@ def _hivemind_orchestrator_loop():
                     if ws.get('status') != 'active':
                         continue
                     sid = ws.get('current_agent_session_id')
-                    if not sid or sid not in agent_sessions:
+                    if not sid:
+                        continue
+                    # MC-1179 OS25: an owner that is absent (restart) or stopped
+                    # is never collected below, so the workstream used to stay
+                    # `active` for ever and held a concurrency slot.
+                    _taken = _hm_liveness.reclaim_gone_owner(
+                        ws, agent_sessions, _time.time(), roster=_hm_roster.is_roster_workstream(ws),
+                        max_retries=manifest.get('config', {}).get('max_retries_per_workstream', 2))
+                    if _taken:
+                        _hm_save_workstream(hivemind_id, ws['id'], ws)
+                        if _taken in ('requeued', 'failed', 'held'):
+                            _log(f"[hivemind] {hivemind_id} {ws['id']}: worker {ws.get('last_agent_session_id')} is gone -> {ws['status']}", flush=True)
+                            _hm_push_sse(hivemind_id, {
+                                'type': 'hivemind_workstream', 'hivemind_id': hivemind_id,
+                                'ws_id': ws['id'], 'status': ws['status'],
+                                'reason': ws.get('failure_reason') or 'worker_gone'})
+                    if sid not in agent_sessions:
                         continue
                     s = agent_sessions[sid]
                     if s.get('status') in ('completed', 'error'):

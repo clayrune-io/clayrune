@@ -1,5 +1,8 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Hivemind: dead workers, resume, held integration, undelivered messages (MC-1179 OS25, OS24, OS33, OS26)
+
+- Hivemind workers that are gone (OS25): an `active` workstream whose worker session is missing (a server restart) or `stopped` is taken back after 60 s instead of staying `active` for ever. Before, it held a `max_concurrent_workers` slot and kept the run from finishing; three such workstreams meant nothing else was ever spawned. A legacy workstream goes back to `pending` with `retry_count` + 1, and to `failed` (`failure_reason: worker_gone`) once `max_retries_per_workstream` is spent. A roster workstream goes to `blocked` with the same reason, for a person to release. The new `mc/hivemind_ws_liveness.py` holds the rule; the orchestrator loop makes one call. A worker whose session is `idle` with its process up is left alone (not covered; see the report for why).
 ## [2026-11-17] - Control plane public routes and the mail reader (MC-1179 MB25, MB26, MB1)
 
 - Mail reader (MB1): a sender-chosen charset name in a header (`=?<any text>?B?...?=`) no longer aborts `tools/mail-mcp/read_digest.py`. `_dec` decodes an unknown or NUL-bearing charset as UTF-8, and the fetch-failure envelope reports the exception class name, not `repr(e)`, so no sender text reaches the calling session unlaundered and one message can no longer make every digest read exit 1.
