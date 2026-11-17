@@ -186,3 +186,24 @@ Notes are terse on purpose; each is re-verified and expanded when moved to
 - Progress: also read fully: signup-http.js, verification-mail.js,
   control-mail-delivery.js, owner-management.js, link-router.js,
   owner-change.js, signed-v2-verifier.js (second read).
+- Progress (after rollover 2): re-read fully: worker.js, pull-activate-http.js,
+  pull-status-http.js; pull-fence-http.js:64-213, pull-key-rotate-http.js:64-223
+  (the rest of both is the shared boilerplate, see C17). Earlier in this pass
+  also read: migrations/0005_pull.sql, pull-retention.js, pull-sweep.js.
+- C17 (M, streamlining, measured with `comm` on sorted unique lines) the five
+  machine-HTTP classes share their boundary code by copy: lines in common with
+  `pull-activate-http.js` (245 lines): `pull-key-rotate-http.js` 169,
+  `pull-status-http.js` 146, `pull-fence-http.js` 120, `pull-send-http.js` 100.
+  Identical members: `flatJSON`, `CODES`, `current`, `snapshotGuard`,
+  `flowGuard`, `fresh`, `accounting`, `operation`, `save`, `response`, and the
+  `handle` prologue and refusal block.
+- C18 (L, low) stale header comments say the module is not wired while
+  `worker.js:26-38` wires it: `pull-activate-http.js:1`, `pull-status-http.js:1`
+  ("Unwired; unit 14 owns routing"), `pull-send-http.js:1`, and others to list.
+- C7 addendum: `pull-activate-http.js:155` accepts a `key_recovery` flow in
+  state `completed`; no code can produce one (no `/mail/key-recovery` handler).
+- Cleared: `/v1/pull/status` charging the `pull:http:send` bucket
+  (`pull-status-http.js:103`) is the contract
+  (`docs/AGENT_MAIL_PULL_CONTRACT.md:120`), not a defect. Key rotation path is
+  complete: `owner-management.js:14,326,396` approve, then
+  `pull-key-rotate-http.js:157`.
