@@ -498,11 +498,15 @@ try {
   (toolTiles.length === 3 && /Action/.test(toolTiles[0]) && /Approval gate/.test(toolTiles[1]) && /Wait/.test(toolTiles[2]))
     ? ok(`exactly three tools in the toolbar, in order: ${JSON.stringify(toolTiles)}`)
     : fail(`expected exactly Action, Approval gate, Wait (in order) in the toolbar, got ${JSON.stringify(toolTiles)}`);
-  const toolbarToolsOrder = await page.$$eval('.wfb-toolbar > *', els => els.map(e => e.className || e.tagName));
-  const toolsIdx = toolbarToolsOrder.findIndex(c => String(c).includes('wfb-toolbar-tools'));
-  const createIdx = toolbarToolsOrder.findIndex(c => String(c).includes('btn-sched-save'));
-  const runNowIdx = toolbarToolsOrder.findIndex(c => String(c).includes('btn-sched-cancel'));
-  (toolsIdx > -1 && toolsIdx < createIdx && createIdx < runNowIdx)
+  // Create/Run now now live in the "act" group (toolbar grouping, 2026-11-17),
+  // so compare the groups' order, then Create before Run now inside the group.
+  const toolbarToolsOrder = await page.$$eval('.wfb-toolbar > *', els => els.map(e => e.getAttribute('data-wf-group') || e.className || e.tagName));
+  const toolsIdx = toolbarToolsOrder.indexOf('add');
+  const createIdx = toolbarToolsOrder.indexOf('act');
+  const actKids = await page.$$eval('.wfb-toolbar [data-wf-group="act"] > *', els => els.map(e => e.className));
+  const runNowIdx = actKids.findIndex(c => String(c).includes('btn-sched-cancel'));
+  (toolsIdx > -1 && toolsIdx < createIdx && actKids.findIndex(c => String(c).includes('btn-sched-save')) > -1
+    && actKids.findIndex(c => String(c).includes('btn-sched-save')) < runNowIdx)
     ? ok('the tool group sits in the toolbar row, to the left of Create and Run now')
     : fail(`expected the tool group before Create/Run now in the toolbar, order: ${JSON.stringify(toolbarToolsOrder)}`);
   const conceptHint = await page.$$eval('.wfb-palette-hint', els => els.map(e => e.textContent).join(' '));

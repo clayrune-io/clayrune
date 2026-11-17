@@ -9661,16 +9661,31 @@
      downward touch-drag before our JS ever sees it -- the toolbar sits ABOVE
      the canvas, so a toolbar-to-canvas drag goes DOWN, the same trap as
      defect 13's palette-to-canvas UP drag, just the opposite axis. */
-  .wfb-toolbar-tools {
-    display: flex; align-items: center; gap: 4px; padding-left: 8px; border-left: 1px solid var(--border);
+  /* Toolbar grouping (Ron, 2026-11-17: "there is no clear visual separation
+     between function keys and action keys"). Three groups -- edit (Undo /
+     Redo / Reset) | add a block (Action / Approval gate / Wait) | act on the
+     workflow (Check / Update / Run now) -- each a no-wrap unit, so on a phone
+     the row breaks BETWEEN groups, never inside one (the "Add" label cannot be
+     stranded from its buttons). The rule before the 2nd and 3rd group is the
+     divider; `.wfb-toolbar-tools` was already the one rule-separated group. */
+  .wfb-toolbar-group { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; }
+  .wfb-toolbar-group + .wfb-toolbar-group { padding-left: 8px; border-left: 1px solid var(--border); }
+  .wfb-toolbar-group-label {
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--text-faint); white-space: nowrap; padding-right: 2px;
   }
+  /* The "add something" look: exactly `.wfb-tab-new` (+ New Workflow) -- a
+     DASHED border and accent text -- so a dashed control on this page always
+     means "this puts something new on the canvas"; the command buttons stay
+     solid. The leading "+" is CSS so the button's text content is unchanged. */
   .wfb-toolbar-tool {
-    background: transparent; border: 1px solid var(--border); border-radius: 6px;
-    color: var(--text-dim); font-size: 11.5px; font-weight: 600; padding: 5px 9px;
+    background: transparent; border: 1px dashed var(--border); border-radius: 6px;
+    color: var(--accent); font-size: 11.5px; font-weight: 600; padding: 5px 9px;
     cursor: grab; white-space: nowrap; font-family: inherit; display: flex; align-items: center;
     gap: 5px; touch-action: none; user-select: none;
   }
-  .wfb-toolbar-tool:hover { border-color: var(--accent); color: var(--accent); }
+  .wfb-toolbar-tool::before { content: '+'; font-weight: 700; }
+  .wfb-toolbar-tool:hover { border-color: var(--accent); }
   .wfb-toolbar-tool.wfb-palette-dragging { cursor: grabbing; opacity: 0.5; }
   .wfb-toolbar-desc-row { flex-shrink: 0; padding-bottom: 8px; }
   .wfb-toolbar-desc-row textarea {

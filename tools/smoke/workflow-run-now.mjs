@@ -18,6 +18,20 @@
  *   - a 409 for a run this tab just started shows no "Run failed" toast, a
  *     409 for a run started elsewhere still does.
  *
+ * Toolbar grouping (Ron, 2026-11-17: the buttons that ADD a block looked
+ * identical to the ones that DO something). The toolbar is three groups,
+ * edit | add | act, with a divider between each:
+ *   - Action / Approval gate / Wait sit in their own group behind a muted
+ *     "Add" label, between two dividers, all wearing the dashed "add
+ *     something" look (the same one "+ New Workflow" uses) and a tooltip that
+ *     says what they add;
+ *   - Undo, Redo, Reset, Check workflow, Update, Run now keep the solid look
+ *     and never carry the add style;
+ *   - at 390px the groups stay whole (the label stays on the row with its
+ *     buttons).
+ *   Set SHOT_DIR (and optionally SHOT_PREFIX) to also write a toolbar
+ *   screenshot per width.
+ *
  * RUN
  *   cd tools/smoke && node workflow-run-now.mjs
  * Exit 0 = all cases behave; 1 = a case regressed / harness error.
@@ -35,6 +49,8 @@ const ORIGIN = 'http://mc.smoke.test';
 const PID = 'smoke_runnow';
 const WFID = 'wf-runnow';
 
+const SHOT_DIR = process.env.SHOT_DIR || '';
+const SHOT_PREFIX = process.env.SHOT_PREFIX || 'toolbar';
 const STATIC = {};
 Object.assign(STATIC, loadStaticJsCss(REPO_ROOT));
 
@@ -147,6 +163,62 @@ try {
       (notDefault(look.run) && sameAsToolbar(look.run))
         ? ok(`Run now matches the toolbar buttons (font ${look.run.fs}, radius ${look.run.br}, class "${look.runCls}")`)
         : fail(`Run now does not match the toolbar: ${JSON.stringify(look.run)} vs Reset ${JSON.stringify(look.reset)}`);
+      // ── 1b) toolbar grouping: add-a-block vs command ────────────────────
+      const g = await page.evaluate(() => {
+        const tb = document.querySelector('.wfb-toolbar');
+        const rect = (el) => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, h: r.height }; };
+        const groups = [...tb.children].filter((c) => c.classList.contains('wfb-toolbar-group'));
+        const kind = (el) => el.getAttribute('data-wf-group');
+        const addGroup = groups.find((x) => kind(x) === 'add');
+        const info = (el) => { const c = getComputedStyle(el); return { bs: c.borderTopStyle, bw: c.borderTopWidth, text: el.textContent.replace(/\s+/g, ' ').trim(), title: el.getAttribute('title') || '', cls: el.className, inAdd: !!(addGroup && addGroup.contains(el)) }; };
+        const cmdBtns = [...tb.querySelectorAll('.wfb-toolbar-btn')].map(info);
+        const addBtns = [...tb.querySelectorAll('.wfb-toolbar-tool')].map(info);
+        const label = addGroup && addGroup.querySelector('.wfb-toolbar-group-label');
+        const firstTool = addGroup && addGroup.querySelector('.wfb-toolbar-tool');
+        return {
+          order: groups.map(kind),
+          dividerLeft: groups.map((x) => getComputedStyle(x).borderLeftWidth),
+          cmdBtns, addBtns,
+          label: label ? { text: label.textContent.trim(), rect: rect(label), color: getComputedStyle(label).color } : null,
+          firstTool: firstTool ? rect(firstTool) : null,
+          groupRects: groups.map((x) => ({ k: kind(x), r: rect(x) })),
+          toolbarRect: rect(tb),
+        };
+      });
+      (g.order.join(',') === 'edit,add,act')
+        ? ok(`toolbar is three groups in order edit | add | act`)
+        : fail(`expected three .wfb-toolbar-group children edit,add,act, got [${g.order}]`);
+      const px = (v) => parseFloat(v) || 0;
+      (px(g.dividerLeft[1]) >= 1 && px(g.dividerLeft[2]) >= 1 && px(g.dividerLeft[0]) === 0)
+        ? ok('the add group sits between two dividers (rule before it and before the act group; none before the edit group)')
+        : fail(`expected dividers before the add and act groups only, border-left widths ${JSON.stringify(g.dividerLeft)}`);
+      (g.label && g.label.text === 'Add')
+        ? ok('the add group opens with a muted "Add" label')
+        : fail(`expected an "Add" label at the start of the add group, got ${JSON.stringify(g.label)}`);
+      (g.addBtns.length === 3 && g.addBtns.every((b) => b.inAdd && b.bs === 'dashed'))
+        ? ok('Action, Approval gate and Wait are in the add group and share the dashed add style')
+        : fail(`expected 3 add buttons in the add group with a dashed border, got ${JSON.stringify(g.addBtns.map((b) => [b.text, b.bs, b.inAdd]))}`);
+      (g.cmdBtns.length === 6 && g.cmdBtns.every((b) => !b.inAdd && b.bs === 'solid' && !/wfb-toolbar-tool/.test(b.cls)))
+        ? ok(`the six command buttons keep the solid look and none carry the add style (${g.cmdBtns.map((b) => b.text.replace(/^\S+\s/, '')).join(', ')})`)
+        : fail(`expected 6 solid command buttons outside the add group, got ${JSON.stringify(g.cmdBtns.map((b) => [b.text, b.bs, b.inAdd]))}`);
+      const wantTitles = [/^Add an? action/i, /^Add an? approval/i, /^Add an? wait/i];
+      (g.addBtns.length === 3 && g.addBtns.every((b, i) => wantTitles[i].test(b.title)))
+        ? ok(`each add button's tooltip says what it adds (${g.addBtns.map((b) => '"' + b.title + '"').join(' · ')})`)
+        : fail(`expected tooltips "Add an action…/approval gate…/wait…", got ${JSON.stringify(g.addBtns.map((b) => b.title))}`);
+      // The label never drifts off its buttons, and no group is broken across
+      // two rows (a group is one button row tall).
+      const sameRow = g.label && g.firstTool && g.label.rect.top < g.firstTool.bottom && g.firstTool.top < g.label.rect.bottom;
+      sameRow ? ok('the "Add" label stays on the same row as its buttons') : fail(`the "Add" label is not on the row of its buttons: ${JSON.stringify([g.label && g.label.rect, g.firstTool])}`);
+      const maxH = Math.max(...g.addBtns.map(() => g.firstTool ? g.firstTool.h : 0)) * 1.6;
+      g.groupRects.every((x) => x.r.h <= maxH)
+        ? ok(`every group stays one row tall (${g.groupRects.map((x) => x.k + ' ' + Math.round(x.r.h) + 'px').join(', ')})`)
+        : fail(`a toolbar group is split across rows: ${JSON.stringify(g.groupRects)}`);
+      if (SHOT_DIR) {
+        const r = g.toolbarRect;
+        const file = resolve(SHOT_DIR, `${SHOT_PREFIX}-${vp.width}.png`);
+        await page.screenshot({ path: file, clip: { x: 0, y: Math.max(0, r.top - 6), width: vp.width, height: r.h + 12 } });
+        console.log('  screenshot: ' + file);
+      }
       const e = errs.filter((x) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(x));
       e.length ? e.forEach((x) => fail('uncaught exception (styling case): ' + x)) : 0;
       await ctx.close();
