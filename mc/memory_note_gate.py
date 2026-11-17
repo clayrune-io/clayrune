@@ -36,7 +36,7 @@ import mc.skills as _skills
 from mc import state
 from mc.core import _atomic_write_text, _log, now_iso
 from mc.state import agent_sessions
-from mc.unattended import is_unattended_caller
+from mc.unattended import non_manual_session_running
 
 NOTE_TYPES = ('user', 'feedback', 'project', 'reference')
 _DEFAULT_TYPE = 'project'
@@ -92,18 +92,24 @@ def classify_caller(project_id):
     'unattended' regardless, fail-safe). Residual hole, stated rather than
     hidden: a foreign agent can still write P while P also has an unattended
     session running.
+
+    The `Origin` header decides nothing about the STAMP (ML6). It is something
+    the caller sends: an agent that added it to its curl used to get
+    `interactive` for free. A request that carries it is still never REFUSED
+    (a browser must not be locked out of a project because an agent is busy
+    elsewhere), but what it writes is stamped by the same session state as any
+    other request, so a human note written while an unattended session runs
+    is stamped `unattended`: the fail-safe direction.
     """
-    if has_request_context() and request.headers.get('Origin'):
-        return 'interactive', None
-    unatt_in_project = is_unattended_caller(project_id)
-    if unatt_in_project:
+    browser = bool(has_request_context() and request.headers.get('Origin'))
+    if non_manual_session_running(project_id):
         return 'unattended', None
-    if not is_unattended_caller(None):
+    if not non_manual_session_running(None):
         return 'interactive', None
     manual_here = any(
         s.get('status') == 'running' and s.get('project_id') == project_id
         for s in agent_sessions.values())
-    if manual_here:
+    if manual_here or browser:
         return 'unattended', None
     return 'unattended', ('an unattended session is running elsewhere and '
                           'none is running on this project')

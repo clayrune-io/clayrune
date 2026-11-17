@@ -75,6 +75,17 @@ def is_unattended_caller(project_id: str | None = None) -> bool:
     """
     if has_request_context() and request.headers.get('Origin'):
         return False
+    return non_manual_session_running(project_id)
+
+
+def non_manual_session_running(project_id: str | None = None) -> bool:
+    """The session half of `is_unattended_caller`, with no look at the request.
+
+    For a decision the `Origin` header must not be able to buy. The header is
+    enough to spare a browser a REFUSAL (above); it is still something the
+    caller sends, so a provenance STAMP reads this instead (ML6: the note
+    route stamped `interactive` for any request that carried the header).
+    """
     for s in agent_sessions.values():
         if s.get('status') != 'running':
             continue
