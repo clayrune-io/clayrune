@@ -788,6 +788,85 @@ def test_serve_image_allowlist(client):
         outside.unlink()
 
 
+# P56: nothing served from these two routes may run script on Clayrune's origin.
+_SCRIPT = b'<script>fetch("/api/projects")</script>'
+
+
+def _upload(client, name, data):
+    _seed(client, backlog=[{'id': 'it1', 'text': 't'}])
+    r = client.post('/api/project/tproj/backlog/it1/attachments',
+                    data={'file': (io.BytesIO(data), name)},
+                    content_type='multipart/form-data')
+    assert r.status_code == 200
+    return r.get_json()['attachment']['stored_name']
+
+
+@pytest.mark.parametrize('name', ['note.html', 'note.HTM', 'page.xhtml',
+                                  'data.xml', 'noext'])
+def test_attachment_html_and_unknown_types_download(client, name):
+    stored = _upload(client, name, _SCRIPT)
+    r = client.get(f'/api/attachments/{stored}')
+    try:
+        assert r.status_code == 200
+        assert r.headers['Content-Disposition'].startswith('attachment')
+        assert r.headers['X-Content-Type-Options'] == 'nosniff'
+        assert 'sandbox' in r.headers['Content-Security-Policy']
+    finally:
+        r.close()
+
+
+def test_attachment_svg_is_sandboxed_picture(client):
+    stored = _upload(client, 'logo.svg', b'<svg xmlns="http://www.w3.org/2000/svg">'
+                     b'<script>fetch("/api/projects")</script></svg>')
+    r = client.get(f'/api/attachments/{stored}')
+    try:
+        assert r.status_code == 200
+        assert not r.headers.get('Content-Disposition', '').startswith('attachment')
+        assert r.mimetype == 'image/svg+xml'
+        csp = r.headers['Content-Security-Policy']
+        assert 'sandbox' in csp and 'allow-scripts' not in csp
+        assert r.headers['X-Content-Type-Options'] == 'nosniff'
+    finally:
+        r.close()
+
+
+@pytest.mark.parametrize('name', ['pic.png', 'pic.JPG', 'doc.pdf', 'doc.txt'])
+def test_attachment_safe_types_stay_inline(client, name):
+    stored = _upload(client, name, b'x')
+    r = client.get(f'/api/attachments/{stored}')
+    try:
+        assert r.status_code == 200
+        assert not r.headers.get('Content-Disposition', '').startswith('attachment')
+        assert r.headers['X-Content-Type-Options'] == 'nosniff'
+        assert 'Content-Security-Policy' not in r.headers
+    finally:
+        r.close()
+
+
+def test_serve_image_svg_sandboxed_raster_inline(client):
+    _seed(client)
+    svg = client.uploads / 'evil.svg'
+    svg.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>')
+    png = client.uploads / 'pic.png'
+    png.write_bytes(b'\x89PNG')
+    r = client.get('/api/serve-image', query_string={'path': str(svg)})
+    try:
+        assert r.status_code == 200 and r.mimetype == 'image/svg+xml'
+        csp = r.headers['Content-Security-Policy']
+        assert 'sandbox' in csp and 'allow-scripts' not in csp
+        assert r.headers['X-Content-Type-Options'] == 'nosniff'
+    finally:
+        r.close()
+    r = client.get('/api/serve-image', query_string={'path': str(png)})
+    try:
+        assert r.status_code == 200 and r.mimetype == 'image/png'
+        assert not r.headers.get('Content-Disposition', '').startswith('attachment')
+        assert r.headers['X-Content-Type-Options'] == 'nosniff'
+        assert 'Content-Security-Policy' not in r.headers
+    finally:
+        r.close()
+
+
 def test_serve_image_siblings(client):
     _seed(client)
     folder = client.uploads / 'ivnav'

@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Uploaded HTML and SVG can no longer run script on the app's origin through /api/attachments and /api/serve-image (MC-1179 P56)
+
+- An `.html` attached to a backlog item came back from `/api/attachments/<name>` as `text/html`, `inline`, with no `nosniff` and no CSP, and an `.svg` with a `<script>` came back the same way from `/api/serve-image`. Opened by link, either was a first-party page with a same-origin `fetch()` against every API (over the tunnel, in the signed-in session). `/api/serve-file` already refused this; these two routes did not.
+- Both routes now go through `mc/inline_safety.py`, which decides by file extension: raster images, PDF and plain text (`.txt .md .log .csv .json`) stay inline; SVG stays a picture but carries `Content-Security-Policy: sandbox; default-src 'none'; ...` (no `allow-scripts`); HTML, XHTML, XML, unknown and extensionless files download. Every response carries `X-Content-Type-Options: nosniff`.
+- Visible change: the "Open" button on an attached `.html`/`.xml` now downloads the file instead of rendering it. Attachment thumbnails, the chat image viewer and raster/PDF/text opens are unchanged.
+- `/api/serve-file` (including `inline=1` for generated HTML viewers) is untouched. Tests: 16 attachment/serve-image tests in `tests/test_project_routes.py` (11 failed on the old code). Finding: `docs/_review/2026-11-16_07_platform.md` P56.
+
 ## [2026-11-17] - Workflow toolbar: buttons that add a block no longer look like buttons that do something
 
 - Action, Approval gate and Wait (which drop a block on the canvas) looked identical to Undo, Redo, Reset, Check workflow, Update and Run now. The toolbar is now three groups with a rule between each: Undo / Redo / Reset | a muted "Add" label then Action / Approval gate / Wait | Check workflow / Update / Run now.
