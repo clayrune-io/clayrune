@@ -18,35 +18,127 @@ Severity: **blocker** = wrong result or lost data on a normal path today;
 every turn/dispatch; **medium** = narrower trigger, or a latent defect behind a
 disabled flag; **low** = hygiene.
 
-Written incrementally. The summary table is rebuilt at each append; a section
-that exists below is finished, a file with no section has not been reported yet
-(see "Coverage" at the end).
+Written incrementally, one commit per section. Every in-scope file has a
+section below; see "Coverage" at the end for what was and was not done.
 
 ## Ranked summary
 
-_Rebuilt at each append. Current as of: small modules + `mc/core.py`._
+60 findings: 0 blocker, 8 high, 16 medium, 36 low. Ranked by consequence, and
+within one severity by how often the path runs. "Latent" means the code is
+behind a disabled flag or has no production caller today.
+
+**Merge-blocking if these were a diff:** ranks 1 to 8. Ranks 1 to 5 are
+measured; 6 to 8 are read from the code.
 
 | Rank | Id | Finding | Lens | Severity |
 |---|---|---|---|---|
-| 1 | C1 | `_atomic_write_text` reuses one temp name per process, so two threads writing the same path tear the target (measured) | L, M | high |
-| 2 | L3 | Lifecycle bridge cannot close an attempt that exits before init or without an integer rc; the attempt stays active and blocks every later dispatch of that conversation (latent, service disabled) | L | medium |
-| 3 | L1 | The lifecycle service is hard-wired `enabled=False` with stub callbacks; 520 lines plus per-dispatch wiring run only under tests while looking live | L, M | medium |
-| 4 | L6 | `revoke_conversations` stops at the first revision conflict, leaving later ids un-fenced and returning no partial list (latent) | L | medium |
-| 5 | L2 | Lifecycle errors are appended to `session['_lifecycle_errors']`, which nothing reads or logs (latent) | M | medium |
-| 6 | L8 | A spawn failure inside the bridge loses its cause; `CLINotInstalledError` becomes `LaunchUncertain` (latent) | L | low |
-| 7 | C2 | `_log` guards only `UnicodeEncodeError`; an `OSError` from a closed or full stdout still aborts the caller | L | low |
-| 8 | C3 | `_harden_secret_perms` ignores the `icacls` exit code and swallows every failure without a log line | M | low |
-| 9 | P1 | `background_model` resolves a tier differently from `resolve_tracking_request` and trusts stored value shapes | L, M | low |
-| 10 | L5 | `RuntimeAttemptOwner.reconstruct` hard-codes `'codex'` in the provider-neutral owner and has no production caller | L | low |
-| 11 | L7 | `ensure_project_generation_schema()` runs on every `bridge_factory` call (latent) | E | low |
-| 12 | C4 | `TimestampedLines` leaves `remove`/`sort`/`reverse` un-overridden; an in-place item assignment re-stamps the line as produced now | L | low |
+| 1 | S1 | Startup backfill ignores `claude_session_ids`, so each earlier transcript of a rolled-over conversation is re-imported as a fake "interrupted" row: real rows are evicted from the 500-row log and the fakes are re-scribed (measured: at least 305 such rows) | L | high |
+| 2 | MA1 | Stop on Qwen, Codex, OpenCode, Goose, Aider and Kiro kills before it sets the status, so every user Stop is logged as a crash with a hint and a `[runtime-error]` line (measured, 5 of 5) | L | high |
+| 3 | C1 | `_atomic_write_text` reuses one temp name per process; two threads writing one path tear the target (measured: 4,471 torn reads of 45,505) | L, M | high |
+| 4 | A1 | `_collect_trailing_reply_text` drops any reply line that starts with `[`, so the saved summary and a workflow step's result can be an older message or a fragment (measured) | L | high |
+| 5 | A2 | Claude transform timeouts do not hold on Windows through the `.cmd` shim (measured: 2 s timeout returned after 8.1 s); `stream_text` has no timeout and leaves the CLI running | L | high |
+| 6 | Q1 | Qwen `oneshot` never reads the exit code and falls back to raw stdout, so the JSONL protocol stream can be returned as the transform's answer | L, M | high |
+| 7 | G1 | Gemini `oneshot` never reads the exit code; a failed transform returns `''` or a fragment as success | L, M | high |
+| 8 | S2 | `app.py` calls `boot(check_port=False)` with no bind first; a desktop launch beside a running instance overwrites its exec token and marks its live runs interrupted | L | high |
+| 9 | X1 | A follow-up sent during a running turn is recorded as a crash on OpenCode, Goose, Aider and Kiro | L | medium |
+| 10 | G2 | Same on Gemini: the old reader reports a crash and fires `on_process_exit` | L | medium |
+| 11 | S3 | Exit cleanup reaps Mode B sessions only, there is no `SIGTERM` handler, and one unguarded line can end the hook early | L | medium |
+| 12 | S4 | The Claude runtime stop hook kills before setting status (reachable from the hivemind reviewer); the follow-up hook is dead and wrong | L, M | medium |
+| 13 | A3 | A transcript scan that hits one exception caches an empty result and persists it; that session's documents vanish from the Documents tab | L, M | medium |
+| 14 | A4 | An unreadable incognito registry is rebuilt from empty by the writer, un-marking every earlier incognito transcript | L | medium |
+| 15 | X4 | OpenCode and Goose declare session resume and never use it for a follow-up; each follow-up starts a new native session with a 20-line tail | L | medium |
+| 16 | X2 | Aider leaves two temp files per turn holding the system prompt and the conversation, never deleted | E, L | medium |
+| 17 | A5 | `last_error` is one attribute on a shared runtime singleton; concurrent transforms classify each other's failures | L | medium |
+| 18 | A6 | `_pid_is_alive` reports an exited Windows process as alive while a handle to it is open (measured) | L | medium |
+| 19 | G3 | The tool-free transform's isolation directory is a fixed path in the shared temp directory, checked once per process (multi-user hosts) | L | medium |
+| 20 | X3 | `oneshot` on OpenCode, Goose, Kiro and Aider reports a failed run as a successful answer (latent; measured with a stub) | L, M | medium |
+| 21 | L3 | Lifecycle bridge cannot close an attempt that exits before init or without an integer rc; it then blocks every later dispatch of that conversation (latent) | L | medium |
+| 22 | L1 | The lifecycle service is hard-wired `enabled=False` with stub callbacks; enabling it as wired breaks every dispatch | L, M | medium |
+| 23 | L6 | `revoke_conversations` stops at the first revision conflict and returns no partial list (latent) | L | medium |
+| 24 | L2 | Lifecycle errors go to `session['_lifecycle_errors']`, which nothing reads or logs (latent) | M | medium |
+| 25 | MA3 | Final status is the exit code only; a CLI that reports a failed turn and exits 0 finishes as `completed` | L | low |
+| 26 | MA2 | One unexpected line shape ends the shared Mode A reader while the process is still alive | L | low |
+| 27 | G4 | Same in the Gemini reader | L | low |
+| 28 | X8 | Unguarded event shapes in Codex, Kiro and Goose parsers end the reader or mis-parse (measured) | L | low |
+| 29 | Q3 | Three unguarded shapes in Qwen `parse_event` raise (measured) | L | low |
+| 30 | Q2 | Qwen text that shares an envelope with a tool call is dropped; only the first tool call is shown | L | low |
+| 31 | X5 | One Codex shell command is logged two or three times | L | low |
+| 32 | X6 | Exit-hint classifiers match the agent's own words; Codex's remedy names a key the file says does not work | L | low |
+| 33 | G5 | Gemini's error classifier reads stale stderr and the agent's own reply text | L | low |
+| 34 | X9 | OpenCode reports the last step's tokens as the turn's | L | low |
+| 35 | S5 | Each read-only startup pass rewrites every agent log (measured: about 63 MB written per boot that changes nothing) | E | low |
+| 36 | S6 | The telemetry backfill re-probes the same rows on every boot (469 rows here) | E | low |
+| 37 | S7 | `_check_port_conflict` is now only a banner: its restart wait and bypass are unreachable, and its port match is a substring | E, L | low |
+| 38 | S8 | A bare `import server` still restores limit-resume waits and can write `config.json` | M | low |
+| 39 | S9 | The Distiller's skills root ignores the data root | M | low |
+| 40 | A10 | `maybe_set_sole_provider_default` changes memory before disk and never reconciles | L | low |
+| 41 | A7 | `apply_mc_tool_blocks` logs "ignored" after it has queued the question | L | low |
+| 42 | G6 | `_slim_system_prompt` matches three anchors and two no longer exist | L | low |
+| 43 | X7 | Codex rollout lookups scan the whole store each time | E | low |
+| 44 | X10 | Three parsers for one Codex cache file, two of them silent | M | low |
+| 45 | Q4 | The Qwen launch environment is assembled in four places | M | low |
+| 46 | S10 | Three `--version` subprocesses on the boot path to read three booleans | E | low |
+| 47 | A8 | `ClaudeRuntime.resolve_binary` is not cached; one transform resolves it four times | E | low |
+| 48 | A9 | Two scan caches still evict in the middle of a pass | E, M | low |
+| 49 | G7 | The `mc:` fence check re-joins the whole turn on every delta (Gemini) | E | low |
+| 50 | MA4 | Same quadratic fence check in the shared reader | E | low |
+| 51 | S11 | `_asset_version()` walks the static tree on every call (measured: 3.35 ms) | E | low |
+| 52 | S12 | Unguarded `int()` on the port, empty rules path becomes the current directory, and four smaller items | L, M | low |
+| 53 | L8 | A spawn failure inside the bridge loses its cause (latent) | L | low |
+| 54 | C2 | `_log` guards only `UnicodeEncodeError`; an `OSError` from stdout still aborts the caller | L | low |
+| 55 | C3 | `_harden_secret_perms` ignores the `icacls` exit code and swallows every failure without a log line | M | low |
+| 56 | P1 | `background_model` resolves a tier differently from `resolve_tracking_request` and trusts stored value shapes | L, M | low |
+| 57 | L5 | `RuntimeAttemptOwner.reconstruct` hard-codes `'codex'` and has no production caller | L | low |
+| 58 | L7 | `ensure_project_generation_schema()` runs on every `bridge_factory` call (latent) | E | low |
+| 59 | G8 | The Gemini class docstring describes a runtime that no longer exists | L | low |
+| 60 | C4 | `TimestampedLines` leaves `remove`/`sort`/`reverse` un-overridden | L | low |
+
+Unnumbered smaller observations are under "Also in this range" in 4d and 4e.
+
+**Two patterns, seven findings.** MA1, X1, G2 and S4 are the same ordering bug
+(kill, then update the session), and G1, Q1 and X3 are the same missing exit
+code check. Gemini's `interrupt` and the `describe_image` of Gemini and Qwen already do it
+correctly, so each fix is a copy of code that is in the file.
 
 ---
 
 ## 0. Prior audits: what is still open in this scope
 
-_To be completed after `mc/agent_runtime.py` and `server.py` are read (the open
-items live there)._
+**`docs/_review/2026-09-10_efficiency.md`.** Two of its findings are in this
+scope. Both are still open.
+
+- **E4, open.** `ClaudeRuntime._session_row` (`mc/agent_runtime.py:2699-2713`)
+  still keys the row cache on `(mtime, size)` and re-reads the whole file on a
+  miss (`:2726-2727` onward). There is no resume from the previous byte offset,
+  so the running session's transcript is parsed in full each time it is listed
+  after a turn. The cache gained a size bound (`:2788-2795`), which is a
+  different concern (A9).
+- **E6, open, narrowed.** `mc_remote/__init__.py:29-80` still registers and
+  starts the autostart thread at import. `server.py:3041` imports
+  `mc/blueprints/remote_routes.py`, whose module scope imports `mc_remote`
+  (`:67`). What changed: `tests/conftest.py:48` now sets
+  `MC_REMOTE_ENABLED=0` before any test imports it, so the test suite no longer
+  starts a connector. A script that imports `server` outside pytest still does.
+  S8 lists two more import-time writes of the same class.
+- E1, E2, E3, E5, F1 and F2 live in `agent_routes.py`, `project_routes.py`,
+  `floor_routes.py` and the frontend. Not judged here. S5 is adjacent to E3
+  (it counts the startup rewrites, which E3 did not).
+
+**`docs/ENTANGLEMENT_AUDIT.md`.** Both in-scope files are still bundled, and
+both have grown since it was written.
+
+- `mc/agent_runtime.py`: 10,816 lines then, 11,530 now. None of the plan #5
+  targets exists (`mc/runtimes/`, `mc/runtime_contracts.py`,
+  `runtime_registry.py`, `runtime_transforms.py`, `runtime_protocol.py`,
+  `runtime_mode_a.py`, `runtime_usage.py`).
+- `server.py`: 3,570 lines then, 3,928 now. None of the plan #7 targets exists
+  (`mc/config_defaults.py`, `config_loader.py`, `startup_backfill.py`,
+  `startup_memory.py`, `startup_worktrees.py`, `server_http.py`,
+  `server_lifecycle.py`, `runtime_hooks.py`, `application_wiring.py`).
+- This review does not repeat the bundling case. It adds one argument for the
+  split: the duplicated-per-provider defects above (seven findings) exist
+  because each provider carries its own copy of `write_followup`, `interrupt`
+  and `oneshot` in one file where the correct copy is 2,000 lines away.
 
 ---
 
@@ -1224,7 +1316,7 @@ never marked and is looked up again at every start. A miss in
 Not timed.
 **Fix:** stamp the row when the probe finds nothing.
 
-### S7 · low · E — the port banner outlived the check it belonged to
+### S7 · low · E, L — the port banner outlived the check it belonged to
 
 Both entry points pass `check_port=False` (`:3926`, `app.py:482`), so
 `_check_port_conflict` (`:2639-2849`) is called only from `_exit_port_in_use`
@@ -1331,3 +1423,61 @@ caching removes it.
   without counting.
 - The frozen-build branch of the guardrail hook generation (`:3906-3911`)
   matches its comment.
+
+---
+
+## Coverage
+
+**Read fully, every line:**
+
+| File | Lines |
+|---|---|
+| `mc/core.py` | 332 |
+| `mc/provider_allowance.py` | 94 |
+| `mc/provider_env_scope.py` | 92 |
+| `mc/provider_preferences.py` | 222 |
+| `mc/runtime_attempt_owner.py` | 333 |
+| `mc/runtime_lifecycle_service.py` | 191 |
+| `mc/agent_runtime.py` | 11,530, in five passes: 1-3845, 3846-5433, 5434-6977, 6977-8242, 8243-11530 |
+| `server.py` | 3,928 |
+
+Nothing in scope was skipped.
+
+**Read partly, only where a finding in scope depended on it** (the line ranges
+are the ones cited in the findings; nothing else in these files was judged):
+`mc/blueprints/agent_routes.py` (pass 2), `app.py`, `mc/agent_log_file.py`,
+`mc/agent_log_maintenance.py`, `mc/agent_spawn.py`, `mc/atomic_json.py`,
+`mc/execution_lifecycle.py`, `mc/hivemind_reviewer.py`,
+`mc/limit_resume_dispatch.py`, `mc/memory.py`, `mc/process_ledger.py`,
+`mc/transform_process_deadline.py`, `mc/workflows.py`,
+`mc_remote/__init__.py`, `mc/blueprints/remote_routes.py`, and the test files
+named under "Test coverage".
+
+**Limits of what was done:**
+
+- **Measured on one platform.** Every measurement is Windows, Python 3.14. A2
+  and A6 are Windows-specific by construction. C1 was not re-run on POSIX,
+  where `replace` over an open file behaves differently; the shared temp name
+  is the same there.
+- **No provider CLI was launched.** Parser findings (Q2, Q3, X5, X8, X9) were
+  measured by calling the parse functions with constructed lines. Whether each
+  CLI emits those shapes in practice was not verified. G1, Q1, MA3 and S10 are
+  read from the code for the same reason.
+- **S2 was not reproduced.** It needs two servers on one port.
+- **S1's count is a floor.** 305 of the 3,337 synthesized rows were matched to
+  a real row. The rest were not classified: some are legitimate imports of
+  chats that ran outside the app, some are duplicates whose real row has
+  already been evicted.
+- **C1's callers.** 32 call sites use `_atomic_write_text`. One outside the
+  scope was opened to confirm the race is reachable; the others were not
+  audited for locking.
+- **Config defaults.** `server.py:80-680` was read, but each default was not
+  traced to every reader. "A flag read in one place and ignored in another" was
+  checked only for the flags the reviewed code paths touch.
+- **Test-coverage statements** come from reading and grepping the test files.
+  None rests on a test run.
+- The live-data counts in S1, S5 and S6 are read-only counts over one
+  machine's agent logs. Other installs will differ in size, not in mechanism.
+
+Scratch scripts behind the measurements are in `_scratch/rev1179/`
+(gitignored, not part of this commit).
