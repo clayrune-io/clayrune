@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Test runs whose owner went away are finished as `lost`; the Floor stops counting them as active (MC-1179 pass 11, SF29)
+
+- A run whose owner session ended, whose tool call was interrupted, or that was open across a restart never reached a terminal state, and the Floor counted it as active for good (measured on one install: 534 of 3,278 runs `running`, `active_count` 443, a 40 KB block in every 5-second Floor reply). New `mc/test_run_lost_sweep.py` finishes as `lost`, through `store.finish` one run at a time, every non-terminal run whose named owner is not a live session of the project and whose `updated_at` is older than `LOST_AFTER_SECONDS` (60 minutes). It runs once at server startup (background thread, only when `test_run_progress_enabled` is on) and from the Floor read, at most once per 60 seconds per project, on the snapshots that read already holds, so the poll does not walk the files again. A terminal run is never touched. Ownerless runs (no owner recorded) are left alone: the Floor treats them as project work.
+- `test_run_floor.project` leaves roots whose owner is unavailable out of the room summary and `active_count`; they stay in `unavailable_owner_count`. A room whose only open runs are owner-unavailable no longer shows (`room_visible` false).
+- An event for a run already finished as `lost` is unchanged behaviour: the store ignores events after any terminal state (`_append` returns the snapshot without writing; `replay` skips them), and a later `finish` returns the terminal snapshot. A lost run is not reopened.
+- Tests: new `tests/test_test_run_lost_sweep.py` (13, temp-directory stores only). Not run against the real data directory; the live server was not restarted, so the sweep takes effect at the next restart. SF30 (store rewrite, retention) not started; no run record deleted.
+- Branch candidate for review; no merge, push or server restart.
+
 ## [2026-11-16] - Test launcher ends the whole process group on timeout or cancel (MC-1179 TL1)
 
 - `tools/test-run.py` ended only the direct child on a timeout or cancel, so a `--shell` unit, `npm`, pytest-xdist workers or a smoke's browser kept running, holding ports and files, while the run was reported `timeout`; the surviving grandchild also held the output pipes, so the tail was lost (`output_drain_incomplete`). Measured before the change: a unit whose grandchild sleeps then writes a marker still wrote it after the launcher had returned.

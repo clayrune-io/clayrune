@@ -9,6 +9,7 @@ from flask import Flask
 import pytest
 
 from mc import state, test_run_floor as projection
+from mc import test_run_lost_sweep as lost_sweep
 from mc.blueprints import floor_routes as floor, test_run_routes as routes
 from mc.test_run_store import OUTCOMES, TERMINAL_STATES, TestRunStore as RunStore
 
@@ -19,6 +20,10 @@ def env(tmp_path, monkeypatch):
     sessions = {}
     projects = [{'id': 'a', 'name': 'Alpha'}, {'id': 'b', 'name': 'Beta'}]
     monkeypatch.setattr(state, 'CONFIG', {projection.FLAG: True})
+    # The fixtures' runs are dated seconds after epoch 0; pin the SF29 sweep's
+    # clock to just after them so it does not finish them as lost mid-test.
+    monkeypatch.setattr(lost_sweep, '_now', lambda: 200.0)
+    monkeypatch.setattr(lost_sweep, '_last_sweep', {})
     monkeypatch.setattr(routes, '_storage', lambda: store)
     floor.wire(agent_sessions_ref=sessions, load_projects_fn=lambda: projects,
                list_characters_fn=lambda **kw: [])
@@ -190,12 +195,16 @@ def test_owner_with_wrong_project_is_not_retained_or_attached(env):
     run(env)
     result = board(env)
     assert result['counts']['figures'] == 0
-    assert result['rooms'][0]['id'] == 'a'
-    assert result['rooms'][0]['test_runs']['unavailable_owner_count'] == 1
+    # SF29: the run is counted as unavailable but is not active work, so the
+    # room it alone belongs to is quiet (it used to be a live room).
+    assert result['rooms'] == []
+    quiet = next(c for c in result['quiet'] if c['id'] == 'a')
+    assert quiet['test_runs']['unavailable_owner_count'] == 1
+    assert quiet['test_runs']['active_count'] == 0
 
 
 def test_project_filter_rejects_cross_project_snapshots(env):
-    a, b = run(env), run(env, pid='b')
+    a, b = run(env, sid=None), run(env, pid='b', sid=None)
     projected = projection.project('a', [a, b], {})
     assert [r['run_id'] for r in projected['summary']['runs']] == [a['run_id']]
 
@@ -324,7 +333,7 @@ def test_detail_cap_discloses_omissions_without_capping_totals(env):
 def test_projection_is_pure_and_does_not_expose_private_metadata(env):
     snapshot = run(env)
     before = copy.deepcopy(snapshot)
-    output = projection.project('a', [snapshot], {})
+    output = projection.project('a', [snapshot], {'s': {'session_id': 's', 'project_id': 'a'}})
     assert snapshot == before
     text = json.dumps(output)
     for secret in ('/private/worktree', 'private-process', 'Untrusted', 'display_label', 'cwd', 'process_identity'):

@@ -9,6 +9,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from mc import state
+from mc import test_run_lost_sweep as lost_sweep
 from mc.core import _log
 from mc.test_run_store import OUTCOMES, TERMINAL_STATES, TestRunStore
 
@@ -80,17 +81,21 @@ def project(project_id: str, snapshots: Iterable[Mapping[str, Any]],
         if parent is None or parent['owner_session_id'] != run['owner_session_id']:
             roots.append(run)
     owners: dict[str, list[Mapping[str, Any]]] = {}
+    counted: list[Mapping[str, Any]] = []
     ownerless, unavailable = 0, 0
     for run in roots:
         sid = run['owner_session_id']
-        owner = sessions.get(sid)
         if sid is None:
             ownerless += 1
-        elif owner is None or owner.get('project_id') != project_id or owner.get('session_id') != sid:
+            counted.append(run)
+        elif lost_sweep.owner_unavailable(run, project_id, sessions):
+            # Counted for the operator, but not active work: SF29 left hundreds
+            # of these in the room's summary, its percent and its size.
             unavailable += 1
         else:
+            counted.append(run)
             owners.setdefault(sid, []).append(run)
-    return {'summary': {**summarize(roots), 'ownerless_count': ownerless,
+    return {'summary': {**summarize(counted), 'ownerless_count': ownerless,
                         'unavailable_owner_count': unavailable},
             'owners': {sid: summarize(runs) for sid, runs in owners.items()}}
 
@@ -121,7 +126,9 @@ def read_projects(projects: Iterable[Mapping[str, Any]],
         if not pid or pid == '_incognito' or room.get('_is_incognito_project'):
             continue
         try:
-            result[pid] = project(pid, _all_runs(_storage(), pid), owners)
+            store = _storage()
+            snapshots = lost_sweep.maybe_sweep(store, pid, _all_runs(store, pid), owners)
+            result[pid] = project(pid, snapshots, owners)
         except Exception as exc:
             _log(f'[test-run-floor] project read failed ({pid}): {exc}', flush=True)
             result[pid] = {'summary': {**summarize([]), 'available': False,

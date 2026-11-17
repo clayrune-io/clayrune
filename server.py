@@ -3271,6 +3271,12 @@ _bp_test_runs.wire(
     proc_identity_fn=_bp_agent._proc_identity,
 )
 app.register_blueprint(_bp_test_runs.bp)
+# SF29: finish orphaned test runs as `lost` once at startup, off the boot path.
+# The Floor read repeats it (throttled); nothing happens while the flag is off.
+if CONFIG.get('test_run_progress_enabled') is True:
+    from mc import test_run_lost_sweep as _test_run_lost_sweep  # noqa: E402
+    _test_run_lost_sweep.start_startup_sweep(
+        _bp_test_runs._storage, _bp_projects.load_projects, _bp_agent.agent_sessions)
 from mc.blueprints.agent_mail_routes import create_blueprint as _mail_ingress_blueprint  # noqa: E402
 app.register_blueprint(_mail_ingress_blueprint(DATA_DIR))
 # Only the server process may sweep orphaned Chromium profile dirs: it is the
