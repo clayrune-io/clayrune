@@ -233,9 +233,7 @@ def diff_text(before: Dict[str, Any], after: Dict[str, Any]) -> str:
     """Zero-context diff — see docs/GUARDRAIL_PARITY_EVIDENCE.md for why: a
     wider window pulled a live API key out of a real settings file in
     testing, back when this wrote into global config. Kept even though the
-    generated files are Clayrune-owned now, since Codex's is a merge of the
-    user's real hooks.json and could still carry content this script never
-    means to display.
+    generated files are Clayrune-owned now and carry nothing of the user's.
     """
     b = json.dumps(before, indent=2, sort_keys=True).splitlines(keepends=True)
     a = json.dumps(after, indent=2, sort_keys=True).splitlines(keepends=True)
@@ -264,9 +262,10 @@ def generate_for_boot(clayrune_home: Optional[Path] = None, guard_script: Option
     """Server-startup entry point — see server.py's wiring.
 
     Generates (applies for real) ONLY for vendors in `installed_vendors`.
-    Never raises on a single vendor's failure (e.g. a malformed real
-    ~/.codex/hooks.json for the codex merge) — one vendor's problem must not
-    block boot or the other vendors' generation.
+    Never raises on a single vendor's failure (e.g. an unwritable launch-file
+    directory) — one vendor's problem must not block boot or the other
+    vendors' generation. `real_home` is accepted for call-signature stability
+    and is not read.
 
     `guard_script`/`python_exe` are `Optional` so a frozen-build caller can
     pass both as `None` (MC-975 follow-up) instead of a real repo path that
@@ -292,9 +291,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument('--vendor', choices=sorted(VENDOR_CONFIGS), action='append',
                          help='Generate for this vendor only (repeatable). Default: all.')
     parser.add_argument('--real-home', default=None,
-                         help="Home directory to read the user's REAL config from, for the "
-                              "codex merge only (claude/gemini/qwen never read the real "
-                              "install at all). Default: Path.home().")
+                         help="Accepted and ignored: no vendor reads the real install any "
+                              "more (Codex is injected inline, never merged from a file).")
     parser.add_argument('--clayrune-home', default=None,
                          help='Where to write the generated files, under <this>/hooks/. '
                               'Default: ~/.clayrune (isolated/test homes override this).')
