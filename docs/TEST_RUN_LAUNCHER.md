@@ -130,6 +130,19 @@ direct child is ended. Pipe drainage is bounded to one second after direct-child
 an output sink fails. A kill failure logs a code and waits for actual exit;
 no early success is manufactured.
 
+**Breakaway trade-off (Windows, MC-2982701a).** An argv unit's Job Object sets
+`JOB_OBJECT_LIMIT_BREAKAWAY_OK` (never `SILENT_BREAKAWAY_OK`), so a descendant
+that explicitly passes `CREATE_BREAKAWAY_FROM_JOB` may leave the job. Without it,
+code under test that needs that flag (the agent shim launch,
+`mc/agent_shim_client.py`) fails with `WinError 5` only when run through the
+launcher. The cost: **a process an argv unit starts with
+`CREATE_BREAKAWAY_FROM_JOB` survives a timeout or cancel kill**, because it is no
+longer in the group. Ordinary descendants are unaffected. `--shell`/`--command`
+units keep a strict job (no breakaway), because bash tries that flag on its own
+forks and its grandchildren would otherwise outlive a timeout
+(`test_timeout_shell_unit_ends_grandchild` pins it). Manifest units follow the
+same rule by their form (`argv` vs `shell`).
+
 Child unit outcomes derive from actual wait results. Missing/unstartable
 executables return 127/126 with diagnostics. Parent results derive from the
 specified aggregation rule. Only the launcher queues `/finalize` after these

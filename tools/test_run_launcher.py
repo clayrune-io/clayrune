@@ -38,6 +38,9 @@ class Unit:
     cwd: str
     env: dict[str, str]
     timeout: float | None
+    # argv units may let a descendant leave the job (CREATE_BREAKAWAY_FROM_JOB);
+    # shell units stay strict because bash's own forks would otherwise escape it.
+    breakaway_ok: bool = False
 
 
 def positive(value: Any) -> float:
@@ -120,7 +123,7 @@ def unit(data: dict, cwd: str, timeout: float | None) -> Unit:
             environment[key] = value
     limit = data.get('timeout_seconds', timeout)
     return Unit(argv if isinstance(argv, str) else list(argv), str(resolved), environment,
-                None if limit is None else positive(limit))
+                None if limit is None else positive(limit), 'argv' in data)
 
 
 def parse(argv: list[str]) -> tuple[argparse.Namespace, list[Unit], bool]:
@@ -204,7 +207,8 @@ def execute(spec: Unit, client: LocalClient, project: str, cancelled: threading.
         started = time.monotonic()
         # Own group, so a timeout or cancel ends the unit's descendants too.
         proc, group = start_group(spec.argv, cwd=spec.cwd, env=spec.env, shell=False,
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  breakaway_ok=spec.breakaway_ok)
     except OSError as exc:
         warn('child_start_failed_' + type(exc).__name__)
         events(telemetry, key, event('diagnostic', code='child_start_failed', capture='partial'))
