@@ -93,8 +93,14 @@ def test_economical_models_stay_at_global_lower_bound(model):
 @pytest.mark.parametrize('model,reason', [
     ('claude-haiku-5-5', 'price_step'), ('claude-haiku-4-5-20251001', 'window_cap'),
 ])
-def test_hard_caps_win_even_below_lower_bound(model, reason):
-    assert threshold_with_reason(_session(model), {}) == (100_000, reason)
+def test_hard_caps_win_over_global_lower_bound(model, reason):
+    assert threshold_with_reason(_session(model, 30_000), {}) == (100_000, reason)
+
+
+@pytest.mark.parametrize('model', ['claude-haiku-5-5', 'claude-haiku-4-5-20251001'])
+def test_hard_caps_never_drop_below_fresh_floor_room(model):
+    # F=90k: a 100k cap would leave 10k of room and re-roll every few calls.
+    assert threshold_with_reason(_session(model), {}) == (150_000, 'fresh_floor')
 
 
 @pytest.mark.parametrize('pin,expected,reason', [
@@ -109,7 +115,8 @@ def test_pin_caps_only_when_it_leaves_60k_working_room(pin, expected, reason):
 
 
 def test_window_cap_and_fresh_floor_lower_bound():
-    assert threshold_with_reason(_session(floor=490_000), {}) == (500_000, 'window_cap')
+    assert threshold_with_reason(_session(floor=400_000), {}) == (500_000, 'window_cap')
+    assert threshold_with_reason(_session(floor=490_000), {}) == (550_000, 'fresh_floor')
     # Tiny global does not roll immediately on the first fresh reading.
     assert threshold_for(_session('claude-opus-5-5', 200_000), {
         'context_rollover_tokens': 60_000,
@@ -165,7 +172,7 @@ def test_unknown_models_are_not_guessed(model):
 
 
 def test_observed_model_and_agent_model_fallback():
-    assert threshold_for(_session(observed_model='claude-haiku-5-5'), {}) == 100_000
+    assert threshold_for(_session(observed_model='claude-haiku-5-5'), {}) == 150_000
     session = {'agent_model': 'claude-fable-5-2', '_mt_fresh_floor': 90_000}
     assert threshold_for(session, {}) == 277_349
     session['model'] = ''  # Native default is unknown until observed.

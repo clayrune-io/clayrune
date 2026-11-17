@@ -58,7 +58,9 @@ def threshold_with_reason(session_or_character: Any, config: Mapping[str, Any]) 
 
     The global nonpositive setting disables all token rollover. With a known
     Claude model and fresh floor, the 50% window/price-step/valid-pin upper
-    bound wins even when below the global or fresh-floor lower bound.
+    bound wins over the global lower bound, but never drops below fresh
+    floor + 60k: a cap that close to the floor would re-roll every few calls,
+    the thrash MC-1178 exists to stop.
     """
     global_tokens = _tokens(config.get('context_rollover_tokens', DEFAULT_THRESHOLD))
     if global_tokens is None:
@@ -86,6 +88,8 @@ def threshold_with_reason(session_or_character: Any, config: Mapping[str, Any]) 
         _log_ignored_pin(ref, pin)
     elif pin is not None and pin < upper:
         upper, cap_reason = pin, 'pin'
+    if upper < floor + MIN_THRESHOLD:
+        upper, cap_reason = floor + MIN_THRESHOLD, 'fresh_floor'
     optimum = floor + sqrt(2 * floor * inputs['write_read_ratio'] * inputs['mean_growth_tokens'])
     candidate = max(lower, int(optimum))
     if candidate > upper:

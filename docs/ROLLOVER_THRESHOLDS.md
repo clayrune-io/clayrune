@@ -45,11 +45,12 @@ cache-write/cache-read price ratio `w/r`:
 ```text
 T* = F + sqrt(2 * F * (w/r) * g)
 lo = max(global threshold, F + 60000)
-hi = min(window / 2, optional price step, optional usable character pin)
+hi = max(F + 60000, min(window / 2, optional price step, optional usable character pin))
 threshold = min(hi, max(lo, int(T*)))
 ```
 
-Hard upper caps win when `hi < lo`. A pin below `F + 60000` is ignored with
+Hard upper caps win over the global part of `lo`, but never drop below
+`F + 60000` (reason `fresh_floor`): a cap closer to the floor re-rolls every few calls. A pin below `F + 60000` is ignored with
 one diagnostic per character/pin (bounded process-local cache); a higher pin
 caps `hi`. No config is rewritten and no new config setting or API is added.
 A global value <= 0 disables token rollover before model or character logic.
@@ -72,10 +73,11 @@ prices stay null; the formula uses the explicit ratio. Haiku 5.5's price-step
 cap is 100000 tokens. All cache writes above use the five-minute price.
 
 At F=90000 and global=200000, Fable 5.2 resolves to 277349, ignoring a 100000
-pin; Opus/Sonnet 5.5 stay at 200000; Haiku 5.5 and 4.5 cap at 100000.
+pin; Opus/Sonnet 5.5 stay at 200000; Haiku 5.5 and 4.5 resolve to 150000
+(`fresh_floor`); their 100000 caps bind only when F <= 40000.
 `threshold_with_reason` returns `(int, reason)` and `threshold_for` stays an
 integer API. Reasons: `global`, `pin`, `cost_optimal`, `window_cap`,
-`price_step`, `pin_ignored_below_floor`. A binding upper cap takes reason
+`price_step`, `fresh_floor`, `pin_ignored_below_floor`. A binding upper cap takes reason
 precedence; otherwise an ignored pin takes precedence over `cost_optimal`.
 `cost_optimal` also covers the global/fresh-floor lower clamp.
 
