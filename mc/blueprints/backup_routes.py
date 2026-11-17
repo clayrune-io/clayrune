@@ -558,6 +558,8 @@ def api_backup_restore():
         return _err(e, 409)
     except _backup.BackupIntegrityError as e:
         return _err(e, 422)
+    except _backup.BackupError as e:
+        return _err(e)
     except FileNotFoundError as e:
         return _err(e, 404)
     except Exception as e:
