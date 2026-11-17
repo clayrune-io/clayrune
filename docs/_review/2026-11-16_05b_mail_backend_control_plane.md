@@ -267,3 +267,203 @@ matching question the second time). It is one accept too many and it relies
 on that `except ValueError` to stay quiet. Fix: let the worker own the
 receipt and have the caller only wait.
 
+
+### 3. Pull transport and its owner: factory, supervisor, recovery, client, receiver
+
+Files: `mc/agent_mail_factory.py`, `agent_mail_supervisor.py`, `agent_mail_recovery.py`,
+`agent_mail_pull_client.py`, `agent_mail_pull_receiver.py`, `agent_mail_pull_schema.py`,
+`agent_mail_reviewed_service.py`, `agent_mail_manifest_fetch.py`,
+`agent_mail_service_client.py`, `agent_mail_deletion.py`.
+
+#### MB8 — blocker — L/F — one failed HTTPS request stops inbound mail until the server is restarted
+
+`mc/agent_mail_pull_client.py:272`, `:599`, `:617`, `:701-705`;
+`mc/agent_mail_service_client.py:267-269`; `mc/agent_mail_reviewed_service.py:83-88`;
+`mc/agent_mail_supervisor.py:259-281`.
+
+The pull worker's outer loop sorts failures into "retry with backoff" and
+"halt" (`pull_client.py:696-726`). The catch-all at `:701-705` turns **every**
+`IngressRefused` or `EnrollmentRefused` into `halt=True`. Two ordinary network
+failures arrive as exactly that type:
+
+1. **The ticket request.** `_ticket` calls the transport outside its `try`
+   (`:272`). In production the transport is `HttpsTransport`
+   (`agent_mail_factory.py:380-381`), which converts any connection error,
+   DNS failure or timeout into `ServiceRefused('connection_lost')`
+   (`service_client.py:267-269`); `ServiceRefused` subclasses
+   `EnrollmentRefused`. `connection_lost` is in none of the three sets tested
+   at `:704`, so it is renamed `local_refused` and halts. An unsigned error
+   page from the edge in front of the Worker (a 502 with an HTML body) halts
+   the same way as `response_unverified` (`:274-283`, `:323-324`).
+2. **The manifest refresh.** The loop calls `_authority()` once a second
+   (`:617`), which calls `reviewed_service()`. Its cache lasts ten minutes
+   (`reviewed_service.py:44`, `:89`); the first call after that does one GET
+   with a five-second timeout, and any failure is raised as
+   `EnrollmentRefused('service_unavailable')` (`:83-88`). That is 144 fetches
+   a day on a healthy connection, and one failure halts the worker.
+
+The supervisor does not start a halted worker again: `_client_started` stays
+true, so the start block at `supervisor.py:259-281` is skipped on every later
+pass. Its docstring says a halted worker is "not blindly restarted" and lists
+what permits another attempt: a changed lifecycle or pin scope, a vault
+lock-then-unlock, or stop/start. For a revoked key or a superseded generation
+that is the right rule. For a dropped connection it means the first Wi-Fi
+drop, sleep/resume or DNS hiccup that outlasts the first retry (at most one
+second of jitter after the socket error, `:677`) ends inbound mail for the
+life of the process. Nothing is lost: replies stay queued at the Worker. But
+they stop arriving in the chat, and the only signals are a log line and
+`client.state: held, reason: local_refused` in the status payload.
+
+**Measured** (scratch tests on the repo's own test harness, production
+`HttpsTransport` with a fake opener, no network):
+
+| condition | worker after 1.5 s | HTTP calls |
+|---|---|---|
+| ticket POST raises `URLError` | not running, reason `local_refused` | 1 |
+| ticket POST times out | not running, reason `local_refused` | 1 |
+| ticket POST gets an unsigned 502 HTML page | not running, reason `response_unverified` | 1 |
+| manifest refresh fails once while connected, service back 1 s later | not running, reason `service_unavailable`, no reconnect | 1 ticket |
+
+With a real `Supervisor` over the halted client, five further
+`_drive_client()` passes made no further HTTP call; snapshot
+`{'state': 'held', 'running': False, 'reason': 'local_refused'}`.
+
+Smallest fix: in `_ticket`, catch `ServiceRefused('connection_lost')` and
+raise `_Failure('connection_lost')` (retryable, the existing backoff applies);
+treat an unverifiable reply with a 5xx status as retryable
+`service_unavailable`, since nothing in it is trusted either way; and in
+`_run`, make `service_unavailable` from `reviewed_service()` retryable. Keep
+`halt` for the reasons in `HALT`.
+
+Tests: none would catch it, and two pin it. Every pull-client test passes a
+fake callable as the transport, which never raises `ServiceRefused`;
+`tests/test_agent_mail_pull_client.py:654-682` asserts the halt for an
+unsigned ticket reply; `:581-594` asserts the halt for authority loss but has
+no case for a failed refresh. `tests/test_agent_mail_slice_e2e.py` uses the
+real transport on the success path only.
+
+#### MB9 — high — L/E — a reply reaches its chat only on the recovery tick, and any step that is merely "pending" pushes that tick out to 15 minutes
+
+`mc/agent_mail_supervisor.py:128`, `:138`, `:147-150`, `:195-198`;
+`mc/agent_mail_recovery.py:127-128`, `:232-246`, `:323-341`.
+
+The pull client commits a reply to the store and acks it. The step that
+trims the quote and posts it to the chat (`launder`, `wake`) runs only inside
+`Recovery._inbound`, which runs only from `Supervisor.tick`, which runs once
+per `delay()`. Nothing wakes the loop when custody commits. So:
+
+* A healthy install delivers a reply 0 to 60 s after it arrived (default
+  interval, `supervisor.py:39`). The one-second "deferred" retry for a busy
+  chat (`agent_mail_wake.py:185-186`) is in practice a 60-second retry.
+* `tick` counts a pass as failed when `report['ok']` is not true
+  (`supervisor.py:128`), and `ok` requires every step to be `ok` or `skipped`
+  (`recovery.py:127-128`). `pending` is a normal state for five of the nine
+  steps: a signup link not yet clicked (`flow_pending`), an ack in flight
+  (`ack_pending`), a socket reconnecting (`pull_disconnected`), a first scan
+  (`scan_pending`), a fence awaiting the service (`revocation_pending`).
+  Each such pass doubles the delay.
+* One held or blocked reply makes `_inbound` raise `step_failed`
+  (`recovery.py:335-336`), which ends the wake loop for that pass and counts
+  as a failure too, so a reply that needs a human (MB6) slows every other
+  chat's mail.
+
+**Measured** (scratch test, real `Supervisor`, fake recovery whose only
+non-ok step is `flows: pending`): `delay()` after successive ticks was
+`[120, 240, 480, 900, 900]` seconds. While any step stays pending the
+install sits at the 900-second cadence and every reply is delivered up to
+15 minutes late.
+
+Smallest fix: count only `failed` and `held` steps toward the backoff, not
+`pending`; and give the supervisor loop a `threading.Event` that the pull
+client sets after a custody commit, so `self._stop.wait(self.delay())`
+returns early when there is mail to deliver.
+
+Tests: `tests/test_agent_mail_supervisor_pull.py` covers backoff on failure
+and reset on success; none asserts what a `pending` step does to the delay,
+and none measures arrival-to-delivery time.
+
+#### MB10 — medium — E — the whole store is integrity-checked twice a second while the socket is open, and again on almost every call
+
+`mc/agent_mail_pull_schema.py:189-208`; `mc/agent_mail_pull_client.py:210-212`,
+`:237-239`, `:359-360`, `:423-425`, `:616-641`; `mc/agent_mail_pull_receiver.py:264-266`;
+`mc/agent_mail_factory.py:182-190`, `:255-257`, `:339-345`;
+`mc/agent_mail_store.py:260-266`, `:311-320`.
+
+`_base` runs `PRAGMA integrity_check` (a scan of every page) and `_validate`
+runs a `sqlite_master` comparison plus eight `foreign_key_check` passes. The
+pull client's idle loop wakes once a second (`ws.settimeout(1)`, `:611`) and
+each pass calls `_authority()` (one `_account`, so one `_base` + `_validate`)
+and `_replay()` (one `_current`, so a second one). Every sent frame adds two
+more (`_send`, `:402-404`), and every received event runs a fifth inside the
+write transaction, with the store lock held (`pull_receiver.py:264-266`).
+Each `_read` and `_tx` also opens a fresh connection and sets three pragmas
+(`store.py:260-266`).
+
+The factory repeats it on its own paths: `open_store` re-runs `_check_seal`,
+which calls `validate_pull`, on every call even for the cached store
+(`factory.py:255-257`), and `require_pull_store` then validates again
+(`:343-344`). `service_client()`, `pull_client()`, `outbound()`, `health()`
+and both store reads in `Supervisor.status` (`supervisor.py:426-427`) all go
+through it.
+
+**Measured** (scratch store in a temp directory, `validate()` timed over 20
+calls): 1.5 ms on an empty store, 2.1 ms with 100 events of 4 KiB, 5.9 ms at
+5 MiB, 33.8 ms at 44 MiB (600 events at the 64 KiB body cap). Opening and
+closing a connection alone is 1.7 ms. So an idle connected install spends
+roughly 7 to 15 ms of every second re-proving that the schema it checked a
+second ago is unchanged, and about 70 ms a second at the body cap. It is not
+large; it is permanent, it grows with the inbox, and the copy inside
+`receive` holds the write lock.
+
+Smallest fix: keep the schema comparison (it is a `sqlite_master` read) and
+drop `integrity_check` and the foreign-key passes from the per-call path;
+run them at `open_store`, at `bootstrap`, and once per supervisor tick. Hold
+one read connection per worker thread instead of opening one per call.
+
+Tests: none measure it; `tests/test_agent_mail_pull_schema.py` asserts that
+corruption is detected, which the cheaper schedule still satisfies at open
+and per tick.
+
+#### MB11 — low — M — an unexpected exception in the worker is reported as `connection_lost` and retried forever
+
+`mc/agent_mail_pull_client.py:712-713`.
+
+`except Exception: failure = _Failure('connection_lost')` keeps the worker
+alive, which is right for socket errors, but it also absorbs an
+`AttributeError` or `KeyError` from a code defect and logs only
+`pull_client connection_lost` (`:717`). The exception type is the one thing
+the project policy asks to keep. Fix: `_log` the `type(exc).__name__` there,
+as `supervisor.py:109-110` already does.
+
+#### MB12 — low — M — two frame verifiers that must agree
+
+`mc/agent_mail_pull_client.py:328-357`; `mc/agent_mail_pull_receiver.py:146-177`.
+
+Every `event` frame is parsed, base64-decoded and signature-checked by
+`PullClient._verified`, then handed as raw bytes to `PullReceiver.receive`,
+which does all three again with its own copy of the rules. The second pass is
+stated as deliberate (`pull_client.py:507-508`). The copies already differ:
+a stale frame is `frame_unverified` in one (`:342-343`) and
+`stale_signature` in the other (`pull_receiver.py:180`); one decodes with
+`unbase64url`, the other with `base64` plus a round-trip check. A rule
+changed in one and not the other fails closed today, but which reason the
+operator sees depends on which copy ran first. See streamlining ST3.
+
+#### Sound in this section
+
+* Custody before ack: the ack payload is built only after the receiver's
+  transaction commits (`pull_receiver.py:310-317`), and only a signed
+  `ack_committed` deletes the outbox row (`pull_client.py:463-465`).
+* A reply to a deleted chat is a hold, not a crash. **Measured**: after
+  `agent_mail_deletion._revoke`, the receiver refused the event with
+  `unknown_thread`, the client sent a `hold` frame and stayed connected.
+  (This was a suspected halt; the reproduction cleared it.)
+* A vanished or replaced store file is never recreated
+  (`factory.py:97-113`, `:235-265`); the marker states are exhaustive.
+* `HttpsTransport` refuses redirects, duplicate headers, compressed bodies
+  and oversize replies before anything is parsed (`service_client.py:243-279`).
+* Frame size is bounded before the payload is read
+  (`pull_client.py:69-74`), and fragments are capped as they accumulate
+  (`:575`).
+* Exception text never reaches a log line or a status field anywhere in
+  these files; every reason is a closed code.
