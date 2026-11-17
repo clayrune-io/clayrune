@@ -26,7 +26,7 @@ Read `usage_limits.five_hour.utilization` — a number from 0 to 100 = percent o
 
 ## Tier 1 — Backlog grooming (DO unattended)
 Read the project backlog. You may directly:
-- Mark items that are clearly already done/obsolete as done or wontdo (state why in the item's notes).
+- Mark items that are clearly already done/obsolete as done or wontdo (state why in the item's journal file `docs/_journal/<item-id>-<slug>.md`; an unattended run never writes a backlog note, see AGENT_RULES.md).
 - Merge or flag obvious duplicates.
 - Rewrite vague one-liners into clear, actionable text WITHOUT changing their intent.
 Do NOT delete items, change priorities, or invent new scope. Log every backlog change in the report.
