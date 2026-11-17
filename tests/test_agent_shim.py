@@ -1540,6 +1540,27 @@ def test_spec_without_a_usable_argv_still_writes_exit_json(tmp_path, argv):
     assert info['reason'] == 'spawn_failed' and info['rc'] is None
 
 
+def test_concurrent_json_writes_to_one_target_never_tear_or_fail(tmp_path):
+    """AP18: the temp name is one per process per target, so two threads
+    writing the same manifest shared a temp file (truncate under the other's
+    writer, replace of an already-renamed temp)."""
+    target = str(tmp_path / 'shim.json')
+    errors = []
+
+    def writer(tag):
+        try:
+            for i in range(150):
+                shim.write_json_atomic(target, {'tag': tag, 'i': i, 'pad': 'x' * 2000})
+        except Exception as exc:        # noqa: BLE001 - the failure is the finding
+            errors.append(repr(exc))
+
+    threads = [threading.Thread(target=writer, args=(n,)) for n in range(4)]
+    [t.start() for t in threads]
+    [t.join(60) for t in threads]
+    assert errors == []
+    assert json.loads(Path(target).read_text(encoding='utf-8'))['pad'] == 'x' * 2000
+
+
 def _reference_cut(buf: bytes, final: bool):
     """The byte-by-byte rule LogTail._cut had before AP22, kept as the oracle."""
     for i, b in enumerate(buf):
