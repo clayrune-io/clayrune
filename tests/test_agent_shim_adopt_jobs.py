@@ -101,3 +101,17 @@ def test_flag_off_is_untouched_by_jobs(tracker, tmp_path, jobs):
     s = _live_session(tracker, tmp_path, 'joff', status='running')
     _open_job(jobs, 'joff')
     assert A.is_adoptable_session(s, cfg=OFF) is False    # flag off: never adoptable, as before
+
+
+def test_holds_work_fails_closed_when_the_job_table_cannot_be_read(monkeypatch):
+    # AP27: _holds_work used to read a failed job-table lookup as "holds
+    # nothing" while its sibling _owns_open_job fails closed and logs.
+    logs = []
+
+    def broken(sid):
+        raise RuntimeError('table gone')
+
+    monkeypatch.setattr(aj, 'open_job_count', broken)
+    monkeypatch.setattr(A, '_log', lambda m, **k: logs.append(m))
+    assert A._holds_work({'session_id': 'sidX', 'status': 'idle'}) is True
+    assert any('job-table check failed' in m for m in logs)
