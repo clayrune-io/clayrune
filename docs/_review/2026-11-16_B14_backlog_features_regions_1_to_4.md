@@ -69,6 +69,12 @@ owner-side acceptance (device test, UI look, product call) keeps the item open.
 | MC-1017 | blocked | Stop kills server on POSIX | DONE (code), NEEDS A HUMAN | `84d677b9` / `3f4dee41` on master. Guard at `mc/proc_kill.py:94` (never signals `os.getpgrp()`), `kill_tree` at `:142`. Left: the Linux VM Stop check. |
 | MC-1016 | blocked | Linux restart inherits dead terminal | DONE (code), NEEDS A HUMAN | `a16fbb27` on master; the restart child's output handling is at `mc/blueprints/system_routes.py:1891-1919`. Note the code now discards stdout (`DEVNULL`, `:1919`) where the item text says "output to data/logs/clayrune.log": the comment at `:1891-1897` gives the reason (a second writer on the log is denied). Left: Linux install retry. |
 | MC-1014 | blocked | nvm-installed CLIs not found | DONE (code), NEEDS A HUMAN | All four commits on master. `nvm_bin_dirs` is used by the five runtime fallbacks (`mc/agent_runtime.py:2155, 4061, 7166, 8474, 10127`); `augment_unix_path` runs at boot (`server.py:3621-3622`) and in the registry path merge (`mc/blueprints/agent_routes.py:2357`). Left: a real Linux run; tests only patch `sys.platform`. |
+| MC-998 | in_progress | Usage breakdown dashboard, Codex sampling | DONE (code), NEEDS A HUMAN | `700d2e8`, `78d5ae9c`, `3a360feb` on master. The item's latest state line already records complete Codex ticks after the restart; what is left is more samples (time, not code) and the owner's UI acceptance. |
+| MC-988 | blocked | Mobile pane stays half height | PARTLY DONE, NEEDS A HUMAN | The item's state line (2026-09-29) is out of date: `fc65e53c` (2026-10-02, on master) moved the recovery decision into the resize event itself and fixed the diagnostic so it can fire. Five MC-988 commits are on master. Whether the bug is gone can only be judged on the owner's fold phone. If it has not recurred since 2026-10-02, close. |
+| MC-976 | blocked | Browser pane parity phase 2 | DONE (code), NEEDS A HUMAN | All five commits on master; all eight gaps built per the item. Browser pane is outside regions 1 to 4 (not traced). Left: upload, right-click and Ctrl+F on a real device. Not blocked on code. |
+| MC-975 | blocked | Codex unattended sandbox on Windows | NEEDS A HUMAN | Part A (`2c36bfa8`, `57a10c9`) on master. Part B is an upstream runner crash; the probe kit (`2492b181`, `d0cdbbe`) is deliberately unmerged. Reopen condition is a codex-cli upgrade plus an elevated probe run, both owner-side. The item was parked at codex-cli 0.160.1; if the installed CLI is newer, the probe is due. |
+| MC-964 | in_progress | Memory overhaul, retrieval failures | PARTLY DONE | Steps A to F and T1 to T5 are on master (`2d80a26d` to `684cd9f2`, `c5f4c25b`, `bf1e8bc5`). The two follow-ups the item names are both still present in code: BX2 (`mc/memory.py:5964`, the terminal habit classifier never sees a follow-up message) and BX3 (`mc/log_lines_trim.py:23-24`, any output line starting with `> ` is pinned forever). Smallest next step: `line.lstrip()` in `_habit_source_statements`, and require the user label in `is_user_line`. Related: R26 (pass 2), the trim runs in one reader only. |
+| MC-944 | open | Memory V2 spec, ten steps | PARTLY DONE (tracked twice) | Steps 1 to 4 (`58fe56b`, `69faf88`), 6 (`dcd7685d`, `5eecaeb7`), 7 (`d858a1fd`, `0a421134`), 8 (`64b300c9` to `fd462034`) and 10 (`6b7e6471`) have commits on master. No commit names step 9 (measure each gate's false-positive rate), and every gate still ships in report mode, so nothing the spec added blocks anything yet. The item says its remainder is driven from MC-964 Step F: one of the two should carry the open work, not both. |
 <!-- BACKLOG-ROWS-END -->
 
 ## Streamlining
@@ -98,6 +104,53 @@ Smallest fix: when `floor` is known and `pin < floor + MIN_THRESHOLD`, ignore
 the pin on the no-table branch too. Test: `tests/` has cases for the table
 models only; none passes a model missing from the table together with a floor
 (read, by grep for `pin_ignored_below_floor`; not exhaustive).
+
+An existing test pins the current behaviour
+(`tests/test_rollover_threshold.py:131`,
+`test_unknown_model_or_floor_preserves_legacy_pin`), so the legacy pin for an
+unknown model is a recorded choice, not an oversight. The consequence above
+still follows from it; the fix has to change that test.
+
+### BX2 — the terminal habit classifier never sees a follow-up message (high, lens 2)
+
+`mc/memory.py:5962-5965`. `_habit_source_statements` keeps a line only when
+`line.startswith('> ')`. The first message of a chat is stored in that shape
+(`mc/blueprints/agent_routes.py:10893`, `:12978`), but every later message is
+stored as `"\n> {label}: {message}\n"` (`agent_routes.py:13883`, `:14581`,
+`:14745`, `:14815`, `:14955`, and the revive seed at `:8010`). A string that
+begins with a newline does not start with `"> "` (measured: `False`), so
+`_scribe_classify_habits` (`memory.py:6179`), the only path that mints a habit
+note, classifies the opening message of a chat and nothing after it. A
+standing habit stated in message two of a long chat, which is the MC-964
+incident shape, is never minted.
+
+The send-time observer (`agent_routes.py:7471`, `mc/habit_report.py`) does see
+follow-ups, but it is report mode: it writes a candidate row and mints
+nothing.
+
+`mc/log_lines_trim.py:23-24` handles the same two shapes correctly with
+`line.lstrip()`, and its docstring names both, so the two readers of one
+convention disagree.
+
+Smallest fix: `s = line.lstrip()` before the prefix test in
+`_habit_source_statements`. Test: `tests/test_habit_classifier.py:115-123`
+feeds only the `"> Ron: ..."` shape, so it passes on the defect. MC-964's
+journal lists this as an open follow-up; it is still open on master.
+
+### BX3 — the chat-buffer trim pins every line that starts with "> " (low, lens 1)
+
+`mc/log_lines_trim.py:23-24`, `:33`. `is_user_line` is true for any string
+whose stripped text starts with `"> "`. Agent output that opens with a
+markdown blockquote matches, so those lines are counted as the human's and
+survive every trim (`pinned`, `:33`). On a long chat with an agent that quotes
+often, the buffer the cap exists to bound grows without limit, and the quoted
+lines are also offered to nothing useful: the classifier filters them out by
+label. Read, not measured.
+
+Smallest fix: pin only lines whose text after `"> "` (and an optional
+`"[queued] "`) starts with the configured user label. Test: none covers an
+agent blockquote line. Other half of R26 (pass 2): R26 is the trim missing
+from most readers; BX3 is the trim keeping too much where it does run.
 
 <!-- DETAIL-END -->
 
