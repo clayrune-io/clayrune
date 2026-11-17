@@ -718,3 +718,88 @@ See streamlining ST4.
   (`enrollment_routes.py:89-98`, `deployment_routes.py:78-85`).
 * A signed answer for the wrong scope, a regressing state or an extended
   expiry is refused (`signup.py:458-470`).
+
+### 6. The push-era enrollment stack that is still shipped
+
+Files: `mc/agent_mail_enrollment.py`, `agent_mail_ceremony_client.py`,
+`agent_mail_ceremony_remote.py`, `agent_mail_ceremony_device.py`, `agent_mail_begin_proof.py`,
+`agent_mail_remote.py`, `agent_mail_enrollment_revocations.py`, `agent_mail_lifecycle_fence.py`,
+`agent_mail_lifecycle_steps.py`, `agent_mail_delivery_proof.py`, `agent_mail_delivery_schema.py`,
+`agent_mail_enrollment_keys.py`, `agent_mail_enrollment_state.py`,
+`agent_mail_enrollment_manifest.py`, `agent_mail_service_manifest.py`,
+`agent_mail_reviewed_service.py`, `agent_mail_status_view.py`; `workers/agent-mail/worker.js:52-60`
+opened only to settle whether the service still answers the old protocol.
+
+What this section establishes, because the feature table and the streamlining
+section both depend on it: **the product has one mail protocol (pull) and the
+tree carries two.** The service answers every push-era route with
+`410 legacy_retired` (`workers/agent-mail/worker.js:56-60`: the lifecycle
+paths, the enrollment ceremony paths, `/v1/mail/send`, `/v1/mail/reconcile`).
+On the local side:
+
+* `MailFactory.enrollment()` (`agent_mail_factory.py:420-436`) is the only
+  thing that builds an `Enrollment`, and it has no caller: the route module
+  takes the pull branch whenever its `factory` argument is absent
+  (`agent_mail_enrollment_routes.py:214-215`), and production passes none
+  (`agent_mail_routes.py:29-30`, `server.py:3275`).
+* If it were called, it could not create a key: it passes
+  `material=unavailable_material` (`agent_mail_factory.py:433`), which raises
+  (`agent_mail_remote.py:73-75`).
+* `DeliveryProof` is constructed nowhere outside tests; the ingress route's
+  `proof_factory` is `None` in production, so a proof request is always
+  `503 proof_unavailable` (`agent_mail_routes.py:55-57`).
+* `LifecycleSteps` is constructed nowhere outside tests.
+  `agent_mail_recovery.py:23` imports two constants from the module and says
+  why at `:49-50`: "keep the retained legacy module reachable to the frozen
+  app until its separately scoped removal. No lifecycle step is called."
+* `ServiceClient.proof_arm`, `.activate`, `.renew` raise `legacy_retired`;
+  `.begin`, `.verify` raise unavailable; `.cached_evidence` returns `None`
+  (`agent_mail_service_client.py:516-533`). `verify_response`
+  (`:536-570`) has one caller, the ceremony client.
+* `select_remote` (`agent_mail_remote.py:58-70`) has no caller.
+* `IdentitySeal.prepare_rotation` and `.commit_rotation`
+  (`agent_mail_enrollment_keys.py:262-312`) have no caller: the service has a
+  key-rotation route, the install has no code that uses it.
+
+None of this is a defect in what runs. It is listed in streamlining as ST2
+with the line counts. It matters for three reasons a reader will hit:
+
+#### MB21 — low — L — comments and docstrings state the wiring the wrong way round
+
+* `mc/agent_mail_status_view.py:14`, `:269`: `pull_status` is described as
+  "unwired". It is the body of the status panel
+  (`agent_mail_enrollment_routes.py:85-86`).
+* `mc/agent_mail_enrollment.py:3`: "No production factory". There is one
+  (`agent_mail_factory.py:420`); it is the caller that is missing.
+* `mc/agent_mail_ingress.py:3`: "Enrollment/outbound code must call
+  pin_service and bind_transport BEFORE send". `bind_transport` has no caller
+  and `pin_service` only the retired one (`agent_mail_enrollment.py:406`).
+* `mc/agent_mail_reviewed_service.py:23-24`: "the store must already hold
+  `mail_enrollment_manifests`. This module never writes schema" is true, and
+  the table's creator is not the module the name points at
+  (`agent_mail_enrollment_state.initialize`, retired) but
+  `agent_mail_service_review_schema.initialize` (`agent_mail_factory.py:331`).
+* `installer/build-macos.spec:65` names `mc.agent_mail_disable` as a hidden
+  import "so the frozen app carries it"; nothing imports it (MB18).
+
+A reviewer asking "is X live" gets the wrong answer from the file header in
+each case. Fix with the ST2 removal, or correct the five lines. No test reads
+a docstring.
+
+#### Sound in this section
+
+* The seal never regenerates over a committed key: a missing or corrupt file
+  with a durable public key is `identity_unavailable_reenrollment_required`,
+  and an orphan from a failed commit is reopened, not overwritten
+  (`agent_mail_enrollment_keys.py:85-86`, `:133-141`, `:208-216`).
+* AES-GCM associated data binds flow, install, generation and key id, so a
+  seal copied between installs or generations does not open (`:76-78`, `:129`).
+* Manifest verification is strict about encoding (round-trip base64url),
+  shape (an 11-element array, not an object), time window and a persistent
+  rollback floor written under compare-and-set before a candidate is
+  returned (`agent_mail_service_manifest.py:48-55`, `:96-118`;
+  `agent_mail_enrollment_state.py:76-87`).
+* The status projection only passes values from a closed vocabulary: reasons
+  are checked against the producers' own sets, not a pattern
+  (`agent_mail_status_view.py:116-120`), numbers are bounded (`:108-113`), and
+  the owner address is shown only once verified (`:350`).
