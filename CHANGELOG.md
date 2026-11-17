@@ -1,5 +1,16 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Agent plumbing, medium and low findings from the pass-10 review (MC-1179)
+
+- Background jobs and rollover: a tool result that only quotes the "moved to the background" message (AP39) is no longer recorded as a job, so the rollover block stops listing jobs that never existed. A dispatched worker's first message is now labelled the current task when no later message was recorded (AP40). The job tail reads the last 4 KB by seeking (AP12); a NaN or infinite `timeout_minutes` and a non-string `shell` on the job route are refused with 400 instead of removing the cap or returning 500 (AP13, AP14).
+- Guard and ledger: the process guard also protects the port the spawn factory exports as `CLAYRUNE_PORT` (AP33). The child-PID ledger logs a failed read, write or reset instead of swallowing it (AP7). `_holds_work` fails closed and logs when the job table cannot be read (AP27).
+- Resume and import: a Claude transcript miss does one lookup instead of one per agent worktree (AP60). The project import scan drops agent-worktree transcript directories by name before reading any of them (AP52). `recorded_cwd` skips rows that cannot hold a cwd (AP61).
+- Version probes: a failed CLI `--version` is no longer parsed as a version (AP47); the Claude version probe no longer inherits stdin (AP56).
+- Follow-ups and diagnostics: a queued follow-up whose delivery raises leaves a not-sent line in the chat (AP41); the capabilities diagnostic uses the server log (AP42). One non-numeric router-stats counter no longer 500s the aggregate route (AP54).
+- Shim: send drops its socket when the retry also times out (AP21); a spec with no usable argv writes `exit.json` as a spawn failure (AP19); `LogTail._cut` uses a compiled search (AP22); shim JSON writes are serialised (AP18).
+- Aider's audited version is read from `aider_source_pin.VERSION` in the launch proof and the runner (AP59); the `state.py` docstring states the rule it follows (AP64).
+- No route, setting or default changed. Findings that need a decision were left alone.
+
 ## [2026-11-17] - Workflow toolbar: buttons that add a block no longer look like buttons that do something
 
 - Action, Approval gate and Wait (which drop a block on the canvas) looked identical to Undo, Redo, Reset, Check workflow, Update and Run now. The toolbar is now three groups with a rule between each: Undo / Redo / Reset | a muted "Add" label then Action / Approval gate / Wait | Check workflow / Update / Run now.
