@@ -24,7 +24,9 @@ Agent sessions try agent-mail first (tools/night-review/agent_mail_route.py) and
 back to the SMTP path below on any failure; --smtp-only skips it.
 
 Exit codes: 0 = sent, 2 = credentials missing / invalid args, 1 = send failed,
-            3 = accepted by SMTP but --verify could not find it in the mailbox.
+            3 = accepted by SMTP but --verify could not find it in the mailbox,
+            4 = refused, the ~/.clayrune/mail_paused kill switch exists,
+            5 = refused, running under pytest without MC_LIVE_MAIL_TESTS.
 """
 from __future__ import annotations
 
@@ -162,6 +164,16 @@ def _verify_delivered(user: str, app_password: str, message_id: str,
         if attempt < tries - 1:
             time.sleep(gap)
     return False
+
+
+def can_verify(host: str, user: str, to_addr: str) -> bool:
+    """--verify reads the mailbox back over Gmail IMAP, logged in as the sender.
+
+    That only proves anything when the SMTP host is Gmail and the message went
+    to the sender's own mailbox. Anywhere else the message is delivered and the
+    check waits out its retries, then calls a good send NOT DELIVERED."""
+    return ((host or "").strip().lower() in ("smtp.gmail.com", "smtp.googlemail.com")
+            and (to_addr or "").strip().lower() == (user or "").strip().lower())
 
 
 def build_message(subject: str, body: str, user: str, to_addr: str, *,
@@ -326,7 +338,10 @@ def main() -> int:
 
     print(f"[send_mail] sent '{args.subject}' to {to_addr}")
 
-    if args.verify:
+    if args.verify and not can_verify(host, user, to_addr):
+        print("[send_mail] verify skipped: the mailbox check only works for a "
+              "Gmail host sending to the sender's own address", file=sys.stderr)
+    elif args.verify:
         if _verify_delivered(user, app_password, msg["Message-ID"]):
             print("[send_mail] verified: message is in the mailbox")
         else:
