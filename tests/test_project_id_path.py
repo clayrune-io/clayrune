@@ -198,6 +198,12 @@ def test_row5_update_project_cannot_replace_a_foreign_record(env):
 
 # ── every other route in the module that takes an id ────────────────────────
 
+# DELETE /api/project/<id> is human-only (mc/human_only_gate.py): a request with no
+# browser Origin is refused 403 before the id is looked at. These tests are about the
+# id check, so they call as the dashboard does.
+_BROWSER = {'Origin': 'http://localhost:5199'}
+
+
 @needs_backslash
 @pytest.mark.parametrize('method,suffix,body', [
     ('delete', '', None),
@@ -209,7 +215,7 @@ def test_row5_update_project_cannot_replace_a_foreign_record(env):
 def test_encoded_backslash_id_is_not_found_on_every_route(env, method, suffix, body):
     url = '/api/project/' + quote('..\\victim', safe='') + suffix
     kw = {'json': body} if body is not None else {}
-    r = getattr(env.client, method)(url, **kw)
+    r = getattr(env.client, method)(url, headers=_BROWSER, **kw)
     assert r.status_code == 404
     assert _intact(env)
 
@@ -223,7 +229,7 @@ def test_absolute_path_id_is_not_found_on_every_route(env):
                                  ('get', '/backlog', None),
                                  ('post', '/conversation-pin', {'conversation_id': 'c'})]:
         kw = {'json': body} if body is not None else {}
-        r = getattr(env.client, method)('/api/project/' + absolute + suffix, **kw)
+        r = getattr(env.client, method)('/api/project/' + absolute + suffix, headers=_BROWSER, **kw)
         assert r.status_code == 404, (method, suffix, r.status_code)
     assert _intact(env)
 
