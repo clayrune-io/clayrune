@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Every new Desk account starts with Read and Post off (MC-1187 / DCW-C2)
+
+- `desk_accounts.create_account` now writes the default-deny consent policy on the account it builds, so the X developer-app, purpose-bindings and pane-wizard (Instagram, YouTube, TikTok) paths no longer start with no policy, which the permission check read as "no consent needed". The browser-setup and saved-site paths were already denied; browser-setup now gets it through `create_account` (it passes the account kind). New `mc/desk_connect/new_account_consent.py`.
+- New accounts only. Existing accounts with no policy still read as legacy; nothing is migrated or rewritten. A platform with no permission profile (blog) is left alone, and LinkedIn created without an explicit member/organization kind is not initialized (the kind is part of the policy and is never guessed).
+- Tests that used `create_account` as a stand-in for a legacy account now say so with `tests/desk_legacy_account.make_legacy`.
+
 ## [2026-11-16] - Six high Desk core defects (MC-1187 / MC-1179 pass 06a, DK1-DK5 and DK7)
 
 - DK1: unarchive, campaign restore and PATCH `state=running` on a paused, done or dropped campaign are refused to an unattended caller. Unarchive and campaign restore return a previously approved version as `needs_review` with the approval stamp cleared (as piece-trash restore already did). A human resuming a paused campaign is unchanged. New `mc/desk_withdrawal.py`.

@@ -34,6 +34,7 @@ from mc import desk_pieces as _pieces  # noqa: E402
 from mc import desk_publish as _publish  # noqa: E402
 from mc import desk_tick as _tick  # noqa: E402
 from mc.blueprints import desk_routes  # noqa: E402
+from tests.desk_legacy_account import make_legacy  # noqa: E402
 
 PROJECTS = [{'id': 'alpha', 'name': 'Alpha'}]
 CID = 'camp-a'
@@ -201,6 +202,7 @@ def test_a_scheduled_assisted_version_is_never_published_when_it_falls_due(world
 def test_a_direct_account_still_refuses_media_and_a_read_only_one_is_not_approvable(world):
     _accounts.create_account('x', '@clayrune', account_id='ch-x')
     _accounts.create_account('instagram', 'ro', capability='none', account_id='ch-ro')
+    make_legacy('ch-x')                         # about media/read-only refusals, not consent
     _campaign(world, ['ch-x', 'ch-ro'])
     p1, v1 = _piece(world, 'ch-ro', piece='p1', vid='v1')
     with pytest.raises(_pieces.PieceError, match='read-only'):

@@ -36,6 +36,7 @@ from mc import desk_accounts as accounts  # noqa: E402
 from mc import desk_oauth as oauth  # noqa: E402
 from mc import desk_publish  # noqa: E402
 from mc.blueprints import desk_routes  # noqa: E402
+from tests.desk_legacy_account import make_legacy  # noqa: E402
 # the fake vault, fake provider and loopback helpers the sign-in tests already use
 from tests.test_desk_oauth import (ACCESS_1, REFRESH_1, _clean_flows, _hit, _state_of, _x_app,  # noqa: E402,F401
                                    provider, vault, x_port)
@@ -217,6 +218,7 @@ def test_publish_and_verify_use_the_accounts_own_sign_in(store, tmp_path, monkey
     monkeypatch.setattr(desk_publish, 'RECEIPTS_PATH', tmp_path / 'receipts.json')
     first = accounts.create_account('x', '@first')
     second = accounts.create_account('x', '@second')
+    make_legacy(first['id'], second['id'])      # about which sign-in is used, not consent
     seen = []
 
     def fake_token(*, consumer, project_id=None, unattended=False, account_id=None):

@@ -46,6 +46,7 @@ from mc import desk_publish as _publish  # noqa: E402
 from mc import desk_tick as _tick  # noqa: E402
 from mc import secrets_store  # noqa: E402
 from mc.blueprints import desk_routes  # noqa: E402
+from tests.desk_legacy_account import make_legacy  # noqa: E402
 
 PROJECTS = [{'id': 'alpha', 'name': 'Alpha'}]
 CID = 'camp-t'
@@ -148,6 +149,8 @@ def world(tmp_path, monkeypatch):
     _accounts.create_account('x', '@clayrune', account_id='ch-x')
     _accounts.create_account('blog', 'clayrune.io/blog', account_id='ch-blog')
     _accounts.create_account('linkedin', 'Clayrune', account_id='ch-li')
+    # These tests are about the tick, not consent: legacy accounts (no policy), as before DCW-C2.
+    make_legacy('ch-x', 'ch-li')
     return w
 
 
@@ -770,6 +773,7 @@ def test_blog_gets_a_publishing_task_and_no_api_call(world):
 
 def test_manual_x_account_gets_a_share_intent_link(world):
     _accounts.create_account('x', '@ron', account_id='ch-xm', capability='manual')
+    make_legacy('ch-xm')
     campaign(world, accounts=('ch-xm',))
     piece, vid = version(world, account='ch-xm', body='Hello & welcome')
     v = go(world, piece, vid)

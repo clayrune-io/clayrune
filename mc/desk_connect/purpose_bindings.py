@@ -368,7 +368,8 @@ def _write_binding(clean: dict) -> dict:
     if account_id is None:
         new = clean['account']['new']
         try:
-            created = _accounts.create_account(clean['service'], new['identity'], label=new['label'] or None)
+            created = _accounts.create_account(clean['service'], new['identity'], label=new['label'] or None,
+                                               account_kind=clean['account_kind'])
         except _accounts.AccountError as e:
             raise BindError(str(e), e.status, 'account_refused') from e
         account_id = created['id']
