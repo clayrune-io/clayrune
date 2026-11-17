@@ -23,8 +23,10 @@ from mc.unattended import is_unattended_caller
 
 bp = Blueprint('api_credits_routes', __name__)
 
-# Fields whose change can increase what background work spends.
-_SPEND_FIELDS = ('mode', 'secret_name', 'budget_usd', 'stop_pct')
+# Fields whose change can increase what background work spends. `reset_day`
+# starts a new empty cycle (the ledger is keyed by cycle start) and `prices`
+# may be all zeros (calls then record $0.00), so both can undo the stop point.
+_SPEND_FIELDS = ('mode', 'secret_name', 'budget_usd', 'stop_pct', 'reset_day', 'prices')
 
 
 def wire(data_dir) -> None:
@@ -36,11 +38,15 @@ def _unattended_refusal():
                              'cannot change API-credit settings or run the key test'}), 403
 
 
+def _gated_change(old: dict, new: dict) -> bool:
+    return (any(old[f] != new[f] for f in _SPEND_FIELDS)
+            or new['session_reserve_usd'] < old['session_reserve_usd'])
+
+
 def _widens_spend(old: dict, new: dict) -> bool:
     if new['mode'] != 'on':
         return False
-    return (any(old[f] != new[f] for f in _SPEND_FIELDS)
-            or new['session_reserve_usd'] < old['session_reserve_usd'])
+    return _gated_change(old, new)
 
 
 @bp.get('/api/api-credits/status')
@@ -65,8 +71,10 @@ def api_credits_put_settings():
         if refusal is not None:
             return refusal
     saved = budget.save_settings(new)
-    # A saved change is the user's answer to a sticky stop; the next call tries again.
-    budget.clear_halt()
+    # A passcode-gated change is the user's answer to a sticky stop; the next call
+    # tries again. A save that changes none of them leaves the halt as it was.
+    if _gated_change(old, new):
+        budget.clear_halt()
     offload.forget_key()
     out = budget.status()
     out['plan'] = plan.detect()

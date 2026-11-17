@@ -155,3 +155,85 @@ def test_failed_close_retains_handle_for_retry_and_never_closes_browser(client):
         assert {method for method, _ in conn.calls} == {'Target.closeTarget'}
     finally:
         tabs._tabs.pop(tab.handle, None)
+
+
+# ---- SF33: input is checked against where the tab IS, not what was typed ----
+
+class _FakePage:
+    """Stands in for the tab's CDP page connection: tracks an address, honours
+    Page.navigate (optionally redirecting), answers Runtime.evaluate with it."""
+    def __init__(self, href, redirects=None, fail_eval=False):
+        self.href = href
+        self.redirects = redirects or {}
+        self.fail_eval = fail_eval
+        self.calls = []
+    def call(self, method, params=None, **kw):
+        self.calls.append((method, params))
+        if method == 'Page.navigate':
+            self.href = self.redirects.get(params['url'], params['url'])
+            return {'frameId': 'f'}
+        if method == 'Runtime.evaluate' and params.get('expression') == 'location.href':
+            if self.fail_eval:
+                raise TimeoutError('no context')
+            return {'result': {'value': self.href}}
+        return {}
+    def input_calls(self):
+        return [c for c in self.calls if c[0].startswith('Input.')]
+
+
+@pytest.fixture
+def fake_tab():
+    made = []
+    def make(href, **kw):
+        tab = tabs.AgentTab({'status': 'running'}, 'p')
+        tab.page = _FakePage(href, **kw)
+        tabs._tabs[tab.handle] = tab
+        made.append(tab)
+        return tab
+    yield make
+    for t in made:
+        tabs._tabs.pop(t.handle, None)
+
+
+_INPUTS = [
+    {'type': 'mouse', 'x': 10, 'y': 10},
+    {'type': 'key', 'key': 'a'},
+    {'type': 'text', 'text': 'hello'},
+    {'type': 'wheel', 'x': 10, 'y': 10, 'dy': 40},
+]
+
+
+@pytest.mark.parametrize('payload', _INPUTS, ids=[p['type'] for p in _INPUTS])
+def test_input_refused_when_tab_is_on_own_origin_and_tab_is_moved_off(client, fake_tab, payload):
+    tab = fake_tab('http://localhost:5199/dashboard')
+    r = client.post('/api/browser/input', json={'session_id': tab.handle, **payload})
+    assert r.status_code == 403
+    assert tab.page.input_calls() == []
+    assert tab.page.href == 'about:blank'
+    assert tab.url == 'about:blank'
+
+
+def test_redirect_onto_own_origin_is_refused_and_tab_moved_off(client, fake_tab):
+    tab = fake_tab('about:blank', redirects={'https://redirector.example/go': 'http://localhost:5199/'})
+    r = client.post('/api/browser/input', json={
+        'session_id': tab.handle, 'type': 'navigate', 'url': 'https://redirector.example/go'})
+    assert r.status_code == 403
+    assert tab.page.href == 'about:blank'
+    assert tab.url == 'about:blank'
+    assert tab.page.input_calls() == []
+
+
+def test_external_page_still_accepts_input(client, fake_tab):
+    tab = fake_tab('https://example.com/')
+    for payload in _INPUTS:
+        r = client.post('/api/browser/input', json={'session_id': tab.handle, **payload})
+        assert r.status_code == 200, (payload, r.get_json())
+    assert tab.page.href == 'https://example.com/'
+    assert len(tab.page.input_calls()) >= len(_INPUTS)
+
+
+def test_unreadable_address_fails_closed(client, fake_tab):
+    tab = fake_tab('https://example.com/', fail_eval=True)
+    r = client.post('/api/browser/input', json={'session_id': tab.handle, 'type': 'key', 'key': 'a'})
+    assert r.status_code == 502
+    assert tab.page.input_calls() == []

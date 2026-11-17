@@ -1,5 +1,23 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Editing a character no longer deletes its Claude Code keys (MC-1179 pass 11, SF17)
+
+- `write_character` rebuilt the frontmatter from seven known keys on every save, so renaming, picking a face, moving, a team overwrite or a description typo-fix removed `tools`, `disallowedTools`, `permissionMode`, `mcpServers`, `hooks` and `color` from an imported subagent (an absent `tools:` means all tools). It now carries every key it does not own from the file being updated, verbatim and in original order (raw lines, because the frontmatter parser cannot round-trip nested maps or lists). Keys it owns are written as before; a new file is written as before.
+- Move: `write_character` takes `carry_from`, and `POST .../move` passes the source file, since the destination is a new file with nothing to carry from.
+- Covers the daily model-upgrade job, which writes through the same function (OS45, pass 09).
+
+## [2026-11-16] - API-credits stop point can no longer be undone without the passcode (MC-1179 pass 11, SF31)
+
+- `reset_day` (starts a new empty cycle) and `prices` (may be all zeros) join `mode`, `secret_name`, `budget_usd` and `stop_pct` as passcode-gated fields on `PUT /api/api-credits/settings`, with the existing rule that the gate applies when the saved mode is `on`. A human with the passcode can still change all of them.
+- A save that changes none of the passcode-gated fields (or lowers `session_reserve_usd`) no longer clears a halt set by a rejected key or an exhausted balance; a save that does change one still clears it, as before.
+- The settings panel now opens the passcode prompt when the reset day is edited with mode on (`static/js/api-credits-settings.js` `widens()`); the panel does not edit `prices`.
+- Tests that saved `reset_day` without a passcode with mode on now expect the passcode; `plan_credit_usd` stands in as the ungated field.
+
+## [2026-11-16] - An agent's hidden browser tab can no longer be clicked or typed into on Clayrune's own address (MC-1179 pass 11, SF33)
+
+- `AgentTab.input` read only the URL the caller typed, so a tab redirected onto the dashboard could still be clicked and typed into, and a page in the pane's Chromium counts as the human on Origin-gated routes. Before every input it now reads the tab's own `location.href` (as `read` does) and refuses with the existing 403 when that is Clayrune's own origin, using `_is_clayrune_own_origin` unchanged; the tab is moved to `about:blank` on refusal. After a navigate it checks again. An address it cannot read refuses (502) rather than sending the input.
+- Not changed: the human-visible pane's own input route (`browser_routes.py` `browser_input`) has the same gap (pass 07, P36), but its fix is a different mechanism (the CDP thread's `frameNavigated` handler and a landing check there), so it is left for that finding.
+
 ## [2026-11-16] - Backup export, import and restore points: close the vault export, member-path and restore-point-id holes (MC-1179 pass 07: P26, P27, P28)
 
 - P26: `POST /api/backup/export-project/<id>` with `vault: true` now needs the retyped dashboard passcode (`_require_human_passcode`, same as restore, import and rollback) and is refused before the vault is opened; `vault` false or omitted is unchanged. The vault export loop (`export_all_for_backup`) also refuses `oauth.*` entries and writes one `export_entry` audit line per exported entry. The panel (`static/js/backup-panel.js`) asks for the passcode through `humanProofFetch` when the vault box is ticked.

@@ -1156,7 +1156,10 @@ def move_character_route(scope, name):
             project_path=to_path, overwrite=False,
             engine=rec.get('engine'), agent_name=rec.get('agent_name'),
             avatar=rec.get('avatar'), skills=rec.get('skills'),
-            emojis=rec.get('emojis'))
+            emojis=rec.get('emojis'),
+            # SF17: the source's Claude Code keys (tools, permissionMode, ...)
+            # go with it; the original is deleted below.
+            carry_from=_chars._find_file(scope, name, from_path))
     except FileExistsError:
         return jsonify({
             'error': f'a character called {name!r} already lives there — '

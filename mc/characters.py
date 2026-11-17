@@ -15,6 +15,7 @@ so the two surfaces never drift on format rules. Writes go ONLY under
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -426,6 +427,54 @@ def validate_fields(name: str, description: str, body: str) -> tuple[str, str]:
     return description, body
 
 
+# Every frontmatter key write_character itself sets. Any other key in an existing
+# file belongs to Claude Code (tools, disallowedTools, permissionMode,
+# mcpServers, hooks, color, ...) and must survive an edit: an absent `tools:`
+# means "all tools", so dropping it widens an imported read-only subagent.
+# The legacy skills key is listed because it is rewritten under SKILLS_KEY.
+_OWNED_FRONTMATTER_KEYS = frozenset(
+    {'name', 'description', AGENT_NAME_KEY, AVATAR_KEY, SKILLS_KEY,
+     LEGACY_SKILLS_KEY, EMOJIS_KEY, *ENGINE_KEYS})
+_FRONTMATTER_KEY_RE = re.compile(r'^([a-zA-Z_][a-zA-Z0-9_-]*)\s*:')
+
+
+def _unowned_frontmatter_lines(path: Path | None) -> list[str]:
+    """The raw frontmatter lines of every key in `path` that write_character
+    does not own, in their original order and verbatim.
+
+    Raw, not parsed: the frontmatter parser has no nested maps or lists, so a
+    parse/dump round trip would flatten `mcpServers:` and `hooks:` into one
+    corrupted string. A key's block runs from its `key:` line to the next
+    column-0 key line. Returns [] when there is no file or no frontmatter.
+    """
+    if path is None:
+        return []
+    try:
+        m = _skills._FENCE_RE.match(path.read_text(encoding='utf-8'))
+    except OSError as e:
+        from mc.core import _log
+        _log(f"[characters] could not read {path} to carry its extra "
+             f"frontmatter keys: {e}", flush=True)
+        return []
+    if not m:
+        return []
+    blocks: list[tuple[str, list[str]]] = []
+    for line in m.group(1).splitlines():
+        km = _FRONTMATTER_KEY_RE.match(line)
+        if km:
+            blocks.append((km.group(1), [line]))
+        elif blocks:
+            blocks[-1][1].append(line)
+    out: list[str] = []
+    for key, lines in blocks:
+        if key in _OWNED_FRONTMATTER_KEYS:
+            continue
+        while lines and not lines[-1].strip():
+            lines.pop()
+        out.extend(lines)
+    return out
+
+
 def write_character(scope: str, name: str, description: str, body: str,
                     project_path: str | None = None,
                     overwrite: bool = False,
@@ -433,7 +482,8 @@ def write_character(scope: str, name: str, description: str, body: str,
                     agent_name: str | None = None,
                     avatar: str | None = None,
                     skills: Any = None,
-                    emojis: Any = None) -> dict[str, Any]:
+                    emojis: Any = None,
+                    carry_from: Path | None = None) -> dict[str, Any]:
     """Create or update `<scope agents dir>/<name>.md`. Raises ValueError on
     bad input, FileExistsError on collision without overwrite.
 
@@ -441,6 +491,10 @@ def write_character(scope: str, name: str, description: str, body: str,
     an empty value are DROPPED rather than written blank, so clearing a field in
     the editor removes the pin instead of persisting a falsy one that would
     shadow the project default.
+
+    Frontmatter keys this function does not own are carried over verbatim from
+    the file being updated, or, for a NEW file, from `carry_from` (the source of
+    a move). A new file with no `carry_from` is written from the owned keys only.
     """
     description, body = validate_fields(name, description, body)
 
@@ -516,6 +570,14 @@ def write_character(scope: str, name: str, description: str, body: str,
     path = existing if existing is not None else d / f'{name}.md'
     text = _skills.dump_skill_md(front,
                                  body + ('\n' if not body.endswith('\n') else ''))
+    carried = _unowned_frontmatter_lines(existing if existing is not None else carry_from)
+    if carried:
+        # dump_skill_md always closes the block with a column-0 `---`; owned
+        # multi-line values are indented, so the first one after line 0 is it.
+        lines = text.split('\n')
+        close = lines.index('---', 1)
+        lines[close:close] = carried
+        text = '\n'.join(lines)
     path.write_text(text, encoding='utf-8')
     rec = _read_one(path, scope, None, include_body=False)
     return rec if rec is not None else {'name': name, 'scope': scope}

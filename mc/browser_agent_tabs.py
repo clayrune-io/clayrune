@@ -89,6 +89,28 @@ class AgentTab:
             except Exception as e:
                 return False, f'cdp_error:{type(e).__name__}'
 
+    def _refuse_if_on_own_origin(self, strict: bool) -> None:
+        """SF33: read where the tab IS (the browser's own `location.href`, the
+        way route('read') does) and refuse when that is Clayrune's own origin.
+        A page in the pane's Chromium sends a real Origin header, so a tab
+        redirected onto the dashboard must not be clickable or typeable. On
+        refusal the tab is moved to about:blank so it is not left parked there.
+        `strict`: an unreadable address also refuses (fail closed); after a
+        navigate it does not, since every later input re-checks."""
+        br = _br()
+        ok, href = self.evaluate('location.href')
+        if not ok or not isinstance(href, str):
+            if strict:
+                raise RuntimeError('agent tab address unreadable')
+            return
+        if br._is_clayrune_own_origin(href):
+            try:
+                self.page.call('Page.navigate', {'url': 'about:blank'})
+                self.url = 'about:blank'
+            except Exception as e:
+                _log(f'[browser-agent-tab] move-off own origin failed: {type(e).__name__}', flush=True)
+            raise PermissionError("the browser pane may not act on Clayrune's own origin")
+
     def input(self, data: dict) -> None:
         br = _br()
         with self.lock:
@@ -98,9 +120,12 @@ class AgentTab:
                     url = 'https://' + url
                 if br._is_clayrune_own_origin(url):
                     raise PermissionError("the browser pane may not navigate to Clayrune's own origin")
+                self._refuse_if_on_own_origin(strict=True)
                 self.page.call('Page.navigate', {'url': url})
                 self.url = url
+                self._refuse_if_on_own_origin(strict=False)
             else:
+                self._refuse_if_on_own_origin(strict=True)
                 for method, params in br._input_commands(data):
                     self.page.call(method, params)
 
