@@ -340,3 +340,21 @@ Read fully so far: `__init__`, `providers/{__init__,base,key_paste,x,higgsfield,
   (`pane_reader.py`, `guard_proxy.py`, `net_guard.py`); curated MCP install checks sha512
   before writing and extracts member by member (`mcp_package_store.py:135-211`); no
   credential value reaches a log line in the files above (every `_log` call opened).
+
+### Desk Connect: working notes, batch 2 (candidates, not yet ranked)
+
+Read fully: `custom_connection_{store,service,operation,activation,guard,removal}`,
+`custom_npm_{artifact,gate,install,scripts}`, `custom_package_manifest`.
+
+- cand DC-d (E): `custom_package_manifest.check_for_launch` (`:317`) runs at agent dispatch
+  and `derive_state` runs per connections listing; each call re-parses the manifest JSON
+  and re-walks the whole installed tree (up to 20k files), no mtime cache. To verify:
+  caller frequency, measured cost on a synthetic tree.
+- cand DC-e (E): `custom_npm_install.install` (`:146-147`) holds every archive of the
+  closure in memory at once. To verify against the closure aggregate cap.
+- cand DC-f (low): `custom_connection_service._name_locks` (`:57`, `:276`) grows per name,
+  never pruned; `custom_connection_removal.py:99` `json.loads` `ValueError` on a corrupt
+  config, to verify at the route.
+- sound: the launch gate refuses before the wrapper reads any secret; the approval
+  fingerprint binds the request id; the store fails closed (`StoreUnreadable`); removal
+  only deletes a direct child of the managed root and refuses links.
