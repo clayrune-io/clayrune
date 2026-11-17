@@ -227,3 +227,21 @@ def test_route_reports_failure_as_json_500(monkeypatch):
     r = server.app.test_client().get('/api/claude-import/scan')
     assert r.status_code == 500
     assert r.get_json()['ok'] is False and 'disk on fire' in r.get_json()['error']
+
+
+def test_worktree_directory_is_skipped_by_name_before_any_transcript_is_read(tmp_path, monkeypatch):
+    # AP52: Clayrune makes one transcript dir per agent worktree; the dir NAME
+    # carries `--clayrune-agents-`, so no glob/stat/head read is needed to drop it.
+    ch = tmp_path / 'projects'
+    folder = tmp_path / 'proj' / '.clayrune' / 'agents' / 'abc123'
+    folder.mkdir(parents=True)
+    _transcript(ch, folder)
+    assert '--clayrune-agents-' in _encode(folder)
+
+    def boom(*a, **k):
+        raise AssertionError('a worktree transcript dir must not be read')
+
+    monkeypatch.setattr(scan_mod, '_folder_cwd', boom)
+    r = scan_mod.scan(claude_home=ch, registered_paths=[], registered_ids=[],
+                      home=tmp_path / 'nohome')
+    assert r['candidates'] == [] and r['skipped']['worktree'] == 1

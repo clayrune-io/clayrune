@@ -36,6 +36,8 @@ _HEAD_BYTES = 256 * 1024
 # How many of a folder's newest transcripts to try before giving up on a cwd.
 _MAX_TRANSCRIPTS_TRIED = 5
 _CWD_RE = re.compile(r'"cwd"\s*:\s*"((?:[^"\\]|\\.)*)"')
+# `_encode('.clayrune/agents/')`, as it appears inside a transcript dir name.
+_WORKTREE_DIR_MARK = '--clayrune-agents-'
 # Cap on the list returned to the browser; `total` still reports the full count.
 MAX_CANDIDATES = 300
 
@@ -163,6 +165,12 @@ def scan(*, claude_home: Optional[Path] = None,
         dirs = []
 
     for d in dirs:
+        # Clayrune makes one transcript dir per agent worktree; its encoded name
+        # carries `--clayrune-agents-`, so drop it before any glob/stat/read.
+        # The cwd check below still catches a worktree under another spelling.
+        if _WORKTREE_DIR_MARK in d.name.lower():
+            skipped['worktree'] += 1
+            continue
         try:
             transcripts = [f for f in d.glob('*.jsonl') if f.is_file()]
             stamped = sorted(((f.stat().st_mtime, f) for f in transcripts),
