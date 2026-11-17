@@ -37,11 +37,16 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
     exit 3
 fi
 
-# Parse <cols>x<rows>
+# Parse <cols>x<rows>; both must be positive, and the 'x' must be there.
+case "$GRID" in *x*) ;; *) echo "ERROR: grid must be <cols>x<rows>, got '$GRID'" >&2; exit 2 ;; esac
 COLS="${GRID%x*}"
 ROWS="${GRID#*x}"
 case "$COLS" in ''|*[!0-9]*) echo "ERROR: bad cols in '$GRID'" >&2; exit 2 ;; esac
 case "$ROWS" in ''|*[!0-9]*) echo "ERROR: bad rows in '$GRID'" >&2; exit 2 ;; esac
+if [ "$COLS" -lt 1 ] || [ "$ROWS" -lt 1 ]; then
+    echo "ERROR: grid '$GRID' needs at least 1 column and 1 row" >&2
+    exit 2
+fi
 
 # Default output: <sheet-stem>_frames/ next to the source
 if [ -z "$OUT_DIR" ]; then
@@ -51,8 +56,9 @@ if [ -z "$OUT_DIR" ]; then
     OUT_DIR="$DIR/${STEM}_frames"
 fi
 
-# Wipe stale output so frame numbering doesn't collide on re-run.
-rm -rf "$OUT_DIR"
+# Wipe stale frames so numbering doesn't collide on re-run. Only frame files:
+# OUT_DIR may be a directory the caller already uses for other things.
+rm -f "$OUT_DIR"/frame_*.png
 mkdir -p "$OUT_DIR"
 
 TOTAL=$((COLS * ROWS))

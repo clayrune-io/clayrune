@@ -47,6 +47,9 @@ fi
 # Probe duration so we can compute an even-spaced sample if max_frames
 # would clip the naive fps-based extraction.
 DURATION=$(ffprobe -v quiet -of csv=p=0 -show_entries format=duration "$VIDEO" 2>/dev/null || echo "0")
+case "$DURATION" in
+    ''|*[!0-9.]*) echo "WARN: $VIDEO reports no duration; frames are the clip's start at the requested fps, not an even sample." >&2 ;;
+esac
 DURATION="${DURATION%.*}"  # integer seconds
 [ -z "$DURATION" ] || [ "$DURATION" = "0" ] && DURATION=1
 
@@ -67,7 +70,7 @@ STEM="${BASE%.*}"
 OUT_DIR="$DIR/${STEM}_frames"
 
 # Clean previous extraction so frame counts don't get confused on re-runs.
-rm -rf "$OUT_DIR"
+rm -f "$OUT_DIR"/frame_*.png
 mkdir -p "$OUT_DIR"
 
 ffmpeg -i "$VIDEO" \
