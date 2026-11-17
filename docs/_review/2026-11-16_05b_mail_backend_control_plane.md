@@ -803,3 +803,279 @@ a docstring.
   are checked against the producers' own sets, not a pattern
   (`agent_mail_status_view.py:116-120`), numbers are bounded (`:108-113`), and
   the owner address is shown only once verified (`:350`).
+
+### 7. Control plane: `control_plane/app/`
+
+Files read fully: `main.py`, `auth.py`, `sessions.py`, `jwt_es256.py`, `entitlement.py`,
+`denylist.py`, `verify.py`, `firestore.py`, `cloudflare.py`, `schemas.py`, `canonical.py`,
+`logsafe.py`, `routes_public.py`, `routes_auth.py`, `routes_attest.py`, `routes_account.py`,
+`routes_admin.py`, and the twelve `mail_*.py` / `routes_mail_*.py` modules. Tests read at
+structure level (`conftest.py` fully, test names per file).
+
+The control plane is the remote-access service (sign-in, username and tunnel
+provisioning, session JWTs, suspension), plus two mail route groups. Every
+measurement below ran the real FastAPI app in-process against the suite's own
+in-memory Firestore fixture and an `httpx.MockTransport` standing in for
+Cloudflare (`_scratch/cp/test_cp_probes.py`, nine probes, all reproduce). No
+network call was made. The existing suite passes in this checkout; none of its
+tests fails on any finding below.
+
+#### MB22 — high — L — a released username keeps minting session tokens for its previous owner
+
+`routes_account.py:333-342`: device revoke deletes `usernames/{name}` so the
+name can be claimed again. It does not clear `users/{uid}.username` (written at
+`:948`) and does not revoke the user's sessions. `routes_auth.py:166-181`
+(sign-in) and `:236-263` (refresh) take the `u` claim from that user row, and
+`routes_account.py:913-916` states that the edge admits a request when
+`claims.u` equals the subdomain.
+
+**Measured:** account A enrolls `ron`, holds a browser session, revokes the
+device. Account B enrolls `ron` (200). A's refresh returns 200 and a JWT with
+`sub` = A, `u` = `ron`, `entitled` = true, while the only device row for that
+hostname belongs to B. A is then past the edge gate of B's machine; what stops A
+after that is only the local install's own passcode. A fresh sign-in by A
+(`session/start`) passes the same way: the `not_enrolled` check at
+`routes_auth.py:167` only asks whether the user row has a username.
+
+Smallest fix: in `revoke_device`, when the username claim is released, clear
+`users/{uid}.username` and call `sessions.revoke_all(uid)`; in refresh, mint
+only if `usernames/{u}.user_id == uid`. No existing test revokes and then
+refreshes.
+
+#### MB23 — high — L — revoking one device deletes other accounts' tunnels
+
+`routes_account.py:1239-1243`: force cleanup deletes every tunnel whose name
+starts with `mc-{username}-`. Tunnel names are `mc-{username}-{random}` (`:886`)
+and the username grammar allows hyphens (`routes_public.py:44`), so the prefix
+for `ron` also matches `mc-ron-dev-…`, the tunnel of the account that owns
+`ron-dev`. Force cleanup runs on every device revoke (`:319-323`) and on an
+enroll that hits a DNS collision (`:901-904`).
+
+**Measured:** A enrolls `ron-dev`, B enrolls `ron`, B revokes. Deleted tunnels:
+both. A's remote access is gone with no error on either side, and A's device row
+still says `provisioning_state: active`, so nothing prompts a repair.
+
+Smallest fix: delete only the tunnel id stored on the device row (already done
+at `:311-316`), or compare the username whole: strip the fixed-length random
+suffix and require the remainder to equal `mc-{username}`. The suite has no
+test with two usernames sharing a prefix.
+
+#### MB24 — high — F — suspension never reaches the edge: the denylist write raises before any request is sent
+
+`cloudflare.py:373-377`: `kv_put` passes `headers={"Content-Type": None}` "to
+let httpx set the multipart boundary". httpx does not treat `None` as "unset".
+**Measured** with a client built the way the class builds its own and a mock
+transport (`_scratch/cp/kv_put_probe.py`): `TypeError: Header value must be str
+or bytes, not NoneType`, raised while the request is being constructed, on
+httpx 0.28.1 (the version installed here). `requirements.txt` pins `0.27.*`,
+which was not available to measure; the owner should run the 20-line probe in
+the image before relying on either answer.
+
+The exception is not an `httpx.HTTPError`, so it skips the handler at `:378`
+and lands in `denylist.add`'s `except Exception` (`denylist.py:66-70`), which
+logs and returns `False`. `routes_admin.py:122-133` then answers `ok: true`
+with `edge_cutoff_immediate: false` and `max_lag_seconds` = the JWT lifetime.
+So the control described at `cloudflare.py:362-365` as "the ONLY immediate
+kill switch we have" cannot fire; a suspended account keeps edge access until
+its current token expires. The Firestore flag and the session revocation both
+still happen, so the lag is bounded by one token lifetime.
+
+Smallest fix: drop the `headers=` argument and send the multipart request
+without the client's default JSON content type (build the request, delete the
+header, send; or a second client for KV). No test calls `kv_put`, `kv_delete`
+or `denylist.add` (callers checked: `routes_admin.py:122`, `:158` only).
+
+#### MB25 — high — M — the connect page reflects a query parameter into an inline script with no content policy
+
+`routes_public.py:112-117`: `pub`, `nonce` and `callback` are placed into an
+inline `<script>` through `json.dumps`, which does not escape `</script>`. The
+response sets only `Cache-Control`. The sibling sign-in page sets a nonce-based
+policy for exactly this reason (`routes_auth.py:373-388`); this page has none.
+
+**Measured:** `GET /v1/connect` with `pub` set to
+`</script><script>alert(1)</script>` and a valid loopback callback returns 200
+with the payload verbatim in the body and no `Content-Security-Policy` header.
+The script runs on the control plane's own origin, the origin the session
+cookies are scoped to; from there `POST /v1/session/refresh` returns the rotated
+refresh token in the response body (`routes_auth.py:283-284`), which is a
+durable session for the victim's subdomain.
+
+Smallest fix: escape `<`, `>` and `&` in the three JSON values (as `<`
+and so on), validate `pub` as 32-byte base64 before rendering (the check exists
+at `:250-253`, one step too late), and give this page the policy the sign-in
+page has. `test_public.py` sends no markup in any parameter.
+
+#### MB26 — high — M — the loopback-only callback check accepts a URL a browser sends elsewhere, with the enrollment token attached
+
+`routes_public.py:47-61`: `_is_safe_callback` judges the host with
+`urlparse`. For `http://evil.example\@127.0.0.1/api/mc-callback` Python reports
+host `127.0.0.1`; a browser treats the backslash as a slash and navigates to
+`evil.example`. The comment at `:40` names the risk the check exists for.
+
+**Measured:** `signin/start` stores that callback (200); `signin/complete`
+returns `redirect_url` (`:284-291`) carrying `enrollment_token` and
+`device_id`; Node's WHATWG URL parser, the one browsers implement, gives its
+host as `evil.example`. The page then navigates there (`:468`). The victim must
+open an attacker-built connect link and sign in; what leaks is the credential
+that authorises device revoke (`routes_account.py:254-257`) and attestation.
+
+Smallest fix: reject any callback containing a backslash, whitespace or `@`,
+and rebuild the redirect from the parsed parts
+(`http://{host}:{port}/api/mc-callback`) instead of echoing the stored string.
+No test passes a callback with userinfo or a backslash.
+
+#### MB27 — medium — M — `return_to` has the same backslash hole, and its value can close the page's script
+
+`routes_auth.py:320-340`: same host check, same parser. **Measured**
+(`_scratch/mb_return_to.py`): `https://evil.example\@a.<zone>/` and
+`https://evil.example\.<zone>/` are accepted; a browser's host for both is
+`evil.example`. After a successful sign-in the page navigates to that value
+(`:487-488`). Nothing secret is appended, so this is an open redirect from the
+real sign-in page, not a token leak.
+
+Second half, `:365`: the accepted value is embedded with `json.dumps` in the
+nonce'd inline script. **Measured:** a `return_to` whose path contains
+`</script><meta http-equiv=refresh …>` appears verbatim in the body. The
+policy stops an injected script; it does not stop a meta refresh or injected
+links, and the page's own script no longer parses, so sign-in is broken for
+that link and the visitor is bounced.
+
+Smallest fix: one shared URL check for MB26 and MB27, and the `<` escaping of
+MB25.
+
+#### MB28 — medium — L — device limit and username ownership are stated and not enforced
+
+* `verify.py:205-207` says the device cap is "enforced at /v1/enroll". Enroll
+  writes `device_cap: 2` (`routes_account.py:951`) and never reads it.
+* `_claim_username` (`:1074-1096`) has no per-account limit and enroll does not
+  release the account's previous name. **Measured:** one account enrolled five
+  usernames: five claims, five live tunnels, five device rows, `device_cap` 2.
+  Names are a finite public namespace and each costs a tunnel against the
+  account ceiling.
+* A second device enrolling the account's existing name is a DNS collision
+  (`:895-905`); force cleanup then deletes every device row for the hostname
+  (`:1256-1267`). **Measured:** second enroll 200, one device row left, the
+  first gone. The first machine learns this only when its next attest fails.
+  If one name means one machine, enroll should say so before replacing it.
+* A re-enroll of an owned name that fails mid-provisioning releases the name
+  (`:919-922`; `_claim_username` returned true for the existing owner at
+  `:1087-1088`), so a transient Cloudflare error on the second machine frees
+  the name the first machine is live on. Read, not measured.
+* Each enroll rewrites the user row with `created_at`, `tier: free` and
+  `bandwidth_used_period_bytes: 0` under `merge=True` (`:945-954`), so a
+  re-enroll resets the period counter and the creation date. Nothing enforces
+  on the counter today (readers are display only: `routes_admin.py:232`,
+  `routes_account.py:140`), so this is latent.
+
+Smallest fix: count the account's live devices and names at the top of
+`_do_enroll_after_auth` and refuse or replace explicitly; release the name on
+rollback only if this call created the claim; write the row defaults only when
+the row does not exist.
+
+#### MB29 — medium — M — the operator gate does not require a verified email
+
+`routes_admin.py:67-68` compares the token's email to the allowlist and stops.
+Enroll (`routes_account.py:806`) and sign-in (`routes_auth.py:159`) both check
+`email_verified`; this gate does not. **Measured:** `GET /v1/admin/data` with a
+token whose `email_verified` is false returns 200. Whether an unverified token
+for an operator address can be obtained depends on the identity provider's
+settings (password sign-up, one account per email), which are not in the repo:
+could not determine. The admin routes list every user and can suspend any of
+them. Smallest fix: one line, the check the other two routes make.
+
+#### MB30 — medium — L — a sign-in intent never expires, and anyone can create them without limit
+
+`routes_public.py:149-160` stores `expires_at` = now + 15 minutes.
+`signin/complete` (`:220-244`) checks existence, key hash and callback, and
+never reads `expires_at`, though its own comment at `:220` says "still valid"
+and the error text says "Sign-in expired". **Measured:** an intent with
+`expires_at` in 2020 completes with 200. `signin/start` is unauthenticated and
+unthrottled, so the collection grows by one document per request and nothing
+collects abandoned ones. Smallest fix: compare `expires_at` at `:232`; set a
+Firestore TTL policy on the field.
+
+#### MB31 — low — M — the idempotency cache stores the enrollment token in clear
+
+`routes_account.py:849-851` caches the whole enroll response for 24 hours,
+including `enrollment_token` (`:981-988`). The device row stores only its hash
+(`:937`, `:966`), and `sessions.py:39-43` states the principle: a Firestore
+read leak must not hand over live credentials. Expired rows are skipped on read
+(`:1124-1131`) and never deleted. Smallest fix: a TTL policy on
+`idempotency_cache.expires_at`, and either accept the 24-hour clear copy as the
+price of idempotent replay or seal the cached response under a key derived
+from the idempotency key.
+
+#### MB32 — low — L — refresh rotation is read, compare, write with no transaction
+
+`sessions.py:232-289`. Two refreshes of one session that overlap (two tabs
+waking together) each rotate. The store keeps the second secret as current and
+the first as previous. If the browser ends up holding the first response's
+cookie, every later refresh presents a superseded secret; inside
+`REUSE_GRACE_SECONDS` that is tolerated (`:254-258`), after it the session is
+revoked as theft (`:260-269`) and the user is signed out, with a log line that
+says two parties hold the token. Read, not measured. Smallest fix: rotate in a
+Firestore transaction and, on a grace-window replay, return the current
+successor instead of minting another.
+
+#### MB33 — low — M — suspension lookup fails open, silently
+
+`verify.py:251-258`: any exception reading the user row returns "not
+suspended" with no log line (project policy: network reads log). The attest
+route re-reads the same row and checks entitlement at
+`routes_attest.py:219-220`, so the decision is covered a second time; the
+helper is a redundant read whose failure mode points the wrong way. Remove it,
+or log and fail closed.
+
+#### MB34 — low — L/E — small items
+
+* `routes_account.py:1202-1238`: every revoke lists every Access application
+  and every tunnel on the account, unpaginated, to find at most one of each.
+  Past one page the listing is silently incomplete (read, not measured; the
+  provider's page size was not checked against its docs).
+* `auth.py:84-98`: three dependency stubs with no caller (grep over
+  `control_plane/`: definitions only).
+* Stale statements: `jwt_es256.py:30-33`, `routes_attest.py:108-110`
+  ("placeholder"), `routes_account.py:18-24` (a pending list of things that
+  shipped), `routes_public.py:293` (names a helper that does not exist).
+* `request_id` is the literal `"x"` in every error body of `routes_public.py`
+  and `routes_admin.py` (for example `routes_public.py:101`,
+  `routes_admin.py:59`), so an id a user reports cannot be matched to a log
+  line. `routes_account.py:925-934` also returns the raw exception text to the
+  caller.
+* `routes_attest.py:243-251` returns hardcoded caps, and an expiry for a
+  tunnel token that does not expire (`:209-218`).
+* 65 tracked files under `control_plane/` open with a "PROPRIETARY AND
+  CONFIDENTIAL" header in a public repository. That is a statement for the
+  owner to reconcile, not a code defect.
+
+#### The control plane's mail routes
+
+`/v1/mail-delivery/*` and `/v1/mail-enrollment/*` (`main.py:75-76`) are 404
+unless an environment flag is set (`routes_mail_delivery.py:109`,
+`routes_mail_enrollment.py:118`). Their callers, checked by import graph, are
+the Worker's `cp-client.js`, `delivery-capability.js`, `enrollment-grant.js`
+and `enrollment-preflight.js`, reachable only from `lifecycle.js` and
+`enrollment-http.js`, whose routes the Worker answers with
+`410 legacy_retired` (`workers/agent-mail/worker.js:56-60`), and the local
+`agent_mail_ceremony_client.py:48` (retired, section 6). The pull protocol
+does not call the control plane. These twelve modules (1,917 lines) and their
+tests (2,206 lines) are correct for a protocol nothing speaks; they are ST3 in
+streamlining. No finding is raised against them: the authority check is
+shared, not duplicated (`mail_authority_check.py`), signing keys come from the
+environment with no fallback, and both groups fail closed when disabled.
+
+#### Sound in this section
+
+* Session design: the access JWT is short-lived ES256, the refresh token is
+  stored hashed and compared in constant time, an unvalidated session id never
+  reaches a document path (`sessions.py:227-230`), and refresh re-reads the
+  user row instead of trusting old claims (`routes_auth.py:236`).
+* Entitlement fails open only where a billing pipeline fault is the likelier
+  cause, and writes an error log each time (`entitlement.py:93-110`);
+  suspension overrides it (`:84-85`).
+* Enroll rolls back the provider resources it created on any failure after
+  the claim (`routes_account.py:919-921`, `:1146`).
+* The dev-auth bypass refuses to start in the hosted environment
+  (`routes_account.py:636-643`).
+* CORS is an explicit origin list with credentials, not a wildcard
+  (`main.py:62-68`).
