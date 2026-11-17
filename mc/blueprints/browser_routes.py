@@ -93,6 +93,7 @@ from mc.core import _log
 from mc.state import browser_sessions, browser_lock
 from mc import browser_auth_diagnostics as _auth_diagnostics
 from mc import browser_frame_guard as _frame_guard
+from mc import browser_screencast_rearm as _rearm
 from mc.browser_profile_owner import profile_owner as _profile_owner
 from mc.browser_paths import browser_home
 
@@ -2039,22 +2040,18 @@ def _run_cdp(session):
                         _bump(session, 'tabs_seq')
                     if tid == session.get('active_target_id'):
                         session['live_url'] = fr['url']
-            elif method == 'Page.frameStoppedLoading':
-                # A cross-document navigation (typed URL, clicked link, or a
-                # queued Page.navigate) STOPS the active screencast on this ws.
-                # Re-arm it on every load, else the pane freezes/blacks after
-                # the first navigation away from the launch page. Skip the
-                # re-arm while minimized (`screencast_paused`) — the pane
-                # asked for the cast to stop precisely so a hidden pane costs
-                # nothing, and a background page navigation must not silently
-                # undo that. Scoped to the ACTIVE tab's session — a background
-                # tab finishing a load must not re-arm a screencast that was
-                # never running on it.
-                if not session.get('screencast_paused') and msg_sid == _active_session_id(session):
-                    try:
-                        start_screencast(session_id=msg_sid)
-                    except Exception as e:
-                        session['error'] = f'rearm failed: {e}'
+            elif method in _rearm.REARM_EVENTS:
+                # A cross-document navigation STOPS the active screencast, and a
+                # main-frame resize often leaves it sending nothing more (MC-1197).
+                # Which event gets which re-arm, and when none is sent (minimized
+                # pane, background tab): mc/browser_screencast_rearm.py.
+                try:
+                    for cmd, cparams in _rearm.commands(session, method, msg_sid,
+                                                        _active_session_id(session),
+                                                        _SCREENCAST_PARAMS):
+                        send(cmd, cparams, session_id=msg_sid)
+                except Exception as e:
+                    session['error'] = f'rearm failed: {e}'
             elif method == 'Target.targetCreated':
                 # `Target.setAutoAttach` alone does NOT reliably deliver
                 # `Target.attachedToTarget` for a `window.open()`/`target=_blank`
