@@ -981,3 +981,182 @@ Revive B `agent_routes.py:8088-8158`, revive A `:8263-8313`, runtime
   transaction and spends a one-shot budget.
 - **Wakers.** Transition-driven; `blocked → pending` is guarded in the
   statement; `uncertain` is never replayed automatically.
+
+## 5. `agent_routes.py` lines 15461-18968
+
+Stop, interrupt and delete routes, `/agent/status`, the agent log and
+conversation listings, transcript reconstruct and search, plans and documents,
+usage, and the session guardian. Read fully.
+
+#### R55 · medium · M — four transcript routes put the conversation id from the URL into a file path with no check
+
+`get_project_transcript` (`agent_routes.py:16621`, Claude branch),
+`reconstruct_from_transcript` (`:16952`), `get_transcript_full_buffer`
+(`:16997`) and `delete_conversation` (`:17032`) pass `<claude_session_id>`
+straight to `_find_transcript_file`, which ends in
+`_CLAUDE_HOME / e / f'{session_id}.jsonl'` (`mc/agent_runtime.py:2524`). The
+Codex branch of the first route does validate, with a UUID regex (`:16590`);
+the Claude branch and the other three routes do not.
+
+Werkzeug's default converter only excludes `/`. **Measured** with an isolated
+Flask test client (no server import): a request for
+`…/conversation/..%5C..%5Cother%5Cabc` reaches the view with the id
+`..\..\other\abc`, and on Windows the joined path resolves two directories
+above the project's transcript folder.
+
+- The three GET routes then parse and return any `*.jsonl` reachable that way,
+  including another project's transcripts.
+- `delete_conversation` renames the file to `*.jsonl.deleted` and first
+  unlinks an existing `.deleted` copy (`:17074-17078`). The live-session
+  check before it compares the raw id (`:17046-17049`), so it does not stop
+  this.
+
+POSIX hosts are not affected (a backslash is an ordinary filename character
+there).
+
+- **Fix:** one guard at the top of all four routes, the same pattern as
+  `:16590` or `[A-Za-z0-9_-]+`; better, once in `transcript_path`.
+- **Tests:** none sends an id with a separator to these routes.
+
+#### R58 · medium · L — the guardian's CPU-idle baseline is kept per session, never reset, and not tied to a process
+
+`_proc_is_cpu_idle` stores `_guardian_prev_cpu_total` and
+`_guardian_prev_cpu_time` on the session (`agent_routes.py:18618-18621`).
+Nothing else touches them (those four lines are the only references in the
+repository). The hung check only samples once a session has been silent past
+its timeout (`:18833`), and its docstring promises "First sample always
+returns False" (`:18592-18594`). That holds once per session, not once per
+process or per silent stretch:
+
+1. **After a respawn or rollover** the session has a new process. Its first
+   sample past the timeout subtracts the old process's total from the new
+   one's. The result is negative, which reads as idle, and State 2 kills the
+   process (`:18833-18849`) on that tick. A process that is silent but busy,
+   the exact case the CPU check exists to spare, gets no confirmation tick.
+2. **A later silent stretch in the same process** is compared with the sample
+   left by the previous stretch, possibly hours old, so the rate is averaged
+   over the whole gap instead of the last ten seconds.
+3. Children that exited between two samples drop out of the total
+   (`:18610-18615`), so a tool run made of short-lived processes can also
+   read negative.
+
+- **Fix:** store the pid with the baseline; treat the sample as a first sample
+  when the pid differs or the baseline is older than a few ticks.
+- **Tests:** would not catch it. `tests/test_guardian_claude_hung_timeout.py:37`
+  and `tests/test_claude_retry_watchdog.py:328` both replace
+  `_proc_is_cpu_idle` with a constant.
+
+#### R56 · medium · L — chat search and the workflow progress scan skip the folder that worktree-isolated agents write to
+
+`_search_project_transcripts` (`agent_routes.py:17228-17231`) and
+`_scan_project_workflows` (`:16700-16703`) each build their own list of
+transcript folders: the encoded project path and its underscore-to-dash
+variant. The runtime's own lookup also covers
+`<encoded>--clayrune-agents-*`, the folder a worktree-isolated agent's CLI
+writes to (`mc/agent_runtime.py:2530-2551`), and the conversation list globs
+those too (`tests/test_claude_runtime.py:489`, `:1689`). With
+`worktree_isolation_enabled` on (it is on in the install this was read
+against), an isolated agent's chat is listed in the rail and opens, but
+`/search-chats` and `/api/search/global` never find it, and its Claude Code
+workflow tree never appears on `/workflows`.
+
+- **Fix:** one runtime method that returns the transcript folders for a
+  project, used by the lookup, the list, the search and the workflow scan.
+- **Tests:** the worktree folder is covered for lookup and listing only.
+
+#### R57 · medium · E — `/agent/status` still ships every session's whole chat buffer, and the two rail endpoints rebuild everything per call
+
+All figures **measured** with GET on a running install, three runs each.
+
+| endpoint | size | time |
+|---|---|---|
+| `/agent/status` (4 sessions) | 105,765 bytes, of which 87,069 (82%) is `log_lines` and `log_line_ts` | 0.22-0.47 s |
+| `/conversations?limit=10` | 33 KB | 0.69-0.78 s |
+| `/agent/log` | 2,137,185 bytes | 0.32-0.35 s |
+
+- `/agent/status` (`agent_routes.py:16280-16305`) copies and sends each
+  session's full buffer on every poll; the stream endpoint already sends lines
+  incrementally by cursor (`:14187-14374`). This is F1 of the 2026-09-10
+  efficiency review, still open.
+- `/conversations` parses the agent log three times in one request (`:17930`,
+  then again inside the Codex row builder at `:17525` and the non-Claude row
+  builder at `:17685`), lists transcripts twice (`:17926` and the lineage scan
+  at `:17833`), and reads a persona file from disk per row (`:17393`).
+- `/agent/log` (`:16494-16551`) returns all 500 rows with every field plus a
+  lineage scan. The rail fetches it whole on each refresh
+  (`static/js/agent-log.js:241`); the `?session_id=` filter (`:16512`) is used
+  only by dispatch callbacks.
+
+The two rail fetches are event-driven and coalesced in flight, not on a timer
+(`static/js/agent-log.js:233-305`), so the cost is per turn completion.
+
+- **Fix:** send `log_lines` from `/agent/status` only on request or after a
+  `log_epoch` change; pass the already-parsed log into the two row builders;
+  resolve each persona once per request; give the rail a slim agent-log view.
+- **Tests:** none (performance).
+
+#### Lesser findings
+
+- **Unlocked iteration, more sites** (L, low; same defect as R41).
+  `agent_sessions.items()` or `.values()` iterated with no snapshot at
+  `:16280`, `:16973`, `:17046`, `:17060`, `:17536`, `:17898`, `:18195`,
+  `:18355`, `:18511`. Each is a `RuntimeError: dictionary changed size during
+  iteration` away from a 500 when a dispatch lands mid-request.
+- **`delete_plans`, `:16133-16136`** (E, low). `changed = True` is set for any
+  row that has a `plan_files` list, whether or not anything was removed from
+  it. Deleting one plan therefore rewrites the agent log of every project that
+  has ever recorded a plan. Fix: compare the filtered list with the original.
+- **`agent_session_delete`, `:16013-16019`** (E/L, low). `_kill_pid(tree=True)`
+  (a `taskkill` subprocess) and `_stop_session` (the stdin close of R53) run
+  under the project lock. The comment at `:16031-16032` says the reader has
+  already logged completion by the time the session is popped; the wait above
+  it gives up after 5 s and only logs (`:16024-16028`).
+- **`delete_conversation`, `:17042-17085`** (E/L, low). The project load, an
+  agent-log parse, one SQLite revoke per alias and the rename all run under
+  the project lock. The live check (`:17046`) matches any session row with
+  that id, including a finished one still in memory, so deleting a chat that
+  just ended answers 409 "conversation is live".
+- **`api_recent_runs` `:17129-17134`, `api_usage` `:18471-18487`** (M/E, low).
+  Both read every project's agent log with their own `json.loads`, bypassing
+  `_load_agent_log`, and both drop a parse failure with a bare `continue`
+  (project policy: a JSON state load must log). A corrupt log silently
+  vanishes from the usage totals. Measured 0.08-0.14 s per call.
+- **Silent swallows on file I/O** (M, low): `:17275` and `:17344` (search),
+  `:18369` (`list_written_markdown`).
+- **`/agent/status` comment and sorts** (L/M, low). The comment at
+  `:16405-16408` says subagents are "computed without a scan" for any session
+  that is not running; the gate at `:16220` scans idle sessions too (correct,
+  per the note above it). Of the three sorts at `:16424-16430` the first has
+  no effect on the result beyond tie order.
+- **Guardian recovery** (L, low). `_guardian_attempt_recovery` changes
+  `recovery_attempts` and `guardian_state` with no lock (`:18655-18669`) and
+  is called from the guardian thread and from a thread the reset route starts
+  (`:16464`). It also sleeps 2 s on the per-project guardian thread
+  (`:18674`), during which no other session in the project is checked.
+- **Non-Claude interrupt** (L, low; second site of R49). `:15639-15649` falls
+  through to `{'ok': True}` after a generic exception, and the comment at
+  `:15599-15601` describes a `runtime.interrupt()` call that is not there.
+- **Dead stubs** (M, low): `_session_guardian_loop` (`:18690`) and
+  `_start_session_guardian` (`:18964`).
+- **Request bodies** (M, low; more of R15): `delete_plans` builds
+  `Path(plan_path)` from an unchecked list item (`:16105`).
+
+#### Sound in this stretch
+
+- **`agent_stop`** (`:15461-15493`): status set under the lock, kill outside
+  it. The opposite order is pass 1's MA1, in the runtime; this route does not
+  repeat it.
+- **Plan and document reads** (`:16045-16090`, `:18259-18304`): realpath
+  containment, markdown only, secret-file denylist, drive-root projects
+  excluded.
+- **Plans cache** (`:18148-18161`): keyed on the log's mtime; every consumer
+  only reads the cached list.
+- **Spawner of record** (`:17410-17488`): one helper for display and revive,
+  legacy field trusted only on a dispatch-marked row, two-node cycle rejected.
+- **Conversation list union** (`:18086-18110`): live rows and requested ids
+  survive the final cut; Codex and agent-log rows cannot double-list.
+- **Search and incognito** (`:17249`, `:17340`): both direct disk readers
+  re-apply the incognito exclusion.
+- **Guardian state checks** (`:18763-18826`): every status write re-checks the
+  process identity and the respawn window under the lock; eviction re-runs its
+  predicate under the lock; the stuck-flag nudges fire once per episode.
