@@ -1,0 +1,1328 @@
+# Mail backend and control plane review, pass 05b (MC-1179) — 2026-11-16
+
+Reviewer: Fenn (code-reviewer), one sequential pass. Base: `master` @ `f0373733`.
+Review only: no source file was changed. Every line cited was opened. A cost or
+a wrong result is marked **measured** (a scratch script against the function,
+with a fake IMAP object or an in-memory store) or **read, not measured**.
+`server` was never imported, the live server was sent nothing, no model call
+was made, no mail was sent, no external service was called, and no process
+that binds a port or launches a provider CLI was started. Nothing was written
+under `data/` or a real memory directory.
+
+Scope: `mc/mail_launder.py`, `mc/agent_mail_*.py` (55 modules),
+`mc/blueprints/agent_mail_*_routes.py` (6 modules), `tools/mail-mcp/`,
+`tools/night-review/send_mail.py`, and `control_plane/` (app first, tests at
+structure level). Passes 1 to 3 (`docs/_review/2026-11-16_01_runtime_core.md`,
+`_02_agent_routes.md`, `_03_memory_learning.md`) are not repeated; where a
+finding here is the other half of one of theirs, the id is named.
+
+Lenses: **E** efficiency, **L** coherent logic, **M** coding methodology,
+**F** feature does not work as documented.
+Severity, same scale as passes 1 to 3, with the brief's addition: **blocker** =
+wrong result or lost data on a normal path today, or raw mail text reaching a
+tooled agent on the documented path; **high** = wrong result or lost data on a
+reachable path, raw mail text reaching a tooled agent on a path that needs an
+attacker's deliberate step, or a cost paid on every poll/request; **medium** =
+narrower trigger, or a latent defect behind a setting that ships off;
+**low** = hygiene.
+
+STATUS: COMPLETE. 35 findings: 1 blocker, 10 high, 11 medium, 13 low.
+
+Two things to know before the tables:
+
+* **The product has one mail protocol (pull) and the tree carries two.** The
+  push-era stack is retired at the service (`410 legacy_retired`) and has no
+  production caller on the install or in the control plane. Section 6 and
+  streamlining ST2, ST4 and ST5 cover it; it is about 9,000 lines with its
+  tests.
+* **Control plane findings are against `master`.** Backlog item MC-948 says
+  production runs an older build (`d34584f`) and that the session-token work
+  has not been released. That was not checked here. Checked against that
+  commit's source: MB23, MB25, MB26, MB28, MB29 and MB30 are in it too; MB22,
+  MB24, MB27, MB32 and MB35 are in code added since.
+
+## Ranked summary
+
+| rank | id | finding | lens | severity |
+|---|---|---|---|---|
+| 1 | MB8 | One failed HTTPS request (ticket, or the ten-minute manifest refresh) halts the pull worker; inbound mail stops until the server restarts | L/F | blocker |
+| 2 | MB22 | Control plane: a released username keeps minting session tokens for its previous owner after another account claims it | L | high |
+| 3 | MB23 | Control plane: revoking a device deletes other accounts' tunnels whose username starts with the same text | L | high |
+| 4 | MB25 | Control plane: the connect page reflects a query parameter into an inline script with no content policy | M | high |
+| 5 | MB26 | Control plane: the loopback-only callback check accepts a URL browsers send elsewhere, with the enrollment token attached | M | high |
+| 6 | MB24 | Control plane: the suspension denylist write raises before sending; the immediate edge cutoff never fires | F | high |
+| 7 | MB13 | A question gets one attempt at being mailed; every failure is final and there is no second channel | L/F | high |
+| 8 | MB18 | Signup has four ordinary dead ends with no way out; disable and owner change are written and not reachable | F/L | high |
+| 9 | MB9 | A reply reaches its chat only on the recovery tick; any "pending" step pushes that tick to 15 minutes | L/E | high |
+| 10 | MB1 | A hostile header charset is printed to the tooled session unlaundered and blocks every later digest read | L/M | high |
+| 11 | MB5 | An agent-mail reply reaches the tooled chat as an instruction with no toolless step (owner ruling; docs and names not updated) | L | high |
+| 12 | MB35 | Phone pairing: host and control plane on `master` disagree on the response; pairing fails once `master` is released | F | medium |
+| 13 | MB6 | Only `session_busy` is retried; quota, recovery, rollover and a busy spawner become permanent holds that freeze the chat's later replies | L | medium |
+| 14 | MB28 | Control plane: device cap and one-name-per-account are stated and not enforced; a second device silently replaces the first | L | medium |
+| 15 | MB30 | Control plane: a sign-in intent never expires; unauthenticated callers can create them without limit | L | medium |
+| 16 | MB29 | Control plane: the operator gate does not require a verified email | M | medium |
+| 17 | MB27 | Control plane: `return_to` accepts an off-zone host and can close the sign-in page's script | M | medium |
+| 18 | MB3 | Digest `decision: approved` can be produced by any sender; the fetch ignores the server-set Sent label | L | medium |
+| 19 | MB2 | The digest is returned whole: extra keys, any types, no length cap | M | medium |
+| 20 | MB14 | A slow note send is delivered twice (agent mail, then the Gmail fallback) | L | medium |
+| 21 | MB19 | Any scheduled or dispatched run anywhere on the install blocks the human from signup actions | L | medium |
+| 22 | MB10 | The store is integrity-checked twice a second while connected, and again on almost every call | E | medium |
+| 23 | MB15 | Sending the same text twice from one chat reports "sent" and sends nothing | L | low |
+| 24 | MB16 | `--verify` is accepted and does nothing on the agent-mail path | L | low |
+| 25 | MB20 | One flag gates the dead push route and the live delivery step; its name describes the dead one | L | low |
+| 26 | MB32 | Control plane: refresh rotation is not transactional; overlapping refreshes can end in a false theft revoke | L | low |
+| 27 | MB31 | Control plane: the idempotency cache keeps the enrollment token in clear for 24 hours and is never purged | M | low |
+| 28 | MB33 | Control plane: suspension lookup fails open, silently | M | low |
+| 29 | MB11 | An unexpected exception in the pull worker is reported as `connection_lost` and retried forever, type not logged | M | low |
+| 30 | MB17 | Every send runs the store cleanup four times and can do a network GET inside the write transaction | E | low |
+| 31 | MB7 | `pipe.write` accepts the same delivery twice, from two threads | L | low |
+| 32 | MB12 | Two frame verifiers that must agree, and already differ in the reason they report | M | low |
+| 33 | MB4 | `read_email` still serves raw mail to any non-steward session that has the server configured (prior audit, still open) | M | low |
+| 34 | MB21 | Docstrings state the wiring the wrong way round in six places | L | low |
+| 35 | MB34 | Control plane small items: unpaginated listings, dead stubs, literal request id, stale comments | L/E | low |
+
+I would block a control plane release on MB22 to MB26 and MB35, and I would
+fix MB8 before anything else in the mail client: it is the only finding that
+breaks the main path on an ordinary day.
+
+## Feature table (lens 4)
+
+Main path and most likely failure path traced through the code for each.
+"Measured" means a scratch reproduction ran; otherwise read.
+
+| # | feature | entry point | verdict |
+|---|---|---|---|
+| 1 | Read the owner's emailed reply as a laundered digest | `tools/mail-mcp/read_digest.py` | works with a defect: MB1 (measured), MB3, MB2 |
+| 2 | Raw mail tools for a session (`search_email`, `read_email`, `list_recent`) | `tools/mail-mcp/server.py` | works as written; that it works is the open prior-audit item (MB4) |
+| 3 | Send a decision or note mail from an agent chat; the reply returns to that chat | `tools/night-review/send_mail.py` → `/api/agent-mail/note` | works with a defect: MB14, MB15, MB16 |
+| 4 | Gmail mailer (fallback, server alerts, `--to`) | `send_mail.py` | works as documented (read; nothing was sent) |
+| 5 | Mail an unanswered question to the owner | `mc/question_channel.py` → `agent_mail_outbound_questions.deliver` | works with a defect: MB13 (one attempt, then silence) |
+| 6 | Receive the owner's reply into the chat that asked | pull socket → store → `MailWake` | works with a defect: MB8 (measured: stops after one network failure), MB9 (measured: up to 15 minutes late) |
+| 7 | A reply that cannot be delivered is held, shown, and released with the passcode | `agent_mail_holds_routes.py` | works with a defect: MB6 (release re-blocks for a long chat; transient causes never retry) |
+| 8 | A reply to a finished dispatched agent goes to its spawner | `agent_mail_spawner_fallback.py` | works with a defect: MB6 (a busy spawner is a permanent hold) |
+| 9 | Turn agent mail on (start, verify, enable) | `POST /api/agent-mail/enrollment/<action>` | works with a defect: MB18 (four dead ends), MB19 |
+| 10 | Turn agent mail off | `POST /api/agent-mail/enrollment/disable` | cannot work as written: MB18 (404; the module has no caller) |
+| 11 | Change the owner address | `OwnerChange` | cannot work as written: MB18 (composed, never called) |
+| 12 | Status panel | `GET /api/agent-mail/enrollment` | works as documented |
+| 13 | Deployment flags and service-manifest review | `agent_mail_deployment_routes.py`, `agent_mail_manifest_routes.py` | works as documented (read) |
+| 14 | Deleting a chat revokes its mail threads | `agent_mail_deletion.py` | works as documented (measured: a later reply is refused as `unknown_thread`, socket stays up) |
+| 15 | Push delivery to the install, delivery proof, key rotation | `/api/agent-mail/ingress`, `DeliveryProof`, `IdentitySeal.prepare_rotation` | cannot work as written: retired (section 6, MB20); no pin can exist, proof is always 503, rotation has no caller |
+| 16 | Control plane: connect, sign in, claim a username, provision a tunnel | `/v1/connect`, `/v1/signin/*`, `/v1/enroll` | works with a defect: MB25, MB26, MB28, MB30 (all measured) |
+| 17 | Control plane: browser session (start, refresh, sign out, sign out everywhere, list) | `/v1/session/*`, `/v1/sessions` | works with a defect: MB22 (measured), MB27, MB32 |
+| 18 | Control plane: revoke a device | `/v1/devices/{id}/revoke` | works with a defect: MB23 (measured), MB22 |
+| 19 | Control plane: attestation and tunnel token | `/v1/nonce`, `/v1/attest` | works as documented (read; MB33 and MB34 are hygiene) |
+| 20 | Control plane: pair a phone | `/v1/devices/{id}/mobile-tokens` with the host's `/api/mobile-pair/generate` | cannot work as written on `master`: MB35 |
+| 21 | Control plane: operator console (list, suspend, unsuspend) | `/v1/admin/*` | works with a defect: MB24 (measured: no immediate cutoff), MB29 |
+| 22 | Control plane: mail delivery and mail enrollment authority | `/v1/mail-delivery/*`, `/v1/mail-enrollment/*` | could not determine end to end: default off and nothing live calls them (ST5) |
+| 23 | Control plane: operator scripts (seed, teardown, cleanup, tunnel, custom domain) | `control_plane/*.py` | could not determine: read at structure level only |
+
+Totals: 6 work as documented or as written, 11 work with a defect, 4 cannot
+work as written, 2 could not be determined.
+
+## Backlog cross-check
+
+Source: `GET /api/project/mission_control/backlog`, read 2026-11-16: 91 items
+are open, in progress or blocked. Five lie in this region. MC-1179 to MC-1183
+are this review's own and were skipped; MC-1184 is pass 05a's own item (its
+other halves are named in section 8). Nothing was patched or noted.
+
+| key | subject | class | evidence |
+|---|---|---|---|
+| MC-948 | Control plane release from master | NEEDS A HUMAN (parked by the owner), and its text is behind the code | The item counts 9 unshipped control plane commits; `git log master -- control_plane` now shows 14 since the build it names (five mail-authority commits of 2026-11-09 and 2026-11-10 added: `dd96708a`, `156b5dbd`, `5a568b26`, `34d42e07`, `64f4b1a6`). Its step 5 is **not done**: `control_plane/app/verify.py` has no MC-947 exemption and the branch it names still exists unmerged. Its step 3 note that the suite needs Python 3.12 no longer holds in this checkout: `pytest control_plane/tests` exits 0 on 3.14 (one test skipped) against the installed packages, which are not the pinned set. `.github/workflows/deploy-control-plane.yml` has no test step and does not depend on `tests.yml`, so re-enabling it deploys on a path match alone. Add to its release list: MB22, MB23, MB24, MB25, MB26 and MB35. Only the owner can deploy, create the signing key and decide the old Access apps. |
+| MC-875 | Phone pairing off Access tokens | PARTLY DONE | Control plane half is on `master`: a paired phone is a mobile session and the route returns `pair_token` and `refresh_url` (`control_plane/app/routes_account.py:347-367`, `:488-499`). Host half is not done and is now incompatible with it: `mc/blueprints/push_mobile.py:1110-1116` still requires `client_id` and `client_secret` and `:927-928` still sends the Access headers. Same defect as MB35. Smallest next step: host route accepts `pair_token` and `refresh_url` and builds the pairing link from them. The phone app is in another repository and was not checked. |
+| MC-878 | Tunnel quota alarm at 800 | NOT DONE | No counting code: a search of `control_plane/` and `tools/night-review/` for a tunnel count, quota or alarm finds none, and none of the 53 schedules (read by GET) mentions tunnels. Smallest fix as the item describes: one script that counts non-deleted tunnels and DNS records and mails through `send_mail.py`. Two findings change its arithmetic: MB28 (one account can hold any number of names and tunnels, so the cap is not "about 1,000 users") and MB34 (the existing tunnel listing is unpaginated; a counter built on it would undercount past one page). |
+| MC-1176 | Steward decisions over agent mail | NEEDS A HUMAN (the live cycle), code DONE | `6048e618` is an ancestor of `master`. `tools/night-review/send_mail.py:211-213`, `:286-287` pass project and session to the agent-mail route. The steward schedule exists and is disabled (GET `/api/schedules`). What the live test will meet, from this pass: MB6 (the steward's one continuing session is the long-chat case, so a reply is held as `rollover_required` and release re-blocks), MB8 and MB9 (a reply stops arriving after a network failure, or arrives up to 15 minutes late), MB15 (a repeated identical decision line reports sent and sends nothing), MB16 (`--verify` proves nothing on this path). I would fix MB6 and MB8 before running it, or the test will fail for reasons unrelated to the steward change. |
+| MC-936 | Organisation transfer follow-ups | NEEDS A HUMAN | Only its step 4 touches this region. `git grep` finds no old-owner reference under `control_plane/` or `.github/`; the deploy workflow takes its identity provider and service account from variables (`deploy-control-plane.yml:52-53`). What remains is the binding on the cloud side, which only the owner's credentials can change. |
+
+Considered and left to other passes, because the code is outside this region:
+MC-879 (self-hosted remote provider, `mc_remote`), MC-999 (feedback Worker on
+the website), MC-1153 (Desk email campaigns).
+
+No item in this region is DONE or OBSOLETE. The nearest is MC-1176: nothing is
+left to build, only the owner's go-ahead for one live cycle.
+
+## Streamlining
+
+Callers were checked with an import scan over `mc/`, `mc/blueprints/`,
+`server.py`, `tools/` and `tests/` (`_scratch/mb_importers.py`,
+`mb_legacy_tests.py`), then by opening each call site. Line counts are whole
+files unless a range is given. They are estimates of what a removal would
+delete, not a prepared patch.
+
+| id | what | where | evidence it is unused or redundant | lines |
+|---|---|---|---|---|
+| ST1 | The "launder" step is a quote trim; merge it into the extractor and rename the state | `mc/agent_mail_launder.py` (81), `mc/agent_mail_extract.py` (59); state `laundering`, column `laundered` | Since `f4760778` no model call is made; `MailLaunder` only calls `extract_reply` (`agent_mail_launder.py:79-80`). One caller (`agent_mail_supervisor.py`). | about 60, and a misleading name removed (MB5) |
+| ST2 | Push-era enrollment stack on the install | `mc/agent_mail_enrollment.py` (437), `agent_mail_ceremony_client.py` (315), `agent_mail_ceremony_remote.py` (73), `agent_mail_ceremony_device.py` (104), `agent_mail_begin_proof.py` (30), `agent_mail_remote.py` (75), `agent_mail_enrollment_revocations.py` (103), `agent_mail_lifecycle_fence.py` (97), `agent_mail_lifecycle_steps.py` (185), `agent_mail_delivery_proof.py` (312), `agent_mail_delivery_schema.py` (50); dead methods `agent_mail_service_client.py:516-570`, `agent_mail_enrollment_keys.py:262-312`, `agent_mail_factory.py:420-436` | The service answers every route they speak with `410` (`workers/agent-mail/worker.js:56-60`). `MailFactory.enrollment()` has no caller; `DeliveryProof` and `LifecycleSteps` are constructed only in tests (section 6). Live modules import a few names from them (`OwnershipReceipt`, `PendingIdentity`, `CancelledAssignment`, `REMOTE_UNAVAILABLE`, two backoff constants, `Enrollment` as a type); those need a new home first. | 1,781 in modules, about 125 in dead methods, 2,959 in tests that import only these modules |
+| ST3 | Two frame verifiers | `mc/agent_mail_pull_client.py:328-357`, `mc/agent_mail_pull_receiver.py:146-177` | Both parse, decode and signature-check the same frame; the receiver's is the authoritative one (MB12). Have the client call the receiver's. | about 30 |
+| ST4 | Push ingress route, its pin and nonce path, and the flag's second meaning | `mc/blueprints/agent_mail_routes.py:21-67` (ingress and proof handlers), `mc/agent_mail_ingress.py` (150), flag `agent_mail_ingress_enabled` | No row can exist in `mail_service_pins` on a pull install: `pin_service` has only the retired caller and `bind_transport` none (MB20). `proof_factory` is `None` in production (`agent_mail_routes.py:55-57`). The tables must stay (the schema check compares them); the route and class can go, and the flag should be renamed for the one job it still does. | about 200 |
+| ST5 | Control plane mail authority | `control_plane/app/mail_*.py` (13 modules), `routes_mail_delivery.py`, `routes_mail_enrollment.py`, mounted at `main.py:75-76` | Default off; the only callers are Worker modules behind the `410` routes and the retired local ceremony client (section 7). | 1,917 in modules, 2,206 in tests |
+| ST6 | `Disable` and `OwnerChange`: wire or remove | `mc/agent_mail_disable.py` (217), `mc/agent_mail_owner_change.py` (535), hidden import at `installer/build-macos.spec:65` | No caller outside tests (MB18). This one should be wired, not deleted: it is the missing off switch. Listed because today it is 752 lines of shipped code that cannot run. | 0 if wired, 752 if not |
+| ST7 | Control plane dead code | `control_plane/app/auth.py:84-98` (stubs), `verify.py:251-258` (`_is_user_suspended`, duplicated by `routes_attest.py:219-220`) | Stubs: definitions only, no caller. Helper: the caller's next step re-reads the same row (MB33). | about 25 |
+| ST8 | Repeated store validation | `mc/agent_mail_pull_schema.py:189-208` and its call sites | Not a deletion of code, a deletion of work: the same proof repeated twice a second (MB10). | 0 lines, about 4 call sites |
+
+Flags that are always one value: none found in this region. The mail flags
+are all read from config and all four are needed until ST4 lands;
+`CLAYRUNE_MAIL_DELIVERY_ENABLED` and `CLAYRUNE_MAIL_ENROLLMENT_ENABLED` on the
+control plane go with ST5.
+
+Total with no loss of behaviour (ST1 to ST5, ST7): about 4,140 lines of source
+and about 5,165 lines of tests, roughly 9,300 lines. ST2 and ST5 are 96% of
+it and both follow from one decision already recorded on MC-1184: the push
+transport is retired.
+
+## Detail
+
+### 1. Laundering path: `mc/mail_launder.py`, `tools/mail-mcp/`
+
+#### MB1 — high — L/M — a hostile header charset name is printed to the tooled session, unlaundered, and blocks every later read
+
+`tools/mail-mcp/read_digest.py:107-113`, `tools/mail-mcp/server.py:71-80`.
+
+`fetch_messages` decodes `From`, `Date` and `Subject` with `server._dec`
+(`read_digest.py:82-84`). `_dec` calls `part.decode(enc or "utf-8", "replace")`
+(`server.py:77`), where `enc` is the charset token of an RFC 2047 encoded word.
+The sender picks that token, and Python's `decode_header` accepts any text
+without a `?` in it, spaces included. An unknown codec raises
+`LookupError("unknown encoding: <token>")`. Nothing in `fetch_messages` catches
+it, so it reaches `run()`, which puts `repr(e)` in the `detail` field
+(`read_digest.py:110`) and `main` prints it (`read_digest.py:129`). The
+launderer is never called.
+
+**Measured** (scratch script, fake IMAP object, no network, no model call): a
+message whose `From` header is `=?<60 characters of chosen text>?B?QQ==?=`
+produced `{"ok": false, "error": "imap_fetch_failed", "detail":
+"LookupError('unknown encoding: <the chosen text, lower-cased>')"}` on stdout,
+exit code 1, launder function not reached.
+
+Two consequences:
+
+1. Text chosen by anyone who can deliver a message that matches the query
+   reaches the calling session's context without passing the toolless call.
+   It is one lower-cased line and it sits inside an error envelope, so it is a
+   narrow channel, but it is the exact path this script exists to close, and
+   module docstring rule 1 (`mc/mail_launder.py:24-32`) says a failure never
+   hands back raw text.
+2. The script exits 1 on every cycle for as long as that message is among the
+   newest `--count` matches. `AGENT_RULES.md` tells the cycle to report the
+   failure and retry later, so one message stops the owner's reply from ever
+   being read. The sender can renew it at will.
+
+Smallest fix: in `_dec`, catch `LookupError` and decode as UTF-8 with
+`replace`; and in `run()`, report `type(e).__name__` only, never `repr(e)`
+(the same rule `claude_mail_transform` already states at
+`mc/mail_launder.py:143`: "Do not return exception messages").
+
+Test: none would catch it. `tests/test_mail_launder.py:218-233` covers the
+`imap_fetch_failed` envelope with a fetch function that raises a fixed
+exception; no test feeds `fetch_messages` a crafted message, and
+`test_no_failure_path_ever_leaks_raw_body_text` (`:161`) covers
+`launder_mail_digest` only.
+
+#### MB2 — medium — M — the digest is returned whole: extra keys, any types, no length cap
+
+`mc/mail_launder.py:215-236`.
+
+After parsing, the code checks that the nine required keys are present and
+that `decision` is one of four words. It then returns `data` itself
+(`:234`). Keys the instruction never asked for pass through, a value can be
+any JSON type, and no string is bounded. The toolless call saw up to 10
+messages of 20,000 characters each (`:45-46`); if the thread steers it, the
+whole hostile text can come back in `notes`, in `reply_text`, or under a new
+key such as `system` and is printed to the tooled session by
+`read_digest.py:129`.
+
+This is inside the module's stated limit ("the output is still untrusted",
+`:33-38`), so it is medium and not high: no tool was live when the raw text
+was read. It is still the cheapest hardening in the file. Smallest fix: build
+the returned digest from the nine named keys only, coerce each to its
+documented type, and cap `reply_text`, `quoted_original_ask`, `notes`,
+`reply_from_header` and each subject (for example 2,000 characters).
+
+Read, not measured (it needs a model call). Test: none;
+`tests/test_mail_launder.py:146-158` test missing keys and a bad `decision`
+only.
+
+#### MB3 — medium — L — `decision: approved` can be produced by anyone who can deliver a message, and the fetch ignores the one authenticated signal it has
+
+`tools/mail-mcp/read_digest.py:65-87`, `mc/mail_launder.py:67-89`.
+
+The fetch takes the newest `--count` (default 5) messages that match the
+query anywhere in the mailbox (`read_digest.py:72-74`). The instruction asks
+the model which message is "most likely" the owner's reply. Nothing ties a
+message to the owner: the warning says so itself (`mail_launder.py:54-56`).
+A message from any sender with the subject tag and the body "Approved, go
+ahead" yields `decision: approved`, `ambiguous_or_mixed: false`. The agent
+rules say approval is the owner's reply; the digest cannot tell whose reply
+it is.
+
+The owner's documented reply path is a reply to themselves, which Gmail files
+with the Sent label. `X-GM-LABELS` is available on the same read-only IMAP
+connection and is set by the server, not the sender. Smallest fix: fetch
+`X-GM-LABELS` with each message and pass only messages carrying `\Sent` to
+the launderer as reply candidates (the rest can still be listed as "the
+ask"). Without it, the same five-message window also lets a sender push the
+real reply out of view with five newer matching messages.
+
+A second effect of the same window: the query is the role tag, not one ask.
+When two asks are open, the newest five messages can hold the reply to one
+and the unanswered other, and the single `decision` field reports one
+verdict for both. `quoted_original_ask` is the only hint.
+
+Read, not measured. Test: none (the tests inject messages; none asserts
+anything about who sent them).
+
+#### MB4 — low — M — `read_email` and friends still serve raw mail to any session that has the server configured
+
+`tools/mail-mcp/server.py:182-201`, `:160-179`, `:139-157`.
+
+This is `docs/UNTRUSTED_INPUT_SURFACE.md` finding #2 and row 2 of the
+2026-09-10 security review's prior-audit table, not a new finding; it is
+listed so the feature table can refer to it. Current state, read from this
+checkout: `steward/fence.py:5068-5071` refuses `mcp__mail__*` for a steward
+cycle. Every other session that has the server in its MCP config can still
+call `read_email` and receive a full body. `search_email` and `list_recent`
+return `From` and `Subject` raw, which are sender-chosen text as well. See
+"Prior audits" below.
+
+### 2. Inbound reply path: store, ingress, extraction, wake
+
+Files: `mc/agent_mail_store.py`, `agent_mail_ingress.py`, `agent_mail_envelope.py`,
+`agent_mail_signing.py`, `agent_mail_extract.py`, `agent_mail_launder.py`,
+`agent_mail_wake.py`, `agent_mail_continuation.py`, `agent_mail_target.py`,
+`agent_mail_pipe.py`, `agent_mail_questions.py`, `agent_mail_spawner_fallback.py`,
+`agent_mail_rollover.py`, `agent_mail_hold_notice.py`,
+`mc/blueprints/agent_mail_holds_routes.py`.
+
+#### MB5 — high (by owner ruling, recorded not disputed) — L — an agent-mail reply reaches the tooled chat as an instruction with no toolless step; the local side cannot check who sent it
+
+`mc/agent_mail_extract.py:1-6`, `:46-59`; `mc/agent_mail_launder.py:79-80`;
+`mc/agent_mail_wake.py:18-19`, `:219-223`.
+
+The brief asks for every path where unlaundered mail text reaches a tooled
+agent. This is one, and it is deliberate: commit `f4760778` (2026-11-15)
+removed the model extraction and the screen on the owner's ruling that a
+reply which passed the Worker's per-email token and verified-owner check is
+the owner. What runs now:
+
+* `extract_reply` cuts at the first quote header, drops `>` lines and strips
+  invisible characters. No model, no screening (`agent_mail_extract.py:1`).
+* `MailWake.process_next` prefixes one line, "Email reply from the project
+  owner, verified sender + this email's one-time token", and posts the text
+  to the chat's follow-up route with the authority of a typed message
+  (`agent_mail_wake.py:219-223`).
+
+What the local side verifies before that, on the pull path that production
+uses (corrected after section 6 established that the push route cannot accept
+anything): the Worker's Ed25519 signature over a transcript that binds
+install, generation, owner generation, epoch, frame id, issue time and payload
+digest, with a freshness window (`agent_mail_pull_receiver.py:146-180`); that
+the event's scope matches the install (`:186-188`); that its `auth` block has
+the closed shape with `ingress` equal to `cloudflare` and `dmarc` a pass
+(`:195-199`); and that the thread id maps to a live chat bound before the
+outbound send (`:230`, `:238`). What it cannot verify: the event has no sender
+field at all (`_EVENT`, `:39-41`), so "the sender is the verified owner" is
+taken from the Worker entirely. The property this whole
+path now rests on is therefore in pass 05a's region (the Worker's owner and
+token checks), plus the custody of the Worker's signing key.
+
+Not a request to reverse the ruling. Three things follow from it that are
+defects in this region today:
+
+1. `docs/AGENT_MAIL_SPEC.md:312-333` still specifies a toolless extractor
+   and says "Do not fall back to raw body/subject ... or a first-line
+   heuristic". The code is now a line heuristic. `docs/AGENT_MAIL_TRANSPORT.md:345`
+   has the new behaviour; the spec was not updated.
+2. `mc/mail_launder.py:12` says that module "is the ONLY thing in the
+   mail-reply path allowed to see a raw message body". That is true for the
+   IMAP digest path only.
+3. The names no longer say what the code does: class `MailLaunder`, state
+   `laundering`, column `laundered`, and the UI reason
+   `laundered_envelope_invalid` describe a quote trim. A reader checking
+   "is mail laundered before it reaches an agent" will answer yes from the
+   names and be wrong. See streamlining item ST1.
+
+Test: `tests/test_agent_mail_instruction_delivery.py` pins the new
+behaviour (instruction text is delivered), so no test would flag it.
+
+#### MB6 — medium — L — only `session_busy` is retried; every other transient refusal becomes a permanent hold that also freezes the chat's later replies
+
+`mc/agent_mail_wake.py:177-188`, `:233-238`; `mc/agent_mail_target.py:99-122`;
+`mc/agent_mail_spawner_fallback.py:56-97`; `mc/agent_mail_store.py:785-800`.
+
+`MailWake.hold` sends `session_busy` back to `ready` with a one-second
+delay and sends every other reason to `_fail_locked(..., retryable=False)`,
+which is `blocked`. `validate` raises several reasons that clear on their
+own: `provider_quota_held` (`target.py:120-122`), `provider_recovery_held`
+(`:99-101`), `rollover_required` (`:114-119`). A `blocked` row is only
+moved by a human retyping the dashboard passcode
+(`agent_mail_holds_routes.py:85-117`), and while it sits there
+`claim_for_submission` delivers nothing later in the same chat
+(`agent_mail_store.py:796-798`).
+
+Three concrete cases:
+
+* **Reply to a long chat.** `rollover_required` is raised when the chat is
+  over the auto-fresh threshold. Mail delivery may not roll a chat over
+  (`agent_mail_continuation.py:188-190`), so the reply is held. Releasing
+  the hold re-runs the same check and blocks again. The only cure is for a
+  human to send a message in that chat first, then release. The UI text
+  (`static/js/agent-mail-holds.js:38`) describes the state and not the cure.
+  The chats that send the most mail are the long-lived ones.
+* **Reply while the provider allowance is exhausted.** Held; not retried
+  when the allowance returns.
+* **Reply to a finished dispatched agent while its spawner is mid-turn.**
+  `try_forward` calls `resolve` on the spawner with the default `busy=True`
+  (`spawner_fallback.py:71`), gets `session_busy`, logs "refused" and
+  returns False; the caller then blocks the event as `worktree_unavailable`
+  (`agent_mail_wake.py:236-238`). On the direct path the same busy state is
+  a one-second retry. `tests/test_agent_mail_spawner_fallback.py:48-62`
+  asserts the permanent hold for a busy spawner, so the test pins the
+  defect.
+
+Smallest fix: treat `provider_quota_held`, `provider_recovery_held` and a
+busy spawner as `retryable` with the store's existing backoff
+(`_fail_locked(..., True)`), and either let a mail wake take the same
+auto-fresh path a typed message takes or say in the hold text that the chat
+must be opened once. Read, not measured.
+
+#### MB7 — low — L — `pipe.write` accepts the same delivery twice, from two threads
+
+`mc/agent_mail_pipe.py:81-90`.
+
+The worker thread calls `finish(scope, ok)` which calls `scope.accept()`
+(`:81-82`), and the calling thread calls `scope.accept()` again when the
+write finished inside ten seconds (`:89-90`). Both run `MailWake.accepted`,
+`settle`, `gate.accept()` and `consume_question`. It is harmless today
+because each step happens to be idempotent (`settle` swallows the second
+`IllegalTransition` at `agent_mail_wake.py:87-92`; `consume` finds no
+matching question the second time). It is one accept too many and it relies
+on that `except ValueError` to stay quiet. Fix: let the worker own the
+receipt and have the caller only wait.
+
+
+### 3. Pull transport and its owner: factory, supervisor, recovery, client, receiver
+
+Files: `mc/agent_mail_factory.py`, `agent_mail_supervisor.py`, `agent_mail_recovery.py`,
+`agent_mail_pull_client.py`, `agent_mail_pull_receiver.py`, `agent_mail_pull_schema.py`,
+`agent_mail_reviewed_service.py`, `agent_mail_manifest_fetch.py`,
+`agent_mail_service_client.py`, `agent_mail_deletion.py`.
+
+#### MB8 — blocker — L/F — one failed HTTPS request stops inbound mail until the server is restarted
+
+`mc/agent_mail_pull_client.py:272`, `:599`, `:617`, `:701-705`;
+`mc/agent_mail_service_client.py:267-269`; `mc/agent_mail_reviewed_service.py:83-88`;
+`mc/agent_mail_supervisor.py:259-281`.
+
+The pull worker's outer loop sorts failures into "retry with backoff" and
+"halt" (`pull_client.py:696-726`). The catch-all at `:701-705` turns **every**
+`IngressRefused` or `EnrollmentRefused` into `halt=True`. Two ordinary network
+failures arrive as exactly that type:
+
+1. **The ticket request.** `_ticket` calls the transport outside its `try`
+   (`:272`). In production the transport is `HttpsTransport`
+   (`agent_mail_factory.py:380-381`), which converts any connection error,
+   DNS failure or timeout into `ServiceRefused('connection_lost')`
+   (`service_client.py:267-269`); `ServiceRefused` subclasses
+   `EnrollmentRefused`. `connection_lost` is in none of the three sets tested
+   at `:704`, so it is renamed `local_refused` and halts. An unsigned error
+   page from the edge in front of the Worker (a 502 with an HTML body) halts
+   the same way as `response_unverified` (`:274-283`, `:323-324`).
+2. **The manifest refresh.** The loop calls `_authority()` once a second
+   (`:617`), which calls `reviewed_service()`. Its cache lasts ten minutes
+   (`reviewed_service.py:44`, `:89`); the first call after that does one GET
+   with a five-second timeout, and any failure is raised as
+   `EnrollmentRefused('service_unavailable')` (`:83-88`). That is 144 fetches
+   a day on a healthy connection, and one failure halts the worker.
+
+The supervisor does not start a halted worker again: `_client_started` stays
+true, so the start block at `supervisor.py:259-281` is skipped on every later
+pass. Its docstring says a halted worker is "not blindly restarted" and lists
+what permits another attempt: a changed lifecycle or pin scope, a vault
+lock-then-unlock, or stop/start. For a revoked key or a superseded generation
+that is the right rule. For a dropped connection it means the first Wi-Fi
+drop, sleep/resume or DNS hiccup that outlasts the first retry (at most one
+second of jitter after the socket error, `:677`) ends inbound mail for the
+life of the process. Nothing is lost: replies stay queued at the Worker. But
+they stop arriving in the chat, and the only signals are a log line and
+`client.state: held, reason: local_refused` in the status payload.
+
+**Measured** (scratch tests on the repo's own test harness, production
+`HttpsTransport` with a fake opener, no network):
+
+| condition | worker after 1.5 s | HTTP calls |
+|---|---|---|
+| ticket POST raises `URLError` | not running, reason `local_refused` | 1 |
+| ticket POST times out | not running, reason `local_refused` | 1 |
+| ticket POST gets an unsigned 502 HTML page | not running, reason `response_unverified` | 1 |
+| manifest refresh fails once while connected, service back 1 s later | not running, reason `service_unavailable`, no reconnect | 1 ticket |
+
+With a real `Supervisor` over the halted client, five further
+`_drive_client()` passes made no further HTTP call; snapshot
+`{'state': 'held', 'running': False, 'reason': 'local_refused'}`.
+
+Smallest fix: in `_ticket`, catch `ServiceRefused('connection_lost')` and
+raise `_Failure('connection_lost')` (retryable, the existing backoff applies);
+treat an unverifiable reply with a 5xx status as retryable
+`service_unavailable`, since nothing in it is trusted either way; and in
+`_run`, make `service_unavailable` from `reviewed_service()` retryable. Keep
+`halt` for the reasons in `HALT`.
+
+Tests: none would catch it, and two pin it. Every pull-client test passes a
+fake callable as the transport, which never raises `ServiceRefused`;
+`tests/test_agent_mail_pull_client.py:654-682` asserts the halt for an
+unsigned ticket reply; `:581-594` asserts the halt for authority loss but has
+no case for a failed refresh. `tests/test_agent_mail_slice_e2e.py` uses the
+real transport on the success path only.
+
+#### MB9 — high — L/E — a reply reaches its chat only on the recovery tick, and any step that is merely "pending" pushes that tick out to 15 minutes
+
+`mc/agent_mail_supervisor.py:128`, `:138`, `:147-150`, `:195-198`;
+`mc/agent_mail_recovery.py:127-128`, `:232-246`, `:323-341`.
+
+The pull client commits a reply to the store and acks it. The step that
+trims the quote and posts it to the chat (`launder`, `wake`) runs only inside
+`Recovery._inbound`, which runs only from `Supervisor.tick`, which runs once
+per `delay()`. Nothing wakes the loop when custody commits. So:
+
+* A healthy install delivers a reply 0 to 60 s after it arrived (default
+  interval, `supervisor.py:39`). The one-second "deferred" retry for a busy
+  chat (`agent_mail_wake.py:185-186`) is in practice a 60-second retry.
+* `tick` counts a pass as failed when `report['ok']` is not true
+  (`supervisor.py:128`), and `ok` requires every step to be `ok` or `skipped`
+  (`recovery.py:127-128`). `pending` is a normal state for five of the nine
+  steps: a signup link not yet clicked (`flow_pending`), an ack in flight
+  (`ack_pending`), a socket reconnecting (`pull_disconnected`), a first scan
+  (`scan_pending`), a fence awaiting the service (`revocation_pending`).
+  Each such pass doubles the delay.
+* One held or blocked reply makes `_inbound` raise `step_failed`
+  (`recovery.py:335-336`), which ends the wake loop for that pass and counts
+  as a failure too, so a reply that needs a human (MB6) slows every other
+  chat's mail.
+
+**Measured** (scratch test, real `Supervisor`, fake recovery whose only
+non-ok step is `flows: pending`): `delay()` after successive ticks was
+`[120, 240, 480, 900, 900]` seconds. While any step stays pending the
+install sits at the 900-second cadence and every reply is delivered up to
+15 minutes late.
+
+Smallest fix: count only `failed` and `held` steps toward the backoff, not
+`pending`; and give the supervisor loop a `threading.Event` that the pull
+client sets after a custody commit, so `self._stop.wait(self.delay())`
+returns early when there is mail to deliver.
+
+Tests: `tests/test_agent_mail_supervisor_pull.py` covers backoff on failure
+and reset on success; none asserts what a `pending` step does to the delay,
+and none measures arrival-to-delivery time.
+
+#### MB10 — medium — E — the whole store is integrity-checked twice a second while the socket is open, and again on almost every call
+
+`mc/agent_mail_pull_schema.py:189-208`; `mc/agent_mail_pull_client.py:210-212`,
+`:237-239`, `:359-360`, `:423-425`, `:616-641`; `mc/agent_mail_pull_receiver.py:264-266`;
+`mc/agent_mail_factory.py:182-190`, `:255-257`, `:339-345`;
+`mc/agent_mail_store.py:260-266`, `:311-320`.
+
+`_base` runs `PRAGMA integrity_check` (a scan of every page) and `_validate`
+runs a `sqlite_master` comparison plus eight `foreign_key_check` passes. The
+pull client's idle loop wakes once a second (`ws.settimeout(1)`, `:611`) and
+each pass calls `_authority()` (one `_account`, so one `_base` + `_validate`)
+and `_replay()` (one `_current`, so a second one). Every sent frame adds two
+more (`_send`, `:402-404`), and every received event runs a fifth inside the
+write transaction, with the store lock held (`pull_receiver.py:264-266`).
+Each `_read` and `_tx` also opens a fresh connection and sets three pragmas
+(`store.py:260-266`).
+
+The factory repeats it on its own paths: `open_store` re-runs `_check_seal`,
+which calls `validate_pull`, on every call even for the cached store
+(`factory.py:255-257`), and `require_pull_store` then validates again
+(`:343-344`). `service_client()`, `pull_client()`, `outbound()`, `health()`
+and both store reads in `Supervisor.status` (`supervisor.py:426-427`) all go
+through it.
+
+**Measured** (scratch store in a temp directory, `validate()` timed over 20
+calls): 1.5 ms on an empty store, 2.1 ms with 100 events of 4 KiB, 5.9 ms at
+5 MiB, 33.8 ms at 44 MiB (600 events at the 64 KiB body cap). Opening and
+closing a connection alone is 1.7 ms. So an idle connected install spends
+roughly 7 to 15 ms of every second re-proving that the schema it checked a
+second ago is unchanged, and about 70 ms a second at the body cap. It is not
+large; it is permanent, it grows with the inbox, and the copy inside
+`receive` holds the write lock.
+
+Smallest fix: keep the schema comparison (it is a `sqlite_master` read) and
+drop `integrity_check` and the foreign-key passes from the per-call path;
+run them at `open_store`, at `bootstrap`, and once per supervisor tick. Hold
+one read connection per worker thread instead of opening one per call.
+
+Tests: none measure it; `tests/test_agent_mail_pull_schema.py` asserts that
+corruption is detected, which the cheaper schedule still satisfies at open
+and per tick.
+
+#### MB11 — low — M — an unexpected exception in the worker is reported as `connection_lost` and retried forever
+
+`mc/agent_mail_pull_client.py:712-713`.
+
+`except Exception: failure = _Failure('connection_lost')` keeps the worker
+alive, which is right for socket errors, but it also absorbs an
+`AttributeError` or `KeyError` from a code defect and logs only
+`pull_client connection_lost` (`:717`). The exception type is the one thing
+the project policy asks to keep. Fix: `_log` the `type(exc).__name__` there,
+as `supervisor.py:109-110` already does.
+
+#### MB12 — low — M — two frame verifiers that must agree
+
+`mc/agent_mail_pull_client.py:328-357`; `mc/agent_mail_pull_receiver.py:146-177`.
+
+Every `event` frame is parsed, base64-decoded and signature-checked by
+`PullClient._verified`, then handed as raw bytes to `PullReceiver.receive`,
+which does all three again with its own copy of the rules. The second pass is
+stated as deliberate (`pull_client.py:507-508`). The copies already differ:
+a stale frame is `frame_unverified` in one (`:342-343`) and
+`stale_signature` in the other (`pull_receiver.py:180`); one decodes with
+`unbase64url`, the other with `base64` plus a round-trip check. A rule
+changed in one and not the other fails closed today, but which reason the
+operator sees depends on which copy ran first. See streamlining ST3.
+
+#### Sound in this section
+
+* Custody before ack: the ack payload is built only after the receiver's
+  transaction commits (`pull_receiver.py:310-317`), and only a signed
+  `ack_committed` deletes the outbox row (`pull_client.py:463-465`).
+* A reply to a deleted chat is a hold, not a crash. **Measured**: after
+  `agent_mail_deletion._revoke`, the receiver refused the event with
+  `unknown_thread`, the client sent a `hold` frame and stayed connected.
+  (This was a suspected halt; the reproduction cleared it.)
+* A vanished or replaced store file is never recreated
+  (`factory.py:97-113`, `:235-265`); the marker states are exhaustive.
+* `HttpsTransport` refuses redirects, duplicate headers, compressed bodies
+  and oversize replies before anything is parsed (`service_client.py:243-279`).
+* Frame size is bounded before the payload is read
+  (`pull_client.py:69-74`), and fragments are capped as they accumulate
+  (`:575`).
+* Exception text never reaches a log line or a status field anywhere in
+  these files; every reason is a closed code.
+
+### 4. Outbound sends: notes, questions, and the mailer
+
+Files: `mc/agent_mail_outbound.py`, `agent_mail_outbound_questions.py`,
+`agent_mail_outbound_state.py`, `agent_mail_outbound_signing.py`,
+`agent_mail_sender_line.py`, `agent_mail_display_name.py`, `agent_mail_ownership.py`,
+`agent_mail_user_agent.py`, `mc/blueprints/agent_mail_note_routes.py`,
+`mc/blueprints/agent_mail_routes.py`, `tools/night-review/send_mail.py`,
+`tools/night-review/agent_mail_route.py`; `mc/question_channel.py:236-400` followed
+as the caller.
+
+#### MB13 — high — L/F — a question gets one attempt at being mailed; every failure of that attempt is final and there is no second channel
+
+`mc/question_channel.py:309-310`, `:369-376`; `mc/agent_mail_outbound_questions.py:41-72`;
+`mc/agent_mail_outbound.py:358-359`, `:393`, `:457-468`; `mc/agent_mail_target.py:113-122`.
+
+When agent mail owns a question, `_notify` adds the revision to `_delivered`
+before the grace timer is armed (`question_channel.py:309-310`), and the timer
+calls `deliver` once (`:369-376`). The comment there is the design: "selected
+channel owns failure/uncertainty too; never SMTP". What `deliver` can return,
+and what happens next:
+
+| outcome of the one attempt | state written | retried by |
+|---|---|---|
+| HTTPS connection never opened (DNS, Wi-Fi, timeout) | `uncertain` / `transport_unavailable` (`outbound.py:462-468`) | nothing: `send` returns early for any state but `ready`/`retryable` (`:358-359`) |
+| Worker answers 429 `send_limit` | `retryable` (`:457-458`) | nothing: no caller sends a `retryable` intent again (callers of `Outbound.send`: the note route and `deliver`, both one-shot) |
+| chat is over the auto-fresh threshold | `MailHeld('rollover_required')` from `validate` (`outbound.py:393`, `target.py:113-119`), returned as `blocked` | nothing |
+| provider allowance exhausted | `MailHeld('provider_quota_held')` (`target.py:120-122`) | nothing |
+| vault locked, or the ten-minute manifest refresh fails | `EnrollmentRefused`, returned as `blocked` / `outbound_unavailable` (`outbound_questions.py:69-72`) | nothing |
+
+In every row the owner is never mailed, the question stays open in a chat
+nobody is watching, and the only trace is one `[question mail: ...]` line in
+that chat's log (`question_channel.py:373-375`). That is the exact case the
+offline channel exists for. `retryable` is a state with no consumer.
+
+Two of the rows are the outbound half of earlier findings: a connection that
+never opened is treated as "may have been sent" (same class as MB8), and the
+send path applies the inbound wake preconditions, so a chat that could not be
+woken right now may not ask either (MB6). A long-lived chat is the likeliest
+one to be over the threshold.
+
+Smallest fix: in `send`, treat `ServiceRefused('connection_lost')` raised before
+any byte was written as `retryable`, not `uncertain` (the transport already
+knows: a `URLError` from `open` is pre-write); have `_deliver_if_still_unattended`
+re-arm its timer with backoff while the result is `retryable` or a held reason
+that clears on its own, and drop the revision from `_delivered` when the result
+is terminal so a later raise can select again; skip the `rollover_required` and
+quota checks on send (they guard a wake, not a send).
+
+Read, not measured. Tests pin the behaviour rather than catch it:
+`tests/test_agent_mail_outbound_questions.py:219-236` asserts `uncertain` for a
+transport exception and no other delivery;
+`tests/test_agent_mail_outbound_questions_default.py:94-97` asserts `blocked`
+for `rollover_required`.
+
+#### MB14 — medium — L — a slow send is delivered twice: the route's deadline is checked before the HTTPS call, the caller gives up during it
+
+`mc/blueprints/agent_mail_note_routes.py:31`, `:55`, `:66`; `mc/agent_mail_outbound.py:435-440`;
+`mc/agent_mail_service_client.py:58`; `tools/night-review/agent_mail_route.py:38`, `:84-88`.
+
+The note route gives a send 15 s (`NOTE_SEND_DEADLINE_SECONDS`). `Outbound.send`
+checks that deadline once, after admission and before the transport call
+(`outbound.py:435`). The transport then has its own 10 s timeout
+(`HTTP_TIMEOUT_S`). The mailer waits 20 s in total (`TIMEOUT_S`) and then sends
+the same text through Gmail. A send admitted at second 14 whose Worker call
+takes 7 s is accepted by the Worker at second 21: the owner gets it twice, once
+from each channel, and the Gmail copy's reply does not come back to the chat.
+The window is 5 s wide (admission between 10 s and 15 s with a slow call), and
+`prepare` can use most of the 15 s by itself: it runs `cleanup` three times, may
+fetch the manifest (5 s timeout) and reads the project file inside the write
+transaction.
+
+Smallest fix: pass the remaining budget to the transport as its timeout
+(`min(10, deadline - now)`), so the two clocks cannot overlap. Read, not
+measured. `tests/test_agent_mail_note_deadline.py` covers a deadline that
+passes before admission, not a slow transport after it.
+
+#### MB15 — low — L — sending the same text twice from one chat reports "sent" and sends nothing
+
+`tools/night-review/agent_mail_route.py:49-52`, `:141-147`; `mc/agent_mail_outbound.py:238-245`, `:278-281`, `:357-359`.
+
+`request_id` is a hash of session, subject and body. A second identical send
+finds the first intent, `prepare` returns its metadata, `send` returns its
+state, and if that state is `accepted` the route answers 200 and the mailer
+prints `sent via agent-mail, intent <id>` and exits 0. No mail leaves. The row
+lives for the 90-day thread lifetime plus 30 days. The docstring calls this
+idempotency, which is right for a retry and wrong for a long-lived chat that
+sends the same status line on two different days (a steward that mails
+"BLOCKED: waiting on X" and repeats it a week later). Fix: include the UTC date
+in the hash, or print "already sent on <date>" instead of "sent". Read, not
+measured.
+
+#### MB16 — low — L — `--verify` is accepted and does nothing on the agent-mail path
+
+`tools/night-review/agent_mail_route.py:144-145`; `tools/night-review/send_mail.py:103-131`, `:202-204`.
+
+`_verify_delivered` exists because "acceptance is not delivery" (its own
+docstring, with the incident). On the agent-mail path `--verify` prints
+"accepted by agent-mail counts as verified; no IMAP check" and exits 0. The
+Worker's `accepted` is the same kind of evidence SMTP's was. The exit-3
+contract in the module docstring (`send_mail.py:26-27`) no longer holds for an
+agent caller. Either keep the wording honest ("not verified") and return the
+documented code, or fall through to SMTP when `--verify` is set.
+
+#### MB17 — low — E — every send runs the store cleanup four times and reads the project file twice inside the write transaction
+
+`mc/agent_mail_outbound.py:229`, `:250-251`, `:327`, `:339`, `:357`, `:387`, `:491`.
+
+`prepare` calls `reconcile` (cleanup 1) and `_bind` ends in `status` (cleanup
+2); `send` starts with `status` (cleanup 3) and ends with it (cleanup 4). Each
+cleanup is a write transaction of up to eight statements over the whole intent
+table. `ar.load_project` is called inside the `prepare` transaction (`:251`)
+and again inside the `send` transaction while the project manager lock is held
+(`:387`); pass 1 measured that file read. `reviewed_service()` is called up to
+five times per send (`:187` twice via `_authority`, `:398`, `:410-411`); when
+its ten-minute cache has expired the first of those is a network GET inside
+the SQLite write transaction and the manager lock, which contradicts the
+comment at `:364` ("Network never holds SQLite"). Fix: one cleanup per public
+call, load the project before the transaction, and resolve the pin once before
+taking the lock. Read, not measured.
+
+#### Sound in this section
+
+* Admission commits before any external write, and the receipt update is
+  keyed on the attempt id (`outbound.py:428-429`, `:470-473`), so a late
+  response cannot overwrite a newer attempt.
+* The note body never carries a recipient; the route accepts exactly four
+  string fields (`note_routes.py:28`, `:59-61`).
+* An orphaned note draft is abandoned, not sent later, so the Gmail fallback
+  cannot be followed by a delayed duplicate (`outbound.py:37-45`, `:95-105`).
+* The display name is allow-listed before it reaches a header
+  (`agent_mail_display_name.py:22-33`).
+* An install that never enabled outbound is untouched: `eligible` is false and
+  the legacy channel is selected (`question_channel.py:298-302`).
+* `send_mail.py` refuses under pytest, honours the kill-switch file and writes
+  the sender ledger before any send (`:225-260`).
+
+### 5. Signup, enable, disable: the lifecycle the product exposes
+
+Files: `mc/agent_mail_signup.py`, `agent_mail_activation.py`, `agent_mail_disable.py`,
+`mc/blueprints/agent_mail_enrollment_routes.py`, `agent_mail_deployment_routes.py`,
+`agent_mail_manifest_routes.py`; `static/js/agent-mail-actions-model.js:120-195`
+read as the consumer.
+
+#### MB18 — high — F/L — signup has four ordinary dead ends and no way out of any of them; disable and owner change exist as modules and are not reachable
+
+`mc/blueprints/agent_mail_enrollment_routes.py:45`, `:193-194`, `:217-218`;
+`mc/agent_mail_signup.py:37`, `:291-323`, `:337-338`; `mc/agent_mail_activation.py:27`,
+`:114`, `:139-140`, `:220-225`; `mc/agent_mail_disable.py:3`; `mc/agent_mail_factory.py:388-392`.
+
+Production registers the enrollment blueprint with no `factory`
+(`agent_mail_routes.py:29-30`), so every request takes the pull branch, whose
+actions are `start`, `resume`, `enable` and nothing else (`:45`, `:193-194`).
+The states an owner can land in:
+
+1. **The 30-minute window runs out.** `TTL` is 30 minutes from Start
+   (`signup.py:37`) and is never extended (`:468`). Start, find the
+   verification mail, click it, come back and press Enable must all happen
+   inside it. After that the flow is `expired`; `start` with the same address
+   returns the expired view (`:337-338`), with another address it is
+   `operation_conflict` (`:307-308`). The UI text says so: "Setup cannot be
+   restarted from here yet" (`agent-mail-actions-model.js:129`).
+2. **A typo in the owner address.** The verification mail goes elsewhere, the
+   address cannot be changed (`:307-308`), and the flow then expires into
+   case 1.
+3. **Enable fails once.** The failure path stores the reason on the flow
+   (`activation.py:220-225`), `status` then reports `held` with that reason,
+   and the UI offers no control for any view that has a reason
+   (`agent-mail-actions-model.js:155`). A dropped connection during Enable
+   ("Try again in a moment") leaves nothing to press. The server would accept
+   a second Enable; the page cannot send one. The flow then expires.
+4. **Enable fails three times.** Each attempt is counted before the request
+   is sent (`activation.py:139-140`); the fourth is `request_limit` for good.
+
+There is no fifth path that resets any of these: nothing deletes or supersedes
+a flow row, and the store is never recreated (`agent_mail_factory.py:97-113`).
+The install is left with agent mail permanently unavailable short of removing
+the store by hand.
+
+The modules that would handle it are written and tested and have no caller:
+`Disable` (`agent_mail_disable.py`, docstring line 3: "Unwired"; no importer
+outside tests), `OwnerChange` (composed at `agent_mail_factory.py:388-392` and
+`agent_mail_signup.py:126-134`; neither method is called). The route's own
+docstring promises "Disable/revocation retry are always open to a valid
+passcode-holder" (`enrollment_routes.py:66`); in production `POST .../disable`
+answers 404 after the passcode. The UI offers Disable only when the status
+read fails (`agent-mail-actions-model.js:193`), which is the one case where it
+is certain to 404.
+
+So today an owner can turn agent mail on and cannot turn it off, change the
+address, or try again. Turning it off means editing the four flags in the
+config file by hand, and that leaves the service side enrolled and accepting
+mail.
+
+Tests pin each dead end as intended behaviour:
+`tests/test_agent_mail_signup.py:209-225` (expired stays expired),
+`:265` (owner immutable), `tests/test_agent_mail_activation.py:100-105`
+(reason persists after a lost response), `:140-149` (attempt cap). None
+asserts that an owner can recover.
+
+Smallest fix, in order of value: wire `Disable` into the pull branch as
+`disable` and `retry-revocations` (it needs the factory, the install id and
+the supervisor's stop, all available in the route); let `start` on an
+`expired` or `cancelled` flow that never reached `active` cancel it remotely
+and begin a new one; clear the stored reason on a `connection_lost` so the
+Enable control stays. Read, not measured (the tests named above are the
+measurement).
+
+#### MB19 — medium — L — any scheduled or dispatched run anywhere on the install blocks the human from starting, resuming or enabling
+
+`mc/blueprints/agent_mail_enrollment_routes.py:61-70`, `:195-197`.
+
+`blocking_sessions` returns every running session whose `trigger_type` is not
+`manual`, across all projects, and the pull branch refuses with 403
+`human_required` while the list is non-empty. On an install that runs
+scheduled jobs or dispatches agents, there is rarely a moment with none
+running, and the signup window is 30 minutes (MB18). The passcode has already
+proved the human on the same request (`:190-192`), and the deployment route in
+the same family uses the per-request check instead (`is_unattended_caller`,
+`agent_mail_deployment_routes.py:64`). The docstring records this as an
+accepted false positive "for this disabled unit" pending per-request
+attribution; the unit is no longer disabled and the per-request helper exists.
+Fix: replace `blocking_sessions()` with `is_unattended_caller()` here. Read,
+not measured. `tests/test_agent_mail_enrollment_routes.py` asserts the 403.
+
+#### MB20 — low — L — one flag gates two unrelated things, and its name describes the one that cannot happen
+
+`mc/blueprints/agent_mail_routes.py:20`, `:67`; `mc/agent_mail_supervisor.py:482-499`;
+`mc/agent_mail_ingress.py:52-78`, `:100-101`.
+
+`agent_mail_ingress_enabled` gates the push route `/api/agent-mail/ingress`
+and, separately, the trim-and-wake step for mail the pull client fetched
+(`supervisor.py:485-486`). On a pull install the push route cannot accept
+anything: it needs a row in `mail_service_pins`, written only by
+`MailIngress.pin_service`, whose one caller is the legacy `Enrollment.enable`
+(`agent_mail_enrollment.py:406`); `bind_transport` has no caller at all. So
+the flag's real job is "deliver pulled replies to chats", and turning it off
+to "close ingress" silently stops delivery while the socket keeps fetching.
+See streamlining ST4.
+
+#### Sound in this section
+
+* No SQLite transaction is held across a signup or activation request
+  (`signup.py:367-388`, `activation.py:146-166`), and the row is re-read and
+  compared before any result is stored.
+* Every mutating route needs the retyped passcode; the passive GET creates
+  nothing (`enrollment_routes.py:113-126`, `:190-192`).
+* Config is written atomically before memory is updated
+  (`enrollment_routes.py:89-98`, `deployment_routes.py:78-85`).
+* A signed answer for the wrong scope, a regressing state or an extended
+  expiry is refused (`signup.py:458-470`).
+
+### 6. The push-era enrollment stack that is still shipped
+
+Files: `mc/agent_mail_enrollment.py`, `agent_mail_ceremony_client.py`,
+`agent_mail_ceremony_remote.py`, `agent_mail_ceremony_device.py`, `agent_mail_begin_proof.py`,
+`agent_mail_remote.py`, `agent_mail_enrollment_revocations.py`, `agent_mail_lifecycle_fence.py`,
+`agent_mail_lifecycle_steps.py`, `agent_mail_delivery_proof.py`, `agent_mail_delivery_schema.py`,
+`agent_mail_enrollment_keys.py`, `agent_mail_enrollment_state.py`,
+`agent_mail_enrollment_manifest.py`, `agent_mail_service_manifest.py`,
+`agent_mail_reviewed_service.py`, `agent_mail_status_view.py`; `workers/agent-mail/worker.js:52-60`
+opened only to settle whether the service still answers the old protocol.
+
+What this section establishes, because the feature table and the streamlining
+section both depend on it: **the product has one mail protocol (pull) and the
+tree carries two.** The service answers every push-era route with
+`410 legacy_retired` (`workers/agent-mail/worker.js:56-60`: the lifecycle
+paths, the enrollment ceremony paths, `/v1/mail/send`, `/v1/mail/reconcile`).
+On the local side:
+
+* `MailFactory.enrollment()` (`agent_mail_factory.py:420-436`) is the only
+  thing that builds an `Enrollment`, and it has no caller: the route module
+  takes the pull branch whenever its `factory` argument is absent
+  (`agent_mail_enrollment_routes.py:214-215`), and production passes none
+  (`agent_mail_routes.py:29-30`, `server.py:3275`).
+* If it were called, it could not create a key: it passes
+  `material=unavailable_material` (`agent_mail_factory.py:433`), which raises
+  (`agent_mail_remote.py:73-75`).
+* `DeliveryProof` is constructed nowhere outside tests; the ingress route's
+  `proof_factory` is `None` in production, so a proof request is always
+  `503 proof_unavailable` (`agent_mail_routes.py:55-57`).
+* `LifecycleSteps` is constructed nowhere outside tests.
+  `agent_mail_recovery.py:23` imports two constants from the module and says
+  why at `:49-50`: "keep the retained legacy module reachable to the frozen
+  app until its separately scoped removal. No lifecycle step is called."
+* `ServiceClient.proof_arm`, `.activate`, `.renew` raise `legacy_retired`;
+  `.begin`, `.verify` raise unavailable; `.cached_evidence` returns `None`
+  (`agent_mail_service_client.py:516-533`). `verify_response`
+  (`:536-570`) has one caller, the ceremony client.
+* `select_remote` (`agent_mail_remote.py:58-70`) has no caller.
+* `IdentitySeal.prepare_rotation` and `.commit_rotation`
+  (`agent_mail_enrollment_keys.py:262-312`) have no caller: the service has a
+  key-rotation route, the install has no code that uses it.
+
+None of this is a defect in what runs. It is listed in streamlining as ST2
+with the line counts. It matters for three reasons a reader will hit:
+
+#### MB21 — low — L — comments and docstrings state the wiring the wrong way round
+
+* `mc/agent_mail_status_view.py:14`, `:269`: `pull_status` is described as
+  "unwired". It is the body of the status panel
+  (`agent_mail_enrollment_routes.py:85-86`).
+* `mc/agent_mail_enrollment.py:3`: "No production factory". There is one
+  (`agent_mail_factory.py:420`); it is the caller that is missing.
+* `mc/agent_mail_ingress.py:3`: "Enrollment/outbound code must call
+  pin_service and bind_transport BEFORE send". `bind_transport` has no caller
+  and `pin_service` only the retired one (`agent_mail_enrollment.py:406`).
+* `mc/agent_mail_reviewed_service.py:23-24`: "the store must already hold
+  `mail_enrollment_manifests`. This module never writes schema" is true, and
+  the table's creator is not the module the name points at
+  (`agent_mail_enrollment_state.initialize`, retired) but
+  `agent_mail_service_review_schema.initialize` (`agent_mail_factory.py:331`).
+* `mc/agent_mail_service_review_schema.py:1`: "deliberately unwired". The factory
+  calls its `initialize` on the production path (`agent_mail_factory.py:50`, `:331`).
+* `installer/build-macos.spec:65` names `mc.agent_mail_disable` as a hidden
+  import "so the frozen app carries it"; nothing imports it (MB18).
+
+A reviewer asking "is X live" gets the wrong answer from the file header in
+each case. Fix with the ST2 removal, or correct the six lines. No test reads
+a docstring.
+
+#### Sound in this section
+
+* The seal never regenerates over a committed key: a missing or corrupt file
+  with a durable public key is `identity_unavailable_reenrollment_required`,
+  and an orphan from a failed commit is reopened, not overwritten
+  (`agent_mail_enrollment_keys.py:85-86`, `:133-141`, `:208-216`).
+* AES-GCM associated data binds flow, install, generation and key id, so a
+  seal copied between installs or generations does not open (`:76-78`, `:129`).
+* Manifest verification is strict about encoding (round-trip base64url),
+  shape (an 11-element array, not an object), time window and a persistent
+  rollback floor written under compare-and-set before a candidate is
+  returned (`agent_mail_service_manifest.py:48-55`, `:96-118`;
+  `agent_mail_enrollment_state.py:76-87`).
+* The status projection only passes values from a closed vocabulary: reasons
+  are checked against the producers' own sets, not a pattern
+  (`agent_mail_status_view.py:116-120`), numbers are bounded (`:108-113`), and
+  the owner address is shown only once verified (`:350`).
+
+### 7. Control plane: `control_plane/app/`
+
+Files read fully: `main.py`, `auth.py`, `sessions.py`, `jwt_es256.py`, `entitlement.py`,
+`denylist.py`, `verify.py`, `firestore.py`, `cloudflare.py`, `schemas.py`, `canonical.py`,
+`logsafe.py`, `routes_public.py`, `routes_auth.py`, `routes_attest.py`, `routes_account.py`,
+`routes_admin.py`, and the fifteen `mail_*.py` / `routes_mail_*.py` modules. Tests read at
+structure level (`conftest.py` fully, test names per file).
+
+The control plane is the remote-access service (sign-in, username and tunnel
+provisioning, session JWTs, suspension), plus two mail route groups. Every
+measurement below ran the real FastAPI app in-process against the suite's own
+in-memory Firestore fixture and an `httpx.MockTransport` standing in for
+Cloudflare (`_scratch/cp/test_cp_probes.py`, nine probes, all reproduce). No
+network call was made. The existing suite passes in this checkout; none of its
+tests fails on any finding below.
+
+#### MB22 — high — L — a released username keeps minting session tokens for its previous owner
+
+`routes_account.py:333-342`: device revoke deletes `usernames/{name}` so the
+name can be claimed again. It does not clear `users/{uid}.username` (written at
+`:948`) and does not revoke the user's sessions. `routes_auth.py:166-181`
+(sign-in) and `:236-263` (refresh) take the `u` claim from that user row, and
+`routes_account.py:913-916` states that the edge admits a request when
+`claims.u` equals the subdomain.
+
+**Measured:** account A enrolls `sam`, holds a browser session, revokes the
+device. Account B enrolls `sam` (200). A's refresh returns 200 and a JWT with
+`sub` = A, `u` = `sam`, `entitled` = true, while the only device row for that
+hostname belongs to B. A is then past the edge gate of B's machine; what stops A
+after that is only the local install's own passcode. A fresh sign-in by A
+(`session/start`) passes the same way: the `not_enrolled` check at
+`routes_auth.py:167` only asks whether the user row has a username.
+
+Smallest fix: in `revoke_device`, when the username claim is released, clear
+`users/{uid}.username` and call `sessions.revoke_all(uid)`; in refresh, mint
+only if `usernames/{u}.user_id == uid`. No existing test revokes and then
+refreshes.
+
+#### MB23 — high — L — revoking one device deletes other accounts' tunnels
+
+`routes_account.py:1239-1243`: force cleanup deletes every tunnel whose name
+starts with `mc-{username}-`. Tunnel names are `mc-{username}-{random}` (`:886`)
+and the username grammar allows hyphens (`routes_public.py:44`), so the prefix
+for `sam` also matches `mc-sam-dev-…`, the tunnel of the account that owns
+`sam-dev`. Force cleanup runs on every device revoke (`:319-323`) and on an
+enroll that hits a DNS collision (`:901-904`).
+
+**Measured:** A enrolls `sam-dev`, B enrolls `sam`, B revokes. Deleted tunnels:
+both. A's remote access is gone with no error on either side, and A's device row
+still says `provisioning_state: active`, so nothing prompts a repair.
+
+Smallest fix: delete only the tunnel id stored on the device row (already done
+at `:311-316`), or compare the username whole: strip the fixed-length random
+suffix and require the remainder to equal `mc-{username}`. The suite has no
+test with two usernames sharing a prefix.
+
+#### MB24 — high — F — suspension never reaches the edge: the denylist write raises before any request is sent
+
+`cloudflare.py:373-377`: `kv_put` passes `headers={"Content-Type": None}` "to
+let httpx set the multipart boundary". httpx does not treat `None` as "unset".
+**Measured** with a client built the way the class builds its own and a mock
+transport (`_scratch/cp/kv_put_probe.py`): `TypeError: Header value must be str
+or bytes, not NoneType`, raised while the request is being constructed, on
+httpx 0.28.1 (the version installed here). `requirements.txt` pins `0.27.*`,
+which was not available to measure; the owner should run the 20-line probe in
+the image before relying on either answer.
+
+The exception is not an `httpx.HTTPError`, so it skips the handler at `:378`
+and lands in `denylist.add`'s `except Exception` (`denylist.py:66-70`), which
+logs and returns `False`. `routes_admin.py:122-133` then answers `ok: true`
+with `edge_cutoff_immediate: false` and `max_lag_seconds` = the JWT lifetime.
+So the control described at `cloudflare.py:362-365` as "the ONLY immediate
+kill switch we have" cannot fire; a suspended account keeps edge access until
+its current token expires. The Firestore flag and the session revocation both
+still happen, so the lag is bounded by one token lifetime.
+
+Smallest fix: drop the `headers=` argument and send the multipart request
+without the client's default JSON content type (build the request, delete the
+header, send; or a second client for KV). No test calls `kv_put`, `kv_delete`
+or `denylist.add` (callers checked: `routes_admin.py:122`, `:158` only).
+
+#### MB25 — high — M — the connect page reflects a query parameter into an inline script with no content policy
+
+`routes_public.py:112-117`: `pub`, `nonce` and `callback` are placed into an
+inline `<script>` through `json.dumps`, which does not escape `</script>`. The
+response sets only `Cache-Control`. The sibling sign-in page sets a nonce-based
+policy for exactly this reason (`routes_auth.py:373-388`); this page has none.
+
+**Measured:** `GET /v1/connect` with `pub` set to
+`</script><script>alert(1)</script>` and a valid loopback callback returns 200
+with the payload verbatim in the body and no `Content-Security-Policy` header.
+The script runs on the control plane's own origin, the origin the session
+cookies are scoped to; from there `POST /v1/session/refresh` returns the rotated
+refresh token in the response body (`routes_auth.py:283-284`), which is a
+durable session for the victim's subdomain.
+
+Smallest fix: escape `<`, `>` and `&` in the three JSON values (as `<`
+and so on), validate `pub` as 32-byte base64 before rendering (the check exists
+at `:250-253`, one step too late), and give this page the policy the sign-in
+page has. `test_public.py` sends no markup in any parameter.
+
+#### MB26 — high — M — the loopback-only callback check accepts a URL a browser sends elsewhere, with the enrollment token attached
+
+`routes_public.py:47-61`: `_is_safe_callback` judges the host with
+`urlparse`. For `http://evil.example\@127.0.0.1/api/mc-callback` Python reports
+host `127.0.0.1`; a browser treats the backslash as a slash and navigates to
+`evil.example`. The comment at `:40` names the risk the check exists for.
+
+**Measured:** `signin/start` stores that callback (200); `signin/complete`
+returns `redirect_url` (`:284-291`) carrying `enrollment_token` and
+`device_id`; Node's WHATWG URL parser, the one browsers implement, gives its
+host as `evil.example`. The page then navigates there (`:468`). The victim must
+open an attacker-built connect link and sign in; what leaks is the credential
+that authorises device revoke (`routes_account.py:254-257`) and attestation.
+
+Smallest fix: reject any callback containing a backslash, whitespace or `@`,
+and rebuild the redirect from the parsed parts
+(`http://{host}:{port}/api/mc-callback`) instead of echoing the stored string.
+No test passes a callback with userinfo or a backslash.
+
+#### MB27 — medium — M — `return_to` has the same backslash hole, and its value can close the page's script
+
+`routes_auth.py:320-340`: same host check, same parser. **Measured**
+(`_scratch/mb_return_to.py`): `https://evil.example\@a.<zone>/` and
+`https://evil.example\.<zone>/` are accepted; a browser's host for both is
+`evil.example`. After a successful sign-in the page navigates to that value
+(`:487-488`). Nothing secret is appended, so this is an open redirect from the
+real sign-in page, not a token leak.
+
+Second half, `:365`: the accepted value is embedded with `json.dumps` in the
+nonce'd inline script. **Measured:** a `return_to` whose path contains
+`</script><meta http-equiv=refresh …>` appears verbatim in the body. The
+policy stops an injected script; it does not stop a meta refresh or injected
+links, and the page's own script no longer parses, so sign-in is broken for
+that link and the visitor is bounced.
+
+Smallest fix: one shared URL check for MB26 and MB27, and the `<` escaping of
+MB25.
+
+#### MB28 — medium — L — device limit and username ownership are stated and not enforced
+
+* `verify.py:205-207` says the device cap is "enforced at /v1/enroll". Enroll
+  writes `device_cap: 2` (`routes_account.py:951`) and never reads it.
+* `_claim_username` (`:1074-1096`) has no per-account limit and enroll does not
+  release the account's previous name. **Measured:** one account enrolled five
+  usernames: five claims, five live tunnels, five device rows, `device_cap` 2.
+  Names are a finite public namespace and each costs a tunnel against the
+  account ceiling.
+* A second device enrolling the account's existing name is a DNS collision
+  (`:895-905`); force cleanup then deletes every device row for the hostname
+  (`:1256-1267`). **Measured:** second enroll 200, one device row left, the
+  first gone. The first machine learns this only when its next attest fails.
+  If one name means one machine, enroll should say so before replacing it.
+* A re-enroll of an owned name that fails mid-provisioning releases the name
+  (`:919-922`; `_claim_username` returned true for the existing owner at
+  `:1087-1088`), so a transient Cloudflare error on the second machine frees
+  the name the first machine is live on. Read, not measured.
+* Each enroll rewrites the user row with `created_at`, `tier: free` and
+  `bandwidth_used_period_bytes: 0` under `merge=True` (`:945-954`), so a
+  re-enroll resets the period counter and the creation date. Nothing enforces
+  on the counter today (readers are display only: `routes_admin.py:232`,
+  `routes_account.py:140`), so this is latent.
+
+Smallest fix: count the account's live devices and names at the top of
+`_do_enroll_after_auth` and refuse or replace explicitly; release the name on
+rollback only if this call created the claim; write the row defaults only when
+the row does not exist.
+
+#### MB29 — medium — M — the operator gate does not require a verified email
+
+`routes_admin.py:67-68` compares the token's email to the allowlist and stops.
+Enroll (`routes_account.py:806`) and sign-in (`routes_auth.py:159`) both check
+`email_verified`; this gate does not. **Measured:** `GET /v1/admin/data` with a
+token whose `email_verified` is false returns 200. Whether an unverified token
+for an operator address can be obtained depends on the identity provider's
+settings (password sign-up, one account per email), which are not in the repo:
+could not determine. The admin routes list every user and can suspend any of
+them. Smallest fix: one line, the check the other two routes make.
+
+#### MB30 — medium — L — a sign-in intent never expires, and anyone can create them without limit
+
+`routes_public.py:149-160` stores `expires_at` = now + 15 minutes.
+`signin/complete` (`:220-244`) checks existence, key hash and callback, and
+never reads `expires_at`, though its own comment at `:220` says "still valid"
+and the error text says "Sign-in expired". **Measured:** an intent with
+`expires_at` in 2020 completes with 200. `signin/start` is unauthenticated and
+unthrottled, so the collection grows by one document per request and nothing
+collects abandoned ones. Smallest fix: compare `expires_at` at `:232`; set a
+Firestore TTL policy on the field.
+
+#### MB31 — low — M — the idempotency cache stores the enrollment token in clear
+
+`routes_account.py:849-851` caches the whole enroll response for 24 hours,
+including `enrollment_token` (`:981-988`). The device row stores only its hash
+(`:937`, `:966`), and `sessions.py:39-43` states the principle: a Firestore
+read leak must not hand over live credentials. Expired rows are skipped on read
+(`:1124-1131`) and never deleted. Smallest fix: a TTL policy on
+`idempotency_cache.expires_at`, and either accept the 24-hour clear copy as the
+price of idempotent replay or seal the cached response under a key derived
+from the idempotency key.
+
+#### MB32 — low — L — refresh rotation is read, compare, write with no transaction
+
+`sessions.py:232-289`. Two refreshes of one session that overlap (two tabs
+waking together) each rotate. The store keeps the second secret as current and
+the first as previous. If the browser ends up holding the first response's
+cookie, every later refresh presents a superseded secret; inside
+`REUSE_GRACE_SECONDS` that is tolerated (`:254-258`), after it the session is
+revoked as theft (`:260-269`) and the user is signed out, with a log line that
+says two parties hold the token. Read, not measured. Smallest fix: rotate in a
+Firestore transaction and, on a grace-window replay, return the current
+successor instead of minting another.
+
+#### MB33 — low — M — suspension lookup fails open, silently
+
+`verify.py:251-258`: any exception reading the user row returns "not
+suspended" with no log line (project policy: network reads log). The attest
+route re-reads the same row and checks entitlement at
+`routes_attest.py:219-220`, so the decision is covered a second time; the
+helper is a redundant read whose failure mode points the wrong way. Remove it,
+or log and fail closed.
+
+#### MB34 — low — L/E — small items
+
+* `routes_account.py:1202-1238`: every revoke lists every Access application
+  and every tunnel on the account, unpaginated, to find at most one of each.
+  Past one page the listing is silently incomplete (read, not measured; the
+  provider's page size was not checked against its docs).
+* `auth.py:84-98`: three dependency stubs with no caller (grep over
+  `control_plane/`: definitions only).
+* Stale statements: `jwt_es256.py:30-33`, `routes_attest.py:108-110`
+  ("placeholder"), `routes_account.py:18-24` (a pending list of things that
+  shipped), `routes_public.py:293` (names a helper that does not exist).
+* `request_id` is the literal `"x"` in every error body of `routes_public.py`
+  and `routes_admin.py` (for example `routes_public.py:101`,
+  `routes_admin.py:59`), so an id a user reports cannot be matched to a log
+  line. `routes_account.py:925-934` also returns the raw exception text to the
+  caller.
+* `routes_attest.py:243-251` returns hardcoded caps, and an expiry for a
+  tunnel token that does not expire (`:209-218`).
+* 65 tracked files under `control_plane/` open with a "PROPRIETARY AND
+  CONFIDENTIAL" header in a public repository. That is a statement for the
+  owner to reconcile, not a code defect.
+
+#### MB35 — medium — F — phone pairing: the host and the control plane on `master` no longer speak the same response
+
+`control_plane/app/routes_account.py:488-499`; `mc/blueprints/push_mobile.py:1110-1116`
+(the host route, outside this region, opened to judge the control plane half).
+
+Since the edge-session change, `POST /v1/devices/{id}/mobile-tokens` returns
+`pair_token` and `refresh_url`, and no `client_id` or `client_secret`
+(`routes_account.py:488-499`; the flow is described at `:347-367`). The host
+route that calls it still requires `hostname`, `client_id` and
+`client_secret` and answers `502 cp_incomplete_response` when either of the
+last two is missing (`push_mobile.py:1110-1116`), then builds the QR link from
+them (`:1119-1120`). Against a control plane built from `master`, every
+"pair a phone" request therefore fails at the host, before the phone is
+involved. The 502 body also echoes the whole control plane response, including
+the one-time `pair_token`, back to the caller (`:1114-1116`).
+
+This is latent while the deployed control plane is the older build (backlog
+item MC-948 says it is; not checked here). It becomes a hard failure the day
+`master` is released, and it is the host half of backlog item MC-875. Read,
+not measured. Smallest fix: have the host route accept `pair_token` +
+`refresh_url`, build the link from those, and stop echoing the upstream body.
+No test under `tests/` calls the generate route.
+
+#### The control plane's mail routes
+
+`/v1/mail-delivery/*` and `/v1/mail-enrollment/*` (`main.py:75-76`) are 404
+unless an environment flag is set (`routes_mail_delivery.py:109`,
+`routes_mail_enrollment.py:118`). Their callers, checked by import graph, are
+the Worker's `cp-client.js`, `delivery-capability.js`, `enrollment-grant.js`
+and `enrollment-preflight.js`, reachable only from `lifecycle.js` and
+`enrollment-http.js`, whose routes the Worker answers with
+`410 legacy_retired` (`workers/agent-mail/worker.js:56-60`), and the local
+`agent_mail_ceremony_client.py:48` (retired, section 6). The pull protocol
+does not call the control plane. These fifteen modules (1,917 lines) and their
+tests (2,206 lines) are correct for a protocol nothing speaks; they are ST5 in
+streamlining. No finding is raised against them: the authority check is
+shared, not duplicated (`mail_authority_check.py`), signing keys come from the
+environment with no fallback, and both groups fail closed when disabled.
+
+#### Sound in this section
+
+* Session design: the access JWT is short-lived ES256, the refresh token is
+  stored hashed and compared in constant time, an unvalidated session id never
+  reaches a document path (`sessions.py:227-230`), and refresh re-reads the
+  user row instead of trusting old claims (`routes_auth.py:236`).
+* Entitlement fails open only where a billing pipeline fault is the likelier
+  cause, and writes an error log each time (`entitlement.py:93-110`);
+  suspension overrides it (`:84-85`).
+* Enroll rolls back the provider resources it created on any failure after
+  the claim (`routes_account.py:919-921`, `:1146`).
+* The dev-auth bypass refuses to start in the hosted environment
+  (`routes_account.py:636-643`).
+* CORS is an explicit origin list with credentials, not a wildcard
+  (`main.py:62-68`).
+
+### 8. Prior audits: what is still open in this region
+
+Not repeated as findings; listed so their state is known.
+
+* `docs/UNTRUSTED_INPUT_SURFACE.md` finding #2 and the 2026-09-10 security
+  review's prior-audit row 2 (mail MCP tools in a tooled session): **still
+  open outside steward cycles.** The fence refuses `mcp__mail__*` for a steward
+  cycle; any other session with the server configured can call `read_email`
+  and receive a raw body (`tools/mail-mcp/server.py:182-201`). See MB4.
+* 2026-09-10 security review, "Clean: mail laundering"
+  (`docs/_review/2026-09-10_security.md:20`, `:96`): the claim that every
+  failure path returns no raw text holds for `launder_mail_digest`. It does not
+  hold for the fetch in front of it (MB1), which that review did not open.
+* 2026-09-10 security review, row F (`mc/question_channel.py` `is_attended`):
+  ruled out of scope there and unchanged. The question path's new defect is
+  MB13.
+* 2026-09-10 efficiency review: no finding in this region.
+* `docs/ENTANGLEMENT_AUDIT.md`: lists no file in this region.
+* Pass 05a (the mail Worker; its report is not in this checkout, ids taken
+  from backlog item MC-1184): W7 and W9 (retired push transport still
+  described and loaded in the Worker) are the service half of ST2 and ST5
+  here; W1 (a send stuck `reserved`) is the service half of MB13's
+  `retryable` row, since neither side retries; W2 (key recovery and delete
+  routes with no handler) is the service half of MB18's unreachable disable
+  and owner change.
+* Passes 1 to 3: pass 1 measured the project-file read that MB17 places inside
+  a write transaction. No other overlap.
+
+## Coverage
+
+Read (the files named at the head of each detail section; this report was
+written across several context rollovers and those lists were recorded as each
+section was written, so they are the record of what was read):
+
+* `mc/mail_launder.py`; `tools/mail-mcp/server.py`, `read_digest.py`;
+  `tools/night-review/send_mail.py`, `agent_mail_route.py`.
+* `mc/agent_mail_*.py`: store, ingress, envelope, signing, extract, launder,
+  wake, continuation, target, pipe, questions, spawner_fallback, rollover,
+  hold_notice, factory, supervisor, recovery, pull_client, pull_receiver,
+  pull_schema, reviewed_service, manifest_fetch, service_client, deletion,
+  outbound, outbound_questions, outbound_state, outbound_signing, sender_line,
+  display_name, ownership, user_agent, signup, activation, disable,
+  enrollment, ceremony_client, ceremony_remote, ceremony_device, begin_proof,
+  remote, enrollment_revocations, lifecycle_fence, lifecycle_steps,
+  delivery_proof, delivery_schema, enrollment_keys, enrollment_state,
+  enrollment_manifest, service_manifest, status_view, ingress_schema,
+  wake_schema, service_review_schema.
+* `mc/blueprints/agent_mail_routes.py`, `agent_mail_note_routes.py`,
+  `agent_mail_holds_routes.py`, `agent_mail_enrollment_routes.py`,
+  `agent_mail_deployment_routes.py`, `agent_mail_manifest_routes.py`.
+* `control_plane/app/`: all 34 modules; `control_plane/tests/conftest.py`;
+  `control_plane/requirements.txt`.
+
+Read partly:
+
+* `mc/agent_mail_owner_change.py` (535 lines): its construction sites and
+  public methods, enough to establish that neither is called (MB18). Its
+  internals were not reviewed.
+* `mc/question_channel.py:236-400`, `mc/agent_mail_*`'s callers in
+  `server.py`, `mc/agent_runtime.py` and `mc/blueprints/agent_routes.py`: only
+  the call sites.
+* `mc/blueprints/push_mobile.py:1046-1132`, `mc_remote/enrollment.py:362-430`:
+  only to judge MB35 and backlog item MC-875.
+* `workers/agent-mail/worker.js:40-75` and the import lines of the Worker
+  modules: only to settle which protocol the service answers.
+* `static/js/agent-mail-actions-model.js:120-195`, `agent-mail-holds.js:38`:
+  as the consumer of the routes.
+
+Read at structure level only (names, sizes, what each test file targets):
+
+* `tests/test_agent_mail*.py` (63 files, 19,902 lines); individual tests were
+  opened where a finding says a test pins or misses it.
+* `control_plane/tests/` (other than `conftest.py`).
+* `control_plane/*.py` operator scripts (`seed.py`, `teardown_access.py`,
+  `force_cleanup.py`, `bring_tunnel_up.py`, `configure_custom_domain.py`,
+  `first_enroll_demo.py`), `control_plane/api_spec.yaml`, `Dockerfile`,
+  `README.md`.
+
+Not reached:
+
+* The internals of `agent_mail_owner_change.py` beyond the above.
+* Line-by-line review of the control plane's fifteen mail modules' tests.
+* The deployed services. Nothing here says what production runs; where a
+  finding depends on it, the dependence is stated.
+* `httpx` 0.27 (the pinned version) for MB24; measured on 0.28.1 only.
+
+Scratch reproductions are under `_scratch/` (gitignored): `test_mb_*.py`,
+`mb_validate_cost.py`, `mb_return_to.py`, `cp/test_cp_probes.py`,
+`cp/kv_put_probe.py`.
