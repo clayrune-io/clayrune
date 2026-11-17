@@ -31,6 +31,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 LAN = {'REMOTE_ADDR': '192.168.1.50'}
+UI_HEADERS = {'Origin': 'http://localhost:5199'}  # a real browser fetch always carries one
 
 # The exact route surface 1.13 owns. A change here is intentional API churn.
 EXPECTED_ROUTES = {
@@ -72,6 +73,14 @@ def ctx(tmp_path, monkeypatch):
     from mc.blueprints import local_auth as la
     from mc.blueprints import scheduler_routes as sr
     from mc import workflows as wfm
+    from mc.blueprints import workflow_routes as wr
+
+    # MC-1188: workflow schedule writes / run-now go through the workflow
+    # routes' human gate (Origin + retyped passcode). These tests exercise
+    # schedule semantics; the passcode itself is covered in
+    # tests/test_human_proof_guard.py, so bypass it here and keep the Origin
+    # half live (UI_HEADERS = human, no headers = agent).
+    monkeypatch.setattr(wr, '_require_human_passcode', lambda data: None)
 
     # Deterministic gate: no LAN passcode this run (loopback exempt, LAN 401).
     monkeypatch.setattr(la, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
@@ -688,7 +697,7 @@ def test_purge_falls_back_to_started_at_when_no_activity_timestamp_recorded(ctx,
 
 def test_create_schedule_with_workflow_id(ctx):
     wf = _seed_workflow(ctx)
-    resp = ctx.client.post('/api/schedules', json={
+    resp = ctx.client.post('/api/schedules', headers=UI_HEADERS, json={
         'workflow_id': wf['id'], 'schedule_type': 'daily', 'time': '03:00'})
     assert resp.status_code == 201
     body = resp.get_json()
@@ -700,7 +709,7 @@ def test_create_schedule_with_workflow_id(ctx):
 
 def test_create_schedule_rejects_both_task_and_workflow_id(ctx):
     wf = _seed_workflow(ctx)
-    resp = ctx.client.post('/api/schedules', json={
+    resp = ctx.client.post('/api/schedules', headers=UI_HEADERS, json={
         'project_id': 'p1', 'task': 'do x', 'workflow_id': wf['id']})
     assert resp.status_code == 400
     assert 'exactly one' in resp.get_json()['error']
@@ -713,7 +722,7 @@ def test_create_schedule_rejects_neither_task_nor_workflow_id(ctx):
 
 
 def test_create_schedule_rejects_unknown_workflow_id(ctx):
-    resp = ctx.client.post('/api/schedules', json={'workflow_id': 'wf-nope'})
+    resp = ctx.client.post('/api/schedules', headers=UI_HEADERS, json={'workflow_id': 'wf-nope'})
     assert resp.status_code == 400
     assert 'wf-nope' in resp.get_json()['error']
     assert not ctx.sched_path.exists() or json.loads(ctx.sched_path.read_text()) == []
@@ -725,7 +734,7 @@ def test_update_schedule_switch_task_to_workflow(ctx):
         {'id': 's1', 'project_id': 'p1', 'task': 'old', 'enabled': True,
          'schedule_type': 'daily', 'time': '09:00'},
     ])
-    resp = ctx.client.put('/api/schedules/s1', json={'task': '', 'workflow_id': wf['id']})
+    resp = ctx.client.put('/api/schedules/s1', headers=UI_HEADERS, json={'task': '', 'workflow_id': wf['id']})
     assert resp.status_code == 200
     body = resp.get_json()
     assert body['workflow_id'] == wf['id']
@@ -752,7 +761,7 @@ def test_update_schedule_rejects_unknown_workflow_id(ctx):
         {'id': 's1', 'project_id': 'p1', 'task': '', 'workflow_id': 'wf-real',
          'enabled': True, 'schedule_type': 'daily', 'time': '09:00'},
     ])
-    resp = ctx.client.put('/api/schedules/s1', json={'workflow_id': 'wf-ghost'})
+    resp = ctx.client.put('/api/schedules/s1', headers=UI_HEADERS, json={'workflow_id': 'wf-ghost'})
     assert resp.status_code == 400
 
 
@@ -844,7 +853,7 @@ def test_run_now_workflow_schedule_starts_a_run(ctx):
         {'id': 's1', 'project_id': '', 'task': '', 'workflow_id': wf['id'],
          'enabled': True, 'schedule_type': 'daily', 'time': '09:00'},
     ])
-    resp = ctx.client.post('/api/schedule/s1/run-now')
+    resp = ctx.client.post('/api/schedule/s1/run-now', headers=UI_HEADERS)
     assert resp.status_code == 200
     body = resp.get_json()
     assert body['ok'] is True
@@ -860,7 +869,7 @@ def test_run_now_workflow_schedule_busy_409(ctx):
         {'id': 's1', 'project_id': '', 'task': '', 'workflow_id': wf['id'],
          'enabled': True, 'schedule_type': 'daily', 'time': '09:00'},
     ])
-    resp = ctx.client.post('/api/schedule/s1/run-now')
+    resp = ctx.client.post('/api/schedule/s1/run-now', headers=UI_HEADERS)
     assert resp.status_code == 409
     assert resp.get_json()['busy'] is True
 
@@ -870,7 +879,7 @@ def test_run_now_workflow_schedule_deleted_workflow_404(ctx):
         {'id': 's1', 'project_id': '', 'task': '', 'workflow_id': 'wf-ghost',
          'enabled': True, 'schedule_type': 'daily', 'time': '09:00'},
     ])
-    resp = ctx.client.post('/api/schedule/s1/run-now')
+    resp = ctx.client.post('/api/schedule/s1/run-now', headers=UI_HEADERS)
     assert resp.status_code == 404
 
 
@@ -909,23 +918,71 @@ def test_schedule_runs_workflow_branch_never_falls_back_to_agent_log(ctx):
 
 # ── authority guard: workflow_id on a schedule is not a definition backdoor ──
 
-def test_agent_caller_can_point_a_schedule_at_an_existing_workflow(ctx):
-    """Schedules are agent-manageable today (unlike workflow definition CRUD,
-    which _refuse_if_agent_caller blocks). Letting an agent pick an EXISTING,
-    human-authored workflow_id is no more capability than it already has via
-    `character` (pick any existing persona) or `task` (dispatch anything, as
-    anyone, anywhere) -- it cannot create, edit or rewire the workflow itself."""
+def test_agent_caller_cannot_schedule_a_workflow(ctx):
+    """MC-1188 (was `..._can_point_a_schedule_at_an_existing_workflow`, which
+    pinned the opposite): scheduling a workflow is human-only, same refusal as
+    definition CRUD. Nothing is stored."""
     wf = _seed_workflow(ctx)
     resp = ctx.client.post('/api/schedules', json={'workflow_id': wf['id']})  # no Origin header
-    assert resp.status_code == 201
+    assert resp.status_code == 403
+    assert not ctx.sched_path.exists() or json.loads(ctx.sched_path.read_text(encoding='utf-8')) == []
 
 
 def test_agent_caller_cannot_conjure_a_workflow_via_the_schedule_route(ctx):
-    """The workflow must already exist -- a schedule route call can reference
-    one, never author one."""
+    """Still nothing authored: refused before the existence check, no workflow
+    created."""
     resp = ctx.client.post('/api/schedules', json={'workflow_id': 'wf-invented'})
-    assert resp.status_code == 400
+    assert resp.status_code == 403
     assert ctx.wfm.list_workflows() == []
+
+
+def test_agent_caller_can_still_create_a_plain_task_schedule(ctx):
+    """Non-workflow schedules stay exactly as open as before (agents use them)."""
+    resp = ctx.client.post('/api/schedules', json={
+        'project_id': 'p1', 'task': 'do x', 'schedule_type': 'daily', 'time': '03:00'})
+    assert resp.status_code == 201
+
+
+def test_agent_caller_cannot_point_an_existing_schedule_at_a_workflow(ctx):
+    wf = _seed_workflow(ctx)
+    _seed_schedules(ctx, [{'id': 's1', 'project_id': 'p1', 'task': 'old', 'enabled': True,
+                           'schedule_type': 'daily', 'time': '09:00'}])
+    resp = ctx.client.put('/api/schedules/s1', json={'task': '', 'workflow_id': wf['id']})
+    assert resp.status_code == 403
+    assert 'workflow_id' not in json.loads(ctx.sched_path.read_text(encoding='utf-8'))[0]
+
+
+def test_agent_caller_cannot_edit_a_workflow_schedule_but_can_edit_a_task_one(ctx):
+    wf = _seed_workflow(ctx)
+    _seed_schedules(ctx, [
+        {'id': 'w1', 'project_id': '', 'task': '', 'workflow_id': wf['id'], 'enabled': True,
+         'schedule_type': 'daily', 'time': '09:00'},
+        {'id': 't1', 'project_id': 'p1', 'task': 'old', 'enabled': True,
+         'schedule_type': 'daily', 'time': '09:00'}])
+    assert ctx.client.put('/api/schedules/w1', json={'time': '04:00'}).status_code == 403
+    assert ctx.client.put('/api/schedules/w1', headers=UI_HEADERS, json={'time': '04:00'}).status_code == 200
+    assert ctx.client.put('/api/schedules/t1', json={'time': '04:00'}).status_code == 200
+
+
+def test_agent_caller_cannot_run_now_a_workflow_schedule_but_can_a_task_one(ctx):
+    wf = _seed_workflow(ctx)
+    _seed_schedules(ctx, [
+        {'id': 'w1', 'project_id': '', 'task': '', 'workflow_id': wf['id'], 'enabled': True,
+         'schedule_type': 'daily', 'time': '09:00'},
+        {'id': 't1', 'project_id': 'p1', 'task': 'do it', 'continue_session': False,
+         'enabled': True, 'schedule_type': 'daily', 'time': '09:00'}])
+    assert ctx.client.post('/api/schedule/w1/run-now').status_code == 403
+    assert ctx.dispatch.calls == [] and ctx.wfm.list_runs(wf['id']) == []
+    assert ctx.client.post('/api/schedule/t1/run-now').status_code == 200
+
+
+def test_the_scheduler_fire_path_still_starts_a_workflow_with_no_http_caller(ctx, monkeypatch):
+    """The cadence fire calls `start_run` directly, not the gated routes: no
+    Origin, no passcode, and a human-authored workflow still runs on its tick."""
+    wf = _seed_workflow(ctx)
+    _seed_schedules(ctx, [_due_workflow_row(wf['id'])])
+    _run_one_loop_iteration(ctx, monkeypatch, paused=False)
+    assert [r['status'] for r in ctx.wfm.list_runs(wf['id'])] == ['running']
 
 
 # ── engine pin (model/effort) reaches dispatch ────────────────────────────────

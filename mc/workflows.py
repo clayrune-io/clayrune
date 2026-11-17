@@ -68,6 +68,7 @@ that can complete one, and it is only reachable via that human-only route).
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import re
@@ -81,6 +82,7 @@ from typing import Any, Callable, Optional
 
 from mc import state
 from mc.core import _atomic_write_text, _log, now_iso
+from mc.workflow_action_ids import require_id
 from mc.workflow_mail import mail_context_args
 from mc import engine_fallback as _engine_fallback  # MC-961: swap record + blocked-run pointer
 from mc.blueprints.push_mobile import _notify_push  # MC-961: same pointer, the notify/inbox surface
@@ -1302,7 +1304,10 @@ def start_run(workflow_id: str, trigger_type: str = 'manual', *, billing: str = 
     workflow = get_workflow(workflow_id)
     if not workflow:
         raise KeyError('workflow not found')
-    if not workflow.get('enabled', True):
+    # A record with no `enabled` key reads as DISABLED (MC-1188): create_workflow
+    # always writes the key, so only a record written around the human routes
+    # lacks it, and it must not run unattended on that basis.
+    if not workflow.get('enabled', False):
         raise ValueError('workflow is disabled')
     with _runs_lock:
         if _has_live_run(workflow_id):
@@ -1890,9 +1895,10 @@ def _journal_append(item_id: str, text: str, title: str = '') -> str:
     entries land in the same file that tool already treats as canonical for
     this item; if that file already exists (however it was created) we append
     to it rather than starting a second one under a different slug."""
+    require_id('journal_append item_id', item_id)    # MC-1188: never a glob/path part unchecked
     journal_dir = _JOURNAL_DIR
     journal_dir.mkdir(parents=True, exist_ok=True)
-    existing = sorted(journal_dir.glob(f'{item_id}-*.md'))
+    existing = sorted(journal_dir.glob(f'{glob.escape(item_id)}-*.md'))
     if existing:
         path = existing[0]
     else:
@@ -1959,15 +1965,15 @@ def _execute_action(run: dict, node: dict, workflow: Optional[dict] = None) -> t
         return False, '', str(e)
     try:
         if action == 'backlog_create':
-            pid = rendered.get('project_id')
+            pid = require_id('backlog_create project_id', rendered.get('project_id'))
             resp = _http_json('POST', f'/api/project/{pid}/backlog',
                               {'text': rendered.get('text', ''),
                                'priority': rendered.get('priority', 'normal')})
             item = resp.get('item') or {}
             return True, f"created {item.get('key', item.get('id', ''))}", None
         if action == 'backlog_patch':
-            pid = rendered.get('project_id')
-            item_id = rendered.get('item_id')
+            pid = require_id('backlog_patch project_id', rendered.get('project_id'))
+            item_id = require_id('backlog_patch item_id', rendered.get('item_id'))
             patch = {k: v for k, v in rendered.items()
                      if k in ('status', 'text') and v is not None}
             resp = _http_json('PATCH', f'/api/project/{pid}/backlog/{item_id}', patch)
@@ -1996,7 +2002,7 @@ def _execute_action(run: dict, node: dict, workflow: Optional[dict] = None) -> t
                 return False, '', f'notify_operator failed: {info}'
             return True, info, None
         if action == 'restore_point_create':
-            pid = rendered.get('project_id')
+            pid = require_id('restore_point_create project_id', rendered.get('project_id'))
             payload = {'label': rendered.get('label')} if rendered.get('label') else {}
             resp = _http_json('POST', f'/api/backup/restore-point/{pid}', payload)
             return True, f"restore point {resp.get('snap_id', '')}", None
@@ -2245,6 +2251,12 @@ def _step_session_verdict(step_state: dict, *, use_live: bool) -> tuple:
         return 'in_flight', None, ''    # its crash-surviving completion replays itself
     live = state.agent_sessions.get(sid) if use_live else None
     if live is not None and live.get('status') not in _STEP_END_STATUSES:
+        return 'in_flight', live.get('status'), ''
+    if live is not None and (live.get('waiting_for_question') or live.get('pending_questions')):
+        # Paused on AskUserQuestion, not finished: agent_routes forces the status
+        # to 'idle' for a pause, which is also a success status, so without this
+        # the question text became the step's output and the real answer was
+        # ignored (MC-1188 / DCW-W1). The hook delivers the real completion.
         return 'in_flight', live.get('status'), ''
     entry = None
     if _load_agent_log is not None:

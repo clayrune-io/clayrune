@@ -92,6 +92,43 @@ def test_a_live_idle_session_without_a_row_advances_with_the_hook_summary(wf, li
     assert wf.m.get_run(run['id'])['steps']['first']['output'] == 'LIVE REPLY'
 
 
+# DCW-W1 (MC-1179 pass 06b): a session paused on AskUserQuestion has
+# waiting_for_question True and its status forced to 'idle' (agent_routes), so it
+# looked "ended" to the reconciler and the question text became the step output.
+@pytest.mark.parametrize('paused', [
+    {'waiting_for_question': True},
+    {'pending_questions': [{'question': 'Which account?', 'question_id': 'q1'}]},
+], ids=['waiting_flag', 'pending_questions'])
+@pytest.mark.parametrize('row', [
+    {'status': 'in_progress', 'summary': ''},
+    {'status': 'idle', 'summary': 'Which account should I use? A or B'},
+], ids=['row_in_progress', 'row_idle'])
+def test_a_step_paused_on_a_question_stays_running_and_the_real_answer_advances_it(
+        wf, live, monkeypatch, paused, row):
+    monkeypatch.setattr(wf.m, '_session_summary', lambda s: 'Which account should I use? A or B')
+    run, sid, _ = _two_step(wf)
+    live[sid] = {'session_id': sid, 'project_id': 'p1', 'status': 'idle', 'log_lines': [], **paused}
+    wf.agent_logs['p1'] = [{'session_id': sid, **row}]
+
+    assert wf.m.reconcile_running_steps() == _ZERO
+    mid = wf.m.get_run(run['id'])
+    assert mid['steps']['first']['status'] == 'running'
+    assert mid['steps']['second']['status'] == 'pending'
+    assert len(wf.dispatch.calls) == 1
+
+    # The human answers, the agent really finishes: the hook delivers the real
+    # reply and it is still accepted (the step was never completed early).
+    live[sid].pop('waiting_for_question', None)
+    live[sid].pop('pending_questions', None)
+    wf.m.on_agent_step_complete(run_id=run['id'], step_name='first', project_id='p1',
+                                session_id=sid, status='completed', summary='Use account A')
+    after = wf.m.get_run(run['id'])
+    assert after['steps']['first']['status'] == 'completed'
+    assert after['steps']['first']['output'] == 'Use account A'
+    assert after['steps']['second']['status'] == 'running'
+    assert len(wf.dispatch.calls) == 2
+
+
 @pytest.mark.parametrize('status', ['stopped', 'interrupted'])
 def test_stopped_or_interrupted_is_never_treated_as_success(wf, live, status):
     run, sid, _ = _two_step(wf)

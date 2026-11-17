@@ -1,5 +1,14 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Workflow reconciler, run authority and action ids (MC-1188 / MC-1179 DCW-W1, W2, W3)
+
+- W1: the 30-second reconciler no longer completes a workflow step whose session is paused on a question (`waiting_for_question` or `pending_questions`). Before, the question text became the step output and the next step ran on it; the real answer was then ignored. A paused step stays running and the later real completion advances the run.
+- W2: scheduling or running a workflow is human-only, with the same refusal as definition create/update (Origin plus retyped passcode): `POST`/`PUT /api/schedules` when the merged row has `workflow_id`, `POST /api/schedule/<id>/run-now` on a workflow row, and `POST /api/workflows/<id>/run`. Non-workflow schedules are unchanged. The scheduler's own fire path calls `start_run` directly and is unaffected.
+- W2: a workflow definition with no `enabled` key now reads as disabled (`start_run`, schedule display). `create_workflow` still writes the key explicitly; the one live definition already has it.
+- W3: `project_id` and `item_id` on `backlog_create`, `backlog_patch`, `restore_point_create` and `journal_append` are checked after template rendering (`mc/workflow_action_ids.py`); a value that is not a plain id fails the step before any path, glob or URL is built. The journal lookup also uses `glob.escape`.
+- Follow-up not in this change: the dashboard's Run, run-now and workflow-schedule save calls send no passcode, so they now receive the human-gate refusal until they use `humanProofFetch`.
+- Branch candidate for review; no merge, push, deployment or server restart.
+
 ## [2026-11-16] - Fix three high agent-mail Worker defects (MC-1184 / MC-1179 W1-W3)
 
 - W1: a send reserved but refused at authorization (the 20-a-day `send_limit`, or a storage fault between the two batches) no longer stays `reserved` forever. A retry with the same `intent_id` re-runs the authorization CAS and sends: still 429 `send_limit` while the cap is full, sent once after the day bucket resets. Two concurrent retries cannot both send. `accepted`, `sending`, `failed` and `revoked` replays are unchanged. The two tests that pinned the stuck behaviour were rewritten; corrected the Python comment at `mc/agent_mail_outbound.py` that claimed the Worker wrote nothing on `send_limit` (comment only).

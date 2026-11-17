@@ -179,10 +179,14 @@ def review_workflow():
 
 @bp.route('/api/workflows/<workflow_id>/run', methods=['POST'])
 def run_workflow(workflow_id):
-    """Manual trigger + 'Run Now' (later phases). Not gated: running an
-    already-authored, human-approved workflow does not expand any agent's
-    capability set — the same posture the scheduler's existing run-now
-    endpoint already takes."""
+    """Manual trigger + 'Run Now' (later phases). Human-only (MC-1188): a run
+    dispatches tooled agents with characters, and a caller with `curl` could
+    otherwise restart a workflow as soon as the one-live-run guard cleared.
+    Same refusal as definition CRUD and decisions. The scheduler's own fire
+    path calls `start_run` directly, not this route, so it is unaffected."""
+    refusal = _refuse_if_agent_caller()
+    if refusal:
+        return refusal
     try:
         run = _wf.start_run(workflow_id, trigger_type='manual')
     except KeyError:

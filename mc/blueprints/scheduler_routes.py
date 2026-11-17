@@ -66,6 +66,7 @@ import mc.github_sync as _gh_sync
 import mc.project_sync as _proj_sync
 import mc.distiller as _distiller           # exploration read-floor (steward cycle refresh)
 from mc import workflows as _wf             # MC-871 Q4: a schedule may invoke a workflow run
+from mc.blueprints.workflow_routes import _refuse_if_agent_caller as _refuse_workflow_agent_caller  # MC-1188
 from mc import memory as _mem            # memory read-floor (steward cycle refresh)
 from mc import isolated_launch as _isolated_launch  # MC-1165 r6: typed revival refusal
 from mc import engine_fallback as _engine_fallback  # MC-961: blocked-run pointer on a timer fire
@@ -1329,7 +1330,7 @@ def _schedule_workflow_display(workflow_id):
     if not wf:
         return {'id': workflow_id, 'name': workflow_id, 'enabled': False, 'missing': True}
     return {'id': workflow_id, 'name': wf.get('name') or workflow_id,
-            'enabled': wf.get('enabled', True), 'missing': False}
+            'enabled': wf.get('enabled', False), 'missing': False}
 
 
 def _schedule_engine_kwargs(sched):
@@ -1575,7 +1576,14 @@ def create_schedule_from_spec(data: dict):
 
 @bp.route('/api/schedules', methods=['POST'])
 def create_schedule():
-    sched, err = create_schedule_from_spec(request.get_json() or {})
+    data = request.get_json() or {}
+    if (data.get('workflow_id') or '').strip():
+        # Scheduling a workflow is a human act (MC-1188); plain task schedules
+        # stay open to agents.
+        refusal = _refuse_workflow_agent_caller()
+        if refusal:
+            return refusal
+    sched, err = create_schedule_from_spec(data)
     if err:
         return err
     return jsonify(sched), 201
@@ -1603,6 +1611,11 @@ def update_schedule(schedule_id):
     # both at create time.
     target_task = (data.get('task', sched.get('task', '')) or '').strip()
     target_workflow_id = (data.get('workflow_id', sched.get('workflow_id', '')) or '').strip()
+    if target_workflow_id:
+        # Merged row carries a workflow: editing it is a human act (MC-1188).
+        refusal = _refuse_workflow_agent_caller()
+        if refusal:
+            return refusal
     if bool(target_task) == bool(target_workflow_id):
         return jsonify({
             'error': 'exactly one of task or workflow_id is required'}), 400
@@ -1691,6 +1704,10 @@ def schedule_run_now(schedule_id):
         return jsonify(result), (200 if result['ok'] else 409)
     workflow_id = sched.get('workflow_id', '')
     if workflow_id:
+        # Human-only (MC-1188). The cadence fire does not come through here.
+        refusal = _refuse_workflow_agent_caller()
+        if refusal:
+            return refusal
         # Same branch the cadence fire takes (MC-871 Q4) — "Run Now" is an
         # extra dispatch, not a different code path, so it inherits the same
         # deleted/disabled/busy guards for free.
