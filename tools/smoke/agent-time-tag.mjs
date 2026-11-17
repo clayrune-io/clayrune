@@ -35,6 +35,9 @@ try {
   for (const width of [1440, 390]) {
     const ctx = await browser.newContext({ viewport: { width, height: 1000 },
       timezoneId: 'America/Los_Angeles', hasTouch: width === 390 });
+    // An undated live line is dated "now" for the day divider, so the fixture
+    // day (2026-11-05) must be "today" or the divider splits the live run.
+    await ctx.clock.setFixedTime(new Date(t('50')));
     const page = await ctx.newPage();
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
