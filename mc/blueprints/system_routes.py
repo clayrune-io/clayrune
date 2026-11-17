@@ -1376,6 +1376,7 @@ def system_usage_refresh():
     the Codex app reaches the bar without waiting for the next run.
     """
     _oauth_usage_cache['ts'] = 0.0
+    _oauth_usage_cache['fail_ts'] = 0.0
     _codex_usage_cache['ts'] = 0.0
     _codex_detail_cache['ts'] = 0.0
     _codex_live_usage.request_fresh()
