@@ -117,10 +117,15 @@ On Windows, Popen's actual Windows return code remains the numeric result;
 unsigned DWORD statuses above `2**31-1` use `ExitProcess` after output/capture
 closes so Python's `SystemExit` conversion cannot truncate them. Platform codes
 are not guessed to be POSIX signals. SIGINT or
-SIGTERM received by the launcher requests cancellation. The launcher only
-kills the direct child PID it started; this phase adds no tree supervisor.
-Shell-spawned/detached descendants are not adopted or guaranteed terminated.
-Pipe drainage is bounded to one second after direct-child exit, with an explicit
+SIGTERM received by the launcher requests cancellation. Each unit is started
+in its own group (`tools/test_run_procgroup.py`): POSIX `start_new_session` and
+`os.killpg`, Windows a Job Object with kill-on-close that the suspended child is
+assigned to before it runs. A timeout or cancel ends that whole group, never a
+PID looked up afterwards, so shell wrappers and workers do not outlive the
+verdict and the pipes reach EOF. A unit that exits on its own is not touched:
+anything it deliberately left running stays. If a group cannot be set up the
+unit runs ungrouped with a `child_group_unavailable` diagnostic and only the
+direct child is ended. Pipe drainage is bounded to one second after direct-child exit, with an explicit
 `output_drain_incomplete` diagnostic if descendants keep descriptors open or
 an output sink fails. A kill failure logs a code and waits for actual exit;
 no early success is manufactured.
