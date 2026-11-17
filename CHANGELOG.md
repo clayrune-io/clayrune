@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - 21 mutating routes now refuse agent and unattended callers (MC-1179 pass 08 / T8-3 follow-up, gate batch 1)
+
+- New `mc/human_only_gate.py` (`@human_only('<action>')`, `refuse_non_human`): the attribution-only gate. It is the two checks `require_human_publish` is built from, `is_unattended_caller()` and `project_safety_settings.is_agent_caller()` (no browser Origin, or the peer process descends from a managed agent), with no passcode, no prompt and no UI change. A refusal is 403 `{"error": "human_only"}` and runs first in the view.
+- Gated: social queue approve and posted; Desk proposal accept; hivemind decision approve, finding review, intervene; automation suggestion accept; remote access enable, disable, disconnect, resume, sessions/revoke-all, sessions/<id>/revoke, sessions/enforce; mobile-pair config PUT and DELETE, generate, DELETE token; DELETE /api/browser/profiles/<name>; DELETE /api/project/<id>; POST /api/system/shutdown. Restart, update and sessions/<id>/label are unchanged.
+- `tests/route_gate_matrix_data.py`: the 21 rows go from `open` to `human_only`; `UNDECIDED_CEILING` 161 -> 140 in `tests/test_route_gate_matrix.py`. New `tests/test_human_only_gate_batch1.py` calls each view with a stubbed backend: 403 for an agent caller, the old behaviour for a person.
+- Existing tests that called these routes with no Origin now send one (a human request; the check is not stubbed). `data/agent_reference/CLAYRUNE_API.md` marks the documented routes human-only.
+
 ## [2026-11-17] - One app-wide table of every mutating route and the gate on it (MC-1179 pass 08 / T8-3)
 
 - New `tests/route_gate_matrix_data.py` (data only): one row per (method, rule) of `server.app.url_map` that is not GET/HEAD/OPTIONS (422 rows), each with `gate` (`passcode` 100, `human_only` 5, `unattended_refused` 41, `open` 276) and evidence. A gated row names the helper that enforces it; an `open` row quotes the stated reason and where it was found, or says exactly `UNDECIDED` (161 rows) with a one-clause note of what the route changes.

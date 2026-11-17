@@ -38,6 +38,9 @@ if str(PROJECT_ROOT) not in sys.path:
 LAN = {'REMOTE_ADDR': '192.168.1.50'}
 
 
+HUMAN = {'Origin': 'http://localhost:5199'}  # a person at the dashboard; an agent's curl sends none
+
+
 class FakeProc:
     def __init__(self, pid=990201):
         self.pid = pid
@@ -581,7 +584,7 @@ def test_delete_project_full_cleanup(client, monkeypatch):
     monkeypatch.setattr(pr, '_runtime_lifecycle_service', types.SimpleNamespace(
         revoke_project=lambda project_id: revoked.append(project_id)))
 
-    r = client.delete('/api/project/tproj')
+    r = client.delete('/api/project/tproj', headers=HUMAN)
     assert r.status_code == 200
     assert not (client.data_dir / 'tproj.json').exists()
     assert not (client.data_dir / 'tproj_agent_log.json').exists()
@@ -598,7 +601,7 @@ def test_delete_project_404(client, monkeypatch):
     revoked = []
     monkeypatch.setattr(pr, '_runtime_lifecycle_service', types.SimpleNamespace(
         revoke_project=lambda project_id: revoked.append(project_id)))
-    assert client.delete('/api/project/nope').status_code == 404
+    assert client.delete('/api/project/nope', headers=HUMAN).status_code == 404
     assert revoked == []
 
 

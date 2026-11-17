@@ -33,6 +33,9 @@ from mc import desk, desk_brief  # noqa: E402
 from mc.blueprints import desk_routes  # noqa: E402
 
 
+HUMAN = {'Origin': 'http://localhost:5199'}  # a person at the dashboard; an agent's curl sends none
+
+
 @pytest.fixture
 def client(tmp_path):
     calls = []
@@ -176,7 +179,7 @@ def test_accepting_is_the_instruction_to_write(client):
     p = client.post('/api/desk/proposals', json={
         'signal_id': s['id'], 'voice': 'personal', 'why': 'ships beat promises'}).get_json()
 
-    r = client.post(f"/api/desk/proposals/{p['id']}/accept")
+    r = client.post(f"/api/desk/proposals/{p['id']}/accept", headers=HUMAN)
     assert r.status_code == 202
     assert r.get_json()['platform'] == 'x'
 
@@ -191,8 +194,8 @@ def test_a_proposal_is_accepted_once(client):
     s = _sig(client)
     p = client.post('/api/desk/proposals', json={
         'signal_id': s['id'], 'voice': 'personal', 'why': 'w'}).get_json()
-    assert client.post(f"/api/desk/proposals/{p['id']}/accept").status_code == 202
-    assert client.post(f"/api/desk/proposals/{p['id']}/accept").status_code == 409
+    assert client.post(f"/api/desk/proposals/{p['id']}/accept", headers=HUMAN).status_code == 202
+    assert client.post(f"/api/desk/proposals/{p['id']}/accept", headers=HUMAN).status_code == 409
 
 
 def test_dismissal_is_latched_on_the_signal(client):
@@ -221,7 +224,7 @@ def test_a_dismissed_signal_is_withheld_from_the_next_triage(client):
 
 
 def test_accept_and_dismiss_on_a_missing_proposal(client):
-    assert client.post('/api/desk/proposals/nope/accept').status_code == 404
+    assert client.post('/api/desk/proposals/nope/accept', headers=HUMAN).status_code == 404
     assert client.post('/api/desk/proposals/nope/dismiss').status_code == 404
 
 

@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional
 from flask import Blueprint, jsonify, request
 
 import mc.agent_runtime as _agent_runtime
+from mc.human_only_gate import human_only
 from mc import allowance_state as _allowance_state
 from mc import codex_live_usage as _codex_live_usage
 from mc import provider_allowance as _provider_allowance
@@ -2839,6 +2840,7 @@ def system_restart():
 
 
 @bp.route('/api/system/shutdown', methods=['POST'])
+@human_only('stop the Clayrune server')
 def system_shutdown():
     """Shut down (power off) the Mission Control server process.
 

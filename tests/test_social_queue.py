@@ -28,6 +28,9 @@ if str(PROJECT_ROOT) not in sys.path:
 ATTRIBUTION_LINE = 'Written by me - Edited by Claude'
 
 
+HUMAN = {'Origin': 'http://localhost:5199'}  # a person at the dashboard; an agent's curl sends none
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     import server  # noqa: F401  (registers the blueprint on first import)
@@ -140,7 +143,7 @@ def test_approve_records_released_unedited_when_never_touched(client):
     item = client.post('/api/project/proj1/social/queue', json={
         'platform': 'x', 'body': 'Shipped the thing.', 'originated': False,
     }).get_json()['item']
-    res = client.post(f"/api/project/proj1/social/queue/{item['id']}/approve")
+    res = client.post(f"/api/project/proj1/social/queue/{item['id']}/approve", headers=HUMAN)
     assert res.status_code == 200
     assert res.get_json()['item']['released_unedited'] is True
 
@@ -152,7 +155,7 @@ def test_approve_does_not_flag_released_unedited_after_a_real_edit(client):
     }).get_json()['item']
     client.patch(f"/api/project/proj1/social/queue/{item['id']}",
                 json={'body': 'Shipped the thing today.'})
-    res = client.post(f"/api/project/proj1/social/queue/{item['id']}/approve")
+    res = client.post(f"/api/project/proj1/social/queue/{item['id']}/approve", headers=HUMAN)
     assert res.status_code == 200
     assert res.get_json()['item']['released_unedited'] is False
 
@@ -167,7 +170,7 @@ def test_attribution_guard_blocks_then_allows(client):
         'platform': 'linkedin', 'body': 'Shipped a new feature today.', 'originated': True,
     }).get_json()['item']
 
-    blocked = client.post(f"/api/project/proj1/social/queue/{item['id']}/approve")
+    blocked = client.post(f"/api/project/proj1/social/queue/{item['id']}/approve", headers=HUMAN)
     assert blocked.status_code == 400
     assert ATTRIBUTION_LINE in blocked.get_json()['error']
     # Refusal must not have flipped the status.
@@ -177,7 +180,7 @@ def test_attribution_guard_blocks_then_allows(client):
     client.patch(f"/api/project/proj1/social/queue/{item['id']}",
                  json={'body': f"Shipped a new feature today.\n\n{ATTRIBUTION_LINE}"})
 
-    allowed = client.post(f"/api/project/proj1/social/queue/{item['id']}/approve")
+    allowed = client.post(f"/api/project/proj1/social/queue/{item['id']}/approve", headers=HUMAN)
     assert allowed.status_code == 200
     assert allowed.get_json()['item']['status'] == 'approved'
     assert allowed.get_json()['item']['decided_at']
@@ -188,7 +191,7 @@ def test_attribution_guard_exempts_replies(client):
     item = client.post('/api/project/proj1/social/queue', json={
         'platform': 'reddit', 'body': 'Thanks for the feedback!', 'originated': False,
     }).get_json()['item']
-    res = client.post(f"/api/project/proj1/social/queue/{item['id']}/approve")
+    res = client.post(f"/api/project/proj1/social/queue/{item['id']}/approve", headers=HUMAN)
     assert res.status_code == 200
     assert res.get_json()['item']['status'] == 'approved'
 

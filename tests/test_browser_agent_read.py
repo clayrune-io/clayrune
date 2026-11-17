@@ -40,6 +40,9 @@ FEED = 'https://www.linkedin.com/feed/'
 
 # ── fixtures ─────────────────────────────────────────────────────────────────
 
+HUMAN = {'Origin': 'http://localhost:5199'}  # a person at the dashboard; an agent's curl sends none
+
+
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
     monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
@@ -247,7 +250,7 @@ def test_policy_for_a_profile_that_does_not_exist_is_refused(env):
 
 def test_forgetting_a_profile_forgets_its_policy(env):
     _enable(env)
-    assert env.client.delete('/api/browser/profiles/li').status_code == 200
+    assert env.client.delete('/api/browser/profiles/li', headers=HUMAN).status_code == 200
     assert env.client.get('/api/browser/agent-read').get_json()['profiles'] == {}
 
 

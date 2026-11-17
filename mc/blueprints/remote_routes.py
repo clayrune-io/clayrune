@@ -33,6 +33,7 @@ from pathlib import Path
 from flask import Blueprint, Response, jsonify, redirect, request
 
 from mc import obs, state
+from mc.human_only_gate import human_only
 from mc.core import _is_loopback_request, _log
 from mc.state import _ENFORCER_STATE, _enforcer_lock
 
@@ -794,6 +795,7 @@ def _session_label_enforcer_loop():
 
 
 @bp.route('/api/remote/sessions/enforce', methods=['POST'])
+@human_only('revoke remote-access sessions')
 def remote_sessions_enforce():
     """Manually trigger the unnamed-session cleanup. Returns what was revoked."""
     with _enforcer_lock:
@@ -831,6 +833,7 @@ def remote_status():
 
 
 @bp.route('/api/remote/enable', methods=['POST'])
+@human_only('enable remote access')
 def remote_enable():
     """Begin enrollment. Launches the OS browser server-side and also returns
     the URL so the frontend can fall back to a manual-copy display.
@@ -894,6 +897,7 @@ def _launch_browser_for_user(url: str) -> bool:
 
 
 @bp.route('/api/remote/disable', methods=['POST'])
+@human_only('disable remote access')
 def remote_disable():
     """Stop the tunnel. Keeps credentials so re-enable is fast."""
     p = _get_remote_provider()
@@ -909,6 +913,7 @@ def remote_disable():
 
 
 @bp.route('/api/remote/resume', methods=['POST'])
+@human_only('resume remote access')
 def remote_resume():
     """Reverse of /api/remote/disable: restart the tunnel for an already-enrolled
     device. No re-enrollment, no new keypair, no new CF resources.
@@ -1054,6 +1059,7 @@ def remote_session_label(session_id):
 
 
 @bp.route('/api/remote/sessions/<session_id>/revoke', methods=['POST'])
+@human_only('revoke a remote-access session')
 def remote_session_revoke(session_id):
     p = _get_remote_provider()
     if p is None:
@@ -1074,6 +1080,7 @@ def remote_session_revoke(session_id):
 
 
 @bp.route('/api/remote/sessions/revoke-all', methods=['POST'])
+@human_only('revoke every remote-access session')
 def remote_sessions_revoke_all():
     p = _get_remote_provider()
     if p is None:
@@ -1093,6 +1100,7 @@ def remote_sessions_revoke_all():
 
 
 @bp.route('/api/remote/disconnect', methods=['POST'])
+@human_only('disconnect this device from remote access')
 def remote_disconnect():
     """Revoke this device on the platform; clear local credentials."""
     p = _get_remote_provider()

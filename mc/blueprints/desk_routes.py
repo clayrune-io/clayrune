@@ -36,6 +36,7 @@ from typing import Callable, Optional
 from flask import Blueprint, jsonify, request
 
 from mc import characters as _chars
+from mc.human_only_gate import human_only
 from mc import desk as _desk
 from mc import desk_accounts as _accounts
 from mc import desk_account_kind_input as _account_kind_input
@@ -1923,6 +1924,7 @@ def add_proposal():
 
 
 @bp.route('/api/desk/proposals/<proposal_id>/accept', methods=['POST'])
+@human_only('accept a Desk proposal: accepting is the instruction to write')
 def accept_proposal(proposal_id):
     """Accepting IS the instruction to write. One gate, then the Queue's gate.
 

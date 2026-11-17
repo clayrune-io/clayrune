@@ -38,6 +38,9 @@ LAN = {'REMOTE_ADDR': '192.168.1.50'}
 
 # ── fakes ─────────────────────────────────────────────────────────────────────
 
+HUMAN = {'Origin': 'http://localhost:5199'}  # a person at the dashboard; an agent's curl sends none
+
+
 class FakeProc:
     """Popen stand-in for the worker/orchestrator spawn paths."""
     def __init__(self):
@@ -733,22 +736,22 @@ class TestEscalationIntervention:
     def test_intervene_happy_and_malformed(self, client):
         hm_id = _create(client)['hivemind']['id']
         r = client.post(f'/api/hivemind/{hm_id}/intervene',
-                        json={'message': 'Focus on ws_002', 'target': 'ws_002'})
+                        json={'message': 'Focus on ws_002', 'target': 'ws_002'}, headers=HUMAN)
         assert r.status_code == 200
         msg = r.get_json()['message']
         assert msg['from'] == 'user' and msg['to'] == 'ws_002' and msg['type'] == 'directive'
-        r = client.post(f'/api/hivemind/{hm_id}/intervene', json={})
+        r = client.post(f'/api/hivemind/{hm_id}/intervene', json={}, headers=HUMAN)
         assert r.status_code == 400 and r.get_json()['error'] == 'message required'
 
     def test_finding_review_and_decision_approve(self, client):
         hm_id = _create(client)['hivemind']['id']
         r = client.post(f'/api/hivemind/{hm_id}/findings/f_001/review',
-                        json={'approved': False, 'comment': 'weak evidence'})
+                        json={'approved': False, 'comment': 'weak evidence'}, headers=HUMAN)
         assert r.status_code == 200
         dec = r.get_json()['decision']
         assert dec['approved'] is False and dec['finding_id'] == 'f_001'
         r = client.post(f'/api/hivemind/{hm_id}/decisions/{dec["id"]}/approve',
-                        json={'approved': True})
+                        json={'approved': True}, headers=HUMAN)
         assert r.status_code == 200
         assert r.get_json()['review']['original_decision_id'] == dec['id']
         # Both recorded in decisions.jsonl.
@@ -759,7 +762,7 @@ class TestEscalationIntervention:
         for verb, path in [('post', 'escalate'), ('post', 'intervene'),
                            ('post', 'findings/f/review'),
                            ('post', 'decisions/d/approve')]:
-            r = getattr(client, verb)(f'/api/hivemind/hm_nope/{path}', json={'message': 'm'})
+            r = getattr(client, verb)(f'/api/hivemind/hm_nope/{path}', json={'message': 'm'}, headers=HUMAN)
             assert r.status_code == 404, path
 
 
