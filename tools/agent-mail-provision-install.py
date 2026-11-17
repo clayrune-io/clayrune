@@ -3,7 +3,8 @@
 
 Creates the local mail store, the sealed Ed25519 install identity, the pin and the
 local account rows already in the ``active`` state, and writes the matching Worker
-D1 SQL to a private file under ``~/.clayrune/``. It never talks to Cloudflare, sends
+D1 SQL to a private file under ``~/.clayrune/``. Its one network call is a GET of the
+manifest from the service origin; it never talks to Cloudflare's API, sends
 no mail, sets no config and enables nothing: the operator applies the SQL and
 edits the config keys this prints. The owner address is an argument; it is
 written only to the local store and to that SQL file, never to the repo.
