@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - A failed interval schedule fire waits a full interval (MC-1179 OS1)
+
+- A failed dispatch of an `interval` schedule left `last_run` alone, so `_compute_next_run` found `last_run + interval` already past and returned now + 5 s: the row was retried on every 30 s tick for as long as the cause lasted (an hourly steward whose engine was out of allowance for five hours made about 600 attempts, activity lines and "Scheduled run blocked" pushes instead of 5).
+- The tick loop now sets `next_run = now + interval` on a failed interval fire, as the paused, condition-skip and steward-role paths already did. `last_run` is still stamped only on success; other schedule types are unchanged.
+- Tests: `tests/test_scheduler_interval_failure.py`. Branch candidate for review; no merge, push or server restart.
+
 ## [2026-11-16] - Fix three high agent-mail Worker defects (MC-1184 / MC-1179 W1-W3)
 
 - W1: a send reserved but refused at authorization (the 20-a-day `send_limit`, or a storage fault between the two batches) no longer stays `reserved` forever. A retry with the same `intent_id` re-runs the authorization CAS and sends: still 429 `send_limit` while the cap is full, sent once after the day bucket resets. Two concurrent retries cannot both send. `accepted`, `sending`, `failed` and `revoked` replays are unchanged. The two tests that pinned the stuck behaviour were rewritten; corrected the Python comment at `mc/agent_mail_outbound.py` that claimed the Worker wrote nothing on `send_limit` (comment only).

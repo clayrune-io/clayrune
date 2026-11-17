@@ -873,6 +873,17 @@ def _scheduler_loop():
                             # Run Now once he's read last_error.
                             sched['enabled'] = False
                             sched['next_run'] = None
+                    elif not dispatch_ok and sched.get('schedule_type') == 'interval':
+                        # MC-1179 OS1: an interval row computes its next fire
+                        # from `last_run`, and a failed dispatch leaves
+                        # `last_run` alone — so _compute_next_run finds
+                        # last_run + interval already past and answers
+                        # now + 5 s: a retry on every 30 s tick for as long
+                        # as the cause lasts. Roll a full interval instead,
+                        # as the paused and condition-skip paths do.
+                        mins = sched.get('interval_minutes', 60) or 60
+                        sched['next_run'] = (now + timedelta(minutes=mins)) \
+                            .isoformat().replace('+00:00', 'Z')
                     else:
                         sched['next_run'] = _compute_next_run(sched)
                     changed = True
