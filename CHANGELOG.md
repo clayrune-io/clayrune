@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Test runs whose owner went away are finished as `lost`; the Floor stops counting them as active (MC-1179 pass 11, SF29)
+
+- A run whose owner session ended, whose tool call was interrupted, or that was open across a restart never reached a terminal state, and the Floor counted it as active for good (measured on one install: 534 of 3,278 runs `running`, `active_count` 443, a 40 KB block in every 5-second Floor reply). New `mc/test_run_lost_sweep.py` finishes as `lost`, through `store.finish` one run at a time, every non-terminal run whose named owner is not a live session of the project and whose `updated_at` is older than `LOST_AFTER_SECONDS` (60 minutes). It runs once at server startup (background thread, only when `test_run_progress_enabled` is on) and from the Floor read, at most once per 60 seconds per project, on the snapshots that read already holds, so the poll does not walk the files again. A terminal run is never touched. Ownerless runs (no owner recorded) are left alone: the Floor treats them as project work.
+- `test_run_floor.project` leaves roots whose owner is unavailable out of the room summary and `active_count`; they stay in `unavailable_owner_count`. A room whose only open runs are owner-unavailable no longer shows (`room_visible` false).
+- An event for a run already finished as `lost` is unchanged behaviour: the store ignores events after any terminal state (`_append` returns the snapshot without writing; `replay` skips them), and a later `finish` returns the terminal snapshot. A lost run is not reopened.
+- Tests: new `tests/test_test_run_lost_sweep.py` (13, temp-directory stores only). Not run against the real data directory; the live server was not restarted, so the sweep takes effect at the next restart. SF30 (store rewrite, retention) not started; no run record deleted.
+- Branch candidate for review; no merge, push or server restart.
+
 ## [2026-11-16] - Connecting a GitHub repo and turning on code sync are human-only (MC-1179 pass 11 / SF22)
 
 - SF22: `POST /api/project/<id>/github/setup` and `POST /api/project/<id>/code-sync/enable` checked only that the project existed. One call from any local process saved the repo, started a sync thread that created GitHub issues from backlog items and their notes (25 at once, 25 more every five minutes), or pushed a branch carrying local commits. Reproduced in `tests/test_project_publish_gate.py` against the real `github_sync` and the conftest fake `gh`: a bare POST, one made during a running dispatch session, and a no-Origin POST carrying the passcode all answered 200, saved the repo, queued the thread and reached `gh repo view` (13 of the 18 new tests failed before the fix).
