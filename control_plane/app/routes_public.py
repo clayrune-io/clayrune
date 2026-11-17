@@ -18,13 +18,16 @@ import datetime as _dt
 import hashlib
 import logging
 import os
+import secrets
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 
 from . import build_info, firestore as fs
-from .connect_page_safety import canonical_callback
+from .connect_page_safety import (
+    canonical_callback, content_security_policy, json_for_script, valid_device_pub,
+)
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -91,20 +94,36 @@ async def connect_page(
             "request_id": "x",
         })
 
-    # Embed values via JSON to keep escaping sane; values are public (Firebase
-    # web config + the user-supplied query params).
-    import json as _json
+    # `pub` is rendered into an inline script: refuse anything that is not the
+    # 32-byte base64 key /v1/signin/complete would demand later anyway.
+    if not valid_device_pub(pub):
+        raise HTTPException(status_code=400, detail={
+            "code": "bad_envelope",
+            "message": "Invalid device public key.",
+            "request_id": "x",
+        })
+
+    # Embed values via JSON; json_for_script also escapes < > & so a value can
+    # never close the element it sits in. The CSP nonce is substituted FIRST so
+    # a query-parameter value containing the placeholder cannot reach it.
+    csp_nonce = secrets.token_urlsafe(16)
     cfg = {
         "apiKey": FB_API_KEY,
         "authDomain": FB_AUTH_DOMAIN,
         "projectId": FB_PROJECT_ID,
     }
-    html = _CONNECT_HTML.replace("__FB_CFG__", _json.dumps(cfg)) \
-                        .replace("__PUB__",      _json.dumps(pub)) \
-                        .replace("__NONCE__",    _json.dumps(nonce)) \
-                        .replace("__CALLBACK__", _json.dumps(callback)) \
-                        .replace("__USERNAME_RE__", _json.dumps(_USERNAME_RE_STR))
-    return HTMLResponse(content=html, headers={"Cache-Control": "no-store"})
+    html = _CONNECT_HTML.replace("__CSP_NONCE__", csp_nonce) \
+                        .replace("__FB_CFG__", json_for_script(cfg)) \
+                        .replace("__PUB__",      json_for_script(pub)) \
+                        .replace("__NONCE__",    json_for_script(nonce)) \
+                        .replace("__CALLBACK__", json_for_script(canonical_callback(callback))) \
+                        .replace("__USERNAME_RE__", json_for_script(_USERNAME_RE_STR))
+    return HTMLResponse(content=html, headers={
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": content_security_policy(csp_nonce, FB_AUTH_DOMAIN),
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+    })
 
 
 @router.post("/signin/start", tags=["public"])
@@ -360,7 +379,7 @@ _CONNECT_HTML = r"""<!doctype html>
     <div class="footer">Clayrune</div>
   </div>
 
-<script type="module">
+<script type="module" nonce="__CSP_NONCE__">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged }
   from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";

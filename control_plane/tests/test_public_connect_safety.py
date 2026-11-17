@@ -1,9 +1,11 @@
-"""MC-1179 MB26: the public /v1/connect loopback callback check.
+"""MC-1179 MB25 + MB26: the public /v1/connect page and its loopback callback.
 
 MB26: `_is_safe_callback` judged the host with urlparse alone. A backslash makes
 urlparse and a browser disagree about the host, so a URL that "is" 127.0.0.1 to
 this check navigates to another site with the enrollment token attached.
 
+MB25: the page put `pub`, `nonce` and `callback` into an inline <script> through
+json.dumps (which leaves `</script>` intact) and sent no Content-Security-Policy.
 """
 from __future__ import annotations
 
@@ -109,3 +111,42 @@ def test_signin_complete_redirect_is_rebuilt_from_parsed_parts(
         "id_token": "x", "nonce": nonce, "pub": GOOD_PUB, "username": "ron"})
     assert r.status_code == 200, r.text
     assert r.json()["redirect_url"].startswith("http://127.0.0.1:5199/api/mc-callback?")
+
+
+# ─── MB25: the connect page ──────────────────────────────────────────────────
+
+def test_connect_page_sends_a_nonce_csp_that_matches_its_inline_script(client):
+    r = client.get("/v1/connect", params={"pub": GOOD_PUB, "nonce": "abc", "callback": GOOD_CB})
+    assert r.status_code == 200
+    csp = r.headers.get("content-security-policy")
+    assert csp, "connect page must carry a Content-Security-Policy"
+    m = re.search(r"script-src 'nonce-([^']+)'", csp)
+    assert m, csp
+    assert f'<script type="module" nonce="{m.group(1)}">' in r.text
+    assert "'unsafe-inline'" not in csp.split("style-src")[0]  # script-src stays strict
+    assert "default-src 'none'" in csp and "base-uri 'none'" in csp
+    assert "frame-ancestors 'none'" in csp
+    assert "connect-src 'self'" in csp  # the page fetches /v1/signin/*
+
+
+def test_connect_page_nonce_differs_per_response(client):
+    p = {"pub": GOOD_PUB, "nonce": "abc", "callback": GOOD_CB}
+    a = client.get("/v1/connect", params=p).headers["content-security-policy"]
+    b = client.get("/v1/connect", params=p).headers["content-security-policy"]
+    assert a != b
+
+
+def test_connect_page_refuses_a_pub_that_is_not_32_byte_base64(client):
+    r = client.get("/v1/connect", params={
+        "pub": "</script><script>alert(1)</script>", "nonce": "abc", "callback": GOOD_CB})
+    assert r.status_code == 400
+    assert "alert(1)" not in r.text
+
+
+def test_connect_page_json_values_cannot_close_the_script(client):
+    r = client.get("/v1/connect", params={
+        "pub": GOOD_PUB, "nonce": "</script><script>alert(1)</script>", "callback": GOOD_CB})
+    assert r.status_code == 200
+    assert "</script><script>alert(1)" not in r.text
+    assert "alert(1)" in r.text  # still delivered, escaped as data
+    assert "\\u003c/script\\u003e" in r.text
