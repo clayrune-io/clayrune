@@ -15,6 +15,7 @@ re-pinning is a reviewed commit.
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import re
@@ -31,12 +32,20 @@ _TAG = re.compile(r'^autobuild-(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})$')
 _UA = {'User-Agent': 'clayrune-addons-pin'}
 
 
-def month_end_problem(tag: str, all_tags: list[str]) -> str | None:
-    """None when `tag` is the latest autobuild of its month, else why not."""
+def month_end_problem(tag: str, all_tags: list[str], today: datetime.date | None = None) -> str | None:
+    """None when `tag` is the latest autobuild of its month, else why not.
+
+    A month still in progress has no last build yet: today's daily build would
+    satisfy the "no later tag" test, then stop being the last one tomorrow and
+    be dropped after 14 days. So the month must also be over (MC-1179 TL22).
+    """
     m = _TAG.match(tag)
     if not m:
         return f'{tag!r} is not an autobuild-YYYY-MM-DD-HH-MM tag'
     month = tag[len('autobuild-'):len('autobuild-') + 7]
+    today = today or datetime.datetime.now(datetime.timezone.utc).date()
+    if month >= today.strftime('%Y-%m'):
+        return f'{tag} is in {month}, a month that is not over yet, so it is not a month-end build'
     later = sorted(t for t in all_tags if _TAG.match(t) and t[len('autobuild-'):len('autobuild-') + 7] == month and t > tag)
     return f'{tag} is not the last build of {month} (later: {later[-1]})' if later else None
 
