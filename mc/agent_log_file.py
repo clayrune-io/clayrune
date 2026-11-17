@@ -65,6 +65,12 @@ def claim_rows(rows: list[dict]) -> list[dict]:
     return deepcopy(rows)
 
 
+def all_rows_claimed(rows: Any) -> bool:
+    """True when every row is a dict that already carries an attempt id."""
+    return isinstance(rows, list) and all(
+        isinstance(r, dict) and r.get('delivery_attempt_id') for r in rows)
+
+
 def merge_rows(rows: list[dict], before: list[dict], after: list[dict]) -> int:
     original = {r['delivery_attempt_id']: r for r in before}
     inserted_any = False
@@ -97,8 +103,10 @@ def snapshot(path: Path) -> list[dict]:
     """Offline --apply claim, before potentially slow transcript reads."""
     with transaction(path):
         rows = json.loads(read_text_with_retry(path))
+        needs_claim = not all_rows_claimed(rows)
         before = claim_rows(rows)
-        write_json_atomic(path, rows, indent=2, ensure_ascii=False)
+        if needs_claim:  # MC-1179 AP34: a read of a fully claimed log writes nothing
+            write_json_atomic(path, rows, indent=2, ensure_ascii=False)
         return before
 
 
