@@ -1282,3 +1282,151 @@ sizes and refuses on failure; `has_unmerged_work` fails closed on any
 exception; the merge lands the reviewed SHA and the hold is re-checked inside
 the landing environment (`:621-624`); every path built from a session id goes
 through `_SAFE_ID`.
+
+---
+
+## 7. The review gates and the small session modules
+
+`mc/merge_review_gate.py`, `mc/cold_review.py`, `mc/cold_review_gate.py`,
+`mc/cold_review_runner.py`, `mc/engine_pace_dispatch.py`,
+`mc/behavior_tail.py`, `mc/session_mcp_config.py`,
+`mc/session_mcp_launch.py` and `mc/session_provenance.py`, all read in full.
+Neither gate is on for any project on this install (`GET /api/projects`: no
+record has `merge_requires_review` or `cold_review_required`), and the local
+review store holds 9 hand records and no cold attempt, so the two gate
+findings below are latent here.
+
+#### R62 · medium · L — the cold-review attempt cap is spent by failures that made no model call, back to back, and nothing resets it
+
+`mc/cold_review_runner.py:115-128`, `:55-59`, `:139-144`;
+`mc/cold_review_gate.py:15-18`.
+
+`review_tip` reserves an attempt (`:118`) and only then calls `_once`. Three
+kinds of failure return from `_once` without any model call: the packet could
+not be built (`packet:git_unavailable`, `:143-144`), the Claude one-shot is not
+available right now (`_default_transform` raises `claude_unavailable`,
+`:57-58`), and the record write was refused. Each costs an attempt. The loop
+then goes straight round again ("the second attempt follows the first
+immediately", module docstring `:22-23`), so the same condition takes the
+second attempt milliseconds later. The cap is 2 per commit and "there is no
+HTTP route that resets it" (`cold_review_gate.py:17-18`).
+
+Failure: a project with `cold_review_required` on; an agent finishes while the
+cached Claude auth status reads not-ok (a sign-out, or the stale probe of R13).
+Both attempts are spent in one pass with zero model calls, and the commit reads
+"cold review attempt 2/2, last error: claude_unavailable; out of attempts,
+needs a human" for good. Signing back in does not help; only a hand merge or a
+new commit does. A 180 s model timeout twice in a row ends the same way.
+
+A cap that exists to bound model spend should count model calls. Smallest fix:
+check `claude_oneshot_available()` and build the packet before
+`reserve_attempt`, returning `held` with no reservation when either fails; and
+let the second attempt wait for the next session end or the worktree retry
+tick, not the same loop iteration.
+
+Tests pin the current behaviour, they do not question it:
+`tests/test_cold_review_wiring.py:198` asserts `claude_unavailable` holds, and
+`:183` asserts two failures hold with `attempts == 2`. Neither asserts that an
+unavailable reviewer leaves the budget alone.
+
+Related, same file set: `cold_review.py:84` truncates the ask to 4,000
+characters without a marker, while the diff is refused whole over its cap
+because "a partly read diff is an unreviewed diff" (`:17-18`). A long task
+brief is reviewed against its first 4,000 characters; acceptance criteria at
+the end of the brief are not in the packet.
+
+#### R63 · low · L — an explicit MCP selection that fails to resolve becomes the full fleet on three engines and a refused launch on four
+
+`agent_routes.py:800-820`, `:864-867`, `:925`;
+`mc/session_mcp_launch.py:24-26`; `mc/session_mcp_config.py:13-15`.
+
+`_resolve_project_mcp_config` returns `None` both for "the project never opted
+in" and for "the project opted in and resolution threw" (`:817-820`,
+"inheriting full fleet"). Claude then launches without `--strict-mcp-config`
+(`:925`), and Gemini and Qwen take the whole effective set (`:864-867`).
+For Codex, OpenCode, Goose and Kiro the same state raises "Cannot resolve the
+explicit MCP selection; launch refused" (`session_mcp_launch.py:24-26`), with
+the comment "an explicit list must never become an untrimmed fleet".
+`session_mcp_config.py:13-15` states the rule as "honoured exactly ... an empty
+list stays empty".
+
+Failure: `enabled_mcp_servers` holds one unhashable entry (a hand-edited
+record with an object in the list). `name in catalog` raises `TypeError` at
+`:810`. A project trimmed to keep a server away from its agents gets that
+server back on Claude, Gemini and Qwen, with one warn line in the server log;
+the same project on Codex does not start. Pick one policy. The newer one
+(refuse) matches the module docstrings.
+
+Test: `tests/test_session_mcp_launch.py:159` covers the refusal; nothing
+covers the fail-open half.
+
+#### R64 · low · M — the review store treats any read error as corruption, and reads a corrupt store silently
+
+`mc/merge_review_gate.py:264-271`, `:111-118`, `:286-291`.
+
+`_mutate` wraps the read in `except Exception` and moves the file aside as
+`.corrupt`. A transient `OSError` on the read is handled the same as a
+malformed file: the good store is renamed away and replaced with a document
+holding only the new record, so every earlier pass is gone and every branch
+that had one reads "no review on record". A second corruption overwrites the
+first `.corrupt` (`path.replace`). On the read side, `_read` and
+`read_section` return `{}` for a corrupt file with no log line (project
+policy: a JSON state load that fails must log), so a corrupt store and an
+unreviewed branch produce the same hold message. Smallest fix: catch
+`ValueError` for the move-aside and let `OSError` raise; timestamp the
+`.corrupt` name; log in the two readers. Test:
+`tests/test_merge_review_gate.py:188` covers a malformed file only.
+
+#### Lesser findings
+
+- **low · L** `cold_review_runner.py:131-133` — an unexpected exception after
+  the reservation (for example an `OSError` out of the store write, which
+  `_once` does not catch at `:157`) returns `attempts: 0`; the attempt was
+  spent and no error is noted against the commit.
+- **low · L** `cold_review_gate.py:104-107` — `hold_reason` reads the store
+  twice (`_gate.hold_reason`, then `attempts`), against the one-snapshot rule
+  written at `merge_review_gate.py:121-125`. Only the wording of the message
+  can be wrong.
+- **low · E** `engine_pace_dispatch.py:13-17`, `agent_routes.py:13610` — the
+  dispatch route reads weekly usage through a private fetch in
+  `system_routes`. Its 60 s cache stores successes only
+  (`claude_usage_source.py:86-88`), so while the usage endpoint is
+  unreachable every dispatch of a character with a configured alternate waits
+  the 6 s timeout before it starts. Not under the project lock. Read, not
+  measured. `prepare` also loads the whole project record once more per
+  dispatch (`:37`), the R9/R10 class.
+- **low · L** `session_mcp_launch.py:35-36` — with `clayrune_mcp_enabled`
+  off, a user-defined server named `clayrune` is dropped for the four bridged
+  engines, while `session_mcp_config.py:60-61` says a user-defined server of
+  that name wins.
+- **low · M** `session_mcp_launch.py:57-58` — with an empty `config_json` and
+  nothing stored on the session, `prepare` returns the bare command, which is
+  the native fleet of that engine; the docstring (`:45-46`) says it never
+  falls back to it. No current caller reaches this: `resolve` always returns
+  a non-empty document for these engines.
+- **low · E** `session_provenance.py:9` — `_origins` gains one entry per
+  session for the life of the server and is never pruned. About 100 bytes
+  each.
+
+#### Sound in these files
+
+- `merge_review_gate`: one snapshot per gate decision; a rejection follows
+  the commit across branch names; `record` refuses a non-tip SHA, a
+  self-review and a non-agent branch; the `cold` marker has no HTTP path.
+- `cold_review`: the packet has no parameter a transcript could enter by; a
+  random fence; duplicate-key refusal in `parse_verdict`; an over-size diff is
+  refused, never truncated.
+- The cold reviewer prompt (up to 256 KB of diff) reaches the CLI on stdin
+  (`agent_runtime.py:3208`, `input=stdin_payload`), not in argv, so the
+  Windows command-line limit of R47 does not apply here.
+- `cold_review_runner.start`: `_inflight` and `_rerun` are only touched under
+  their lock; the `then` of the newest completion always runs, including
+  after the round cap and after a worker exception.
+- `behavior_tail`: **measured** 738 bytes full and 245 compact, inside the 750
+  and 250 budgets its comments state; `render` cannot raise; the counter is
+  reset at both respawn sites that reuse the session dict
+  (`agent_routes.py:15096`, `:15838`).
+- `engine_pace_dispatch.prepare`: an explicit engine, model or effort, or a
+  resume, skips routing; every failure keeps the original character and logs.
+- `session_mcp_config`: incognito and frozen builds get no server; an
+  explicit selection is never added to.
