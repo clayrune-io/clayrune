@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Process guard: ordinary spellings of an image-name or listener-PID kill, and a lazy listener lookup (MC-1190 / MC-1179 AP1, AP3)
+
+- AP1: the process-guard hook now finds the kill command word (`kill`, the Windows kill tool, `Stop-Process`, `spps`) and reads its whole segment. Every integer in it is checked against the listener PIDs, so `kill -TERM <pid>`, `kill 111 <pid>`, a second `/PID`, `/FI "PID eq <pid>"`, positional `Stop-Process <pid>` and `-Id 111,<pid>` are refused. Image-name spellings added: the `/FI "IMAGENAME eq x"` filter and `-im`, `-ProcessName` and the `-Na`/`-Pr` prefixes, `spps -Name`, `Get-Process x | kill`, `gps x | spps`, `(Get-Process x).Kill()`, and the CIM/WMI `Terminate` form.
+- AP1, indirect forms: a kill whose PIDs come from a lookup by port or by name is refused (`kill $(lsof -ti :port)`, `lsof ... | xargs kill`, a variable or loop variable assigned from `Get-NetTCPConnection`/`Get-Process`/`pgrep`/`netstat`, `Stop-Process -Id (Get-NetTCPConnection ...).OwningProcess`). Killing a PID the agent captured itself (`$!`, `$pid`, `$p.Id`, `$p.Kill()` on a `Start-Process -PassThru` handle, `$(cat pidfile)`, `$(jobs -p)`, `$(pgrep -P $$)`) is still allowed. New logic is in `mc/process_guard_kills.py`; the original patterns in `mc/process_guard.py` still run first, so no existing refusal was loosened.
+- AP3: `guard_command` takes the listener PIDs or a callable, and `hook_main` passes the callable, so the `netstat` lookup (53.5 ms) runs only when a kill with an integer in it is found. `echo hi` through the hook: 80.6 ms median before, 55.6 ms after (15 runs each).
+- Not fixed here, same review: AP2 (a command that only mentions a blocked spelling is refused) and AP4 (no listener detection on Linux/macOS). `mc.process_guard_kills` added to the macOS spec's hidden imports next to `mc.process_guard`.
+- Branch candidate for review; no merge, push, hook reinstall or server restart.
+
 ## [2026-11-16] - Workflow reconciler, run authority and action ids (MC-1188 / MC-1179 DCW-W1, W2, W3)
 
 - W1: the 30-second reconciler no longer completes a workflow step whose session is paused on a question (`waiting_for_question` or `pending_questions`). Before, the question text became the step output and the next step ran on it; the real answer was then ignored. A paused step stays running and the later real completion advances the run.

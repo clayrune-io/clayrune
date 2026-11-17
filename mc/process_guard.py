@@ -14,7 +14,12 @@ import os
 import re
 import subprocess
 import sys
-from typing import Iterable, Optional
+from typing import Callable, Iterable, Optional, Union
+
+try:
+    from mc import process_guard_kills as _kills
+except ImportError:  # run as a script (the installed hook): sys.path[0] is mc/
+    import process_guard_kills as _kills  # type: ignore[no-redef]
 
 
 _IMAGE_PATTERNS = (
@@ -31,8 +36,12 @@ _PID_PATTERNS = (
 )
 
 
-def guard_command(command: str, listener_pids: Iterable[str]) -> Optional[str]:
-    """Return a human-readable block reason, or ``None`` to allow."""
+def guard_command(command: str, listener_pids: Union[Iterable[str], Callable[[], Iterable[str]]]) -> Optional[str]:
+    """Return a human-readable block reason, or ``None`` to allow.
+
+    ``listener_pids`` is the set of Clayrune listener PIDs, or a callable that
+    produces it.  A callable is only called when the command holds a kill that
+    carries an integer (MC-1190 AP3: the lookup is a ``netstat`` subprocess)."""
     if not isinstance(command, str) or not command.strip():
         return None
     for pattern in _IMAGE_PATTERNS:
@@ -42,15 +51,17 @@ def guard_command(command: str, listener_pids: Iterable[str]) -> Optional[str]:
                 "process guard: image-name termination is blocked "
                 f"({match.group(0).strip()!r}); only terminate a PID you spawned"
             )
-    listeners = {str(pid).strip() for pid in listener_pids if str(pid).strip()}
+    listeners = _kills.LazyPids(listener_pids)
     for pattern in _PID_PATTERNS:
         for match in pattern.finditer(command):
-            if match.group(1) in listeners:
+            if match.group(1) in listeners.get():
                 return (
                     "process guard: refusing to terminate Clayrune listener "
                     f"PID {match.group(1)}"
                 )
-    return None
+    # The patterns above are the original spellings and stay as they were; the
+    # kill-command analysis (mc/process_guard_kills.py) only adds refusals.
+    return _kills.find_violation(command, listeners)
 
 
 def clayrune_listener_pids() -> set[str]:
@@ -97,7 +108,7 @@ def hook_main(payload: object) -> int:
         return 0
     tool_input = payload.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else ""
-    reason = guard_command(command or "", clayrune_listener_pids())
+    reason = guard_command(command or "", clayrune_listener_pids)
     if reason:
         sys.stderr.write(reason + "\n")
         return 2
