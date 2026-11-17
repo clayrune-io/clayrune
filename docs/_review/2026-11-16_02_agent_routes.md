@@ -193,3 +193,198 @@ group by provider once, before the loop.
 (`:2648-2651`). The three stream observers keep their never-raise contract
 and log what they catch (`:4464-4465`, `:4487-4488`, `:4505-4506`), which is
 the project exception policy applied correctly.
+
+## 2. `mc/blueprints/agent_routes.py` lines 4733-9160
+
+Universal capability text, `_build_agent_context`, TodoWrite sync, the two
+Claude stream readers, the agent-log file helpers, the fence lookup routes,
+the revive paths, `_note_claude_sid`, `_log_agent_dispatch_pending`.
+
+#### R19 · medium · M — the operator's first name is hardcoded in prompt text sent to every agent on every install
+
+`agent_routes.py:5103`, `:5107`, `:5114`, `:5119` (the roster block) and
+`:5261` (the Floor-figure paragraph) are string literals that name one
+person, inside text appended to the system prompt. The same function reads
+the configured name two lines later (`:5233`, `state.CONFIG.get('user_name')`)
+and uses it correctly at `:5294`. On any other install the agent is told that
+someone it has never heard of "will say" the roster names and "cannot open"
+a Task-tool helper. This is the case the project's own binding rule names
+(nothing operator-specific in the repo; rules files were the first incident,
+this is the same thing in code).
+
+Smallest fix: substitute `user_name or 'the user'` in those five literals.
+
+Test: none. `TestDelegatedPersonalessIdentity` pins the `:5260` paragraph's
+text, so it will need the same substitution.
+
+#### R24 · medium · L — the TodoWrite backlog key is the Claude session id, which changes on every respawn, so one todo becomes several backlog rows and the old ones stay "in progress" for good
+
+The key is `claude_session_id or id or session_id`
+(`agent_routes.py:6279-6281`, `:6697-6699`, and the note writer at
+`:5899-5901`), hashed with the todo text into the row's `agent_ref`
+(`:5821-5825`). `_sync_todowrite_to_backlog` documents it as a "stable
+identifier" (`:5969-5970`). `_note_claude_sid` documents the opposite: "a
+respawn/resume starts a NEW claude_session_id" and keeps the old ones in a
+history list (`:8786-8794`).
+
+So after any respawn (context rollover, idle eviction, a revive after a
+restart) the next `TodoWrite` hashes to new refs: every todo is inserted again
+as a new backlog row (`:6009-6024`), the earlier rows are never updated again,
+and `_auto_snapshot_notes_on_turn` only matches rows whose
+`agent_session_id` equals the current id (`:5932`), so rows left
+`in_progress` under the old id stay that way. Read, not run.
+
+Smallest fix: key on the Clayrune `session_id`, which survives respawns.
+
+Test: none found that calls the sync twice across a changed
+`claude_session_id`.
+
+#### R26 · medium · E/L — the chat buffer is capped in one of the readers only
+
+`agent_routes.py:6775-6778` trims `log_lines` to 1,500 when it passes 2,000,
+inside the Claude Mode B loop. The Claude Mode A reader (`:6141-6436`) has no
+trim, and that call is the only use of `_log_lines_trim.trim` in `mc/` (grep
+of the tree, so the non-Claude readers in `mc/agent_runtime.py` have none
+either). A Mode A or non-Claude session keeps one session dict across
+follow-ups, so its buffer grows for the life of the conversation, and every
+consumer that copies or ships the buffer grows with it.
+
+Smallest fix: move the cap into one helper called by every reader's append
+path.
+
+Test: none asserts a bound on a Mode A or non-Claude buffer.
+
+#### R23 · low · E/M — the per-turn backlog note writer parses the whole project record on every turn, writes the wrong text, and hides its own I/O errors
+
+`_auto_snapshot_notes_on_turn` runs at every `result` event
+(`agent_routes.py:6358`, `:6487`). With 20 or more characters of reply text it
+calls `load_project` (`:5923`) before it knows whether the session owns any
+backlog row; almost none do. **Measured** 8.8 ms on the largest record here.
+The docstring says it appends "the last substantive assistant text"
+(`:5896`); `:5918` joins every fragment of the turn and keeps the first 300
+characters. Load and save failures return silently (`:5924`, `:5956`) and
+the outer handler is `except Exception: pass` (`:5958-5959`), on state-file
+I/O.
+
+Smallest fix: skip unless the session has synced a TodoWrite list (one flag
+set at `:6282`); take the tail; log the three handlers.
+
+#### R17 · low · L — the context fingerprint does not cover what the context reads
+
+`_context_fingerprint` (`agent_routes.py:1072-1140`) says it signs
+"everything `_build_agent_context` reads that can change while a session is
+alive", and `_respawn_sysprompt_args` reuses the stashed prompt while it holds
+(`:1224-1227`). Not signed: the project record (`current_task` `:5789`, name
+`:5304`, `activity_log` `:5688`) and the config keys read at `:5195`
+(`context_profile_overrides`), `:5302` (`brief_replies_always_enabled`),
+`:5478`, `:5513`, `:5537`, `:5558`, `:5637`, `:5669` (six feature flags).
+Changing a project's current task, or switching continuity or coordination
+off, leaves a long-lived chat's prompt carrying the old line or the disabled
+block until an unrelated memory file changes. A stale prompt, not a wrong
+action.
+
+Smallest fix: add those keys and the project record's mtime to the hash.
+
+#### R20 · low · L — the skills catalog decides Claude-or-not from the project default, not from the session's engine
+
+`_skills_catalog_block` reads `project.get('provider')` or the global default
+(`agent_routes.py:4961`). `_build_agent_context` has the session's effective
+`provider` and uses it for its other two engine decisions (`:5193-5194`,
+`:5217-5218`) but calls the catalog with the bare project (`:5415`). Dispatch
+hides this by passing a project copy with the provider overwritten (`:11454`,
+`:12712`); the respawn and revive builders do not (`:1181`, `:1231`, `:7966`,
+`:7990`). A Claude chat on a project whose default engine is not Claude gets
+the full skills catalog appended on respawn or revive and not on dispatch.
+
+Smallest fix: pass `provider` into `_skills_catalog_block`.
+
+#### R27 · low · L — the Mode A reader's failed-resume recovery skips the ownership check its Mode B twin has
+
+Mode B: `agent_routes.py:6566` requires `_completion_owned_by(session,
+my_proc)`. Mode A: `:6430-6435` does not, so a superseded reader that reaches
+its `finally` while the session reads `error` can call
+`_auto_recover_failed_resume` on a session another process owns. The
+`_resume_recovery_attempted` latch is checked at `:6432` and set at `:6794`
+with no lock between.
+
+#### R28 · low · L — a failed opening write in the Mode B fresh-retry leaves a process with no reader
+
+`_auto_recover_failed_resume` publishes the new process (`agent_routes.py:
+6846-6857`), then writes the opening message (`:6885-6886`), then starts the
+reader (`:6887`). If the write raises, `:6891-6894` sets `status = 'error'`
+and returns: `session['proc']` is the new process, `process_alive` is True,
+the tracker has it registered, and nothing waits on it, unregisters it or
+runs completion. Start the reader before the write, as the revive path does
+(`:8173` then `:8202`).
+
+#### R29 · low · L/E — the fence's trigger-type lookup iterates the live session dict unguarded, and a miss parses every project's log
+
+`agent_routes.py:7050` iterates `agent_sessions.values()` directly; the
+sibling route snapshots it (`:7370`). A dispatch that inserts during the
+loop raises `RuntimeError` and the hook's call is a 500. The fence treats a
+failed lookup as "unknown" and falls back to the launch marker, so this
+degrades safely. On a miss, `:7058-7066` reads and parses every
+`*_agent_log.json`. **Measured:** 26 files, 12.6 MB, 42 ms per miss. This is
+2026-09-10 E3's "trigger-type glob", still open; `:7061` swallows read errors
+without a log.
+
+#### R31 · low · E — a revive parses the transcript twice
+
+`_revive_history_lines` calls `_transcript_buffer_lines_and_ts`
+(`agent_routes.py:7650`, parse at `:7717`) and then
+`_buffer_truncation_notice`, which parses the whole file again with
+`max_messages=100000` only to count messages (`:7673`); `:7678` swallows its
+errors. Return the total from the first parse.
+
+#### R22 · low · L/E — the recent-conversations block reads the live session dict unguarded and parses the agent log to label five rows
+
+`agent_routes.py:5710-5717`: a concurrent insert raises inside the loop, the
+`except Exception: pass` leaves the status map half built, and conversations
+are labelled from the stale log instead. `:5720` (and `:5740`) parse the full
+agent log (**measured** 5.1 ms for the 2.07 MB, 500-row log here) per context
+build. 2026-09-10 E3, still open at this site.
+
+#### R25, R30 · low · M — dead code that still looks live
+
+`agent_routes.py:6290-6308` and `:6708-6723` handle a native
+`AskUserQuestion` tool call, which the file's own docstring says headless
+Claude does not have (`:5835-5837`); both kill with `proc.kill()`, not the
+tree. `attend_session` returns 410 from `if True:` (`:7113-7117`) and keeps
+34 lines of unreachable handler below it (`:7118-7151`).
+`_ATTEND_ONCE_ELIGIBLE_TRIGGER_TYPES` (`:7179-7181`) is a hand copy of the
+fence's set; the two match today, and no test pins this copy (the tests pin
+`launch_marker` against the fence, not this one).
+
+#### Methodology notes for this stretch
+
+- The two Claude readers duplicate about 150 lines of assistant/tool-use/
+  tool-result handling (`agent_routes.py:6195-6343` against `:6611-6751`).
+  R26 and R27 are what that costs: a fix landed in one copy.
+- The Mode B and Mode A revive branches each build the session dict from a
+  70-line literal (`:8088-8158`, `:8263-8313`) that has to be kept key for key
+  by hand; the comments at `:8129-8134` record two bugs of exactly that kind.
+- `_revive_from_agent_log` allocates a delegation turn (`:7857`), records a
+  resume and a rollover (`:7962`, `:7965`) and writes the activity line
+  (`:7977`) before the spawn; a spawn failure returns `None` (`:8083`,
+  `:8258`) without undoing them and the caller then starts a fresh dispatch.
+- Agent-log cost, **measured** on the 2.07 MB log: parse 5.1 ms, serialise
+  5.9 ms, so one `_update_agent_log` is about 11 ms of CPU plus the write,
+  under the project lock. `mc/launch_transaction.py:86`, `:111` and `:179`
+  add three more full parses per launch. The per-dispatch total is counted in
+  the dispatch section.
+- Further unguarded request fields for R15: `agent_routes.py:7367`.
+
+**Sound in this stretch:** `_update_agent_log` (`agent_routes.py:7425-7445`)
+serialises read-modify-write behind a per-project lock and a file
+transaction and never saves over a forgiving read; `_save_agent_log` is
+atomic (`:7463`), so the display-read quarantine at `:6993` cannot be
+triggered by a racing writer. `_load_agent_log` keeps I/O errors and parse
+errors apart (`:6970-6994`). `consume_attend_once_pass` re-derives the match
+under the project lock and `_CSID_LOCK` and checks the pass's bound session
+(`:7378-7412`); `_note_claude_sid` takes only `_CSID_LOCK` for its write
+(`:8783-8794`), which keeps the reader thread off the project lock. The
+read-floor failure is logged, not swallowed (`:5583-5590`). The single-emit
+gate (`:6094-6121`) is applied on every terminal write in both readers. The
+revive paths refuse rather than fall back to the project checkout when an
+isolated conversation's worktree cannot be restored (`:8037-8045`,
+`:8079-8082`, `:8254-8257`).
