@@ -66,6 +66,9 @@ async function open(profileOnly = false) {
       const el = win.querySelector('#floor-pref-' + field.key);
       let value = field.type === 'checkbox' ? el.checked : el.value.trim();
       if (field.type === 'number') {
+        // An empty box for a key the server sent no value for is untouched, not "0":
+        // Number('') is 0, which would be saved as a change on every unrelated save.
+        if (value === '' && original[field.key] == null) continue;
         value = Number(value);
         if (!Number.isInteger(value) || value < 0) { el.reportValidity(); return; }
       }
