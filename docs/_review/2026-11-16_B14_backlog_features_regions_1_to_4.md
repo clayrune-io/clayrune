@@ -6,9 +6,11 @@ noted. `server` was never imported, the live server was sent nothing but `GET`,
 no model call was made, and no process that binds a port or launches a provider
 CLI was started.
 
-STATUS: IN PROGRESS. Sections are written as they are completed; the ranked
-summary and coverage statement are written last. If this line is still here,
-the pass was interrupted: continue from the last committed section.
+STATUS: COMPLETE. One disclosure: the first half of this pass (about 45 backlog
+verdicts) was held only in the session and was lost at a context rollover
+before anything but the skeleton had been committed. Every verdict in this
+file was re-derived from the code and the git log after that, and committed
+in batches. Nothing here is carried over from memory of the lost half.
 
 Scope: the regions of passes 1 to 4 (runtime core, agent routes and session
 lifecycle, memory and learning, frontend). Those four reports are not repeated;
@@ -18,7 +20,27 @@ a backlog item meets one. New findings from this pass use the prefix **BX**.
 
 ## Ranked summary
 
-(written last)
+4 new findings: 0 blocker, 1 high, 2 medium, 1 low. This pass was scoped to the
+feature table and the backlog cross-check, so the count is small by design;
+the defects of these regions are the 296 numbered findings of passes 1 to 4.
+
+**Merge-blocking if it were a diff:** rank 1.
+
+| Rank | Id | Finding | Lens | Severity |
+|---|---|---|---|---|
+| 1 | BX2 | The terminal habit classifier reads only lines that start with `"> "`; every message after the first is stored with a leading newline, so a habit stated in a follow-up is never minted (measured; the test feeds one shape only) | L | high |
+| 2 | BX4 | Seven of the twelve human-only project safety settings, including the merge gate and the cold reviewer, have no control anywhere in the product; agents are refused from setting them, so both gates stay off | L | medium |
+| 3 | BX1 | The rollover pin floor guard is skipped for any model outside the Claude table; a pin under the fresh floor still thrashes there (measured; pinned by a test) | L | medium |
+| 4 | BX3 | The chat-buffer trim treats any line starting with `"> "` as the user's and never drops it, so agent blockquotes accumulate without limit | E | low |
+
+**The result that is not a code finding.** Of 46 open backlog items in these
+regions, 26 have their code ask met on master. 13 are marked `blocked` and 10
+of those are blocked by nothing but an owner-side look. Nine items still say
+work is "dispatched" or not started while the commits are on master. The
+backlog over-states open engineering work in these regions by more than half.
+
+**Features:** 54 traced or mapped. 8 work, 39 work with a defect, 7 cannot
+work as written (two of those by design, behind a flag or in report mode).
 
 ## Feature table (lens 4)
 
@@ -85,7 +107,7 @@ Verdicts: **works** (as documented) / **defect** (works with a defect) /
 | F37 | Chat tabs: pin and close | Tab controls in the chat header | The controls exist only in markup that is never rendered (CV5) | cannot (CV5) | pass 4 |
 | F38 | Floor: figures, hire, un-hire | Floor render, hire drag, un-hire handler | An agent's self-chosen name runs as script on click (FE2); un-hire takes a persona name inside a quoted handler (CV1) | defect (FE2, CV1) | pass 4 |
 | F39 | Workflow builder | Canvas edit and save | Adding a person blanks the persona of the step whose editor is open (WB1, blocker, measured) | defect (WB1) | pass 4 |
-| F40 | Settings | Section render, save, human gate | Removing any push device unsubscribes this browser (ST2); the sign-in session "rename" link is broken markup (ST1). No field exists for `context_rollover_by_character`, `verify_command` or `cold_review_required` (this pass) | defect (ST1, ST2) | pass 4; gaps checked here by grep |
+| F40 | Settings | Section render, save, human gate | Removing any push device unsubscribes this browser (ST2); the sign-in session "rename" link is broken markup (ST1). No field exists for `context_rollover_by_character`, `verify_command` or `cold_review_required` (BX4) | defect (ST1, ST2, BX4) | pass 4; gaps checked here by grep |
 | F41 | Skills panel | List, editor, browse other projects | "Install" from another project copies the text and reports installed (SK5); frontmatter name reaches quoted handlers (SK1) | defect (SK1, SK4, SK5) | pass 4 |
 | F42 | MCP server manager | List, per-project toggle, edit | Double-click on a toggle turns every server off (MC3); Edit then Save rewrites the entry from a lossy form (MC4); env-var name from a repo runs on first keystroke (MC1) | defect (MC1, MC3, MC4) | pass 4 |
 | F43 | Backup, export, restore | Backup panel | Export with the vault included cannot be submitted, the button never re-enables (BK3); a failed size preview retries in a tight loop (BK2) | cannot, for vault export (BK3); defect otherwise | pass 4 |
@@ -134,8 +156,8 @@ owner-side acceptance (device test, UI look, product call) keeps the item open.
 | MC-1178 | open | Rollover thrash, per-character pin | PARTLY DONE | Parts (1) and (2) are on master: `d124f33e`, `1cfb6d82`. `mc/rollover_threshold.py:56-97` resolves a per-model cost optimum and ignores a pin below fresh floor + 60k (measured: Fable 5.2, floor 90k, pin 100k gives 277,349, reason `pin_ignored_below_floor`); the roll log records character, model and floor (`mc/midturn_rollover.py:502-523`). Left: the guard is skipped whenever the model is not in `MODEL_TABLE` (BX1); part (3) Settings warning and part (4) a Settings field for `context_rollover_by_character` do not exist (no hit for the key anywhere under `static/`); the "rollover paused" chat notice was replaced by a once-per-pin log line (`rollover_threshold.py:50-53`), which the user never sees. Smallest next step: apply the floor guard on the no-table branch (`rollover_threshold.py:77-78`), then the Settings field. |
 | MC-1174 | open | Stall guard outside /goal | NOT DONE | No code: no module, flag or hook names a stall guard (`grep` for `stall_guard` / `MC-1174` under `mc/`, `static/`, `server.py` finds only unrelated text). The item's own open question (where plan state lives) is a design decision, so the smallest next step is that decision, not a fix. |
 | MC-1168 | in_progress | Delivery reported when nothing written | DONE | Both halves are on master: `8551e4a1`, `0c39990e`, `51d0e400`. (A) Codex follow-up now goes through `_start_prompt_delivery` and `_require_prompt_delivered` (`mc/agent_runtime.py:5509-5560`, used at `:9858-9863`), which raises `PromptDeliveryError` instead of returning. (B) Mode B revival writes through the same seam and, on failure, rejects the gate, undoes the revive and raises `ReviveDeliveryError` (`mc/blueprints/agent_routes.py:8200-8226`). Ten `tests/test_runtime_delivery_truth*.py` files plus `tests/mc1168_r12/`. The item text still says "Tobin dispatched". |
-| MC-1165 | in_progress | Cold reviewer on each handoff | DONE (code), NEEDS A HUMAN | `mc/cold_review.py`, `mc/cold_review_gate.py`, `mc/cold_review_runner.py` are on master (`c9e21f9b`, `d1bba7a8` and nine earlier rounds), wired into `merge_back` through `mc/agent_worktree.py:51` and `mc/merge_review_gate.py:177,218`. Opt-in per project (`cold_review_required`, human-only in `mc/project_safety_settings.py`). No Settings control for it exists under `static/` (no hit for the key), so turning it on is a config edit. Owner: decide which projects require it. |
-| MC-1164 | in_progress | Merge only when checks pass | DONE (code), NEEDS A HUMAN | `b8886776` / `646b94b5` on master. `mc/landing_gate.py:125-134` returns `None` (historical path) when `verify_command` is unset, otherwise blocks on any failure; called from `mc/agent_worktree.py:608-613`. Contract `docs/LANDING_GATE.md` exists. Off until `verify_command` is set per project, and there is no Settings field for it under `static/`. Owner: set the command on the projects that should be gated. |
+| MC-1165 | in_progress | Cold reviewer on each handoff | DONE (code), NEEDS A HUMAN | `mc/cold_review.py`, `mc/cold_review_gate.py`, `mc/cold_review_runner.py` are on master (`c9e21f9b`, `d1bba7a8` and nine earlier rounds), wired into `merge_back` through `mc/agent_worktree.py:51` and `mc/merge_review_gate.py:177,218`. Opt-in per project (`cold_review_required`, human-only in `mc/project_safety_settings.py`). No Settings control for it exists under `static/` (no hit for the key), so turning it on is a config edit (BX4). Owner: decide which projects require it. |
+| MC-1164 | in_progress | Merge only when checks pass | DONE (code), NEEDS A HUMAN | `b8886776` / `646b94b5` on master. `mc/landing_gate.py:125-134` returns `None` (historical path) when `verify_command` is unset, otherwise blocks on any failure; called from `mc/agent_worktree.py:608-613`. Contract `docs/LANDING_GATE.md` exists. Off until `verify_command` is set per project, and there is no Settings field for it under `static/` (BX4). Owner: set the command on the projects that should be gated. |
 | MC-1161 | in_progress | Adoption drops open agent jobs | DONE | `7b9fdbff` / `663a305d` on master. `mc/agent_shim_adopt.py:823-834` refuses a session that owns an open job (`_owns_open_job`, `:812-817`); the dialog says "running session(s) or job(s)" (`static/js/update-power.js:280`). Adoption flag is off by default, so the only visible change is the wording. Close on the UI look. |
 | MC-1160 | in_progress | Restart blockers ignore agent jobs | DONE | `739cdedf` / `0427ebea` on master. Open jobs are listed as `job_running` rows (`mc/blueprints/system_routes.py:1746`) from `mc/agent_jobs.py:146,155`. Remaining step is the owner's UI test named in the item. |
 | MC-1150 | in_progress | Agent runs survive server restart | PARTLY DONE | P1 to P4 are merged (`6f49582e`, `ad73ef94`, `6ca14879`, `92d4cf58`): `mc/agent_shim*.py` (6 modules), checkpoint, boot adoption, completion replay. The item text still says "NEXT: P1". The flag `agent_survive_restart_enabled` defaults to `False` (`mc/agent_shim_client.py:45`, comment: "off until P4 is live-proven"), so the user-facing ask (restart while an agent runs) is not delivered. Left: the live proof and the decision to turn the flag on. |
@@ -162,7 +184,7 @@ owner-side acceptance (device test, UI look, product call) keeps the item open.
 | MC-1016 | blocked | Linux restart inherits dead terminal | DONE (code), NEEDS A HUMAN | `a16fbb27` on master; the restart child's output handling is at `mc/blueprints/system_routes.py:1891-1919`. Note the code now discards stdout (`DEVNULL`, `:1919`) where the item text says "output to data/logs/clayrune.log": the comment at `:1891-1897` gives the reason (a second writer on the log is denied). Left: Linux install retry. |
 | MC-1014 | blocked | nvm-installed CLIs not found | DONE (code), NEEDS A HUMAN | All four commits on master. `nvm_bin_dirs` is used by the five runtime fallbacks (`mc/agent_runtime.py:2155, 4061, 7166, 8474, 10127`); `augment_unix_path` runs at boot (`server.py:3621-3622`) and in the registry path merge (`mc/blueprints/agent_routes.py:2357`). Left: a real Linux run; tests only patch `sys.platform`. |
 | MC-998 | in_progress | Usage breakdown dashboard, Codex sampling | DONE (code), NEEDS A HUMAN | `700d2e8`, `78d5ae9c`, `3a360feb` on master. The item's latest state line already records complete Codex ticks after the restart; what is left is more samples (time, not code) and the owner's UI acceptance. |
-| MC-988 | blocked | Mobile pane stays half height | PARTLY DONE, NEEDS A HUMAN | The item's state line (2026-09-29) is out of date: `fc65e53c` (2026-10-02, on master) moved the recovery decision into the resize event itself and fixed the diagnostic so it can fire. Five MC-988 commits are on master. Whether the bug is gone can only be judged on the owner's fold phone. If it has not recurred since 2026-10-02, close. |
+| MC-988 | blocked | Mobile pane stays half height | PARTLY DONE, NEEDS A HUMAN | The item's state line (2026-09-29) is out of date: `fc65e53c` (2026-10-02, on master) moved the recovery decision into the resize event itself and fixed the diagnostic so it can fire. Five MC-988 commits are on master. Whether the bug is gone can only be judged on the owner's phone. If it has not recurred since 2026-10-02, close. |
 | MC-976 | blocked | Browser pane parity phase 2 | DONE (code), NEEDS A HUMAN | All five commits on master; all eight gaps built per the item. Browser pane is outside regions 1 to 4 (not traced). Left: upload, right-click and Ctrl+F on a real device. Not blocked on code. |
 | MC-975 | blocked | Codex unattended sandbox on Windows | NEEDS A HUMAN | Part A (`2c36bfa8`, `57a10c9`) on master. Part B is an upstream runner crash; the probe kit (`2492b181`, `d0cdbbe`) is deliberately unmerged. Reopen condition is a codex-cli upgrade plus an elevated probe run, both owner-side. The item was parked at codex-cli 0.160.1; if the installed CLI is newer, the probe is due. |
 | MC-964 | in_progress | Memory overhaul, retrieval failures | PARTLY DONE | Steps A to F and T1 to T5 are on master (`2d80a26d` to `684cd9f2`, `c5f4c25b`, `bf1e8bc5`). The two follow-ups the item names are both still present in code: BX2 (`mc/memory.py:5963`, the terminal habit classifier never sees a follow-up message) and BX3 (`mc/log_lines_trim.py:22-23`, any output line starting with `> ` is pinned forever). Smallest next step: `line.lstrip()` in `_habit_source_statements`, and require the user label in `is_user_line`. Related: R26 (pass 2), the trim runs in one reader only. |
@@ -228,7 +250,25 @@ phase 5).
 
 ## Streamlining
 
-(in progress)
+The brief for this pass excused the code streamlining section unless a backlog
+item calls for it; passes 1 to 4 carry the code candidates for these regions
+and none is repeated or re-verified here. **Lines removed, this pass: 0.**
+
+What the backlog itself calls for is consolidation of items, not of code:
+
+| What | Evidence | Effect |
+|---|---|---|
+| MC-885, MC-1174, MC-895 phase 4 | Each asks for a completion check outside the model; MC-895's text says "phase 4 ... That is MC-885" | Three items become one |
+| MC-944 into MC-964 | MC-944's state line says its remainder is "sequenced as Step F of MC-964" | Two items become one |
+| MC-868 into MC-895 | MC-895's text says "phase 5 ... That is MC-868" | Two items become one |
+| MC-1046 | "DO NOT DISPATCH", branch gone, handed outside | One item leaves the active list |
+| 26 items whose code is on master | Backlog table, DONE classes | Close on acceptance, or move to a "waiting on owner" status so `blocked` and `in_progress` mean what they say |
+
+One code candidate is named by a backlog item and was not verified here:
+MC-892 notes the install runs the legacy `agent` condense mode, and ML16
+(pass 3) found that mode cannot work as written. If pass 3's finding is
+accepted, the legacy mode is a deletion, not a repair. Callers were not
+checked in this pass, so no line estimate is given.
 
 ## Detail
 
@@ -283,7 +323,7 @@ convention disagree.
 
 Smallest fix: `s = line.lstrip()` before the prefix test in
 `_habit_source_statements`. Test: `tests/test_habit_classifier.py:115-123`
-feeds only the `"> Ron: ..."` shape, so it passes on the defect. MC-964's
+feeds only the `"> <label>: ..."` shape, so it passes on the defect. MC-964's
 journal lists this as an open follow-up; it is still open on master.
 
 ### BX3 — the chat-buffer trim pins every line that starts with "> " (low, lens 1)
@@ -301,6 +341,35 @@ Smallest fix: pin only lines whose text after `"> "` (and an optional
 agent blockquote line. Other half of R26 (pass 2): R26 is the trim missing
 from most readers; BX3 is the trim keeping too much where it does run.
 
+### BX4 — seven human-only project safety settings have no control in the product (medium, lens 2)
+
+`mc/project_safety_settings.py:16-29` lists twelve keys an agent caller may
+not write (`refuse_agent_safety_write`, `:48-60`, enforced at
+`mc/blueprints/project_routes.py:712`). For seven of them no file under
+`static/` contains the key: `merge_requires_review`, `verify_command`,
+`verify_timeout_seconds`, `cold_review_required`, `worktree_isolation`,
+`worktree_base_branch`, `worktree_shared_runtime` (case-insensitive search of
+`static/` for each name and for `requires_review`, `verify.command`,
+`cold.review`: no match; the only safety key that appears is `steward_mode`,
+read-only, at `static/js/steward-role-editor.js:58`). A key assembled at run
+time would not be found this way; none was seen.
+
+Result: the merge gate (MC-1164), the cold reviewer (MC-1165), the review
+requirement (MC-1075) and worktree isolation are settings a human can change
+only by hand-building a request from a browser origin or by editing the
+project record on disk, and the agents that could do it for them are refused
+by design. Both gates shipped "off until configured", so in practice they
+stay off. MC-1076's recorded UI test ("change a safety setting in Project
+settings") cannot be performed for these seven keys.
+
+The same gap, smaller: `context_rollover_by_character` (MC-1178 part 4),
+`midturn_rollover_enabled`, `agent_survive_restart_enabled` and
+`aider_restricted_adapter_enabled` are not named under `static/` either.
+
+Smallest fix: one "Safety" group in the project settings modal bound to the
+existing `POST /api/project/<id>`, which already carries the human check.
+Test: no smoke opens such a control because none exists.
+
 <!-- DETAIL-END -->
 
 ### Commit ancestry (measured)
@@ -311,6 +380,80 @@ ancestors), MC-1046 `c072fce3` (not an ancestor; the item says the branch is
 gone), MC-1108 `02bf1966` (not an ancestor; still on its agent branch), MC-1160
 `af6cc23f` (object missing from this clone).
 
+## Prior audits
+
+`docs/ENTANGLEMENT_AUDIT.md` and the two 2026-09-10 reviews are covered, for
+these four regions, in the "prior audits" section of each of the four reports.
+This pass re-opened none of those findings and has nothing to add to them.
+
+## Open choices (not decided here)
+
+1. **BX1.** A test pins the legacy pin for a model outside the table
+   (`tests/test_rollover_threshold.py:131`). Either the floor guard applies to
+   every model (change the test), or a pin is trusted when the model is
+   unknown (then MC-1178 is done for Claude only, and should say so).
+2. **`blocked`.** Ten of thirteen in-region `blocked` items wait only on an
+   owner-side look. Either add a status for that, or use `blocked` for it and
+   mark the three genuinely stuck ones some other way.
+3. **MC-1108.** The reviewed tip is 1,009 commits behind master. Re-merge and
+   re-test before the VM pass, or run the VM pass on the old tip and re-review
+   after.
+4. **BX4.** Whether the merge gate and the cold reviewer are meant to be
+   configured from the product at all, or are deliberately config-only.
+
 ## Coverage
 
-(written last)
+This pass did not review files for defects; it opened the lines a backlog item
+or a feature path pointed at. Stated as what was actually opened.
+
+**Read fully:** `mc/rollover_threshold.py` (102 lines), `mc/log_lines_trim.py`.
+
+**Read partly (line ranges):**
+`mc/blueprints/agent_routes.py` 7471-7500, 8200-8232, 12180-12200,
+13540-13658, 15250-15300, 15461-15510 (about 330 of 18,968 lines);
+`mc/agent_runtime.py` 3681-3695, 9755-9800; `mc/midturn_rollover.py` 296-345,
+440-470, 500-545; `mc/memory.py` 5929-5975; `mc/rollover_model_table.py` 1-78;
+`mc/landing_gate.py` 120-145; `mc/cold_review_gate.py` 1-25;
+`mc/aider_launch.py` 1-16; `mc/project_safety_settings.py` 10-30, 45-60;
+`static/js/installed-app-update.js` 1-12; `tests/test_habit_classifier.py`
+113-126; `docs/RUNTIME_DELIVERY_TRUTH.md` (the r12 to r14 notes).
+
+**Structure level only (grep for a symbol, route or flag, with the matching
+line opened):** `mc/agent_shim_adopt.py`, `mc/agent_shim_client.py`,
+`mc/agent_jobs.py`, `mc/proc_kill.py`, `mc/cli_install.py`,
+`mc/continuity_liveness.py`, `mc/session_provenance.py`, `mc/habit_report.py`,
+`mc/behavior_tail.py`, `mc/agent_worktree.py`, `mc/merge_review_gate.py`,
+`mc/blueprints/system_routes.py`, `skills_routes.py`, `distiller_routes.py`,
+`popout_routes.py`, `project_routes.py`, `steward/fence.py`, and under
+`static/js/`: `conversation.js`, `resume-preview.js`, `rich-text.js`,
+`report-waiting.js`, `update-power.js`, `skills-panel.js`,
+`settings-ownership.js`, `desk-v1-what.js`. The route list of
+`agent_routes.py` was read whole (58 routes).
+
+**The four earlier reports:** the ranked summary of pass 1 was read whole (60
+rows). Of pass 2, ranks 1 to 27 of 57; of pass 3, ranks 1 to 21 of 37; of
+pass 4, ranks 1 to 11 of 142 plus every high and medium row for fourteen
+screen prefixes. The feature table therefore cites the higher-ranked finding
+for each feature; a lower-ranked finding may apply to a feature and not be
+cited. The bodies of those reports were opened only at pass 2 section 9 and
+R26.
+
+**Backlog:** status and opening text of all 91 active items; the text of the
+63 in-region and Desk items to a 2,600-character cap (ten items are longer
+and were read to the cap). Every commit an in-region item names was tested
+for ancestry (about 125 commits: 108 in one scripted run, the rest one at a
+time; see Detail).
+
+**Measured:** `threshold_with_reason` over six models, two floors and a pin
+(pure function, scratch script); `model_inputs` over eight names; the
+`startswith` shape for BX2; commit ancestry; the MC-1108 branch distance.
+Everything else is read, not measured.
+
+**Not reached:** `docs/MEMORY_SYSTEM.md` was not re-read after the rollover.
+No feature was run: every "works" verdict is a reading of the path, and four
+of the eight say so. The Desk backend, the browser pane backend, the steward,
+the scheduler and the hivemind are other passes' regions and were not opened;
+the 17 Desk rows rest on commit ancestry and a file listing. The items
+MC-1071, MC-1079, MC-976 and MC-968 were classified from commits and one
+symbol each, without tracing the feature. No streamlining candidate was
+verified.
