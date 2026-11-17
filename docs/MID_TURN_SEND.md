@@ -84,8 +84,15 @@ text-output signal, not semantic verification that each question was answered.
 Messages received after the roll remain unstamped and survive that cleanup.
 Tool-only output, empty or whitespace-only text, and subagent text do not
 retire carried entries, so a roll without main-conversation text carries
-them again. A turn result still clears every unanswered entry. The latest
-user-message section and rollover thresholds/defaults are unchanged.
+them again. A turn result still clears every unanswered entry.
+
+MC-1198: the latest user message and every unanswered message are carried in
+full. The former 2,000-character slice and five-message retention cap could
+discard instructions after a successful `/agent/send`. In the reported case,
+the original transcript held the complete followup; the replacement child's
+rollover state ended mid-word. Cleanup still follows the text/result signals
+above; rollover thresholds and defaults are unchanged. Larger pending requests
+therefore add their full size to the replacement context.
 
 ## Tests
 
@@ -94,8 +101,17 @@ user-message section and rollover thresholds/defaults are unchanged.
 - `tests/test_midturn_rollover.py` — carried-message retirement in both Claude
   readers, messages arriving after a roll, repeated rolls without text,
   tool-only/empty/subagent output, pure rendering, and observable helper errors.
+- `tests/test_agent_send_full_text.py` — 10,000-character followup and queued
+  sends survive a rollover into the scripted child's stdin; all eight pending
+  instructions survive, then clear on a turn result. The normal Mode A queue
+  drain also passes the full 10,000-character prompt to the next child.
 - `tools/smoke/mid-turn-send-ui.mjs` — composer: Interrupt button, wording,
   `send_mode` on the wire, in-flight gate lifted.
+
+MC-1198 validation: the three initial regressions failed before removing the
+caps. After the fix, the four full-text regressions, `test_midturn_rollover.py`
+and all `test_agent_routes*.py` passed together (213 tests) through the reported
+test-run launcher. Pyright basic reported zero errors for `mc/midturn_rollover.py`.
 
 ## Not verified
 
