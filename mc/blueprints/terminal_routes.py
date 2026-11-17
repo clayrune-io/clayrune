@@ -43,7 +43,7 @@ from typing import Any, Callable
 
 from flask import Blueprint, Response, jsonify, request
 
-from mc import pty_backend
+from mc import pty_backend, terminal_output_buffer
 from mc.core import _is_loopback_request
 from mc.state import agent_sessions, terminal_lock, terminal_sessions
 
@@ -104,10 +104,8 @@ def _read_terminal_stream(proc, session):
             if not chunk:
                 break
             text = chunk.decode('utf-8', errors='replace')
-            session['output_lines'].append(text)
-            # Cap to prevent unbounded memory growth
-            if len(session['output_lines']) > 5000:
-                session['output_lines'] = session['output_lines'][-3000:]
+            # Caps memory growth; counts what it cuts in session['dropped'].
+            terminal_output_buffer.append_chunk(session, text)
     except Exception as e:
         if session.get('proc') is my_proc:
             session['output_lines'].append(f'[stream error: {e}]')
@@ -137,9 +135,7 @@ def _read_pty_stream(pty_sess, session):
             text = pty_sess.read(4096)
             if not text:
                 break
-            session['output_lines'].append(text)
-            if len(session['output_lines']) > 5000:
-                session['output_lines'] = session['output_lines'][-3000:]
+            terminal_output_buffer.append_chunk(session, text)
     except Exception as e:
         if session.get('pty') is my_pty:
             session['output_lines'].append(f'[stream error: {e}]')
@@ -199,6 +195,7 @@ def launch_pty_session(project_id, command, cwd=None, argv_extra=None, env_extra
         'status': 'running',
         'command': command,
         'output_lines': [],
+        'dropped': 0,
         'started_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         'session_id': session_id,
         'project_id': project_id,
@@ -256,6 +253,7 @@ def launch_pipe_session(project_id, command, cwd=None):
         'status': 'running',
         'command': command,
         'output_lines': [],
+        'dropped': 0,
         'started_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         'session_id': session_id,
         'project_id': project_id,
@@ -374,14 +372,14 @@ def terminal_stream():
             yield f"data: {json.dumps({'type': 'error', 'msg': 'no active session'})}\n\n"
             return
 
+        # `sent` is an ABSOLUTE position (chunks ever produced), not an index
+        # into the trimmed buffer; see mc/terminal_output_buffer.py.
         sent = int(since) if since.isdigit() else 0
         tick = 0
         while True:
-            lines = session['output_lines']
-            if sent < len(lines):
-                for line in lines[sent:]:
-                    yield f"data: {json.dumps({'type': 'output', 'text': line})}\n\n"
-                sent = len(lines)
+            chunks, sent = terminal_output_buffer.read_from(session, sent)
+            for line in chunks:
+                yield f"data: {json.dumps({'type': 'output', 'text': line})}\n\n"
 
             status = session['status']
             if status != 'running':
@@ -482,11 +480,14 @@ def terminal_status(project_id):
             continue
         # Only return running sessions — completed/stopped are disposable
         if s['status'] == 'running':
+            dropped, kept = terminal_output_buffer.snapshot(s)
             sessions.append({
                 'session_id': s['session_id'],
                 'status': s['status'],
                 'command': s['command'],
-                'output_lines': s['output_lines'],
+                'output_lines': kept,
+                # Absolute position of output_lines[0]; the stream's `since`.
+                'dropped': dropped,
                 'started_at': s['started_at'],
                 'exit_code': s.get('exit_code'),
                 'is_pty': bool(s.get('is_pty')),

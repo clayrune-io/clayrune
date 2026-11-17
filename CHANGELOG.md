@@ -1,5 +1,26 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - A stalled push service can no longer freeze an agent's output reader (MC-1179 pass 11, SF15)
+
+- `_handle_push_signal` runs on the agents' stream-reader threads and delivered inline: one `webpush` call per subscribed device with no timeout (pywebpush's default is none), so an endpoint that accepted the connection and never answered held the reader that reads the CLI's output; the session stopped showing anything and nothing was logged.
+- New `mc/push_delivery_queue.py`: one FIFO worker (a daemon thread started on first use) fed by a queue of at most 200 pending pushes. When it is full the new push is dropped and one log line says so; queuing never blocks or raises. Whether to push is still decided on the caller's thread; only the `_notify_push` call moves. `webpush` now gets `timeout=10`.
+- A failed or timed-out delivery now logs the endpoint host, the status code and the exception class; the endpoint path and any key value are removed from the logged text (library errors echo the URL, and the path is the subscription's capability). The nonce prefix is no longer logged.
+- Nothing reads `_notify_push`'s result on the `_handle_push_signal` path (3 callers in `agent_routes.py`, all discard it), so no caller sees a change. Direct `_notify_push` callers (the test-push route, scheduler, workflows) stay synchronous and only gain the timeout and the log line. A push dropped on a full queue is not written to the Inbox, because that row is written when the job runs.
+- New `tests/test_push_delivery_queue.py` (9 tests, no network: `pywebpush` is stubbed): a blocking `webpush` does not block `_handle_push_signal`, order is kept, `timeout=10` is passed, a full queue drops and logs once, the worker is one daemon thread, failure logs hold the host only. The blocking, stalled-endpoint, timeout and log-leak tests failed before the change.
+
+## [2026-11-17] - The terminal pop-out no longer goes silent after 5,000 output chunks (MC-1179 pass 11, SF20)
+
+- The readers keep at most 5,000 chunks and cut to the last 3,000; the SSE stream followed the buffer with a list index, so after the first trim it never again had anything to send while the process kept running and `status` stayed `running`. Measured with one poll per chunk: 20,000 produced, 5,000 delivered.
+- New `mc/terminal_output_buffer.py` holds the cap and a running `dropped` count on the session (incremented by what each trim removes); the pipe and the PTY reader both append through it, and `terminal_stream` indexes by absolute position. A reader older than the oldest kept chunk resumes from the oldest kept chunk; the stream says nothing extra.
+- `GET /api/project/<id>/terminal/status` now also returns `dropped`, and `static/js/terminal.js` starts a refreshed pop-out's stream at `dropped` plus the restored chunks, so a refresh after the first trim does not replay the buffer.
+- New `tests/test_terminal_stream_trim.py` drives the real reader threads and the real stream in lockstep (pipe and PTY): 20,000 chunks with one poll per chunk arrive once each and in order; a reader that polls rarely gets the newest chunks and keeps receiving; the dropped count matches what was trimmed; status and `since` agree. 8 of 8 failed before the fix.
+
+## [2026-11-17] - The clayrune MCP stdio server speaks UTF-8 on Windows (MC-1179 pass 11, SF8)
+
+- On Windows the server's stdin and stdout used the locale code page (cp1252), so a tool reply with a character outside it (an arrow, an emoji) ended the process with `UnicodeEncodeError` and the session lost all eight tools, and a non-ASCII argument (em dash, curly quotes) reached the handler as mojibake or with a lone surrogate; `_send_message` and `_dispatch_agent` forward that text on.
+- `mc/clayrune_mcp/server.py` `main` now reconfigures stdin to UTF-8 and stdout to UTF-8 with LF newlines before `protocol.serve`.
+- New `tests/test_clayrune_mcp_stdio_encoding.py` starts the real server as `mc/session_mcp_config.py` does, with `PYTHONUTF8` and `PYTHONIOENCODING` removed, against a loopback stub: a reply with an arrow and an emoji comes back intact and a later `ping` is answered; an argument with an em dash and curly quotes reaches the Clayrune route unchanged. Both failed before the fix.
+
 ## [2026-11-16] - An unreadable MCP config file is refused, no longer treated as empty and overwritten (MC-1179 pass 11 / SF1)
 
 - `~/.claude.json` and a project's `.mcp.json` were read through a helper that returned `{}` for a missing file, an empty file, a read error and a parse error alike; every writer then replaced the file with only `mcpServers`. A UTF-8 BOM (Windows PowerShell 5.1, Notepad), a half-written file or a sharing violation was enough, and for `~/.claude.json` the Claude Code account and settings state went with it.

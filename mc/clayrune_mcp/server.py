@@ -22,6 +22,15 @@ from mc.clayrune_mcp import protocol, tools  # noqa: E402
 SERVER_INFO = {'name': 'clayrune', 'version': '1.0.0'}
 
 
+def _force_utf8_stdio() -> None:
+    """MCP frames are UTF-8. On Windows the std streams default to the locale
+    code page (cp1252), where a reply with a character outside it kills the
+    process and non-ASCII arguments arrive as mojibake. Writing LF only keeps
+    the one-line-per-frame framing from becoming CRLF."""
+    sys.stdin.reconfigure(encoding='utf-8')  # type: ignore[union-attr]
+    sys.stdout.reconfigure(encoding='utf-8', newline='\n')  # type: ignore[union-attr]
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description='Clayrune cross-session MCP server')
     ap.add_argument('--project', required=True)
@@ -32,6 +41,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except ValueError as e:
         print(f'[clayrune-mcp] {e}', file=sys.stderr, flush=True)
         return 2
+    _force_utf8_stdio()
     protocol.serve(tools.ClayruneToolHost(gateway), SERVER_INFO)
     return 0
 

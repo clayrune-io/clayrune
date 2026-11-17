@@ -332,7 +332,8 @@ async function fetchTerminalStatus(projectId) {
       if (s.status === 'running' && !openModals.has(modalId)) {
         // Restore buffer and open pop-out
         terminalOutputBuffers[s.session_id] = s.output_lines || [];
-        terminalOutputCount[s.session_id] = (s.output_lines || []).length;
+        // Absolute stream position: chunks the server trimmed + chunks restored.
+        terminalOutputCount[s.session_id] = (s.dropped || 0) + (s.output_lines || []).length;
         openTerminalPopout(projectId, s.session_id, s.command, s.is_pty);
       }
     }
