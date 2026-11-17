@@ -16,7 +16,7 @@ it (spec §6).
     python tools/clayrune-backup.py restore <path.crbackup> --sandbox-root <dir>
 
     python tools/clayrune-backup.py export-project <project_id> --vault omit
-    python tools/clayrune-backup.py export-project <project_id> --vault include --passphrase <p>
+    python tools/clayrune-backup.py export-project <project_id> --vault include --passphrase-env VAULT_PASS
     python tools/clayrune-backup.py import <path.crbackup>
     python tools/clayrune-backup.py import <path.crbackup> --apply --new-path <dir>
     python tools/clayrune-backup.py import <path.crbackup> --apply \
@@ -34,9 +34,16 @@ with real path remapping (§8) — no sandbox flag needed there because the
 remap itself already writes to wherever `--new-path` says, not to the live
 absolute paths, unless you point it back at them on purpose. `import`
 defaults to a dry run (the §4.4 collision report); pass `--apply` to commit.
+
+The vault passphrase is never taken on the command line (it would land in shell
+history, the process list and any agent transcript). Name an environment
+variable with `--passphrase-env NAME`, or, with neither given and a terminal
+attached, you are prompted. The old `--passphrase <value>` form is refused.
 """
 import argparse
+import getpass
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -45,6 +52,39 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from mc import backup as bk  # noqa: E402
+
+
+class _RefusePassphraseValue(argparse.Action):
+    """`--passphrase <value>` used to be accepted; it must now fail loudly rather
+    than prefix-match `--passphrase-env` or be silently ignored."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        parser.error('--passphrase <value> is no longer accepted (a value on the command '
+                     'line lands in shell history and the process list). Use '
+                     '--passphrase-env NAME to read it from an environment variable, or '
+                     'omit it to be prompted on a terminal.')
+
+
+def _add_passphrase_args(parser, help_text):
+    parser.add_argument('--passphrase', nargs='?', action=_RefusePassphraseValue,
+                        help=argparse.SUPPRESS)
+    parser.add_argument('--passphrase-env', dest='passphrase_env', metavar='NAME',
+                        help=help_text)
+
+
+def _read_passphrase(args, *, prompt: str, ask: bool = True):
+    """Passphrase from --passphrase-env NAME, else a getpass prompt when stdin is
+    a terminal and `ask`, else None. Raises BackupError for a named variable that
+    is unset or empty."""
+    name = getattr(args, 'passphrase_env', None)
+    if name:
+        value = os.environ.get(name)
+        if not value:
+            raise bk.BackupError(f'--passphrase-env {name}: environment variable is not set or is empty')
+        return value
+    if ask and sys.stdin.isatty():
+        return getpass.getpass(prompt) or None
+    return None
 
 
 def _fmt_bytes(n: int) -> str:
@@ -132,9 +172,10 @@ def cmd_export_project(args):
     vault_arg = {'include': True, 'omit': False, None: None}[args.vault]
     categories = _categories_from_exclude(args.exclude)
     try:
+        passphrase = _read_passphrase(args, prompt='Vault passphrase: ', ask=args.vault == 'include')
         result = bk.export_project(
             args.project_id, categories=categories, vault=vault_arg,
-            vault_passphrase=args.passphrase, label=args.label,
+            vault_passphrase=passphrase, label=args.label,
             dest_dir=Path(args.dest) if args.dest else None)
     except bk.BackupError as e:
         print(f'ERROR: {e}', file=sys.stderr)
@@ -186,12 +227,14 @@ def cmd_import(args):
         return 0
 
     try:
+        passphrase = _read_passphrase(
+            args, prompt='Vault passphrase (leave empty if the archive has no secrets): ')
         report = bk.import_project(
             Path(args.archive),
             project_resolution=args.project_resolution,
             schedule_resolution=args.schedule_resolution,
             new_project_path=args.new_path,
-            vault_passphrase=args.passphrase)
+            vault_passphrase=passphrase)
     except bk.BackupIntegrityError as e:
         print(f'ABORTED before any write: {e}', file=sys.stderr)
         return 1
@@ -298,7 +341,7 @@ def main():
     p.add_argument('project_id')
     p.add_argument('--vault', choices=['include', 'omit'], default=None,
                    help='the vault question — unanswered refuses to export (spec §4.2)')
-    p.add_argument('--passphrase', help='required with --vault include')
+    _add_passphrase_args(p, 'environment variable holding the vault passphrase (required with --vault include; prompted for on a terminal if omitted)')
     p.add_argument('--exclude', nargs='+', metavar='CATEGORY')
     p.add_argument('--dest', help='destination dir (default: ~/.clayrune/backups)')
     p.add_argument('--label')
@@ -312,7 +355,7 @@ def main():
     p.add_argument('--schedule-resolution', choices=['skip', 'replace'], default='skip')
     p.add_argument('--new-path', dest='new_path',
                    help='remap project_path to this directory (spec §8)')
-    p.add_argument('--passphrase', help='vault passphrase, if the archive contains secrets')
+    _add_passphrase_args(p, 'environment variable holding the vault passphrase, if the archive contains secrets (prompted for on a terminal if omitted)')
     p.set_defaults(fn=cmd_import)
 
     args = ap.parse_args()

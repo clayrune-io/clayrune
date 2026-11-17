@@ -77,3 +77,80 @@ def test_create_backup_error_is_one_line_and_exit_1(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.bk, 'create_backup', boom)
     args = SimpleNamespace(exclude=None, dest=None, label=None)
     assert cli.cmd_create(args) == 1
+
+
+# ── MC-1179 pass 12 second wave, TL11: vault passphrase is never an argv value ──
+
+import pytest  # noqa: E402
+
+
+def _run_main(monkeypatch, argv):
+    monkeypatch.setattr(sys, 'argv', ['clayrune-backup.py'] + argv)
+    return cli.main()
+
+
+@pytest.mark.parametrize('form', [['--passphrase', 'hunter2'], ['--passphrase=hunter2']])
+@pytest.mark.parametrize('sub', [['export-project', 'p', '--vault', 'include'], ['import', 'a.crbackup']])
+def test_old_passphrase_flag_is_refused_and_names_the_new_one(monkeypatch, capsys, sub, form):
+    called = []
+    monkeypatch.setattr(cli.bk, 'export_project', lambda *a, **k: called.append(k))
+    monkeypatch.setattr(cli.bk, 'import_project', lambda *a, **k: called.append(k))
+    with pytest.raises(SystemExit) as e:
+        _run_main(monkeypatch, sub + form)
+    assert e.value.code == 2
+    err = capsys.readouterr().err
+    assert '--passphrase-env' in err and 'no longer accepted' in err
+    assert called == []
+
+
+def _export_stub(monkeypatch, seen):
+    def fake(project_id, **k):
+        seen.update(k)
+        return {'path': 'x', 'files_written': 0, 'warnings': [], 'repo_checklist': [], 'manifest': {'vault_status': 'included'}}
+    monkeypatch.setattr(cli.bk, 'export_project', fake)
+
+
+def test_passphrase_env_is_read_from_the_environment(monkeypatch):
+    seen = {}
+    _export_stub(monkeypatch, seen)
+    monkeypatch.setenv('CR_TEST_VAULT_PASS', 's3cret')
+    assert _run_main(monkeypatch, ['export-project', 'p', '--vault', 'include',
+                                   '--passphrase-env', 'CR_TEST_VAULT_PASS']) == 0
+    assert seen['vault_passphrase'] == 's3cret'
+
+
+def test_passphrase_env_unset_is_an_error_not_an_empty_passphrase(monkeypatch, capsys):
+    seen = {}
+    _export_stub(monkeypatch, seen)
+    monkeypatch.delenv('CR_TEST_VAULT_PASS', raising=False)
+    assert _run_main(monkeypatch, ['export-project', 'p', '--vault', 'include',
+                                   '--passphrase-env', 'CR_TEST_VAULT_PASS']) == 1
+    assert 'CR_TEST_VAULT_PASS' in capsys.readouterr().err
+    assert seen == {}
+
+
+def test_terminal_with_neither_given_prompts_with_getpass(monkeypatch):
+    seen = {}
+    _export_stub(monkeypatch, seen)
+    monkeypatch.setattr(cli.sys.stdin, 'isatty', lambda: True, raising=False)
+    monkeypatch.setattr(cli.getpass, 'getpass', lambda prompt='': 'typed')
+    assert _run_main(monkeypatch, ['export-project', 'p', '--vault', 'include']) == 0
+    assert seen['vault_passphrase'] == 'typed'
+
+
+def test_no_terminal_and_no_env_passes_none_and_does_not_prompt(monkeypatch):
+    seen = {}
+    _export_stub(monkeypatch, seen)
+    monkeypatch.setattr(cli.sys.stdin, 'isatty', lambda: False, raising=False)
+    monkeypatch.setattr(cli.getpass, 'getpass', lambda prompt='': pytest.fail('prompted'))
+    _run_main(monkeypatch, ['export-project', 'p', '--vault', 'include'])
+    assert seen['vault_passphrase'] is None
+
+
+def test_vault_omit_never_prompts(monkeypatch):
+    seen = {}
+    _export_stub(monkeypatch, seen)
+    monkeypatch.setattr(cli.sys.stdin, 'isatty', lambda: True, raising=False)
+    monkeypatch.setattr(cli.getpass, 'getpass', lambda prompt='': pytest.fail('prompted'))
+    _run_main(monkeypatch, ['export-project', 'p', '--vault', 'omit'])
+    assert seen['vault_passphrase'] is None
