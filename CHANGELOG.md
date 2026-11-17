@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - An agent's hidden browser tab can no longer be clicked or typed into on Clayrune's own address (MC-1179 pass 11, SF33)
+
+- `AgentTab.input` read only the URL the caller typed, so a tab redirected onto the dashboard could still be clicked and typed into, and a page in the pane's Chromium counts as the human on Origin-gated routes. Before every input it now reads the tab's own `location.href` (as `read` does) and refuses with the existing 403 when that is Clayrune's own origin, using `_is_clayrune_own_origin` unchanged; the tab is moved to `about:blank` on refusal. After a navigate it checks again. An address it cannot read refuses (502) rather than sending the input.
+- Not changed: the human-visible pane's own input route (`browser_routes.py` `browser_input`) has the same gap (pass 07, P36), but its fix is a different mechanism (the CDP thread's `frameNavigated` handler and a landing check there), so it is left for that finding.
+
 ## [2026-11-16] - Every new Desk account starts with Read and Post off (MC-1187 / DCW-C2)
 
 - `desk_accounts.create_account` now writes the default-deny consent policy on the account it builds, so the X developer-app, purpose-bindings and pane-wizard (Instagram, YouTube, TikTok) paths no longer start with no policy, which the permission check read as "no consent needed". The browser-setup and saved-site paths were already denied; browser-setup now gets it through `create_account` (it passes the account kind). New `mc/desk_connect/new_account_consent.py`.
