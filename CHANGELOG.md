@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Two threads writing one file through `_atomic_write_text` no longer tear it (MC-1179 C1)
+
+- `mc.core._atomic_write_text` named its temp file `.{name}.tmp{pid}`: unique per process, not per call. Two threads writing one target shared a temp file, truncated each other's data, and the second `replace` raised `FileNotFoundError`. Measured in the review: 4,471 of 45,505 reads of the target returned content that was neither payload. 32 call sites use it (memory files, distiller artifacts, `process_ledger`'s `mc_child_pids.json`).
+- The temp name is now `.{name}.{random}.tmp{pid}`, opened with `'x'`, and unlinked if the write or replace fails. The `.tmp{pid}` tail is kept, so `sweep_orphan_tmpfiles` still matches it, and it still does not end in `.json`. File mode and newline handling are unchanged (no `mkstemp`, so no 0600 on POSIX).
+- Tests: new `tests/test_core_atomic_write_concurrency.py` (4 tests, 3 failed on the old code). `tests/test_memory_index_durability.py`: the "no temp left behind" glob widened to the new name shape (the old glob would have matched nothing). Finding: `docs/_review/2026-11-16_01_runtime_core.md` C1.
+
 ## [2026-11-17] - /agent/send attributes its caller when it starts a child (MC-1179 R48)
 
 - `POST /agent/send` reached `_dispatch_agent_internal` on its fresh-dispatch and native-resume (codex) paths with no `trigger_type` or `source`, so the dispatcher's `manual` default applied. A managed agent that POSTed `/agent/send` with no live `session_id` got a child the fence, the secrets vault and the config gate all read as attended. Only `/agent/dispatch` attributed its caller.
