@@ -61,11 +61,8 @@ MIN_GROWTH_TOKENS = 20_000
 # context size the failed attempt was made at.
 MAX_ROLL_FAILURES = 3
 _BG_JOBS_KEEP = 10
-# MC-1088: user text carried across a roll. Bounded like the other `_mt_*`
-# fields: the newest few mid-turn messages, each capped, so a flood of steers
-# cannot inflate the fresh session's floor.
-UNANSWERED_KEEP = 5
-USER_MSG_CAP_CHARS = 2000
+# User instructions must survive a roll in full. Retire unanswered messages
+# on main-conversation text after a roll or on turn completion, never by size.
 _INPUT_PREVIEW = 160
 # Line caps, not a character cap: 1,000 characters bound at ~14 `diff --stat`
 # rows, so later files AND the trailing `N files changed` summary vanished.
@@ -233,13 +230,6 @@ def note_tool_results(session, content):
     return seen
 
 
-def _cap_user_text(text):
-    text = str(text).strip()
-    if len(text) > USER_MSG_CAP_CHARS:
-        return text[:USER_MSG_CAP_CHARS] + ' [... truncated]'
-    return text
-
-
 def note_user_message(session, text, *, mid_turn=False):
     """Record a user message for the rollover state block (MC-1088).
 
@@ -250,18 +240,17 @@ def note_user_message(session, text, *, mid_turn=False):
     a roll drops the queue, and either way the transcript handoff (role/text
     turns) does not reliably carry it. Those are kept in `_mt_unanswered_msgs`
     until post-roll assistant text retires carried entries, or the turn ends
-    (`note_turn_complete`), newest `UNANSWERED_KEEP` only.
+    (`note_turn_complete`). Keep the full text of every pending instruction.
     Never raises."""
     if not enabled() or not isinstance(text, str) or not text.strip():
         return
     try:
-        capped = _cap_user_text(text)
-        session['_mt_latest_user_msg'] = capped
+        message = text.strip()
+        session['_mt_latest_user_msg'] = message
         if mid_turn:
             msgs = session.setdefault('_mt_unanswered_msgs', [])
             msgs.append({'ts': datetime.now(timezone.utc).strftime('%H:%M:%SZ'),
-                         'text': capped})
-            msgs[:] = msgs[-UNANSWERED_KEEP:]
+                         'text': message})
     except Exception as e:
         _log(f"[midturn-rollover] note_user_message failed: {e}")
 

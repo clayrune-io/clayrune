@@ -916,17 +916,17 @@ def test_mc1088_latest_message_is_current_and_distinct_from_unanswered(env):
         'a non-mid-turn message is the latest message but not unanswered'
 
 
-def test_mc1088_unit_bounds_clear_on_result_and_flag_off(env):
+def test_mc1088_messages_clear_on_result_and_flag_off(env):
     from mc import midturn_rollover as mt
     s = {}
-    for i in range(mt.UNANSWERED_KEEP + 3):
+    for i in range(8):
         mt.note_user_message(s, f'm{i}', mid_turn=True)
     assert [m['text'] for m in s['_mt_unanswered_msgs']] == \
-        [f'm{i}' for i in range(3, mt.UNANSWERED_KEEP + 3)], 'newest kept'
+        [f'm{i}' for i in range(8)], 'all unanswered instructions kept'
 
-    mt.note_user_message(s, 'x' * (mt.USER_MSG_CAP_CHARS + 50), mid_turn=True)
-    assert len(s['_mt_latest_user_msg']) < mt.USER_MSG_CAP_CHARS + 50
-    assert s['_mt_latest_user_msg'].endswith('[... truncated]')
+    mt.note_user_message(s, 'x' * 10_000, mid_turn=True)
+    assert s['_mt_latest_user_msg'] == 'x' * 10_000
+    assert s['_mt_unanswered_msgs'][-1]['text'] == 'x' * 10_000
 
     mt.note_turn_complete(s)
     assert '_mt_unanswered_msgs' not in s, 'a turn result answers what it absorbed'

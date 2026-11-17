@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Followup instructions survive a context rollover in full (MC-1198 / 697d2efe)
+
+- The reported `/agent/send` succeeded with the full message. A subsequent mid-task rollover cut the saved latest request at 2,000 characters in `mc/midturn_rollover.py`, so the replacement child lost the remaining instructions. Removed that slice for both latest and unanswered messages, plus the five-message cap that silently dropped older unanswered instructions.
+- Pending instructions now remain complete until the existing post-roll text or turn-result cleanup. Large pending messages increase the replacement context by their full size. No route or provider transport changed; no 413 refusal is needed for this cut.
+- Regression tests drive the real send/followup handlers and both Claude readers with scripted children: 10,000-character followup and queued messages reach the replacement stdin intact, and eight pending instructions survive. Updated `docs/MID_TURN_SEND.md`.
+
 ## [2026-11-17] - The browser pane re-arms its screencast after a page resize, so a static page no longer stays black or on the old frame (MC-1197)
 
 - Cause: headless Chromium keeps the screencast running across a main-frame resize but often never sends the picture drawn at the new size; on a page that does not repaint, nothing else is ever sent. Chromium resizes a new document by 1 px right after its first paint, so this also hits the first frame after a navigation. Under CPU load it is what `browser-pane-binary-stream.mjs` check 1 kept failing on: in every failing trace the reader re-armed on `Page.frameStoppedLoading`, Chromium answered with `Page.frameResized`, and then sent no frame of the page (0 frames, or only the dark blank-document frame). Server receipt, the /frames stream and the client draw were all fine; the stop was Chromium's send.
