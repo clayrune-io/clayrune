@@ -419,3 +419,47 @@ Read fully: `remote_mcp_{transport,bridge,activation,check,operation,service,obs
   bound to the digest the person was shown; OAuth is never reported connected; the closure
   takes dependency edges from the archive, not the registry; the GitHub gate re-hashes reviewed
   source before every start and resolves a bare program name outside the repository folder.
+
+### Desk Connect: working notes, batch 4 (candidates, not yet ranked)
+
+Read fully: `browser_setup`, `browser_setup_record`, `browser_check`, `browser_check_schema`,
+`browser_connections`, `purpose_bindings`, `purpose_verification`, `purpose_verification_store`,
+`permission_policy`, `permission_check`, `post_consent`, `parameter_sources`,
+`package_setup_helper`, `route_readiness`, `type_view`, `purpose_view`, `linkedin_destination`,
+`saved_site_account`, `account_attach`, `x_account_attach`, `x_card_signin`, `pane_account`,
+`instagram_read`, `saved_browser_edit`, `saved_mcp_draft`, `signin_method`, `display_text`.
+
+- cand DC-o (medium, L; read): the Read/Post consent default depends on which Save made the
+  account. `permission_policy.py:4-5` says "New setup must call initialize_new_account" (default
+  deny). Five paths create an account; two call it (`browser_setup.py:377`,
+  `saved_site_account.py:79`). The other three leave the account `legacy`, which
+  `permission_check.py:44-45` and `post_consent.py:38` treat as "no consent needed":
+  `providers/x.py:119` (the X developer-app connection, the one route that posts through the
+  API), `purpose_bindings.py:371`, `pane_account.py:66` (Instagram, YouTube, TikTok from the
+  Connect wizard). So an X account connected by browser sign-in must have Post ticked before
+  the publisher will post, and the same account connected by developer app posts with no
+  Permissions step at all; an Instagram account made from the wizard is read with no Read
+  consent, the same account attached from an old saved site is default-deny. Tests pin both
+  halves separately (`test_desk_connect_permission_execution.py` legacy cases,
+  `test_desk_pane_account.py`); none asserts that a new account from every Save path starts
+  denied.
+- cand DC-p (low, L; read): `browser_connections.commit` (`:82-85`) returns from the
+  pane-account branch before the trim loop at `:107-108`, so `_done` grows by one entry per
+  Instagram/YouTube/TikTok Save until some non-pane Save trims it. `pane_account.save`
+  (`:54-75`) is check, create, update, stamp in four separate lock acquisitions; a failure
+  after `create_account` leaves an account with the default profile and no sign-in method, and
+  the retry then answers 409 "already an account with a different browser profile".
+- cand DC-q (low, L; read): `permission_check.require_publish` (`:68`) hard-codes
+  `account_kind='organization'` for LinkedIn. `linkedin.json` declares `member` and
+  `organization`. For a member account with an explicit policy, `read_policy` runs
+  `_check_identity` with `organization` (`permission_policy.py:151-155`, `:81`), gets
+  `wrong_kind` and returns denied, so `post_consent.reason_for` tells the person to "tick Post
+  on its Permissions step" for an account where ticking it cannot help. To confirm: whether a
+  member account can reach the API publisher at all (`capability` direct).
+- dropped: a candidate about two accounts sharing one browser profile, noted before a context
+  rollover, could not be reconstructed from the code on re-reading and is not reported.
+- sound: `x_card_signin` confirms the signed-in X user against the account before the token is
+  held and logs the HTTP status and exception class only; `saved_mcp_draft` copies credential
+  names, never values; `browser_check` builds its script from reviewed profile selectors only
+  and re-checks the final URL at evidence time; `linkedin_destination.apply` refuses to
+  re-sign an invalid policy.
