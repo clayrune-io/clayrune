@@ -55,6 +55,8 @@ from mc import state
 from mc.ui_field_validation import validate_project_fields, validate_backlog_fields
 from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
+from mc.project_mutate import mutate_project
+from mc.project_record_path import is_plain_project_id, project_record_path
 from mc.project_safety_settings import refuse_agent_safety_write
 from mc import steward_role_writes as _role_writes
 from mc.project_routing_guard import require_human_routing_write
@@ -216,6 +218,15 @@ _DERIVED_RUNTIME_KEYS = (
 
 _project_write_locks = {}
 _project_write_locks_guard = _RLock()
+
+
+def _record_path(project_id, suffix=''):
+    """The record path for a plain project id, or None (MC-1179 P54).
+
+    The only place in this module an id becomes a path; see
+    mc/project_record_path.py. None means "no such project".
+    """
+    return project_record_path(DATA_DIR, project_id, suffix)
 # Bumped on every save, under that project's write lock. See _record_fingerprint.
 _project_write_seq = {}
 # Per-thread {project_id: {collection: frozenset(ids)}} as of this thread's
@@ -264,8 +275,11 @@ def _record_fingerprint(project_id):
     stays for the cross-process case (the restart overlap spawns a second
     server that writes these same files).
     """
+    path = _record_path(project_id)
+    if path is None:
+        return None
     try:
-        st = os.stat(DATA_DIR / f'{project_id}.json')
+        st = os.stat(path)
     except OSError:
         return None
     return (_project_write_seq.get(project_id, 0), st.st_mtime_ns, st.st_size)
@@ -290,8 +304,8 @@ def _record_load_baseline(project_id, record, fingerprint=None):
 
 def _read_record_raw(project_id):
     """The on-disk record with no decoration, or None if absent/unparseable."""
-    filepath = DATA_DIR / f'{project_id}.json'
-    if not filepath.exists():
+    filepath = _record_path(project_id)
+    if filepath is None or not filepath.exists():
         return None
     try:
         raw = json.loads(filepath.read_text(encoding='utf-8'))
@@ -354,7 +368,9 @@ def load_project(project_id):
     already handles it; a 500 nobody handles is strictly worse than a
     project that reads as absent while the error sits in the log.
     """
-    filepath = DATA_DIR / f'{project_id}.json'
+    filepath = _record_path(project_id)
+    if filepath is None:
+        return None
     if not filepath.exists():
         _record_load_baseline(project_id, None)
         return None
@@ -376,6 +392,9 @@ def load_project(project_id):
 
 
 def save_project(project_id, data):
+    filepath = _record_path(project_id)
+    if filepath is None:
+        return  # refused id (logged): nothing to write, nothing to raise
     # Strip runtime-only attachment fields (e.g. `_present`) before persisting
     # so they never leak into the JSON. See _decorate_attachments.
     if isinstance(data, dict):
@@ -385,7 +404,6 @@ def save_project(project_id, data):
                     att.pop(k, None)
         for k in _DERIVED_RUNTIME_KEYS:
             data.pop(k, None)
-    filepath = DATA_DIR / f'{project_id}.json'
     # The whole read-back-reconcile-write runs under the project's write lock,
     # so two savers cannot both read the pre-state and both write over it.
     # See the "Lost-update guard" block above for the race and the rule.
@@ -604,15 +622,17 @@ def _log_agent_activity(project_id, msg, bump_updated=True):
     False for background machinery (e.g. GitHub auto-sync) that should be
     *logged* without floating the project to the top of the recency sort.
     """
-    p = load_project(project_id)
-    if not p:
-        return
-    log = p.setdefault('activity_log', [])
-    log.insert(0, {'ts': now_iso(), 'msg': msg})
-    p['activity_log'] = log[:20]
-    if bump_updated:
-        p['last_updated'] = now_iso()
-    save_project(project_id, p)
+    def _apply(p):
+        log = p.setdefault('activity_log', [])
+        log.insert(0, {'ts': now_iso(), 'msg': msg})
+        p['activity_log'] = log[:20]
+        if bump_updated:
+            p['last_updated'] = now_iso()
+        return True
+
+    # Applied to the record re-read under the project lock (MC-1179 P55): this
+    # runs on every agent event and must not carry a stale copy of the backlog.
+    mutate_project(project_id, _apply)
 
 
 # ── Project endpoints ────────────────────────────────────────────────────────
@@ -718,7 +738,9 @@ def update_project(project_id):
     if error:
         return jsonify({'error': error}), 400
 
-    filepath = DATA_DIR / f'{project_id}.json'
+    filepath = _record_path(project_id)
+    if filepath is None:
+        return jsonify({'error': 'project not found'}), 404
     is_new = not filepath.exists()
     refusal = require_human_routing_write(data, is_new=is_new)
     if refusal is not None:
@@ -924,8 +946,8 @@ def set_conversation_pin(project_id):
     can lag, esp. Mode B); conversation_id is the fallback for closed/historical
     chats. Omit "pinned" to toggle.
     """
-    filepath = DATA_DIR / f'{project_id}.json'
-    if not filepath.exists():
+    filepath = _record_path(project_id)
+    if filepath is None or not filepath.exists():
         return jsonify({'error': 'project not found'}), 404
     body = request.get_json(silent=True) or {}
     csid = (body.get('conversation_id') or '').strip()
@@ -938,18 +960,25 @@ def set_conversation_pin(project_id):
             csid = s['claude_session_id']
     if not csid:
         return jsonify({'error': 'no resolvable conversation id (chat has no saved session yet)'}), 400
-    existing = json.loads(filepath.read_text(encoding='utf-8'))
-    pinned = existing.get('pinned_conversations')
-    if not isinstance(pinned, list):
-        pinned = []
-    is_pinned = csid in pinned
-    want = bool(body['pinned']) if 'pinned' in body else (not is_pinned)
-    if want and not is_pinned:
-        pinned.append(csid)
-    elif not want and is_pinned:
-        pinned = [c for c in pinned if c != csid]
-    existing['pinned_conversations'] = pinned
-    save_project(project_id, existing)
+
+    def _apply(existing):
+        pinned = existing.get('pinned_conversations')
+        if not isinstance(pinned, list):
+            pinned = []
+        is_pinned = csid in pinned
+        want = bool(body['pinned']) if 'pinned' in body else (not is_pinned)
+        if want and not is_pinned:
+            pinned.append(csid)
+        elif not want and is_pinned:
+            pinned = [c for c in pinned if c != csid]
+        existing['pinned_conversations'] = pinned
+        return pinned
+
+    # The toggle is decided on the record re-read under the project lock, so a
+    # second pin or any other writer between our read and write is not undone.
+    pinned = mutate_project(project_id, _apply)
+    if pinned is None:
+        return jsonify({'error': 'project not found'}), 404
     return jsonify({'ok': True, 'pinned_conversations': pinned, 'pinned': csid in pinned})
 
 
@@ -1018,25 +1047,28 @@ def generate_project_summary(project_id):
     emoji = (data.get('emoji') or '').strip()
     summary = (data.get('summary') or '').strip()
 
-    if emoji and (overwrite_emoji or not p.get('emoji')):
-        p['emoji'] = emoji
-    if summary:
-        p['summary'] = summary
-    p['last_updated'] = now_iso()
-    save_project(project_id, p)
+    # The model call is done; apply its result to the record as it is NOW, not
+    # to the copy loaded before the call (MC-1179 P55). The lock is taken only
+    # here, never across the call.
+    def _apply(fresh):
+        if emoji and (overwrite_emoji or not fresh.get('emoji')):
+            fresh['emoji'] = emoji
+        if summary:
+            fresh['summary'] = summary
+        fresh['last_updated'] = now_iso()
+        return {'emoji': fresh.get('emoji', ''), 'summary': fresh.get('summary', '')}
 
-    return jsonify({
-        'ok': True,
-        'emoji': p.get('emoji', ''),
-        'summary': p.get('summary', ''),
-    })
+    applied = mutate_project(project_id, _apply)
+    if applied is None:
+        return jsonify({'error': 'project not found'}), 404
+    return jsonify({'ok': True, **applied})
 
 
 @bp.route('/api/project/<project_id>', methods=['DELETE'])
 @_role_writes.project_delete
 def delete_project(project_id):
-    filepath = DATA_DIR / f'{project_id}.json'
-    if not filepath.exists():
+    filepath = _record_path(project_id)
+    if filepath is None or not filepath.exists():
         return jsonify({'error': 'not found'}), 404
 
     # Revoke before deletion side effects, under the same manager guard used by
@@ -1063,8 +1095,8 @@ def delete_project(project_id):
                     att_path.unlink()
 
     # Remove agent log file if exists
-    agent_log = DATA_DIR / f'{project_id}_agent_log.json'
-    if agent_log.exists():
+    agent_log = _record_path(project_id, '_agent_log')
+    if agent_log is not None and agent_log.exists():
         agent_log.unlink()
 
     # Kill any running agent sessions for this project
@@ -2128,10 +2160,14 @@ def github_setup(project_id):
     if not ok:
         return jsonify({'error': err}), 400
 
-    p['github_repo'] = repo
-    p['github_sync_enabled'] = True
-    p['last_updated'] = now_iso()
-    save_project(project_id, p)
+    def _apply(rec):
+        rec['github_repo'] = repo
+        rec['github_sync_enabled'] = True
+        rec['last_updated'] = now_iso()
+        return True
+
+    if not mutate_project(project_id, _apply):
+        return jsonify({'error': 'not found'}), 404
     _log_agent_activity(project_id, f"GitHub: Connected to {repo}")
 
     # Trigger initial sync in background
@@ -2148,11 +2184,15 @@ def github_disconnect(project_id):
     if p is None:
         return jsonify({'error': 'not found'}), 404
     repo = p.get('github_repo', '')
-    p['github_sync_enabled'] = False
-    p['github_repo'] = ''
-    p['github_last_sync'] = None
-    p['last_updated'] = now_iso()
-    save_project(project_id, p)
+
+    def _apply(rec):
+        rec['github_sync_enabled'] = False
+        rec['github_repo'] = ''
+        rec['github_last_sync'] = None
+        rec['last_updated'] = now_iso()
+        return True
+
+    mutate_project(project_id, _apply)
     if repo:
         _log_agent_activity(project_id, f"GitHub: Disconnected from {repo}")
     return jsonify({'ok': True})
@@ -2914,6 +2954,11 @@ def save_project_order():
     if not data or 'order' not in data:
         return jsonify({'error': 'order array required'}), 400
     order = data['order']
+    # Ids from the body become file paths below; refuse the request, before any
+    # write, if one is not a plain id (MC-1179 P54). None is a spacer.
+    if not isinstance(order, list) or not all(
+            pid is None or is_plain_project_id(pid) for pid in order):
+        return jsonify({'error': 'order must be a list of project ids or null'}), 400
     # Save full grid layout (with nulls for spacers)
     layout_path = DATA_DIR.parent / 'grid_layout.json'
     write_json_atomic(layout_path, {'order': order}, indent=2, ensure_ascii=False)
@@ -2921,10 +2966,9 @@ def save_project_order():
     for i, project_id in enumerate(order):
         if project_id is None:
             continue
-        p = load_project(project_id)
-        if p:
-            p['display_order'] = i
-            save_project(project_id, p)
+        # One field per record, applied to the record re-read under its lock:
+        # this loop touches every project and must not carry stale backlogs.
+        mutate_project(project_id, lambda p, i=i: p.__setitem__('display_order', i) or True)
     return jsonify({'ok': True})
 
 @bp.route('/api/grid-layout')
