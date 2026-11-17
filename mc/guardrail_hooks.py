@@ -48,6 +48,8 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from mc.hook_command_shell import POWERSHELL_INLINE, quote_hook_tokens
+
 # {vendor: filename under ~/.clayrune/hooks/} — Codex is deliberately absent,
 # see the module docstring's "NO file here" section.
 LAUNCH_FILENAMES = {
@@ -175,7 +177,8 @@ def hook_invocation_tokens(hook: str, script: Optional[Path], default_script: Pa
     return [py, _shell_neutral_path(str(script or default_script))]
 
 
-def guard_shell_command(guard_script: Optional[Path] = None, python_exe: Optional[str] = None) -> str:
+def guard_shell_command(guard_script: Optional[Path] = None, python_exe: Optional[str] = None,
+                        shell: Optional[str] = None) -> str:
     """The command string every vendor's hook config points at — the ONE
     place this is built, shared by `tools/guards/install_hooks.py` (writes
     it into claude/gemini/qwen's generated files) and Codex's inline `-c`
@@ -195,7 +198,11 @@ def guard_shell_command(guard_script: Optional[Path] = None, python_exe: Optiona
     Fix: quote the interpreter ONLY when its path contains a space (the one
     case a bareword can't handle). Re-verified through the same real
     dispatch path: blocked, notepad survived. An interpreter path WITH a
-    space remains a disclosed, untested gap.
+    space was a disclosed, untested gap until MC-1179 AP5: PowerShell reads a
+    leading quoted word as a string expression (parse error, exit 1, which
+    Codex and Gemini treat as allow), so `shell` (mc/hook_command_shell.py)
+    names the shell that will run the string and a spaced interpreter gets
+    that shell's call prefix. `shell=None` keeps the plain quoted form.
 
     W4/MC-947 (2026-09-18): the SAME unconditional-quoting mistake existed
     for the SCRIPT path too, and broke Qwen specifically — live-reproduced
@@ -252,8 +259,7 @@ def guard_shell_command(guard_script: Optional[Path] = None, python_exe: Optiona
     tokens = hook_invocation_tokens(
         PROCESS_GUARD_HOOK, guard_script,
         Path(__file__).resolve().parent / 'process_guard.py', python_exe)
-    quoted = [f'"{t}"' if ' ' in t else t for t in tokens]
-    return ' '.join(quoted) + _EXIT_CODE_SUFFIX
+    return quote_hook_tokens(tokens, shell) + _EXIT_CODE_SUFFIX
 
 
 def _toml_basic_string(s: str) -> str:
@@ -341,7 +347,8 @@ def codex_hook_config_args(guard_script: Optional[Path] = None,
     codex_fence_hook_command(). None keeps the guard-only shape, which the
     pinned-string tests use.
     """
-    command = guard_shell_command(guard_script=guard_script, python_exe=python_exe)
+    command = guard_shell_command(guard_script=guard_script, python_exe=python_exe,
+                                  shell=POWERSHELL_INLINE)
     handlers = (
         '{type="command",'
         f'command={_toml_basic_string(command)},name={_toml_basic_string(HOOK_NAME)}}}'
