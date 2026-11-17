@@ -35,6 +35,7 @@
   "desk-v1-connect-signin-details.mjs": "alias of desk-v1-connect-api-step.mjs and desk-v1-connect-login-step.mjs",
   "desk-v1-connect-slice2.mjs": "alias of desk-v1-connect-api-step.mjs",
   "desk-v1-default.mjs": "needs an isolated disposable server (MC_SMOKE_BASE_URL and MC_DATA_DIR) and refuses to start without them",
+  "desk-v1-exit.mjs": "aggregate of smokes the runner already runs one by one (21 Desk smokes, over 240 s serially); its own sweeps are desk-v1-exit-sweeps.mjs",
   "desk-v1-fixture-api.mjs": "helper module (exports only); the Desk fixture loader other smokes import, nothing to run",
   "desk-v1-what-add-modal.mjs": "registers its fixture process with the live Clayrune on localhost:5199 and asserts it succeeded",
   "desk-video-upload-real.mjs": "registers its fixture process with the live Clayrune on localhost:5199 and asserts it succeeded",
