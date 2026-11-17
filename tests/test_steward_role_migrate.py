@@ -383,11 +383,46 @@ def test_rollback_refuses_an_edited_role_without_allow_edited(api):
     assert rollback(api, snap, '--apply', '--allow-edited')[0] == 0
 
 
+def test_rollback_does_not_call_activation_an_edit(api):
+    # MC-1179 pass 12 second wave, TL36: the documented next step after a migration
+    # is to enable the role; that is not drift.
+    snap = migrated(api)
+    api.row['enabled'] = True
+    code, text = rollback(api, snap, '--apply')
+    assert code == 0, text
+    assert 'steward_role' not in api.row
+
+
+def test_rollback_does_not_call_a_charter_self_update_an_edit(api):
+    # The one write an unattended steward cycle is told to make is to its charter item.
+    snap = migrated(api)
+    api.backlog[0]['status'] = 'in_progress'
+    api.backlog[0]['text'] = api.backlog[0]['text'] + ' (cycle 3 done)'
+    code, text = rollback(api, snap, '--apply')
+    assert code == 0, text
+
+
+def test_rollback_dry_run_does_not_warn_after_activation(api):
+    snap = migrated(api)
+    api.row['enabled'] = True
+    assert 'edited after migration' not in rollback(api, snap)[1]
+
+
+def test_rollback_legacy_snapshot_without_drift_revision_keeps_full_revision_guard(api):
+    snap = migrated(api)
+    import json as _json
+    body = _json.loads(Path(snap).read_text(encoding='utf-8'))
+    body.pop('post_drift_revision')
+    Path(snap).write_text(_json.dumps(body), encoding='utf-8')
+    api.row['interval_minutes'] = 60
+    assert rollback(api, snap, '--apply')[0] == mig.EXIT_REVISION
+
+
 def test_rollback_waits_for_running_cycle(api):
     snap = migrated(api)
     api.row['enabled'] = True
     api.sessions = [{'session_id': 's7', 'trigger_type': 'schedule', 'trigger_id': 'sc1', 'status': 'running'}]
-    code, text = rollback(api, snap, '--apply', '--allow-edited')
+    code, text = rollback(api, snap, '--apply')
     assert code == mig.EXIT_QUIESCE and 'steward_role' in api.row and api.row['enabled'] is False
 
 
