@@ -4,10 +4,11 @@ Every name here was moved VERBATIM from server.py. server.py keeps
 `from mc.state import <name>` shims so all existing bare-name references
 keep working unchanged. Rules:
 
-- Objects here are mutated IN PLACE only, never rebound (verified: the only
-  `global`-rebound names in server.py — _fcm_app, _fcm_init_error,
-  _LAST_SYSTEM_STATUS, _LAST_RESTART_TIME — deliberately stayed behind and
-  migrate with their blueprints).
+- Most objects here are mutated IN PLACE and never rebound. A few ARE rebound
+  (`CONFIG` at boot, `_fcm_app`, `_fcm_init_error`, `_LAST_SYSTEM_STATUS`,
+  `_LAST_RESTART_TIME`), so the rule that protects every name here is: ALWAYS
+  read it through `state.<name>`. A module-level `from mc.state import NAME`
+  binds whatever the name held at import time and goes stale on a rebind.
 - This module imports stdlib only. It must never import server.py or flask.
 - As Phase 1 blueprints extract, their functions switch from bare names to
   `from mc import state` + `state.<name>` access.
