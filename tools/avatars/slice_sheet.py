@@ -19,6 +19,7 @@ alternative (erasing everything soft) eats the figure's own contact edge.
 """
 import argparse
 import colorsys
+import sys
 from collections import deque
 from pathlib import Path
 
@@ -381,6 +382,7 @@ def main():
     W, H = sheet.size
     cw, ch = W // cols, H // rows
     OUT.mkdir(parents=True, exist_ok=True)
+    badly_keyed = []
 
     for i, name in enumerate(names):
         col, row = i % cols, i // cols
@@ -392,14 +394,27 @@ def main():
         # across all nine at the tolerance knee, a figure holds 33-40% of its
         # cell; well outside that band is a keying failure, not a slim
         # character. Low = the fill ate the body, high = it never started.
-        flag = '' if 0.20 <= kept <= 0.55 else '   <-- CHECK: keyed badly'
+        keyed_ok = 0.20 <= kept <= 0.55
+        flag = '' if keyed_ok else '   <-- CHECK: keyed badly'
+        if not keyed_ok:
+            badly_keyed.append(name)
         if screen and not a.no_despill:
             keyed = despill(keyed, screen)
         out = square(keyed, a.size)
         p = OUT / f'{name}.webp'
+        # An existing avatar of the same name is still replaced (re-slicing a
+        # better sheet is the normal use); it is just no longer silent.
+        if p.exists():
+            print(f'  replacing existing {p}', file=sys.stderr)
         out.save(p, 'WEBP', quality=88, method=6)
         print(f'  {name:14} {p.stat().st_size // 1024:>3} KB   kept {kept*100:4.1f}%{flag}')
     print(f'\n{len(names)} avatars -> {OUT}')
+    # Every cell is still written, so a partial fix is not lost; the exit code
+    # is what stops a script chaining this into a commit from shipping them.
+    if badly_keyed:
+        print(f'{len(badly_keyed)} cell(s) keyed badly: {", ".join(badly_keyed)}',
+              file=sys.stderr)
+        raise SystemExit(2)
 
 
 if __name__ == '__main__':
