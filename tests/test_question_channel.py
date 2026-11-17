@@ -703,3 +703,44 @@ def test_agent_mail_accepted_result_is_a_plain_success(chan, monkeypatch):
     assert chan.timers == [] and key in qc._delivered
     assert _notsent_lines(s) == [] and chan.pushes == []
     assert s['log_lines'][-1] == '[question mail: accepted]'
+
+
+def test_an_answer_that_fails_to_post_is_retried_on_the_next_poll(monkeypatch):
+    """MC-1179 OS19: a failed follow-up post must not consume the reply."""
+    results = iter([False, True])
+    monkeypatch.setattr(qc, '_answer', lambda qid, ans: next(results))
+    _outbox_entry()
+    kw = dict(message_id='<reply-1@gmail.com>', in_reply_to='<q-1@clayrune.local>')
+    assert qc.handle_reply('Re: [Clayrune question] P · q:deadbeef', '2', **kw) is False
+    assert 'deadbeefcafe' not in qc._answered
+    assert qc.handle_reply('Re: [Clayrune question] P · q:deadbeef', '2', **kw) is True
+    assert 'deadbeefcafe' in qc._answered
+
+
+def test_poller_pass_retires_idle_groups_before_polling(monkeypatch):
+    """MC-1179 OS20: retire() was only reachable from the agent-mail supervisor."""
+    calls = []
+    monkeypatch.setattr(qc.retention, 'retire', lambda **k: calls.append('retire') or {})
+    monkeypatch.setattr(qc, 'poll_replies', lambda: calls.append('poll') or 0)
+    assert qc._poll_once() == 0
+    assert calls == ['retire', 'poll']
+
+
+def test_poller_pass_still_polls_when_retention_raises(monkeypatch):
+    def boom(**k):
+        raise RuntimeError('x')
+    monkeypatch.setattr(qc.retention, 'retire', boom)
+    monkeypatch.setattr(qc, 'poll_replies', lambda: 3)
+    assert qc._poll_once() == 3
+
+
+def test_unparseable_credentials_file_is_logged_not_silent(monkeypatch, tmp_path):
+    seen = []
+    bad = tmp_path / 'night-mail.json'
+    bad.write_text('{nope', encoding='utf-8')
+    monkeypatch.setattr(qc, '_CREDS', bad)
+    monkeypatch.setattr(qc, '_log', lambda m, **k: seen.append(m))
+    monkeypatch.delenv('NIGHT_MAIL_USER', raising=False)
+    monkeypatch.delenv('NIGHT_MAIL_APP_PASSWORD', raising=False)
+    assert qc._creds() is None
+    assert any('unreadable' in m for m in seen)

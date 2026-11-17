@@ -615,7 +615,14 @@ def _handle_reply(subject: str, body: str, *, message_id: str = "",
             _log(f"[question-channel] q:{short} reply did not match any "
                  f"option — left open, not resumed", flush=True)
             return False
-        return _answer(qid, answer)
+        if _answer(qid, answer):
+            return True
+        # MC-1179 OS19: the answer was not delivered (follow-up refused, server
+        # unreachable). Release the qid so the next poll retries it instead of
+        # leaving the session parked behind a reply that was consumed.
+        with _lock:
+            _answered.discard(qid)
+        return False
 
     # Genuinely free-text question (no options anywhere in it). Decision:
     # never auto-resume a fully-tooled agent from a mail reply here — see
@@ -653,7 +660,12 @@ def _creds() -> Optional[tuple[str, str]]:
             cfg = json.loads(_CREDS.read_text(encoding="utf-8"))
             user = user or cfg.get("user", "")
             pw = pw or cfg.get("app_password", "")
-        except Exception:
+        except FileNotFoundError:
+            return None
+        except Exception as e:
+            # A credentials file that exists but will not parse used to read as
+            # "mail not configured", silently (MC-1179 OS21).
+            _log(f"[question-channel] mail credentials file unreadable: {e}", flush=True)
             return None
     pw = (pw or "").replace(" ", "").strip()
     return (user, pw) if user and pw else None
@@ -728,12 +740,24 @@ def poll_replies() -> int:
     return answered
 
 
+def _poll_once() -> int:
+    """One poller pass. MC-1179 OS20: retire idle question groups first, so an
+    answered or dismissed question stops costing a mailbox login every pass and
+    the caches stop growing; before this, the only caller of retire() was the
+    agent-mail supervisor loop, which is off by default."""
+    try:
+        retention.retire()
+    except Exception as e:
+        _log(f"[question-channel] retention pass failed: {e}", flush=True)
+    return poll_replies()
+
+
 def start_poller(interval_s: int = 120) -> None:
     """Background loop. Best-effort; a mailbox outage must never touch an agent."""
     def _loop():
         while True:
             try:
-                poll_replies()
+                _poll_once()
             except Exception as e:
                 _log(f"[question-channel] poller error: {e}", flush=True)
             time.sleep(max(30, interval_s))
