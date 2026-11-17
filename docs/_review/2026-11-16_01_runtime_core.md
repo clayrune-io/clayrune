@@ -282,3 +282,206 @@ and the provenance map (`runtime_attempt_owner.py:256-257`, key built at
 `LifecycleConflict` before launch.
 
 ---
+
+## 4. `mc/agent_runtime.py` (11,530 lines)
+
+Reported in line-range parts as they were read. Ids `A1…` are stable; the
+ranked table at the top is rebuilt when the file is finished.
+
+### 4a. Lines 1-3845: shared helpers, `AgentRuntime` base, registry, `ClaudeRuntime`, process helpers
+
+#### A1 · high · L — `_collect_trailing_reply_text` treats any line that starts with `[` as a status marker and drops reply text
+
+`mc/agent_runtime.py:943-947`: `if stripped.startswith('['): … continue/break`.
+The sibling scanner `_last_real_error_line` was fixed for exactly this in MC-935
+and now uses `_MARKER_ONLY_RE` (`:849`, `:870`), which matches only a line that
+is one bracket pair start to finish. This function kept the loose test, so a
+reply line that merely begins with `[` (a Markdown link, a `[file:…]` /
+`[browser:…]` marker, a JSON array, a `[x]` checklist) is taken for one of MC's
+own markers.
+
+**Measured** (`_scratch` script calling the function):
+
+| `log_lines` tail | returned |
+|---|---|
+| `'Earlier message.'`, `'[tool: Read]'`, `'[docs](http://x) are here.'` (Claude, one element per message) | `'Earlier message.'` (the previous message) |
+| `'See '`, `'[docs](x) for more'` (delta chunks) | `'See '` |
+| `'See '`, `'[docs](x)'`, `' for more'` | `' for more'` |
+| `'Old answer'`, `'[1, 2, 3]'` | `'Old answer'` |
+
+Callers: the session summary that is persisted and later read by Scribe
+(`agent_routes.py:10322-10323`) and a workflow step's result text
+(`mc/workflows.py:2236-2238`). Both receive an older message or a fragment as
+if it were the final reply, with no error.
+**Fix:** use `_MARKER_ONLY_RE.match(stripped)` here too (a marker-only line is
+a boundary; anything else is content).
+**Test coverage:** `tests/test_codex_run_error.py:222-241` covers delta joining
+and tracing lines; no case has reply text starting with `[`.
+
+#### A2 · high · L — Claude transform timeouts do not hold on Windows when the CLI is a `.cmd` shim, and `stream_text` has no timeout at all
+
+`oneshot` without a `deadline` runs `subprocess.run(..., timeout=leg_timeout)`
+(`:3289-3304`); `describe_image` does the same (`:3352-3357`). On Windows
+`resolve_binary` deliberately prefers the npm `.cmd` shim (`:2124-2129`), so the
+child is `cmd.exe` and the CLI is a grandchild. On timeout `subprocess.run`
+kills only `cmd.exe` and then calls `communicate()` again with no timeout, which
+waits until every holder of the pipe (the still-running CLI) exits.
+
+**Measured:** `subprocess.run([shim.cmd], timeout=2)` around an 8 s child
+returned after **8.1 s**. On the review box the Claude binary resolves to a
+`.CMD` file, so this is the live path. A CLI stalled on the network therefore
+blocks the calling thread (Scribe, condense, Distiller, mail launder, vision
+bridge) for as long as the CLI lives, and the "timed out" process is never
+killed.
+
+The `deadline` path does this correctly: `mc/transform_process_deadline.py:36-50`
+tree-kills (`taskkill /T`, job object, `kill_tree`). `grep` finds no
+`run_text_transform` caller in `mc/memory.py`, `mc/distiller.py` or the routes
+that passes `deadline=`, so the 14 call sites use the path that does not hold.
+
+`stream_text` (`:3386-3476`) is weaker again: the read loop at `:3427` has no
+timeout; stderr is a pipe that nothing drains while stdout is read (`:3409-3410`,
+a CLI that fills the stderr pipe deadlocks both sides); and the `finally` at
+`:3472-3476` calls `proc.kill()`, which on a shim leaves the CLI running after a
+client disconnect even though the process was started with `POPEN_NEW_SESSION`
+for exactly that kind of cleanup.
+**Fix:** route the no-deadline `oneshot`/`describe_image` through
+`transform_process_deadline.run` with `deadline = now + timeout`; in
+`stream_text` use `_kill_pid(proc.pid)` in the `finally`, send stderr to a
+drained thread or `STDOUT`, and bound the loop.
+**Test coverage:** none can catch it; the tests stub `subprocess.run`.
+
+#### A3 · medium · L, M — a transcript scan that hits one exception caches an empty result, and the Documents cache writes it to disk
+
+`list_written_markdown`, `:2861-2890`: any exception while reading or parsing a
+transcript sets `hits = []` and then stores `(mtime, size, [])` in
+`_DOC_WRITE_CACHE`. A finished transcript never changes `(mtime, size)`, so the
+empty answer is permanent for the process, and `_doc_cache_store.mark_dirty`
+(`:2896-2897`) persists it, so it also survives restarts. Every document that
+session wrote disappears from the Documents tab with no log line. Triggers: a
+Windows sharing violation on `open`, or one line that makes `parse_event` raise
+(`:2313` does `msg.get('message', {}).get('content', [])`, which raises
+`AttributeError` on `"message": null` and `TypeError` on `"content": null`).
+
+`_session_row`, `:2725-2773`, has the same shape (`except Exception: pass`,
+then cache at `:2795`): a failed open caches a row with `turns: 0` and an empty
+label for a real conversation until the file next changes; one bad line stops
+the scan there and caches the partial row. `list_running_subagents`
+`:2966-2992` likewise.
+**Fix:** on exception, log and return the result without caching it; guard the
+two `.get` chains in `parse_event`.
+**Test coverage:** not found for the failure path.
+
+#### A4 · medium · L — an unreadable incognito registry is rebuilt from empty by the writer, un-marking every earlier incognito transcript
+
+`mark_transcript_incognito`, `:1827-1838`: if the file exists but does not parse,
+`data = {}` and the registry is rewritten holding only the new id (comment:
+"rebuild rather than lose the new mark"). The readers treat the same condition
+the opposite way: `_load_incognito_registry` returns `None` and
+`is_transcript_incognito` answers True for everything (`:1855-1859`,
+`:1875-1877`), because an unreadable registry must not release incognito
+transcripts. So a corrupt registry is fail-closed until the next incognito
+dispatch, and from that moment every previously marked transcript is listed,
+backfilled, indexed and summarised as an ordinary one. No log line marks the
+rebuild. Read, not measured.
+**Fix:** on a parse failure, move the bad file aside (`.corrupt-<ts>`), log, and
+keep failing closed for ids that cannot be confirmed; never overwrite it with a
+one-entry file.
+**Test coverage:** not checked for the corrupt-then-mark sequence.
+
+#### A5 · medium · L — `last_error` is one attribute on a shared runtime object, read after the call by another thread's rules
+
+`oneshot` clears and sets `self.last_error` (`:3282`, `:3285`, `:3306`, `:3311`,
+`:3316`), and the caller reads it afterwards to classify the failure
+(`run_text_transform` `:1571-1575`, `stream_text` base `:1357-1361`). The
+runtime is a process-wide singleton (`_RUNTIMES`), and transforms run
+concurrently (one Scribe call per finished session, plus condense, Distiller,
+Claydo, the vision bridge). Thread A fails with `rc=1: usage limit…`; thread B
+starts and clears the field, or times out and writes `timeout after…`; A's
+caller then raises `TransformFailure` with an empty detail, or
+`TransformTimeout`, which routes map to 504. The detail is what the allowance
+layer reads to recognise exhaustion (`:130-132`). Read, not measured.
+**Fix:** return the reason with the result (or raise it) instead of parking it
+on the instance; a `threading.local` is the smallest change.
+**Test coverage:** single-threaded only.
+
+#### A6 · medium · L — `_pid_is_alive` reports an exited Windows process as alive while any handle to it is open
+
+`:3665-3673` treats a successful `OpenProcess` as "alive". Windows keeps the
+process object until its last handle closes, and a `subprocess.Popen` object is
+such a handle. **Measured:** child exited with rc 0, `_pid_is_alive(pid)`
+returned **True** while the `Popen` object was referenced and False once it was
+dropped. Callers that check `proc.poll()` first are unaffected
+(`agent_routes.py:14642`, `:18794`, `scheduler_routes.py:1213-1214`); callers
+that have only a pid are not (`system_routes.py:168`, `:259`,
+`process_ledger.py:174`, `:188`, `agent_routes.py:1653`): a registered process
+whose parent shell or CLI still holds its handle is shown as running, and the
+startup reaper can treat a dead prior server as alive.
+**Fix:** after `OpenProcess`, call `GetExitCodeProcess` and compare with
+`STILL_ACTIVE` (259), or `WaitForSingleObject(handle, 0)`.
+**Test coverage:** tests mock the function; none exercises it on a real exited
+child.
+
+#### A7 · low · L — `apply_mc_tool_blocks` logs "ignored" after it has queued the question
+
+`:762-780`: the question is appended to `pending_questions`,
+`waiting_for_question` is set and `paused = True` before the agent-mail hook is
+imported and called (`:776-777`). If that hook raises, the handler logs
+`[mc:question ignored — malformed block: …]` while the turn is in fact paused
+on a pending question. The `mc:todo` branch labels a failing backlog hook as a
+"malformed block" the same way (`:794-796`).
+**Fix:** give the hook calls their own `try` with an accurate message.
+
+#### A8 · low · E — `ClaudeRuntime.resolve_binary` is not cached; a transform resolves it four times
+
+`:2117` runs `shutil.which('claude')` on every call. **Measured: 1.29 ms per
+call** on a 51-entry `PATH`. `claude_oneshot_available` says both of its checks
+are cheap because "resolve_binary() is a cached path lookup" (`:1733-1734`); it
+is not. One transform resolves four times (`transform_evidence` builds both
+argvs and calls `claude_installed`, `:3188`, `:3197-3199`; `oneshot` builds the
+argv again, `:3284`), one dispatch twice (`:2199`, `:2218`). About 5 ms per
+transform, small next to the spawn; reported because the comment promises
+otherwise and `claude_installed()` has 12 call sites.
+**Fix:** cache the result for a few seconds, keyed on `PATH`.
+
+#### A9 · low · E, M — two scan caches still evict in the middle of a pass
+
+`_session_row` `:2788-2794` and `list_running_subagents` `:3002-3004` drop the
+oldest quarter when the cache is full, during the scan. The comment at
+`:1938-1948` documents this exact policy producing a 0 % hit rate for the
+Documents cache, and `_trim_scan_cache` (`:1953-1969`) was written to replace
+it there. The other two caches were left on the old policy; `_SESSION_ROW_CACHE`
+is global across projects, so several large projects polled in turn can pass
+4,096 between them. Read, not measured.
+**Fix:** use `_trim_scan_cache` with a touched set in all three.
+
+#### A10 · low · L — `maybe_set_sole_provider_default` changes memory before disk and never reconciles
+
+`:1699` sets `config['default_provider']` on the live config dict; if the write
+at `:1708` fails the function returns False (`:1709-1711`) with the in-memory
+value still set, so the process runs on a default the next restart will not
+have. The read-merge-write at `:1700-1708` takes no lock against the settings
+route doing the same. The docstring's "idempotent" holds only when exactly one
+CLI is installed: with zero or several, every call re-runs
+`installed_runtimes()`, a `health_check()` per registered runtime (`:1611-1619`).
+Read, not measured; the call site at `agent_routes.py:2410` is pass 2.
+
+#### Sound in lines 1-3845
+
+- `strip_injected_preamble` is bounded (12 passes, `:527`) and its greedy
+  handoff alternative backtracks once from the end; no catastrophic pattern.
+- `stop_hook_block_kind_before` is bounded at 50 parent hops (`:650`).
+- `_authorize_text_transform` refuses before any input is delivered, and
+  `transform_evidence` self-checks that both argv builders still carry
+  `TRANSFORM_ISOLATION` (`:3197-3200`).
+- `list_sessions` reads the incognito registry once per call and drops
+  everything when it is unreadable (`:2669-2673`); the must-include / limit
+  arithmetic at `:2676-2695` matches its docstring.
+- `transcript_path` globs the worktree dirs only after the direct lookups miss
+  (`:2523-2551`).
+- `_trim_scan_cache` never evicts an entry the current pass touched.
+- `_gemini_session_settings_path` fails closed on malformed MCP JSON
+  (`:3806-3817`) and uses a content-hashed name, so distinct MCP sets do not
+  collide.
+
+---
