@@ -96,9 +96,12 @@ enforces this — see spec §4.2, secret-bearing export is attended-only).
                                                               diff, no writes),
                                                               `restore_memory_index`
 
-Restore-point creation/list/label/pin/delete are reversible, additive
-operations on the project's OWN backup artifacts (not the project itself) —
-same "backup creation may run unattended" class as export-project, no gate.
+Restore-point creation/list/label/pin are reversible, additive operations
+on the project's OWN backup artifacts (not the project itself) — same "backup
+creation may run unattended" class as export-project, no gate. DELETE needs no
+passcode either, but is refused to an unattended caller (MC-1179 P28). Every
+route validates project_id/snap_id (mc/backup_restore_point_guard.py): a
+segment never becomes a path outside the restore-points directory.
 Rollback is the only Phase 3a write into project state, so it follows
 restore/import's attended-only rule — except `dry_run:true`, which never
 writes and is safe for a steward cycle to request as a preview.
@@ -661,6 +664,8 @@ def api_backup_restore_point(project_id):
     if request.method == 'GET':
         try:
             return jsonify({'restore_points': _backup.list_restore_points(project_id)})
+        except _backup.BackupError as e:
+            return _err(e, 404)
         except Exception as e:
             _log(f"[backup] restore-point list failed for {project_id}: {e}")
             return _err(e, 500)
@@ -682,6 +687,11 @@ def api_backup_restore_point(project_id):
 def api_backup_restore_point_item(project_id, snap_id):
     try:
         if request.method == 'DELETE':
+            # P28: no passcode (restore points are disposable and the UI deletes
+            # one in a click), but an unattended session may not delete them.
+            if _is_unattended():
+                return jsonify({'error': 'deleting a restore point is attended-only — '
+                                         'refused for this trigger type'}), 403
             return jsonify(_backup.delete_restore_point(project_id, snap_id))
         data = request.get_json(silent=True) or {}
         manifest = None

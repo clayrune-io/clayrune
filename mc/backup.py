@@ -68,6 +68,7 @@ from typing import Any, Callable, Optional
 
 from mc.blueprints.project_routes import EXCLUDED_SIDECAR_SUFFIXES
 from mc import backup_path_guard as _path_guard
+from mc import backup_restore_point_guard as _rp_guard
 from mc import secrets_store as _secrets_store
 from mc import state as _state
 from mc.atomic_json import write_json_atomic
@@ -840,7 +841,9 @@ def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = 
     dest_dir.mkdir(parents=True, exist_ok=True)
     fname = _filename_for(cats, unprotected_excl)
     if label:
-        fname = fname.replace('.crbackup', f'-{label}.crbackup')
+        # P28: a label is a name segment, not a path (it used to carry
+        # separators and '..' straight into dest_dir / fname).
+        fname = fname.replace('.crbackup', f'-{_slugify(label)}.crbackup')
     final_path = dest_dir / fname
     tmp_path = _partial_path_for(dest_dir, fname)
 
@@ -1468,7 +1471,9 @@ def export_project(project_id: str, *, categories: Optional[dict] = None,
     if vault_status == 'included':
         fname = fname.replace('.crbackup', '-SECRETS.crbackup')
     if label:
-        fname = fname.replace('.crbackup', f'-{label}.crbackup')
+        # P28: a label is a name segment, not a path (it used to carry
+        # separators and '..' straight into dest_dir / fname).
+        fname = fname.replace('.crbackup', f'-{_slugify(label)}.crbackup')
     final_path = dest_dir / fname
     tmp_path = _partial_path_for(dest_dir, fname)
 
@@ -1892,8 +1897,28 @@ def _slugify(label: Optional[str]) -> str:
     return kept.strip('-')[:40] or 'point'
 
 
+def _registered_ids(paths: dict) -> list[str]:
+    return [p['id'] for p in _iter_registered_projects(paths['data_dir'])]
+
+
+def _restore_point_project_dir(paths: dict, project_id: str, *, require_known: bool = True) -> Path:
+    """A project's restore-point directory, refused (BackupError) unless it
+    is a direct child of the restore-points root and the project is registered
+    or already has points on disk (P28; rules in backup_restore_point_guard)."""
+    try:
+        return _rp_guard.project_dir(paths['restore_points_dir'], project_id,
+                                     lambda: _registered_ids(paths),
+                                     require_known=require_known)
+    except ValueError as exc:
+        raise BackupError(str(exc)) from exc
+
+
 def _restore_point_dir(paths: dict, project_id: str, snap_id: str) -> Path:
-    return paths['restore_points_dir'] / project_id / snap_id
+    try:
+        return _rp_guard.snap_dir(paths['restore_points_dir'], project_id, snap_id,
+                                  lambda: _registered_ids(paths))
+    except ValueError as exc:
+        raise BackupError(str(exc)) from exc
 
 
 def _enumerate_restore_point_entries(paths: dict, project: dict) -> tuple[list[_Entry], list[_Warning]]:
@@ -2012,7 +2037,7 @@ def _load_restore_point_manifest(paths: dict, project_id: str, snap_id: str) -> 
 
 def list_restore_points(project_id: str) -> list[dict]:
     paths = _paths()
-    d = paths['restore_points_dir'] / project_id
+    d = _restore_point_project_dir(paths, project_id, require_known=False)
     out: list[dict] = []
     if not d.is_dir():
         return out
