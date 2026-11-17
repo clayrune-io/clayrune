@@ -24,7 +24,7 @@ function interruptButtonHTML(projectId, sessionId, status, mobile) {
   const e = (s) => String(s).replace(/[&<>"']/g, (c) => (
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const title = 'Stop the current turn and send this now (Esc / Stop just stops)';
-  const call = `sendFollowup('${e(projectId)}','${e(sessionId)}','interrupt')`;
+  const call = `sendFollowup('${window.jsAttr(projectId)}','${e(sessionId)}','interrupt')`;
   return mobile
     ? `<button class="btn-interrupt-send btn-interrupt-send-mobile" type="button" onclick="${call}" title="${title}" aria-label="Interrupt and send">&#9099;</button>`
     : `<button class="btn-interrupt-send" type="button" onclick="${call}" title="${title}">Interrupt</button>`;

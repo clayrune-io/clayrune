@@ -50,7 +50,7 @@ function docSearchBoxHTML(projectId) {
     <input type="text" id="doc-search-input-${_esc(projectId)}" class="doc-search-input"
       placeholder="Search inside documents..." autocomplete="off" spellcheck="false"
       value="${_esc((st && st.raw) || '')}"
-      oninput="docSearchInput('${_esc(projectId)}', this.value)">
+      oninput="docSearchInput('${window.jsAttr(projectId)}', this.value)">
   </div>`;
 }
 
@@ -82,7 +82,7 @@ function _hitHTML(projectId, h, query) {
   const line = Number(h.line_start) || 0;
   return `
     <div class="doc-search-hit" role="button" tabindex="0"
-      onclick="docSearchOpen('${_esc(projectId)}','${_jsAttr(h.path)}','${_jsAttr(file)}',${line})"
+      onclick="docSearchOpen('${window.jsAttr(projectId)}','${_jsAttr(h.path)}','${_jsAttr(file)}',${line})"
       onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click();}">
       <div class="doc-search-file">${tag}<span class="doc-search-path">${_esc(file)}</span>${line ? `<span class="doc-search-line">:${line}</span>` : ''}</div>
       ${head}

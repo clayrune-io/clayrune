@@ -99,7 +99,7 @@ function _sbRender() {
       const hasCsid = !!csid;
       const handler = hasCsid
         ? `_sbOpenTranscript(${idx})`
-        : `_sbOpenAgentLog('${esc(pid)}')`;
+        : `_sbOpenAgentLog('${window.jsAttr(pid)}')`;
       const cls = hasCsid ? 'sb-row sb-row-recent' : 'sb-row sb-row-recent sb-row-no-csid';
       const absTime = _sbFormatAbs(e.ts);
       const provBadge = _providerBadge(e.provider);

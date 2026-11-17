@@ -479,7 +479,7 @@ function _renderRemoteLoginBox(provider, url) {
     <div>Open this on any device signed into the right account, then paste the code it gives you back here:</div>
     <div style="margin:6px 0;word-break:break-all"><a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a></div>
     <button class="btn-add" style="background:var(--surface3);color:var(--text)"
-            onclick="openBrowserPane('${esc(url)}', window.currentProjectId, null, '${esc(provider)}-login')">Open in browser pane</button>
+            onclick="openBrowserPane('${window.jsAttr(url)}', window.currentProjectId, null, '${esc(provider)}-login')">Open in browser pane</button>
     <div style="display:flex;gap:6px;margin-top:8px">
       <input id="settings-remote-code-${esc(provider)}" type="text" class="settings-input"
              placeholder="Paste code here" style="flex:1" autocomplete="off">

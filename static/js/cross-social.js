@@ -179,7 +179,7 @@ function renderAllSocial() {
           ${!item.originated ? '<span class="backlog-source">reply</span>' : ''}
         </div>
         <div class="backlog-text" id="social-body-${esc(item.id)}" contenteditable="true" spellcheck="true"
-          onblur="saveSocialBody(event,'${esc(p.id)}','${esc(item.id)}')"
+          onblur="saveSocialBody(event,'${window.jsAttr(p.id)}','${esc(item.id)}')"
         >${esc(item.body)}</div>
         ${item.teaching ? `<div class="social-teaching">${esc(item.teaching)}</div>` : ''}
         ${missingAttribution ? `<div class="social-attr-warn">Missing the line "${esc(SOCIAL_ATTRIBUTION_LINE)}" — Release will be refused until it's added.</div>` : ''}
@@ -188,14 +188,14 @@ function renderAllSocial() {
           : ''}
       </div>
       <div class="backlog-meta social-item-actions">
-        <button class="btn-social-edit" onclick="editSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Edit the draft">Edit</button>
+        <button class="btn-social-edit" onclick="editSocialItem(event,'${window.jsAttr(p.id)}','${esc(item.id)}')" title="Edit the draft">Edit</button>
         ${needsChanges
-          ? `<button class="btn-social-restore" onclick="restoreSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Put this back to pending">Restore to pending</button>`
-          : `<button class="btn-social-release" onclick="releaseSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Approve and hand off the copy">Release</button>
+          ? `<button class="btn-social-restore" onclick="restoreSocialItem(event,'${window.jsAttr(p.id)}','${esc(item.id)}')" title="Put this back to pending">Restore to pending</button>`
+          : `<button class="btn-social-release" onclick="releaseSocialItem(event,'${window.jsAttr(p.id)}','${esc(item.id)}')" title="Approve and hand off the copy">Release</button>
         ${item.status === 'approved'
-          ? `<button class="btn-social-posted" onclick="markSocialItemPosted(event,'${esc(p.id)}','${esc(item.id)}')" title="Record that this actually went out, with its link">Mark posted</button>`
+          ? `<button class="btn-social-posted" onclick="markSocialItemPosted(event,'${window.jsAttr(p.id)}','${esc(item.id)}')" title="Record that this actually went out, with its link">Mark posted</button>`
           : ''}
-        <button class="btn-social-pushback" onclick="pushBackSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Send back with a note">Push back</button>`}
+        <button class="btn-social-pushback" onclick="pushBackSocialItem(event,'${window.jsAttr(p.id)}','${esc(item.id)}')" title="Send back with a note">Push back</button>`}
       </div>
     </div>`;
   }).join('');

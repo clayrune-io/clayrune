@@ -35,7 +35,7 @@ function renderDeliveryStatusHTML(p) {
   const data = deliveryStatusCache[p.id];
   if (!data) return '<div class="agent-log-empty">Loading delivery status…</div>';
   if (data.error) return `<div class="agent-log-empty">${esc(data.error)}
-    <button class="agent-log-more" onclick="loadDeliveryStatus('${esc(p.id)}')">Refresh read</button></div>`;
+    <button class="agent-log-more" onclick="loadDeliveryStatus('${window.jsAttr(p.id)}')">Refresh read</button></div>`;
   const items = data.items || [];
   const rows = items.length ? items.map(item => `
     <div class="agent-log-entry delivery-status-${esc(item.state || 'pending')}">
@@ -45,9 +45,9 @@ function renderDeliveryStatusHTML(p) {
       ${item.reason ? `<div class="agent-log-summary">${esc(item.reason)}</div>` : ''}
     </div>`).join('') : '<div class="agent-log-empty">No pending recovery items.</div>';
   const previous = data.offset > 0
-    ? `<button class="agent-log-more" onclick="loadDeliveryStatus('${esc(p.id)}',${Math.max(0, data.offset - data.limit)})">‹ Previous</button>` : '';
+    ? `<button class="agent-log-more" onclick="loadDeliveryStatus('${window.jsAttr(p.id)}',${Math.max(0, data.offset - data.limit)})">‹ Previous</button>` : '';
   const next = data.offset + data.limit < data.total
-    ? `<button class="agent-log-more" onclick="loadDeliveryStatus('${esc(p.id)}',${data.offset + data.limit})">Next ›</button>` : '';
+    ? `<button class="agent-log-more" onclick="loadDeliveryStatus('${window.jsAttr(p.id)}',${data.offset + data.limit})">Next ›</button>` : '';
   const usage = data.usage;
   const usageHTML = !usage || usage.status === 'unknown'
     ? `<div class="delivery-status-usage delivery-status-usage-unknown">Logical delivery payload usage is unavailable; warning state is unknown.</div>`
@@ -115,7 +115,7 @@ function agentLogPanelHTML(p) {
       const sessionLabel = eprov === 'claude' ? 'claude -r' : `${eprov} session`;
       // Continue button: only show for providers that support session resume
       const continueBtn = (resumeId && ecaps.supports_session_resume)
-        ? `<button class="agent-log-continue-btn" onclick="toggleContinueInput('${esc(p.id)}','${esc(eid)}','${esc(resumeId)}')">Continue</button>`
+        ? `<button class="agent-log-continue-btn" onclick="toggleContinueInput('${window.jsAttr(p.id)}','${esc(eid)}','${esc(resumeId)}')">Continue</button>`
         : '';
       return `
       <div class="agent-log-entry status-${e.status || 'completed'}">
@@ -129,15 +129,15 @@ function agentLogPanelHTML(p) {
         <div class="agent-log-ts">${esc(e.ts_relative || e.ts || '')} &middot; started ${esc(e.started_relative || e.started_at || '')}${usageStr}${costStr}</div>
         ${resumeId ? `<div class="agent-log-session-id">${sessionLabel} <code title="Click to copy">${esc(resumeId)}</code><span class="copy-sid" onclick="navigator.clipboard.writeText('${esc(resumeId)}');this.textContent='copied!';setTimeout(()=>this.textContent='copy',1200)" title="Copy session ID">copy</span></div>` : ''}
         ${(resumeId && ecaps.supports_session_resume && continueInputOpen[eid]) ? `<div class="agent-log-continue-input open" id="continue-input-${esc(eid)}">
-          <textarea id="continue-msg-${esc(eid)}" rows="2" placeholder="What should the agent continue with?" onkeydown="handleInputEnter(event,()=>dispatchContinue('${esc(p.id)}','${esc(eid)}','${esc(resumeId)}','${esc(eprov)}'),'${esc(p.id)}')"></textarea>
-          <button class="btn-send" onclick="dispatchContinue('${esc(p.id)}','${esc(eid)}','${esc(resumeId)}','${esc(eprov)}')">Send</button>
+          <textarea id="continue-msg-${esc(eid)}" rows="2" placeholder="What should the agent continue with?" onkeydown="handleInputEnter(event,()=>dispatchContinue('${window.jsAttr(p.id)}','${esc(eid)}','${esc(resumeId)}','${esc(eprov)}'),'${window.jsAttr(p.id)}')"></textarea>
+          <button class="btn-send" onclick="dispatchContinue('${window.jsAttr(p.id)}','${esc(eid)}','${esc(resumeId)}','${esc(eprov)}')">Send</button>
         </div>` : ''}
       </div>`;
     }).join('');
 
   const remaining = all.length - entries.length;
   const moreBtn = remaining > 0
-    ? `<button class="agent-log-more" onclick="showMoreAgentLog('${esc(p.id)}')"
+    ? `<button class="agent-log-more" onclick="showMoreAgentLog('${window.jsAttr(p.id)}')"
          style="width:100%;margin-top:10px;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text-faint);font-size:12px;cursor:pointer">
          Show ${Math.min(remaining, AGENT_LOG_PAGE)} more &middot; ${remaining} older</button>`
     : '';
@@ -149,8 +149,8 @@ function agentLogPanelHTML(p) {
       <div class="modal-tab-search">
         <input type="text" id="tab-search-agent-log-${esc(p.id)}" placeholder="Filter..."
           value="${esc(modalSearchQuery[p.id] || '')}"
-          oninput="modalSearchQuery['${esc(p.id)}']=this.value;applyTabFilter('${esc(p.id)}')"
-        >${modalSearchQuery[p.id] ? `<span class="search-clear" onclick="clearTabSearch('${esc(p.id)}')">&#x2715;</span>` : ''}
+          oninput="modalSearchQuery['${window.jsAttr(p.id)}']=this.value;applyTabFilter('${window.jsAttr(p.id)}')"
+        >${modalSearchQuery[p.id] ? `<span class="search-clear" onclick="clearTabSearch('${window.jsAttr(p.id)}')">&#x2715;</span>` : ''}
       </div>
     </div>
     ${entriesHTML}
@@ -468,9 +468,9 @@ function renderDocumentsTab(projectId) {
     toolbar.style.display = 'flex';
     toolbar.className = 'plans-toolbar';
     toolbar.innerHTML = `
-      <label><input type="checkbox" ${allChecked ? 'checked' : ''} onchange="toggleAllDocs('${esc(projectId)}', this.checked)"> Select All</label>
-      ${delSelCount > 0 ? `<button class="btn-plans-action btn-plans-delete" onclick="deleteSelectedDocs('${esc(projectId)}')">Delete Selected (${delSelCount})</button>` : ''}
-      ${selCount > 0 ? `<button class="btn-plans-action" onclick="exportSelectedDocs('${esc(projectId)}')">Export (${selCount})</button>` : ''}
+      <label><input type="checkbox" ${allChecked ? 'checked' : ''} onchange="toggleAllDocs('${window.jsAttr(projectId)}', this.checked)"> Select All</label>
+      ${delSelCount > 0 ? `<button class="btn-plans-action btn-plans-delete" onclick="deleteSelectedDocs('${window.jsAttr(projectId)}')">Delete Selected (${delSelCount})</button>` : ''}
+      ${selCount > 0 ? `<button class="btn-plans-action" onclick="exportSelectedDocs('${window.jsAttr(projectId)}')">Export (${selCount})</button>` : ''}
     `;
   }
 
@@ -492,12 +492,12 @@ function renderDocumentsTab(projectId) {
       ? `<span class="plan-history-task" title="${esc(d.location || '')}">${esc(d.location || '')}</span>`
       : `<span class="plan-history-task">${esc((d.task || '').length > 80 ? d.task.slice(0,77) + '...' : (d.task || ''))}</span>`;
     const deleteBtn = d.deletable
-      ? `<button class="plan-card-delete" onclick="event.stopPropagation();deleteSingleDoc('${esc(projectId)}','${pathEsc}','${titleEsc}')" title="Delete plan">&times;</button>`
+      ? `<button class="plan-card-delete" onclick="event.stopPropagation();deleteSingleDoc('${window.jsAttr(projectId)}','${pathEsc}','${titleEsc}')" title="Delete plan">&times;</button>`
       : `<span class="plan-card-delete plan-card-delete-disabled" title="Lives in the project's own working tree — not deleted from here">&times;</span>`;
     return `
     <div class="plan-history-card">
-      <input type="checkbox" class="plan-cb" ${checked} onchange="toggleDocSelection('${esc(projectId)}','${pathEsc}',this.checked)" onclick="event.stopPropagation()">
-      <div class="plan-card-body" onclick="openDocFromHistory('${pathEsc}','${titleEsc}','${esc(projectId)}')">
+      <input type="checkbox" class="plan-cb" ${checked} onchange="toggleDocSelection('${window.jsAttr(projectId)}','${pathEsc}',this.checked)" onclick="event.stopPropagation()">
+      <div class="plan-card-body" onclick="openDocFromHistory('${pathEsc}','${titleEsc}','${window.jsAttr(projectId)}')">
         <div class="plan-history-title">${kindBadge} ${esc(d.title)}</div>
         <div class="plan-history-meta">
           <span>${esc(d.ts_relative || '')}</span>

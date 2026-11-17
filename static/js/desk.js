@@ -575,15 +575,15 @@ async function deskVoices() {
         <div class="desk-voice-row" data-voice="${esc(v.name)}">
           <div class="desk-voice-row-head">
             <span class="camp-voice-name">${esc(v.name)}</span>
-            <button class="desk-platform desk-platform-btn" onclick="deskPlatformRules('${esc(v.platform || '')}')"
+            <button class="desk-platform desk-platform-btn" onclick="deskPlatformRules('${window.jsAttr(v.platform || '')}')"
               title="This voice's platform rules — the brief the writer gets">${esc(v.platform || '')}</button>
-            <button class="desk-platform desk-destination-btn" onclick="deskVoiceDestination('${esc(v.name)}')"
+            <button class="desk-platform desk-destination-btn" onclick="deskVoiceDestination('${window.jsAttr(v.name)}')"
               title="Which account this voice publishes to — distinct from the platform">${esc(v.destination || 'default account')}</button>
             <span class="desk-voice-learned${(v.rewrites || []).length ? '' : ' cold'}">
               ${(v.rewrites || []).length} edit${(v.rewrites || []).length === 1 ? '' : 's'} learned
             </span>
             <span style="flex:1"></span>
-            <button class="desk-seed-btn" onclick="deskSeedVoice('${esc(v.name)}')">
+            <button class="desk-seed-btn" onclick="deskSeedVoice('${window.jsAttr(v.name)}')">
               Learn from how I write
             </button>
           </div>
@@ -672,7 +672,7 @@ async function deskVoiceDestination(name) {
           placeholder="e.g. a profile URL or account name">
       </div>
       <div id="dest-error" class="social-attr-warn" style="display:none"></div>
-      <button class="btn-add" style="width:100%;margin-top:4px" onclick="deskSaveVoiceDestination('${esc(name)}')">Save</button>
+      <button class="btn-add" style="width:100%;margin-top:4px" onclick="deskSaveVoiceDestination('${window.jsAttr(name)}')">Save</button>
     </div>`;
   win.appendChild(content);
   document.getElementById('modal-layer').appendChild(win);
@@ -736,7 +736,7 @@ async function deskPlatformRules(platform) {
   content.innerHTML = `
     <div class="modal-header" style="padding:18px 24px 10px 28px">
       <div class="modal-window-controls" style="position:absolute;top:14px;right:16px;display:flex;gap:4px">
-        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+        <button class="modal-close" onclick="closeModalById('${window.jsAttr(modalId)}')" title="Close">&#10005;</button>
       </div>
       <h2 style="margin:0;font-size:17px;font-weight:700;color:var(--text)">${esc(platform)} rules</h2>
     </div>
@@ -754,7 +754,7 @@ async function deskPlatformRules(platform) {
           placeholder="Cost per post, what gets demoted, how long is too long...">${esc(rules.text || '')}</textarea>
       </div>
       <div id="plat-error" class="social-attr-warn" style="display:none"></div>
-      <button class="btn-add" style="width:100%;margin-top:4px" onclick="deskSavePlatformRules('${esc(platform)}')">Save</button>
+      <button class="btn-add" style="width:100%;margin-top:4px" onclick="deskSavePlatformRules('${window.jsAttr(platform)}')">Save</button>
     </div>`;
   win.appendChild(content);
   document.getElementById('modal-layer').appendChild(win);
@@ -1507,7 +1507,7 @@ function _deskQueueRowHTML(row, selected) {
   const proj = (typeof allProjects !== 'undefined' ? allProjects : []).find(x => x.id === item.project_id);
   const age = (typeof window.timeAgoShort === 'function') ? window.timeAgoShort(item.created_at) : '';
   return `<div class="desk-qrow${selected ? ' selected' : ''}" data-item-id="${esc(item.id)}"
-      onclick="deskQueueSelect('${esc(p.id)}','${esc(item.id)}')">
+      onclick="deskQueueSelect('${window.jsAttr(p.id)}','${esc(item.id)}')">
     <div class="desk-qrow-top">
       <span class="desk-vpill ${_deskVoicePillClass(platform)}">${esc(voice || platform || 'unspecified')}</span>
       <span class="desk-qrow-proj">${esc((proj && proj.name) || item.project_id || '')}</span>
@@ -1652,7 +1652,7 @@ function _deskOtherVoiceHTML(item) {
     return `<div class="desk-other-voice-card">Same story, other voice — no other voice exists yet</div>`;
   }
   return `<div class="desk-other-voice-card"><b>${esc(otherVoiceName)}</b> has no draft from this
-    signal yet — <button onclick="deskDraft('${esc(item.signal_id)}','${esc(otherVoiceName)}')">Ask Posy ›</button></div>`;
+    signal yet — <button onclick="deskDraft('${esc(item.signal_id)}','${window.jsAttr(otherVoiceName)}')">Ask Posy ›</button></div>`;
 }
 
 function _deskUpdateCharCounter(el) {
@@ -1942,7 +1942,7 @@ function _deskReviewPaneHTML(row) {
   const assetHTML = (item.media || []).length ? '' : `
     <div class="desk-needs-asset">
       <span>Needs asset — no media attached yet.</span>
-      <button onclick="deskQueueAttachAsset('${esc(p.id)}','${esc(item.id)}')">Attach ›</button>
+      <button onclick="deskQueueAttachAsset('${window.jsAttr(p.id)}','${esc(item.id)}')">Attach ›</button>
     </div>`;
 
   const cost = _deskReleaseCost(platform, item.body);
@@ -1956,7 +1956,7 @@ function _deskReviewPaneHTML(row) {
       <div class="desk-checks-card" style="color:var(--amber-text)">
         <b>Pushed back</b> — ${esc(item.note || 'no note recorded')}
       </div>
-      <button class="desk-schedule-btn" onclick="restoreSocialItem(event,'${esc(p.id)}','${esc(item.id)}')">Restore to pending</button>`;
+      <button class="desk-schedule-btn" onclick="restoreSocialItem(event,'${window.jsAttr(p.id)}','${esc(item.id)}')">Restore to pending</button>`;
   } else if (item.status === 'approved') {
     // Which routes appear is entirely the platform's call, per item — X gets
     // Open in X, LinkedIn gets Open in LinkedIn, and Post via API only once
@@ -1964,10 +1964,10 @@ function _deskReviewPaneHTML(row) {
     // panel). Copy always works, for any platform.
     const routeBtns = [
       platform === 'x'
-        ? `<button class="desk-postroute-btn" onclick="deskOpenInX('${esc(p.id)}','${esc(item.id)}')">Open in X ›</button>` : '',
+        ? `<button class="desk-postroute-btn" onclick="deskOpenInX('${window.jsAttr(p.id)}','${esc(item.id)}')">Open in X ›</button>` : '',
       platform === 'linkedin'
-        ? `<button class="desk-postroute-btn" onclick="deskOpenInLinkedIn('${esc(p.id)}','${esc(item.id)}')">Open in LinkedIn ›</button>` : '',
-      `<button class="desk-postroute-btn" onclick="deskCopyBody('${esc(p.id)}','${esc(item.id)}')">Copy</button>`,
+        ? `<button class="desk-postroute-btn" onclick="deskOpenInLinkedIn('${window.jsAttr(p.id)}','${esc(item.id)}')">Open in LinkedIn ›</button>` : '',
+      `<button class="desk-postroute-btn" onclick="deskCopyBody('${window.jsAttr(p.id)}','${esc(item.id)}')">Copy</button>`,
       (platform === 'x' && _deskXConnected())
         ? `<button class="desk-postroute-btn" onclick="deskPostViaApi()">Post via API ›</button>` : '',
     ].filter(Boolean).join('');
@@ -1984,22 +1984,22 @@ function _deskReviewPaneHTML(row) {
         <input type="text" class="desk-permalink-input" id="desk-permalink-${esc(item.id)}"
           placeholder="Paste the post's link once it's live">
         <button class="desk-schedule-btn" style="width:auto"
-          onclick="deskQueueRecordPermalink('${esc(p.id)}','${esc(item.id)}')">Record ›</button>
+          onclick="deskQueueRecordPermalink('${window.jsAttr(p.id)}','${esc(item.id)}')">Record ›</button>
       </div>
       <div class="desk-permalink-skip">
-        <a onclick="deskQueueRecordPermalink('${esc(p.id)}','${esc(item.id)}',true)">I don't have the link — record without it</a>
+        <a onclick="deskQueueRecordPermalink('${window.jsAttr(p.id)}','${esc(item.id)}',true)">I don't have the link — record without it</a>
       </div>
-      <button class="desk-kill-btn" onclick="deskQueueKill('${esc(p.id)}','${esc(item.id)}')">Kill this draft</button>`;
+      <button class="desk-kill-btn" onclick="deskQueueKill('${window.jsAttr(p.id)}','${esc(item.id)}')">Kill this draft</button>`;
   } else {
     railHTML = `
       <button class="desk-release-btn${locked ? ' locked' : ''}" ${locked ? 'disabled' : ''}
-        onclick="deskQueueRelease('${esc(p.id)}','${esc(item.id)}')"
+        onclick="deskQueueRelease('${window.jsAttr(p.id)}','${esc(item.id)}')"
         title="${locked ? 'Edit the draft at least once to unlock' : ''}">${esc(priced)}</button>
       <div class="desk-release-unlock">Release unlocks after your first edit — ${
-        locked ? `or <a onclick="deskQueueReleaseUnedited('${esc(p.id)}','${esc(item.id)}')">release unedited anyway</a>`
+        locked ? `or <a onclick="deskQueueReleaseUnedited('${window.jsAttr(p.id)}','${esc(item.id)}')">release unedited anyway</a>`
                : 'already unlocked.'}</div>
       <button class="desk-schedule-btn" onclick="deskQueueSchedule()">Schedule ▾</button>
-      <button class="desk-kill-btn" onclick="deskQueueKill('${esc(p.id)}','${esc(item.id)}')">Kill this draft</button>
+      <button class="desk-kill-btn" onclick="deskQueueKill('${window.jsAttr(p.id)}','${esc(item.id)}')">Kill this draft</button>
       ${_deskChecksHTML(item)}
       ${_deskOtherVoiceHTML(item)}`;
   }
@@ -2020,7 +2020,7 @@ function _deskReviewPaneHTML(row) {
         </div>
         <div class="desk-post-body" contenteditable="true" spellcheck="true"
           oninput="_deskUpdateCharCounter(this)"
-          onblur="deskQueueSaveBody(event,'${esc(p.id)}','${esc(item.id)}')">${esc(item.body || '')}</div>
+          onblur="deskQueueSaveBody(event,'${window.jsAttr(p.id)}','${esc(item.id)}')">${esc(item.body || '')}</div>
         ${assetHTML}
       </div>
       <div class="desk-post-footer">
@@ -2028,8 +2028,8 @@ function _deskReviewPaneHTML(row) {
         <div class="desk-insert-wrap">
           <button class="desk-insert-btn" onclick="deskQueueToggleInsert(event)">Insert ▾</button>
           <div class="desk-insert-menu" style="display:none">
-            <button onclick="deskQueueInsertLink('${esc(p.id)}','${esc(item.id)}')">Tracked link</button>
-            <button onclick="deskQueueInsertMention('${esc(p.id)}','${esc(item.id)}')">Mention</button>
+            <button onclick="deskQueueInsertLink('${window.jsAttr(p.id)}','${esc(item.id)}')">Tracked link</button>
+            <button onclick="deskQueueInsertMention('${window.jsAttr(p.id)}','${esc(item.id)}')">Mention</button>
             <button disabled title="This campaign has no canonical URL stored yet">Campaign canonical URL</button>
           </div>
         </div>
@@ -2151,11 +2151,11 @@ function _deskThreadComposerHTML(item, disabled) {
     <div class="agent-input-row">
       <textarea class="agent-task-input" id="${taId}" rows="1" ${disabled ? 'disabled' : ''}
         placeholder="${disabled ? "Posy is already revising this draft…" : 'Push back to Posy…'}"
-        onkeydown="handleInputEnter(event,()=>deskThreadSendPushback('${esc(item.project_id)}','${esc(item.id)}'),null)"
+        onkeydown="handleInputEnter(event,()=>deskThreadSendPushback('${window.jsAttr(item.project_id)}','${esc(item.id)}'),null)"
       ></textarea>
       ${(!disabled && typeof window.micBtnHTML === 'function') ? window.micBtnHTML(taId) : ''}
       <button class="btn-dispatch" id="desk-thread-send-${esc(item.id)}" ${disabled ? 'disabled' : ''}
-        onclick="deskThreadSendPushback('${esc(item.project_id)}','${esc(item.id)}')">Send</button>
+        onclick="deskThreadSendPushback('${window.jsAttr(item.project_id)}','${esc(item.id)}')">Send</button>
     </div>`;
 }
 

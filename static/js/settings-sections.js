@@ -1119,10 +1119,10 @@ async function refreshRemoteSessions() {
         ? `Paired phone${lastMs ? ` · last active ${fmtAgo(lastMs)}` : ''}`
         : (lastMs ? `Last active ${fmtAgo(lastMs)}` : '');
       const ua = briefUA(s.ua || '');
-      const sidEsc = esc(s.session_id);
+      const sidEsc = window.jsAttr(s.session_id);
       // Headline priority: user-typed label > clickable "Name this session…"
       const labelHtml = s.label
-        ? `<span>${esc(s.label)}</span> <a href="#" onclick="renameRemoteSession('${sidEsc}', ${JSON.stringify(s.label)}); return false;" style="font-size:10px;font-weight:400;opacity:.5;margin-left:6px;text-decoration:underline">rename</a>`
+        ? `<span>${esc(s.label)}</span> <a href="#" onclick="renameRemoteSession('${sidEsc}', '${window.jsAttr(s.label)}'); return false;" style="font-size:10px;font-weight:400;opacity:.5;margin-left:6px;text-decoration:underline">rename</a>`
         : `<a href="#" onclick="renameRemoteSession('${sidEsc}', ''); return false;" style="color:var(--accent);text-decoration:underline">Name this session…</a>`;
       const subParts = [];
       if (ua) subParts.push(esc(ua));

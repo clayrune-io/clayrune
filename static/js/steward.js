@@ -32,7 +32,7 @@ async function renderStewards() {
   // Say so on the card rather than advertising a cadence that isn't running.
   const schedPaused = !!(window._globalConfig || {}).scheduler_paused;
   list.innerHTML = stewards.map(s => {
-    const pid = esc(s.project_id);
+    const pid = window.jsAttr(s.project_id);
     const pend = s.decisions_pending || 0;
     const blk = s.blocked || 0;
     const cadence = s.cadence_minutes >= 60 && s.cadence_minutes % 60 === 0

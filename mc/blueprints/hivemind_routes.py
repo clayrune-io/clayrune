@@ -42,6 +42,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from mc.ui_field_validation import validate_workstream_priority
+
 from flask import Blueprint, Response, jsonify, request
 
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
@@ -595,6 +597,12 @@ def hivemind_create():
     if not data or not data.get('goal', '').strip():
         return jsonify({'error': 'goal required'}), 400
 
+    for ws_in in data.get('workstreams') or []:
+        if isinstance(ws_in, dict):
+            error = validate_workstream_priority(ws_in)
+            if error:
+                return jsonify({'error': error}), 400
+
     project_id = data.get('project_id', '').strip()
     if not project_id:
         return jsonify({'error': 'project_id required'}), 400
@@ -881,6 +889,10 @@ def hivemind_workstream_create(hivemind_id):
     if not data or not data.get('title', '').strip():
         return jsonify({'error': 'title required'}), 400
 
+    error = validate_workstream_priority(data)
+    if error:
+        return jsonify({'error': error}), 400
+
     ws_id = data.get('id', 'ws_' + str(uuid.uuid4())[:6])
     try:
         warnings = []
@@ -931,6 +943,10 @@ def hivemind_workstream_update(hivemind_id, ws_id):
     if not ws:
         return jsonify({'error': 'workstream not found'}), 404
     data = request.get_json() or {}
+    error = validate_workstream_priority(data)
+    if error:
+        return jsonify({'error': error}), 400
+
     manifest = _hm_load_manifest(hivemind_id)
     warnings = []
     try:

@@ -50,7 +50,7 @@ function renderCreatePreviews(projectId) {
       <div class="create-preview-item" title="${esc(file.name)}">
         ${thumbContent}
         <div class="file-name">${esc(file.name)}</div>
-        <button class="create-preview-remove" onclick="removeCreateFile('${esc(projectId)}',${i})">✕</button>
+        <button class="create-preview-remove" onclick="removeCreateFile('${window.jsAttr(projectId)}',${i})">✕</button>
       </div>`;
   }).join('');
 }
@@ -275,7 +275,7 @@ async function codeSyncShowIncoming(projectId) {
                 <div style="font-size:10px;color:var(--text-faint)">${esc(c.author_name||'')} &middot; ${esc(c.authored_at||'')}</div>
               </div>
               <button class="btn-small" style="font-size:10px;padding:3px 8px"
-                onclick="codeSyncDismiss('${esc(projectId)}','${esc(c.sha)}', this)">Reject</button>
+                onclick="codeSyncDismiss('${window.jsAttr(projectId)}','${esc(c.sha)}', this)">Reject</button>
             </div>
           `).join('')}
         </div>
@@ -377,7 +377,7 @@ function attHTML(a, projectId, itemId) {
       <div class="att-size">${kb}</div>
     </div>
     <a href="${url}" target="_blank" rel="noopener"><button class="att-open">Open</button></a>
-    <button class="att-del" onclick="deleteAttachment(event,'${projectId}','${itemId}','${esc(a.id)}')" title="Remove">✕</button>
+    <button class="att-del" onclick="deleteAttachment(event,'${window.jsAttr(projectId)}','${itemId}','${esc(a.id)}')" title="Remove">✕</button>
   </div>`;
 }
 
@@ -453,7 +453,7 @@ function linkRowHTML(l, item, backlog, projectId) {
     <span class="link-type">${esc(_linkLabel(l.type))}</span>
     ${_linkChip(target)}
     <button class="link-del" title="Remove link"
-      onclick="removeBacklogLink(event,'${esc(projectId)}','${esc(item.id)}','${esc(l.type)}','${esc(l.target)}')">✕</button>
+      onclick="removeBacklogLink(event,'${window.jsAttr(projectId)}','${esc(item.id)}','${esc(l.type)}','${esc(l.target)}')">✕</button>
   </div>`;
 }
 

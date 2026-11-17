@@ -100,12 +100,12 @@ function field(provider, projectId, key, label, compact = false) {
     <label class="settings-label" for="${esc(id)}">${compact ? '' : esc(provider.display_name) + ' · '}${esc(label)}</label>
     <div class="engine-preference-control">
       <select id="${esc(id)}" class="settings-select" data-engine-field="${esc(key)}" data-provider="${esc(provider.name)}"
-        onchange="EnginePreferences.choose('${esc(projectId)}','${esc(provider.name)}','${esc(key)}',this)">
+        onchange="EnginePreferences.choose('${window.jsAttr(projectId)}','${esc(provider.name)}','${esc(key)}',this)">
         ${choices.map(([v, l]) => `<option value="${esc(v)}"${selected === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}
         ${key === 'effort' ? '' : '<option value="__custom__">Custom model…</option>'}
       </select>
       ${key === 'effort' ? '' : `<input class="settings-input engine-custom-model" hidden aria-label="${esc(provider.display_name)} custom ${esc(label)}" placeholder="Exact model ID"
-        onchange="EnginePreferences.saveField('${esc(projectId)}','${esc(provider.name)}','${esc(key)}',this.value)"/>`}
+        onchange="EnginePreferences.saveField('${window.jsAttr(projectId)}','${esc(provider.name)}','${esc(key)}',this.value)"/>`}
     </div>
   </div>`;
 }
@@ -147,7 +147,7 @@ function render(projectId = '') {
   if (!data) return '<div class="settings-hint">Provider preferences are unavailable. Close and reopen to retry.</div>';
   const providerChoice = projectId ? `<div class="settings-row">
     <label class="settings-label" for="project-provider-default">Default provider</label>
-    <select class="settings-select" id="project-provider-default" onchange="EnginePreferences.saveProjectProvider('${esc(projectId)}',this.value)">
+    <select class="settings-select" id="project-provider-default" onchange="EnginePreferences.saveProjectProvider('${window.jsAttr(projectId)}',this.value)">
       <option value="">Use global (${esc(data.default_provider || 'not selected')})</option>
       ${data.project_provider && !data.providers.some(p => p.name === data.project_provider) ? `<option value="${esc(data.project_provider)}" selected>${esc(data.project_provider)} (not registered)</option>` : ''}
       ${data.providers.map(p => `<option value="${esc(p.name)}"${data.project_provider === p.name ? ' selected' : ''}>${esc(p.display_name)}</option>`).join('')}
@@ -242,7 +242,7 @@ async function openProject(projectId) {
       <div class="engine-project-body">${render(projectId)}
         <details><summary>Advanced runtime</summary>
           <div class="settings-row"><label class="settings-label" for="project-runtime-mode">Process lifetime</label>
-            <select class="settings-select" id="project-runtime-mode" onchange="EnginePreferences.saveProjectMode('${esc(projectId)}',this.value)">
+            <select class="settings-select" id="project-runtime-mode" onchange="EnginePreferences.saveProjectMode('${window.jsAttr(projectId)}',this.value)">
               <option value=""${mode == null ? ' selected' : ''}>Use global</option>
               <option value="b"${mode === true ? ' selected' : ''}>Persistent where supported</option>
               <option value="a"${mode === false ? ' selected' : ''}>Start per turn</option>

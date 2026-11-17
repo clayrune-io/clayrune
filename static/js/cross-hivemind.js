@@ -227,7 +227,7 @@ function renderAllHiveminds() {
           : `<span class="hm-status-badge ${esc(eff)}"${badgeTitle ? ` title="${esc(badgeTitle)}"` : ''}>${esc(eff)}</span>`}
         <span class="hm-global-card-shortid" title="Hivemind ID: ${esc(hm.id)}">#${esc(_hmShortId(hm.id))}</span>
         <div class="hm-global-card-title">${esc(hm.title || 'Untitled')}</div>
-        <span class="hm-global-card-project" onclick="event.stopPropagation();_allHivemindFilter.project='${esc(hm.project_id)}';document.getElementById('ahm-project').value='${esc(hm.project_id)}';renderAllHiveminds()" title="Filter by project">${esc(projName)}</span>
+        <span class="hm-global-card-project" onclick="event.stopPropagation();_allHivemindFilter.project='${window.jsAttr(hm.project_id)}';document.getElementById('ahm-project').value='${window.jsAttr(hm.project_id)}';renderAllHiveminds()" title="Filter by project">${esc(projName)}</span>
         <span class="hm-global-card-meta">${esc(updated)}</span>
         <span class="hm-global-card-controls">${controls}</span>
       </div>

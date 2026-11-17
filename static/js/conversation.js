@@ -149,11 +149,11 @@ function _composerCharacterPicker(p, resumeId) {
   // keeps the row quiet in the common "None" case.
   const editBtn = cur
     ? `<button class="composer-persona-edit" type="button" title="Edit this persona"
-        onclick="editComposerCharacter('${esc(p.id)}')">&#9998;</button>`
+        onclick="editComposerCharacter('${window.jsAttr(p.id)}')">&#9998;</button>`
     : '';
   return `<div class="composer-provider-row composer-character-row">
     <span class="composer-provider-label">Persona</span>
-    <select class="composer-provider-select" onchange="setComposerCharacter('${esc(p.id)}',this.value)">
+    <select class="composer-provider-select" onchange="setComposerCharacter('${window.jsAttr(p.id)}',this.value)">
       <option value="">${noneLabel}</option>${opts}
       <option value="__create__">&#43; Create new persona&hellip;</option>
     </select>
@@ -218,7 +218,7 @@ function _composerPersonPickerHTML(p, resumeId, threadShellKey) {
   const card = (val, face, name, role, eng, selected, extraClass) => {
     const titleAttr = esc(name) + (role && role !== name ? ' — ' + esc(role) : '');
     return `<button type="button" class="ces-person-card${selected ? ' selected' : ''}${extraClass ? ' ' + extraClass : ''}"
-      onclick="setComposerCharacter('${esc(p.id)}','${esc(val)}')" title="${titleAttr}">
+      onclick="setComposerCharacter('${window.jsAttr(p.id)}','${esc(val)}')" title="${titleAttr}">
       <span class="ces-person-face">${face}</span>
       <span class="ces-person-name">${esc(name)}</span>
       ${role && role !== name ? `<span class="ces-person-role">${esc(role)}</span>` : ''}
@@ -387,7 +387,7 @@ function _composerProviderPicker(p) {
     : '';
   return `<div class="composer-provider-row">
     <span class="composer-provider-label">Agent</span>
-    <select class="composer-provider-select" onchange="setComposerProvider('${esc(p.id)}',this.value)">${opts}</select>
+    <select class="composer-provider-select" onchange="setComposerProvider('${window.jsAttr(p.id)}',this.value)">${opts}</select>
   </div>${warn}`;
 }
 
@@ -465,7 +465,7 @@ function _composerModelPicker(p, resumeId) {
   const customInput = isCustom
     ? `<input class="composer-model-custom" type="text" value="${esc(cur)}"
         placeholder="model id" title="Passed to ${esc(prov)} verbatim — for a model newer than this list"
-        onchange="setComposerModel('${esc(p.id)}',this.value)">`
+        onchange="setComposerModel('${window.jsAttr(p.id)}',this.value)">`
     : '';
   // Surface the warning as text too, not just an <option title=> — a native
   // <select>'s own tooltip only shows once the dropdown is open, so the
@@ -478,7 +478,7 @@ function _composerModelPicker(p, resumeId) {
       </div>` : '';
   return `<div class="composer-provider-row composer-model-row">
     <span class="composer-provider-label">Model</span>
-    <select class="composer-provider-select" onchange="setComposerModel('${esc(p.id)}',this.value)">
+    <select class="composer-provider-select" onchange="setComposerModel('${window.jsAttr(p.id)}',this.value)">
       <option value="">${esc(defLabel)}</option>${opts}
       <option value="__custom__" ${isCustom ? 'selected' : ''}>Custom&hellip;</option>
     </select>
@@ -538,9 +538,9 @@ function toggleChatModelMenu(event, projectId, sid) {
     return (p.agent_model && m) ? m[1] : 'Project / global default';
   })();
   const items = [
-    `<button class="cms-item${!pinned ? ' active' : ''}" onclick="switchChatModel('${esc(projectId)}','${esc(sid)}','')">Follow default<span class="cms-sub">${esc(defLabel)}</span></button>`,
+    `<button class="cms-item${!pinned ? ' active' : ''}" onclick="switchChatModel('${window.jsAttr(projectId)}','${esc(sid)}','')">Follow default<span class="cms-sub">${esc(defLabel)}</span></button>`,
     ...choices.map(([v, l]) =>
-      `<button class="cms-item${pinned === v ? ' active' : ''}" onclick="switchChatModel('${esc(projectId)}','${esc(sid)}','${esc(v)}')">${esc(l)}</button>`)
+      `<button class="cms-item${pinned === v ? ' active' : ''}" onclick="switchChatModel('${window.jsAttr(projectId)}','${esc(sid)}','${esc(v)}')">${esc(l)}</button>`)
   ].join('');
   const pop = document.createElement('div');
   pop.className = 'chat-model-menu open';
@@ -762,7 +762,7 @@ function _incognitoChipHTML(p) {
   const incOn = getIncognitoFor(p.id);
   const incForced = isIncognitoProject(p);
   return `<div class="incognito-toggle ${incOn ? 'on' : ''} ${incForced ? 'forced' : ''}"
-      onclick="${incForced ? '' : `toggleIncognito('${esc(p.id)}')`}"
+      onclick="${incForced ? '' : `toggleIncognito('${window.jsAttr(p.id)}')`}"
       title="${incForced ? 'This is the global Incognito agent — sessions here are always incognito.' : (incOn ? 'Incognito ON: agent has full project context, but the session is not logged and nothing is appended to MEMORY.md.' : 'Incognito OFF: standard project context applies.')}">
       <span class="inc-mark">&#x1F576;&#xFE0F;</span>
       <span class="inc-label">Incognito${incForced ? '' : (incOn ? ' on' : '')}</span>
@@ -781,7 +781,7 @@ function _composerPlusStatusLineHTML(p, resumeId) {
   const parts = [`&#9680; ${esc(provName)}`];
   if (charMeta) parts.push(esc(charMeta.display_name));
   parts.push(`&#x1F576;&#xFE0F; ${inc ? 'Incognito on' : 'Incognito off'}`);
-  return `<div class="composer-plus-status" onclick="openComposerSheet('${esc(p.id)}')">${parts.join(' &middot; ')} &middot; <span class="cps-change">Change</span></div>`;
+  return `<div class="composer-plus-status" onclick="openComposerSheet('${window.jsAttr(p.id)}')">${parts.join(' &middot; ')} &middot; <span class="cps-change">Change</span></div>`;
 }
 
 // The slide-up sheet itself. Always rendered (visibility is CSS-class driven off
@@ -796,7 +796,7 @@ function _composerSheetHTML(p, resumeId) {
   // Spec §8 (2026-07-06): the sheet holds per-message COMPOSE options only —
   // Agent / Persona / Incognito. NO resume/search here: resuming = tap a chat in
   // the Layer-2 conversation list (a Resume action in the sheet was dead weight).
-  return `<div class="composer-sheet-overlay ${open ? 'visible' : ''}" onclick="closeComposerSheet('${esc(p.id)}')">
+  return `<div class="composer-sheet-overlay ${open ? 'visible' : ''}" onclick="closeComposerSheet('${window.jsAttr(p.id)}')">
     <div class="composer-sheet ${open ? 'visible' : ''}" onclick="event.stopPropagation()">
       <div class="composer-sheet-grip"></div>
       <div class="composer-sheet-scroll">
@@ -807,7 +807,7 @@ function _composerSheetHTML(p, resumeId) {
         <div class="composer-sheet-row">${inc}</div>
       </div>
       <div class="composer-sheet-footer">
-        <button type="button" class="composer-sheet-done" onclick="closeComposerSheet('${esc(p.id)}')">Done</button>
+        <button type="button" class="composer-sheet-done" onclick="closeComposerSheet('${window.jsAttr(p.id)}')">Done</button>
       </div>
     </div>
   </div>`;
@@ -999,12 +999,12 @@ function _agentSurfacesHTML(p) {
     { tab: 'workflows', ic: '&#9939;',   name: 'Workflows', sub: 'runs',        body: '<div class="surface-line surface-empty">Open to view workflows</div>' },
     { tab: 'activity',  ic: '&#9201;',   name: 'Activity',  sub: 'timeline',    body: '<div class="surface-line surface-empty">Open to view activity</div>' },
     { tab: 'agent-log', ic: '&#128220;', name: 'Agent Log', sub: 'history',     body: '<div class="surface-line surface-empty">Open to view the log</div>' },
-    { action: `openMediaSurface('${esc(p.id)}')`,
+    { action: `openMediaSurface('${window.jsAttr(p.id)}')`,
       ic: '&#128444;', name: 'Media',    sub: 'diagrams & images',
       body: '<div class="surface-line surface-empty">Open to view media</div>' },
   ];
   const cardHTML = cards.map(c => {
-    const onclick = c.action || `switchModalTab('${esc(p.id)}','${c.tab}')`;
+    const onclick = c.action || `switchModalTab('${window.jsAttr(p.id)}','${c.tab}')`;
     return `
     <button class="surface-card" onclick="${onclick}" title="Open ${c.name}">
       <div class="surface-card-head"><span class="surface-ic">${c.ic}</span><span class="surface-name">${c.name}</span><span class="surface-sub">${esc(c.sub)}</span></div>
@@ -1096,24 +1096,24 @@ function agentPanelHTML(p) {
       convListHTML = `<div class="mobile-conv-list-view">
         <div class="rail-mode mconv-mode" role="tablist">
           <button class="rail-mode-btn${_mode === 'chats' ? ' on' : ''}" role="tab"
-            onclick="setRailMode('${esc(p.id)}','chats')">Chats</button>
+            onclick="setRailMode('${window.jsAttr(p.id)}','chats')">Chats</button>
           <button class="rail-mode-btn${_mode === 'topics' ? ' on' : ''}" role="tab"
-            onclick="setRailMode('${esc(p.id)}','topics')">Topics</button>
+            onclick="setRailMode('${window.jsAttr(p.id)}','topics')">Topics</button>
           <button class="rail-mode-btn${_mode === 'channel' ? ' on' : ''}" role="tab"
-            onclick="setRailMode('${esc(p.id)}','channel')"
+            onclick="setRailMode('${window.jsAttr(p.id)}','channel')"
             title="Everyone who's worked in this project">Channel</button>
         </div>
         <div class="mconv-search-wrap">
           <svg class="mconv-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           <input type="text" class="mconv-search" id="mconv-search-${esc(p.id)}" placeholder="${_mode === 'topics' ? 'Search topics&hellip;' : _mode === 'channel' ? 'Search people&hellip;' : 'Search conversations&hellip;'}"
-            spellcheck="false" value="${esc(_railQuery[p.id] || '')}" oninput="railSearch('${esc(p.id)}', this.value)">
+            spellcheck="false" value="${esc(_railQuery[p.id] || '')}" oninput="railSearch('${window.jsAttr(p.id)}', this.value)">
         </div>
         <div class="conv-list-scroll${_mode === 'topics' ? ' mconv-topics' : ''}${_mode === 'channel' ? ' mconv-channel' : ''}">${
           _mode === 'topics' ? _railTopicsHTML(p)
           : _mode === 'channel' ? _railChannelHTML(p)
                              : mobileUserConversationsHTML(p, _mobileUserConvos)}</div>
         <div class="conv-newbtn-bar">
-          <button class="conv-newbtn" onclick="newAgentTab('${esc(p.id)}')">&#43; New conversation</button>
+          <button class="conv-newbtn" onclick="newAgentTab('${window.jsAttr(p.id)}')">&#43; New conversation</button>
         </div>
       </div>`;
     } else {
@@ -1148,18 +1148,18 @@ function agentPanelHTML(p) {
       const isInc = h.incognito || (agentStatusCache[h.sessionId] || {}).incognito;
       const incBadge = isInc ? '<span class="agent-tab-incognito" title="Incognito session — not saved to project memory or agent log">&#x1F576;&#xFE0F;</span>' : '';
       const isPinnedConv = _isPinnedConv(h);
-      const pinMark = `<button class="agent-tab-pin-mark${isPinnedConv ? ' pinned' : ''}" onclick="event.stopPropagation();togglePinConversationSession('${esc(p.id)}','${esc(h.sessionId)}')" title="${isPinnedConv ? 'Unpin this chat' : 'Pin this chat'}" aria-label="${isPinnedConv ? 'Unpin this chat' : 'Pin this chat'}" aria-pressed="${isPinnedConv ? 'true' : 'false'}">&#x1F4CC;</button>`;
-      return `<div class="agent-tab ${isActive ? 'active' : ''} ${isOrch ? 'hivemind-orch' : ''} ${isInc ? 'incognito' : ''} ${isPinnedConv ? 'pinned-conv' : ''}" onclick="switchAgentTab('${esc(p.id)}','${esc(h.sessionId)}')" title="${esc(h.task)}${isInc ? ' (incognito)' : ''}"${isOrch ? ` onmouseenter="showHmWorkerPopover(event,'${esc(h.sessionId)}')" onmouseleave="scheduleHideHmPopover()"` : ''}>
+      const pinMark = `<button class="agent-tab-pin-mark${isPinnedConv ? ' pinned' : ''}" onclick="event.stopPropagation();togglePinConversationSession('${window.jsAttr(p.id)}','${esc(h.sessionId)}')" title="${isPinnedConv ? 'Unpin this chat' : 'Pin this chat'}" aria-label="${isPinnedConv ? 'Unpin this chat' : 'Pin this chat'}" aria-pressed="${isPinnedConv ? 'true' : 'false'}">&#x1F4CC;</button>`;
+      return `<div class="agent-tab ${isActive ? 'active' : ''} ${isOrch ? 'hivemind-orch' : ''} ${isInc ? 'incognito' : ''} ${isPinnedConv ? 'pinned-conv' : ''}" onclick="switchAgentTab('${window.jsAttr(p.id)}','${esc(h.sessionId)}')" title="${esc(h.task)}${isInc ? ' (incognito)' : ''}"${isOrch ? ` onmouseenter="showHmWorkerPopover(event,'${esc(h.sessionId)}')" onmouseleave="scheduleHideHmPopover()"` : ''}>
         ${hmBadge}${incBadge}<span class="agent-status-dot ${h.status}"></span>
         <span class="agent-tab-label">${esc(label)}</span>
         ${pinMark}
-        <button class="agent-tab-close" onclick="event.stopPropagation();closeAgentTab('${esc(p.id)}','${esc(h.sessionId)}')" title="Close tab">&#10005;</button>
+        <button class="agent-tab-close" onclick="event.stopPropagation();closeAgentTab('${window.jsAttr(p.id)}','${esc(h.sessionId)}')" title="Close tab">&#10005;</button>
       </div>`;
     };
     const tabsHTML = [..._ordered.filter(_isPinnedConv), ..._ordered.filter(h => !_isPinnedConv(h))]
       .map(renderTab).join('');
     tabBar = sessions.length > 0
-      ? `<div class="agent-tab-bar">${tabsHTML}<button class="agent-tab-new" onclick="newAgentTab('${esc(p.id)}')">+ New</button></div>`
+      ? `<div class="agent-tab-bar">${tabsHTML}<button class="agent-tab-new" onclick="newAgentTab('${window.jsAttr(p.id)}')">+ New</button></div>`
       : '';
   }
 
@@ -1226,7 +1226,7 @@ function agentPanelHTML(p) {
         && (e.provider || 'claude') === resumeProvider);
       label = entry ? (entry.task || '').substring(0, 50) : resumeId.substring(0, 12);
     }
-    return `<div class="resume-indicator">Resuming: ${esc(label)} <span class="ri-clear" onclick="selectResumeSession('${esc(p.id)}','')">clear</span></div>`;
+    return `<div class="resume-indicator">Resuming: ${esc(label)} <span class="ri-clear" onclick="selectResumeSession('${window.jsAttr(p.id)}','')">clear</span></div>`;
   })() : '';
 
   // Fresh-hire thread shell: landing on the +New composer while channel-
@@ -1271,15 +1271,15 @@ function agentPanelHTML(p) {
     : (incOn ? 'Incognito — not saved to memory...' : `Describe a task for ${esc(_personName)}...`);
   const _attachInput = _pcaps.image_attach ? `
     <input type="file" multiple id="agent-attach-input-${esc(p.id)}" class="agent-attach-input"
-      onchange="handleAgentAttachPick(event,'${esc(p.id)}')">` : '';
+      onchange="handleAgentAttachPick(event,'${window.jsAttr(p.id)}')">` : '';
   // Desktop: ＋ on the LEFT opens the picker (mirrors the in-chat composer).
   // Mobile: keeps its 📎 to the right of the pill.
   const _dispatchPlusBtn = _pcaps.image_attach ? `
     <button class="btn-composer-plus" type="button" title="Attach files or take a photo"
-      onclick="triggerAgentAttach('${esc(p.id)}')">&#43;</button>` : '';
+      onclick="triggerAgentAttach('${window.jsAttr(p.id)}')">&#43;</button>` : '';
   const _attachBtn = _pcaps.image_attach ? `
     <button class="btn-attach" type="button" title="Attach files or take a photo"
-      onclick="triggerAgentAttach('${esc(p.id)}')">&#128206;</button>` : '';
+      onclick="triggerAgentAttach('${window.jsAttr(p.id)}')">&#128206;</button>` : '';
   const _dispatchMicBtn = micBtnHTML(`agent-task-${esc(p.id)}`);
   // §5 starter chips: on a truly empty +New screen (no session AND not resuming),
   // show "What should Claude work on?" + 3 tappable prompts that FILL the dispatch
@@ -1305,13 +1305,13 @@ function agentPanelHTML(p) {
     <div class="ces-heading">${_threadShellKey ? (_threadShellLoading ? 'Loading conversations&#8230;' : _threadShellFailed ? "Couldn't load conversations." : 'No conversations yet') : `What should ${esc(_personName)} work on?`}</div>
     <div class="ces-sub">${_threadShellKey ? (_threadShellLoading ? 'Checking for earlier messages&#8230;' : _threadShellFailed ? 'Try again in a moment.' : 'Say something to start the thread.') : 'Describe a task in plain language.<br>The agent plans, edits files, and reports back.'}</div>
     <div class="ces-chips">${_threadShellKey ? '' :
-      `<button type="button" class="ces-chip ces-chip-brainstorm" onclick="startBrainstormThis('${esc(p.id)}')" title="Switch this new chat to the Brainstorm persona and describe the idea below">
+      `<button type="button" class="ces-chip ces-chip-brainstorm" onclick="startBrainstormThis('${window.jsAttr(p.id)}')" title="Switch this new chat to the Brainstorm persona and describe the idea below">
         <span class="ces-chip-icon">&#128161;</span>
         <span class="ces-chip-label">Brainstorm this</span>
         <span class="ces-chip-chev">&#8250;</span>
       </button>`
     }${STARTER_CHIPS.map(c =>
-      `<button type="button" class="ces-chip" data-chip-text="${esc(c.label)}" onclick="fillStarterChip('${esc(p.id)}', this.dataset.chipText)">
+      `<button type="button" class="ces-chip" data-chip-text="${esc(c.label)}" onclick="fillStarterChip('${window.jsAttr(p.id)}', this.dataset.chipText)">
         <span class="ces-chip-icon">${c.icon}</span>
         <span class="ces-chip-label">${esc(c.label)}</span>
         <span class="ces-chip-chev">&#8250;</span>
@@ -1326,8 +1326,8 @@ function agentPanelHTML(p) {
   // Mobile send control: a circular ↑ (per the doc) instead of the green
   // Dispatch/Send text button. Desktop keeps the labelled button.
   const _dispatchBtn = mobileMode
-    ? `<button class="btn-send-arrow" onclick="dispatchAgent('${esc(p.id)}')" title="${resumeId ? 'Continue' : 'Dispatch'}" aria-label="${resumeId ? 'Continue' : 'Dispatch'}">&#8593;</button>`
-    : `<button class="btn-dispatch" onclick="dispatchAgent('${esc(p.id)}')">${resumeId ? 'Continue' : 'Dispatch'}</button>`;
+    ? `<button class="btn-send-arrow" onclick="dispatchAgent('${window.jsAttr(p.id)}')" title="${resumeId ? 'Continue' : 'Dispatch'}" aria-label="${resumeId ? 'Continue' : 'Dispatch'}">&#8593;</button>`
+    : `<button class="btn-dispatch" onclick="dispatchAgent('${window.jsAttr(p.id)}')">${resumeId ? 'Continue' : 'Dispatch'}</button>`;
   // Desktop keeps the inline recents/search on the +New screen; on mobile the
   // recents ARE the Layer-2 list (rendered above), so the compose view is just
   // the composer (+ resume preview / starter chips).
@@ -1354,7 +1354,7 @@ function agentPanelHTML(p) {
     ondragover="handleAgentDragOver(event,this)"
     ondragenter="handleAgentDragOver(event,this)"
     ondragleave="handleAgentDragLeave(event,this)"
-    ondrop="${_pcaps.image_attach ? `handleAgentDrop(event,'${esc(p.id)}')` : 'event.preventDefault()'}">
+    ondrop="${_pcaps.image_attach ? `handleAgentDrop(event,'${window.jsAttr(p.id)}')` : 'event.preventDefault()'}">
     ${_attachInput}
     ${mobileMode && _pcaps.image_attach ? cameraInputHTML(esc(p.id)) : ''}
     ${mobileMode ? '' : _dispatchPlusBtn}
@@ -1362,8 +1362,8 @@ function agentPanelHTML(p) {
     <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-task-${esc(p.id)}" rows="1"
       data-project="${esc(p.id)}"
       placeholder="${_dispatchPlaceholder}"
-      onkeydown="handleInputEnter(event,()=>dispatchAgent('${esc(p.id)}'),'${esc(p.id)}')"
-      onpaste="${_pcaps.image_attach ? `handleAgentPaste(event,'${esc(p.id)}')` : ''}"
+      onkeydown="handleInputEnter(event,()=>dispatchAgent('${window.jsAttr(p.id)}'),'${window.jsAttr(p.id)}')"
+      onpaste="${_pcaps.image_attach ? `handleAgentPaste(event,'${window.jsAttr(p.id)}')` : ''}"
     ></textarea>
     ${mobileMode ? _attachBtn : ''}
     ${mobileMode && _pcaps.image_attach ? cameraBtnHTML(esc(p.id)) : ''}
@@ -1651,7 +1651,7 @@ function agentPanelHTML(p) {
             ? `<button type="button" class="msg-brainstorm-btn" title="Brainstorm this"
                 data-raw-text="${esc(line.replace(/^\s*>\s?/, ''))}"
                 data-source-label="${esc(_activeSessionPersonName(activeSession, p))}"
-                onclick="brainstormFromMessage('${esc(p.id)}', this)">&#128161;</button>`
+                onclick="brainstormFromMessage('${window.jsAttr(p.id)}', this)">&#128161;</button>`
             : '';
           const div = `<div class="${cls}" dir="auto"${cls === 'agent-line' ? agentTimeAttrs(bufTs[_i]) : ''}>${html}${_brainstormBtn}</div>`;
           // Tool lines and user prompts reset plan-block accumulator
@@ -1706,7 +1706,7 @@ function agentPanelHTML(p) {
     // terminal cached status (a revived/parked chat) rendered NO Stop button
     // for the whole running turn without this slot to patch.
     const stopBtn = (isRunning || st === 'idle' || st === 'error')
-      ? `<button class="btn-stop" onclick="stopAgent('${esc(p.id)}','${esc(activeSessionId)}')">Stop</button>` : '';
+      ? `<button class="btn-stop" onclick="stopAgent('${window.jsAttr(p.id)}','${esc(activeSessionId)}')">Stop</button>` : '';
     const stopBtnSlot = `<span id="stop-btn-${esc(activeSessionId)}">${stopBtn}</span>`;
 
     // §4 cold-render: derive the typing indicator declaratively from run-state
@@ -1731,16 +1731,16 @@ function agentPanelHTML(p) {
     const guardianBanner = cbTripped
       ? `<div class="guardian-banner">
           <span>\u26A0 Auto-recovery exhausted after repeated failures.</span>
-          <button class="btn-retry" onclick="guardianReset('${esc(p.id)}','${esc(activeSessionId)}','retry')">Try Again</button>
-          <button class="btn-fresh" onclick="dispatchAgent('${esc(p.id)}')">Start Fresh</button>
+          <button class="btn-retry" onclick="guardianReset('${window.jsAttr(p.id)}','${esc(activeSessionId)}','retry')">Try Again</button>
+          <button class="btn-fresh" onclick="dispatchAgent('${window.jsAttr(p.id)}')">Start Fresh</button>
         </div>`
       : guardianState === 'recovering'
         ? `<div class="guardian-banner"><span>\u23F3 Guardian is recovering the session...</span></div>`
         : guardianState === 'needs_attention'
           ? `<div class="guardian-banner">
               <span>\u26A0 Session needs attention.</span>
-              <button class="btn-retry" onclick="guardianReset('${esc(p.id)}','${esc(activeSessionId)}','retry')">Retry</button>
-              <button class="btn-fresh" onclick="guardianReset('${esc(p.id)}','${esc(activeSessionId)}','dismiss')">Dismiss</button>
+              <button class="btn-retry" onclick="guardianReset('${window.jsAttr(p.id)}','${esc(activeSessionId)}','retry')">Retry</button>
+              <button class="btn-fresh" onclick="guardianReset('${window.jsAttr(p.id)}','${esc(activeSessionId)}','dismiss')">Dismiss</button>
             </div>`
           : '';
     // The hidden file input is shared by both the desktop ＋ and the mobile 📎.
@@ -1771,7 +1771,7 @@ function agentPanelHTML(p) {
             <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-followup-${esc(activeSessionId)}" rows="1"
               data-project="${esc(p.id)}"
               placeholder="${mobileMode ? (st === 'error' ? 'Continue…' : st === 'stopped' ? 'Resume…' : st === 'running' ? mcSendIntent.runningPlaceholder(_pcaps, true) : 'Message') : (st === 'error' ? 'Type to continue from where it stopped...' : st === 'stopped' ? 'Type to resume conversation...' : st === 'running' ? mcSendIntent.runningPlaceholder(_pcaps, false) : 'Send follow-up...')}"
-              onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(activeSessionId)}'),'${esc(p.id)}')"
+              onkeydown="handleInputEnter(event,()=>sendFollowup('${window.jsAttr(p.id)}','${esc(activeSessionId)}'),'${window.jsAttr(p.id)}')"
               onpaste="${_pcaps.image_attach ? `handleAgentPaste(event,'fu_${esc(activeSessionId)}')` : ''}"
             ></textarea>
             ${mobileMode ? _fuAttachBtn : ''}
@@ -1781,8 +1781,8 @@ function agentPanelHTML(p) {
             ${mcSendIntent.interruptButtonHTML(p.id, activeSessionId, st, mobileMode)}
             ${mobileMode
               ? composerActionHTML(`agent-followup-${esc(activeSessionId)}`, `fu_${esc(activeSessionId)}`,
-                  `<button class="btn-send-arrow" onclick="sendFollowup('${esc(p.id)}','${esc(activeSessionId)}')" title="Send" aria-label="Send">&#8593;</button>`)
-              : `${_fuMicBtn}<button class="btn-dispatch" onclick="sendFollowup('${esc(p.id)}','${esc(activeSessionId)}')">Send</button>`}
+                  `<button class="btn-send-arrow" onclick="sendFollowup('${window.jsAttr(p.id)}','${esc(activeSessionId)}')" title="Send" aria-label="Send">&#8593;</button>`)
+              : `${_fuMicBtn}<button class="btn-dispatch" onclick="sendFollowup('${window.jsAttr(p.id)}','${esc(activeSessionId)}')">Send</button>`}
           </div>
         </div>` : '';
 
@@ -1812,7 +1812,7 @@ function agentPanelHTML(p) {
                 }
               }).catch(() => {});
           }
-          return `<button class="btn-plan-file" onclick="openPlanFileViewer('${esc(p.id)}','${esc(activeSessionId)}')" title="${esc(fname)}">&#128196; ${esc(label)}</button>`;
+          return `<button class="btn-plan-file" onclick="openPlanFileViewer('${window.jsAttr(p.id)}','${esc(activeSessionId)}')" title="${esc(fname)}">&#128196; ${esc(label)}</button>`;
         })()
       : '';
     const isActiveOrch = isHivemindOrchestrator({sessionId: activeSessionId, hivemindRole: (activeSession||{}).hivemindRole});
@@ -1863,7 +1863,7 @@ function agentPanelHTML(p) {
       const _swTitle = `Model for THIS conversation${_pinnedModel ? ' (pinned)' : ''} — click to switch. ${_provTitle}`;
       // The menu itself is built + positioned in document.body on click (escapes
       // the chat-output overflow that was clipping an in-flow dropdown).
-      _provBadge = `<button type="button" class="provider-badge model-switch prov-claude${_pinnedModel ? ' pinned' : ''}" title="${esc(_swTitle)}" onclick="toggleChatModelMenu(event,'${esc(p.id)}','${esc(activeSessionId)}')"><span class="cms-key">Model</span><span class="cms-val">${esc(_curLabel)}</span>${_suffix}${_pinMark} <span class="cms-caret" aria-hidden="true">&#9662;</span></button>`;
+      _provBadge = `<button type="button" class="provider-badge model-switch prov-claude${_pinnedModel ? ' pinned' : ''}" title="${esc(_swTitle)}" onclick="toggleChatModelMenu(event,'${window.jsAttr(p.id)}','${esc(activeSessionId)}')"><span class="cms-key">Model</span><span class="cms-val">${esc(_curLabel)}</span>${_suffix}${_pinMark} <span class="cms-caret" aria-hidden="true">&#9662;</span></button>`;
     }
     // Persona pill (Prompt Builder Phase 2) — visible for the whole chat
     // when a character was chosen at spawn; immutable for this chat's life.
@@ -1932,9 +1932,9 @@ function agentPanelHTML(p) {
         <span class="token-badge" id="session-metrics-${esc(activeSessionId)}">${activeSession ? sessionMetricsHTML(activeSession, _pcaps) : ''}</span>
         <span class="agent-activity" id="agent-activity-${esc(activeSessionId)}"></span>
         ${_pcaps.supports_plan_mode ? `<span id="plan-file-btn-${esc(activeSessionId)}">${planFileBtn}</span>` : ''}
-        <button class="btn-popout btn-chat-search" onclick="openChatSearch('${esc(p.id)}','${esc(activeSessionId)}')" title="Find in this conversation (Ctrl/Cmd+F)">&#128269; Find</button>
-        <button class="btn-popout btn-popout-window" onclick="popOutChat('${esc(p.id)}','${esc(activeSessionId)}')" title="Open this conversation in its own window">Pop Out &#8599;</button>
-        <button class="btn-popout btn-browser" onclick="browserButtonClick('${esc(p.id)}')" title="Open a live browser pane">&#127760; Browser<span id="bp-badge" style="display:none;margin-left:5px;background:#4caf50;color:#000;font-size:10px;font-weight:700;border-radius:8px;padding:0 5px;line-height:15px;vertical-align:middle"></span></button>
+        <button class="btn-popout btn-chat-search" onclick="openChatSearch('${window.jsAttr(p.id)}','${esc(activeSessionId)}')" title="Find in this conversation (Ctrl/Cmd+F)">&#128269; Find</button>
+        <button class="btn-popout btn-popout-window" onclick="popOutChat('${window.jsAttr(p.id)}','${esc(activeSessionId)}')" title="Open this conversation in its own window">Pop Out &#8599;</button>
+        <button class="btn-popout btn-browser" onclick="browserButtonClick('${window.jsAttr(p.id)}')" title="Open a live browser pane">&#127760; Browser<span id="bp-badge" style="display:none;margin-left:5px;background:#4caf50;color:#000;font-size:10px;font-weight:700;border-radius:8px;padding:0 5px;line-height:15px;vertical-align:middle"></span></button>
         ${orchHmId ? `<button class="btn-hm-dash" onclick="openHivemindDashboard('${esc(orchHmId)}')">Dashboard &#8599;</button>` : ''}
       </div>
       <div class="agent-chat">
@@ -1989,25 +1989,25 @@ function agentPanelHTML(p) {
     try { _ensureThreadsCss(); } catch (e) {}  // never let a board bug break the panel render
     return `<div class="agent-panel agent-3pane">
       <div class="agent-rail"${_railStyle}>
-        <button class="conv-newbtn agent-rail-new" onclick="newAgentTab('${esc(p.id)}')">&#43; New conversation</button>
-        ${activeSessionId ? `<button class="agent-rail-crossproj-btn" onclick="toggleCrossProjectPicker('${esc(p.id)}')" title="Open a conversation from another project beside this one">&#8646; View another project's chat beside this&hellip;</button>` : ''}
+        <button class="conv-newbtn agent-rail-new" onclick="newAgentTab('${window.jsAttr(p.id)}')">&#43; New conversation</button>
+        ${activeSessionId ? `<button class="agent-rail-crossproj-btn" onclick="toggleCrossProjectPicker('${window.jsAttr(p.id)}')" title="Open a conversation from another project beside this one">&#8646; View another project's chat beside this&hellip;</button>` : ''}
         ${_crossProjectPickerOpen[p.id] ? `<div class="agent-rail-crossproj-panel">${_crossProjectPickerHTML(p)}</div>` : ''}
         <div class="rail-mode" role="tablist">
           <button class="rail-mode-btn${_mode === 'chats' ? ' on' : ''}" role="tab"
-            onclick="setRailMode('${esc(p.id)}','chats')">Chats</button>
+            onclick="setRailMode('${window.jsAttr(p.id)}','chats')">Chats</button>
           <button class="rail-mode-btn${_mode === 'topics' ? ' on' : ''}" role="tab"
-            onclick="setRailMode('${esc(p.id)}','topics')"
+            onclick="setRailMode('${window.jsAttr(p.id)}','topics')"
             title="Subjects across this project's chats, deduplicated">Topics</button>
           <button class="rail-mode-btn${_mode === 'channel' ? ' on' : ''}" role="tab"
-            onclick="setRailMode('${esc(p.id)}','channel')"
+            onclick="setRailMode('${window.jsAttr(p.id)}','channel')"
             title="Everyone who's worked in this project">Channel</button>
           ${_mode === 'topics' ? `<button class="rail-mode-board" title="Open the full topic board"
-            onclick="openThreadsBoard('${esc(p.id)}')">&#9638;</button>` : ''}
+            onclick="openThreadsBoard('${window.jsAttr(p.id)}')">&#9638;</button>` : ''}
         </div>
         <div class="agent-rail-search-wrap">
           <svg class="agent-rail-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           <input type="text" class="agent-rail-search" id="rail-search-${esc(p.id)}" placeholder="${_mode === 'topics' ? 'Search topics&hellip;' : _mode === 'channel' ? 'Search people&hellip;' : 'Search conversations&hellip;'}"
-            spellcheck="false" value="${esc(_railQuery[p.id] || '')}" oninput="railSearch('${esc(p.id)}', this.value)">
+            spellcheck="false" value="${esc(_railQuery[p.id] || '')}" oninput="railSearch('${window.jsAttr(p.id)}', this.value)">
         </div>
         <div class="agent-rail-list">${railRows}</div>
       </div>
@@ -2794,8 +2794,8 @@ function mobileUserConversationsHTML(p, convos, opts) {
           window.avatarHTML(_cChar.avatar, 28)}</span>`
       : '';
     const hideBtn = isHidden
-      ? `<button class="conv-hide" onclick="unhideConversation(event,'${esc(p.id)}','${esc(hideKey)}')" title="Move back to the list" aria-label="Unhide">&#8617;</button>`
-      : `<button class="conv-hide" onclick="hideConversation(event,'${esc(p.id)}','${esc(hideKey)}')" title="Hide from this list" aria-label="Hide">&#10005;</button>`;
+      ? `<button class="conv-hide" onclick="unhideConversation(event,'${window.jsAttr(p.id)}','${esc(hideKey)}')" title="Move back to the list" aria-label="Unhide">&#8617;</button>`
+      : `<button class="conv-hide" onclick="hideConversation(event,'${window.jsAttr(p.id)}','${esc(hideKey)}')" title="Hide from this list" aria-label="Hide">&#10005;</button>`;
     // A RESUMED session reuses ONE mc_session_id across several claude
     // transcripts, so multiple rail rows can carry the same mcsid. Matching on
     // mcsid alone then lit up every sibling row white at once. When we know the
@@ -2811,9 +2811,9 @@ function mobileUserConversationsHTML(p, convos, opts) {
     // Hidden on mobile (single-pane drill-down there).
     const _canSplit = !mobileMode && (mcsid || csid) && !isActive && activeAgentTab[p.id];
     const splitBtn = _canSplit
-      ? `<button class="conv-split" onclick="event.stopPropagation();openInSplit('${esc(p.id)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})" title="Open beside the current chat (split view)" aria-label="Open in split view">&#9707;</button>`
+      ? `<button class="conv-split" onclick="event.stopPropagation();openInSplit('${window.jsAttr(p.id)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})" title="Open beside the current chat (split view)" aria-label="Open in split view">&#9707;</button>`
       : '';
-    return `<div class="conv-row ${isChild ? 'conv-row-child' : ''} ${isHidden ? 'conv-hidden' : ''}${liveSt ? ' conv-live-' + liveSt : ''}${isActive ? ' active' : ''}" data-search="${esc(_convSearchText(c))}" data-csid="${esc(csid || '')}" data-mcsid="${esc(mcsid || '')}" data-ts-relative="${esc(c.ts_relative || '')}" data-rest-status="${esc(stt)}" onclick="openConversation('${esc(p.id)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})" title="${esc(c.label || '')}">
+    return `<div class="conv-row ${isChild ? 'conv-row-child' : ''} ${isHidden ? 'conv-hidden' : ''}${liveSt ? ' conv-live-' + liveSt : ''}${isActive ? ' active' : ''}" data-search="${esc(_convSearchText(c))}" data-csid="${esc(csid || '')}" data-mcsid="${esc(mcsid || '')}" data-ts-relative="${esc(c.ts_relative || '')}" data-rest-status="${esc(stt)}" onclick="openConversation('${window.jsAttr(p.id)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})" title="${esc(c.label || '')}">
       ${face}
       <div class="conv-main">
         <div class="conv-top">
@@ -2851,7 +2851,7 @@ function mobileUserConversationsHTML(p, convos, opts) {
   _hiddenPools[_listKey] = _hiddenPool;
   const hiddenCount = _hiddenPoolMatchCount(_hiddenPool, _q);
   const toggle = _hiddenPool.length > 0
-    ? `<button class="conv-hidden-toggle" data-hidden-key="${esc(_listKey)}" style="${hiddenCount ? '' : 'display:none'}" onclick="toggleShowHiddenConvos('${esc(p.id)}')">${_showHiddenConvos[p.id] ? 'Hide' : 'Show'} ${hiddenCount} hidden</button>`
+    ? `<button class="conv-hidden-toggle" data-hidden-key="${esc(_listKey)}" style="${hiddenCount ? '' : 'display:none'}" onclick="toggleShowHiddenConvos('${window.jsAttr(p.id)}')">${_showHiddenConvos[p.id] ? 'Hide' : 'Show'} ${hiddenCount} hidden</button>`
     : '';
   return `<div class="conv-list-header"><span class="conv-list-title">Conversations</span><span class="conv-list-count">${convos.length}</span></div>
     <div class="conv-list">${rows}</div>
@@ -3032,12 +3032,12 @@ function _channelRowHTML(p, r, inRoom, expanded) {
   // removing a live agent's address mid-turn is refused server-side (409),
   // so the affordance simply doesn't appear on a row that could hit it.
   const unhire = (!inRoom && r.hired)
-    ? `<button class="conv-unhire" onclick="event.stopPropagation();unhireFromProject('${esc(p.id)}','${esc(r.key)}','${name}')"
+    ? `<button class="conv-unhire" onclick="event.stopPropagation();unhireFromProject('${window.jsAttr(p.id)}','${window.jsAttr(r.key)}','${window.jsAttr(ch.agent_name || ch.display_name || ch.name || '')}')"
         title="Remove from this project — conversation history stays" aria-label="Remove from project">&#10005;</button>`
     : '';
   return `<div class="conv-row channel-row${expanded ? ' expanded' : ''}" data-search="${esc(search)}" data-char-key="${esc(r.key)}" data-project-id="${esc(p.id)}" data-ts-relative="${esc(r.tsRelative || '')}"
       aria-expanded="${expanded ? 'true' : 'false'}"
-      onclick="toggleChannelPerson('${esc(p.id)}','${esc(r.key)}')" title="${name}${ch.deleted ? ' (persona since deleted)' : ''}">
+      onclick="toggleChannelPerson('${window.jsAttr(p.id)}','${esc(r.key)}')" title="${name}${ch.deleted ? ' (persona since deleted)' : ''}">
     <span class="conv-face">${face}</span>
     <div class="conv-main">
       <div class="conv-top">
@@ -3237,12 +3237,12 @@ function _threadCardHTML(pid, c, kind) {
   // Open the conversation but LEAVE the board open (it's a triage surface — the
   // user picks the next thread from it). openConversation raises the project
   // modal; the board stays a click away.
-  const open = `openConversation('${esc(pid)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})`;
+  const open = `openConversation('${window.jsAttr(pid)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})`;
   const meta = [esc(c.ts_relative || ''), c.turns ? `${c.turns} turn${c.turns !== 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ');
   let acts;
   if (kind === 'waiting') acts = `<button class="tb-act p" onclick="${open}">${c.waiting_for_plan_approval ? 'Review plan' : 'Answer'}</button>`;
   else if (kind === 'running') acts = `<button class="tb-act go" onclick="${open}">Open</button>`;
-  else acts = `<button class="tb-act" onclick="${open}">Resume</button><button class="tb-act" onclick="archiveThread(event,'${esc(pid)}','${esc(csid)}')">Archive</button>`;
+  else acts = `<button class="tb-act" onclick="${open}">Resume</button><button class="tb-act" onclick="archiveThread(event,'${window.jsAttr(pid)}','${esc(csid)}')">Archive</button>`;
   return `<div class="tb-card" onclick="${open}">
       <div class="tb-title">${esc(_threadTitle(c))}</div>
       <div class="tb-meta">${meta}</div>
@@ -3276,7 +3276,7 @@ function _threadsBoardHTML(pid) {
       </div>
       <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
         <button class="modal-minimize" onclick="minimizeModal('${esc(mid)}')" title="Minimize">&#x2015;</button>
-        <button class="modal-close" onclick="closeThreadsBoard('${esc(pid)}')" title="Close (Esc)">&#10005;</button>
+        <button class="modal-close" onclick="closeThreadsBoard('${window.jsAttr(pid)}')" title="Close (Esc)">&#10005;</button>
       </div>
     </div>
     <div class="tb-body">
@@ -3376,7 +3376,7 @@ function _railTopicsHTML(p) {
   }
   if (!d.topics) {
     return `<div class="agent-rail-empty">No topic digest yet.
-      <button class="rail-topic-refresh" onclick="reviewTopics('${esc(pid)}')">Build it</button></div>`;
+      <button class="rail-topic-refresh" onclick="reviewTopics('${window.jsAttr(pid)}')">Build it</button></div>`;
   }
   // Resolve each topic's chats against the loaded conversation list once —
   // needed for both the ordering and the active highlight below.
@@ -3423,7 +3423,7 @@ function _railTopicsHTML(p) {
   // stale one — the whole reason the backend now computes real staleness.
   const staleBar = d.stale
     ? `<div class="rail-topic-stale" title="${esc(d.stale_reason || '')}">Out of date
-         <button class="rail-topic-refresh" onclick="reviewTopics('${esc(pid)}')">Refresh</button></div>`
+         <button class="rail-topic-refresh" onclick="reviewTopics('${window.jsAttr(pid)}')">Refresh</button></div>`
     : '';
   const rows = list.map(t => {
     // Switching from Chats to Topics should show you where you are, not make
@@ -3431,7 +3431,7 @@ function _railTopicsHTML(p) {
     // same treatment a row gets on hover.
     const here = !!(activeCsid && csidsOf(t).includes(activeCsid));
     return `
-    <div class="rail-topic${here ? ' active' : ''}" onclick="openTopicNewest('${esc(pid)}','${esc(t.id)}')"
+    <div class="rail-topic${here ? ' active' : ''}" onclick="openTopicNewest('${window.jsAttr(pid)}','${esc(t.id)}')"
          title="${esc(t.gist || '')}">
       <div class="rail-topic-title">${esc(t.title)}</div>
       <div class="rail-topic-gist">${esc((t.gist || '').slice(0, 110))}</div>
@@ -3467,7 +3467,7 @@ function _topicChatsHTML(pid, t) {
     const ts = c ? (c.ts_relative || '') : (ch.ts ? _agoShort(ch.ts) : '');
     const mcid = c ? (c.mc_session_id || '') : '';
     const live = c && c.live ? 'true' : 'false';
-    return `<div class="tb-chat" onclick="event.stopPropagation();openConversation('${esc(pid)}','${esc(cs)}','${esc(mcid)}',${live})">${label}<span class="tb-chat-meta">${esc(ts)}</span></div>`;
+    return `<div class="tb-chat" onclick="event.stopPropagation();openConversation('${window.jsAttr(pid)}','${esc(cs)}','${esc(mcid)}',${live})">${label}<span class="tb-chat-meta">${esc(ts)}</span></div>`;
   }).join('');
   return `<div class="tb-chats">${rows || '<div class="tb-chat-empty">no chats</div>'}</div>`;
 }
@@ -3479,12 +3479,12 @@ function _topicCardHTML(pid, t) {
   const chip = us === 'done' ? '<span class="tb-us done">Done</span>'
     : us === 'archived' ? '<span class="tb-us arch">Archived</span>' : '';
   const acts = us === 'open'
-    ? `<button class="tb-act" onclick="event.stopPropagation();setTopicState('${esc(pid)}','${esc(t.id)}','done')">Mark done</button>
-       <button class="tb-act" onclick="event.stopPropagation();setTopicState('${esc(pid)}','${esc(t.id)}','archived')">Archive</button>`
-    : `<button class="tb-act" onclick="event.stopPropagation();setTopicState('${esc(pid)}','${esc(t.id)}','open')">Reopen</button>`;
+    ? `<button class="tb-act" onclick="event.stopPropagation();setTopicState('${window.jsAttr(pid)}','${esc(t.id)}','done')">Mark done</button>
+       <button class="tb-act" onclick="event.stopPropagation();setTopicState('${window.jsAttr(pid)}','${esc(t.id)}','archived')">Archive</button>`
+    : `<button class="tb-act" onclick="event.stopPropagation();setTopicState('${window.jsAttr(pid)}','${esc(t.id)}','open')">Reopen</button>`;
   const exp = _topicsExpanded[pid + '/' + t.id];
   return `<div class="tb-topic${us !== 'open' ? ' tb-topic-muted' : ''}">
-      <div class="tb-topic-head" onclick="toggleTopic('${esc(pid)}','${esc(t.id)}')">
+      <div class="tb-topic-head" onclick="toggleTopic('${window.jsAttr(pid)}','${esc(t.id)}')">
         <span class="tb-badge ${badgeCls}">${esc(st)}</span>
         <div class="tb-topic-main">
           <div class="tb-topic-title">${esc(t.title)}${chip}</div>
@@ -3513,18 +3513,18 @@ function _topicsBoardHTML(pid) {
         <div class="tb-summary">${summary}</div>
       </div>
       <div class="modal-window-controls" style="position:static;display:flex;gap:6px;align-items:center">
-        <button class="tb-review" onclick="reviewTopics('${esc(pid)}')" ${d.loading ? 'disabled' : ''}>${d.loading ? 'Reviewing…' : '&#8635; Review'}</button>
-        <button class="tb-review tb-sweep-btn" onclick="sweepBacklog('${esc(pid)}')" title="Propose closing backlog items covered by topics you marked done">&#129529; Sweep backlog</button>
+        <button class="tb-review" onclick="reviewTopics('${window.jsAttr(pid)}')" ${d.loading ? 'disabled' : ''}>${d.loading ? 'Reviewing…' : '&#8635; Review'}</button>
+        <button class="tb-review tb-sweep-btn" onclick="sweepBacklog('${window.jsAttr(pid)}')" title="Propose closing backlog items covered by topics you marked done">&#129529; Sweep backlog</button>
         <button class="modal-minimize" onclick="minimizeModal('${esc(mid)}')" title="Minimize">&#x2015;</button>
-        <button class="modal-close" onclick="closeThreadsBoard('${esc(pid)}')" title="Close (Esc)">&#10005;</button>
+        <button class="modal-close" onclick="closeThreadsBoard('${window.jsAttr(pid)}')" title="Close (Esc)">&#10005;</button>
       </div>
     </div>`;
   let body;
   if (d.loading && !d.topics) body = '<div class="tb-empty">Reviewing your chats…</div>';
-  else if (!d.topics) body = `<div class="tb-empty">No topic review yet.<br><br><button class="tb-act go" onclick="reviewTopics('${esc(pid)}')">Review chats now</button></div>`;
-  else if (!shown.length) body = `<div class="tb-empty">No open topics.${archivedN ? ` <button class="tb-linkbtn" onclick="toggleTopicsArchived('${esc(pid)}')">Show ${archivedN} archived</button>` : ''}</div>`;
+  else if (!d.topics) body = `<div class="tb-empty">No topic review yet.<br><br><button class="tb-act go" onclick="reviewTopics('${window.jsAttr(pid)}')">Review chats now</button></div>`;
+  else if (!shown.length) body = `<div class="tb-empty">No open topics.${archivedN ? ` <button class="tb-linkbtn" onclick="toggleTopicsArchived('${window.jsAttr(pid)}')">Show ${archivedN} archived</button>` : ''}</div>`;
   else body = `<div class="tb-topics">${shown.map(t => _topicCardHTML(pid, t)).join('')}</div>`
-    + (archivedN ? `<div class="tb-archline"><button class="tb-linkbtn" onclick="toggleTopicsArchived('${esc(pid)}')">${_topicsShowArchived[pid] ? 'Hide' : 'Show'} ${archivedN} archived</button></div>` : '');
+    + (archivedN ? `<div class="tb-archline"><button class="tb-linkbtn" onclick="toggleTopicsArchived('${window.jsAttr(pid)}')">${_topicsShowArchived[pid] ? 'Hide' : 'Show'} ${archivedN} archived</button></div>` : '');
   const sw = _topicsSweep[pid];
   const sweep = (sw && (sw.loading || sw.matches || sw.note || sw.error)) ? _sweepPanelHTML(pid) : '';
   return header + `<div class="tb-body">${sweep}${body}</div>`;
@@ -3534,14 +3534,14 @@ function _topicsBoardHTML(pid) {
 let _topicsSweep = {};   // pid -> {matches, selected:Set, loading, note, error}
 function _sweepPanelHTML(pid) {
   const s = _topicsSweep[pid] || {};
-  const dismiss = `<button class="tb-linkbtn" onclick="dismissSweep('${esc(pid)}')">Dismiss</button>`;
+  const dismiss = `<button class="tb-linkbtn" onclick="dismissSweep('${window.jsAttr(pid)}')">Dismiss</button>`;
   if (s.loading && !s.matches) return `<div class="tb-sweep"><div class="tb-sweep-head">Scanning backlog…</div></div>`;
   if (s.error) return `<div class="tb-sweep"><div class="tb-sweep-head">Sweep failed: ${esc(s.error)} ${dismiss}</div></div>`;
   if (!(s.matches || []).length) return `<div class="tb-sweep"><div class="tb-sweep-head">${esc(s.note || 'No matching backlog items.')} ${dismiss}</div></div>`;
   const rows = s.matches.map(m => {
     const on = s.selected && s.selected.has(m.id);
     return `<label class="tb-sweep-row">
-        <input type="checkbox" ${on ? 'checked' : ''} onchange="toggleSweepItem('${esc(pid)}','${esc(m.id)}')">
+        <input type="checkbox" ${on ? 'checked' : ''} onchange="toggleSweepItem('${window.jsAttr(pid)}','${esc(m.id)}')">
         <span class="tb-sweep-main"><span class="tb-sweep-text">${esc(m.text)}</span>
           <span class="tb-sweep-meta"><span class="tb-conf ${esc(m.confidence)}">${esc(m.confidence)}</span> &nbsp;${esc(m.topic)} — ${esc(m.reason)}</span></span>
       </label>`;
@@ -3550,7 +3550,7 @@ function _sweepPanelHTML(pid) {
   return `<div class="tb-sweep">
       <div class="tb-sweep-head">Backlog items covered by done topics — review &amp; confirm ${dismiss}</div>
       ${rows}
-      <div class="tb-sweep-foot"><button class="tb-act go" ${n && !s.loading ? '' : 'disabled'} onclick="confirmSweep('${esc(pid)}')">${s.loading ? 'Closing…' : `Close ${n} selected`}</button></div>
+      <div class="tb-sweep-foot"><button class="tb-act go" ${n && !s.loading ? '' : 'disabled'} onclick="confirmSweep('${window.jsAttr(pid)}')">${s.loading ? 'Closing…' : `Close ${n} selected`}</button></div>
     </div>`;
 }
 async function sweepBacklog(pid) {
@@ -4024,7 +4024,7 @@ window._openConversationByCsid = _openConversationByCsid;
 // incremental repaint (below), which cannot go through that render path (see
 // the comment on the _repaintAgentOutput call there) and must reinsert it by hand.
 function _rolloverButtonHTML(projectId, sessionId, remaining, total) {
-  return `<div class="agent-line rollover-load-part" id="rollover-load-${esc(sessionId)}" style="text-align:center;padding:8px;opacity:0.7;cursor:pointer" onclick="loadEarlierConversationPart('${esc(projectId)}','${esc(sessionId)}')">&#x25B2; Load earlier conversation (part ${remaining} of ${total}) &#x25B2;</div>`;
+  return `<div class="agent-line rollover-load-part" id="rollover-load-${esc(sessionId)}" style="text-align:center;padding:8px;opacity:0.7;cursor:pointer" onclick="loadEarlierConversationPart('${window.jsAttr(projectId)}','${esc(sessionId)}')">&#x25B2; Load earlier conversation (part ${remaining} of ${total}) &#x25B2;</div>`;
 }
 
 // MC-978: fetch ONE earlier rollover-chain link (a whole prior transcript,
@@ -4185,9 +4185,9 @@ function conversationRowHTML(p, h) {
   const isPinnedConv = (typeof cache.pinned === 'boolean')
     ? cache.pinned
     : (() => { const c = cache.claudeSessionId || ''; return !!c && (p.pinned_conversations || []).includes(c); })();
-  const pinMark = `<button class="conv-pin-mark${isPinnedConv ? ' pinned' : ''}" onclick="event.stopPropagation();togglePinConversationSession('${esc(p.id)}','${esc(h.sessionId)}')" title="${isPinnedConv ? 'Unpin this chat' : 'Pin this chat'}" aria-label="${isPinnedConv ? 'Unpin this chat' : 'Pin this chat'}" aria-pressed="${isPinnedConv ? 'true' : 'false'}">&#x1F4CC;</button>`;
+  const pinMark = `<button class="conv-pin-mark${isPinnedConv ? ' pinned' : ''}" onclick="event.stopPropagation();togglePinConversationSession('${window.jsAttr(p.id)}','${esc(h.sessionId)}')" title="${isPinnedConv ? 'Unpin this chat' : 'Pin this chat'}" aria-label="${isPinnedConv ? 'Unpin this chat' : 'Pin this chat'}" aria-pressed="${isPinnedConv ? 'true' : 'false'}">&#x1F4CC;</button>`;
   return `
-  <div class="conv-row ${isPinnedConv ? 'pinned-conv' : ''}" onclick="switchAgentTab('${esc(p.id)}','${esc(h.sessionId)}')" title="${esc(h.task || '')}">
+  <div class="conv-row ${isPinnedConv ? 'pinned-conv' : ''}" onclick="switchAgentTab('${window.jsAttr(p.id)}','${esc(h.sessionId)}')" title="${esc(h.task || '')}">
     <div class="conv-av friendly-${fs}"><span class="conv-ring"></span>${glyph}</div>
     <div class="conv-main">
       <div class="conv-top">
@@ -4200,7 +4200,7 @@ function conversationRowHTML(p, h) {
         <span class="conv-badges">${tags}</span>
       </div>
     </div>
-    <button class="conv-row-close" onclick="event.stopPropagation();closeAgentTab('${esc(p.id)}','${esc(h.sessionId)}')" title="Close conversation">&#10005;</button>
+    <button class="conv-row-close" onclick="event.stopPropagation();closeAgentTab('${window.jsAttr(p.id)}','${esc(h.sessionId)}')" title="Close conversation">&#10005;</button>
   </div>`;
 }
 
@@ -4305,12 +4305,12 @@ function splitPaneHTML(p, sid, isPrimary, hostPid) {
   // split pane's status is patched in place too (updateStopButtonUI targets
   // both ids), so it must not go stale for the running-turn window either.
   const stopBtn = (isRunning || st === 'idle' || st === 'error')
-    ? `<button class="btn-stop" onclick="stopAgent('${esc(p.id)}','${esc(sid)}')">Stop</button>` : '';
+    ? `<button class="btn-stop" onclick="stopAgent('${window.jsAttr(p.id)}','${esc(sid)}')">Stop</button>` : '';
   const stopBtnSlot = `<span id="stop-btn-split-${esc(sid)}">${stopBtn}</span>`;
   // ✕ closes THIS pane and keeps the other as the single view. Split state is
   // keyed by the HOST project (the modal that owns the split), which for a
   // cross-project pane is not p — keying the close off p.id left that ✕ dead.
-  const closeBtn = `<button class="agent-split-close" onclick="closeSplitPane('${esc(hostPid || p.id)}','${esc(sid)}')" title="Close this pane">&#10005;</button>`;
+  const closeBtn = `<button class="agent-split-close" onclick="closeSplitPane('${window.jsAttr(hostPid || p.id)}','${esc(sid)}')" title="Close this pane">&#10005;</button>`;
   const composeEnabled = (st === 'running' || st === 'completed' || st === 'stopped' || st === 'idle' || st === 'error');
   // Attachments. sendFollowup already uploads from the `fu_<sid>` key for ANY
   // pane, but this composer used to render none of the affordances that fill
@@ -4341,11 +4341,11 @@ function splitPaneHTML(p, sid, isPrimary, hostPid) {
         <textarea spellcheck="true" dir="auto" class="agent-task-input" id="agent-followup-${esc(sid)}" rows="1"
           data-project="${esc(p.id)}"
           placeholder="${isRunning ? mcSendIntent.runningPlaceholder(_spCaps, true) : 'Reply…'}"
-          onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(sid)}'),'${esc(p.id)}')"
+          onkeydown="handleInputEnter(event,()=>sendFollowup('${window.jsAttr(p.id)}','${esc(sid)}'),'${window.jsAttr(p.id)}')"
           onpaste="${_spCaps.image_attach ? `handleAgentPaste(event,'${esc(_spKey)}')` : ''}"></textarea>
         ${emojiBtnHTML(`agent-followup-${esc(sid)}`)}
         ${mcSendIntent.interruptButtonHTML(p.id, sid, isRunning ? 'running' : st, false)}
-        <button class="btn-dispatch" onclick="sendFollowup('${esc(p.id)}','${esc(sid)}')">Send</button>
+        <button class="btn-dispatch" onclick="sendFollowup('${window.jsAttr(p.id)}','${esc(sid)}')">Send</button>
       </div></div>` : '';
   return `<div class="agent-split-pane${isPrimary ? ' primary' : ''}" data-sid="${esc(sid)}">
     <div class="agent-split-head">
@@ -4554,7 +4554,7 @@ function _crossProjectPickerHTML(p) {
       || h.projectId;
     const label = esc((h.task || 'Conversation').substring(0, 60));
     const isLive = h.status === 'running';
-    return `<button type="button" class="agent-rail-crossproj-row" onclick="openInSplit('${esc(p.id)}','','${esc(h.sessionId)}',${isLive ? 'true' : 'false'},'${esc(h.projectId)}')">
+    return `<button type="button" class="agent-rail-crossproj-row" onclick="openInSplit('${window.jsAttr(p.id)}','','${esc(h.sessionId)}',${isLive ? 'true' : 'false'},'${window.jsAttr(h.projectId)}')">
       <span class="agent-rail-crossproj-proj">${esc(pName)}</span>
       <span class="agent-rail-crossproj-task">${label}</span>
     </button>`;
@@ -4857,7 +4857,7 @@ function _forkNoticeHTML(sessionId) {
   if (!others.length && !moved) return '';
   const pid = c.projectId || '';
   const links = others.map(o =>
-    `<a href="#" class="fork-notice-link" data-sid="${esc(o)}" onclick="event.preventDefault();switchAgentTab('${esc(pid)}','${esc(o)}')">copy ${esc(o.slice(0, 8))}</a>`).join(', ');
+    `<a href="#" class="fork-notice-link" data-sid="${esc(o)}" onclick="event.preventDefault();switchAgentTab('${window.jsAttr(pid)}','${esc(o)}')">copy ${esc(o.slice(0, 8))}</a>`).join(', ');
   const n = others.length + (c.processAlive ? 1 : 0);
   const parts = [];
   if (others.length) {
@@ -4918,7 +4918,7 @@ function _dispatchedByBannerHTML(sessionId) {
     : (parent ? _providerDisplayName(parent.provider || 'claude') : '');
   const pFace = pChar && pChar.avatar ? window.avatarHTML(pChar.avatar, 18, 'av-pill') : '';
   const openLink = parent
-    ? ` <a href="#" class="dispatched-by-link" data-sid="${esc(parentId)}" onclick="event.preventDefault();switchAgentTab('${esc(parent.projectId || '')}','${esc(parentId)}')">Open its chat</a>`
+    ? ` <a href="#" class="dispatched-by-link" data-sid="${esc(parentId)}" onclick="event.preventDefault();switchAgentTab('${window.jsAttr(parent.projectId || '')}','${esc(parentId)}')">Open its chat</a>`
     : '';
   const who = pName ? `${pFace}<strong>${esc(pName)}</strong>` : `another session (${esc(parentId.slice(0, 8))}, since ended)`;
   const possessive = pName ? `${esc(pName)}'s` : 'the dispatcher\'s';
@@ -5224,7 +5224,7 @@ function appendAgentLine(sessionId, text, dateHint, promptTs = dateHint) {
       const warn = document.createElement('div');
       warn.className = 'agent-plan-stuck-warning';
       warn.style.cssText = 'background:var(--amber-dim);border:1px solid var(--amber);color:var(--amber-text);padding:8px 12px;border-radius:6px;margin:6px 0;font-size:12px;line-height:1.5;display:flex;align-items:center;gap:10px;flex-wrap:wrap';
-      warn.innerHTML = `&#x26A0; Agent is stuck trying to exit plan mode.${pid ? ` <button style="background:var(--green);color:#fff;border:none;padding:6px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer" onclick="approvePlan('${esc(pid)}','${esc(sessionId)}')">Approve Plan</button>` : ''}`;
+      warn.innerHTML = `&#x26A0; Agent is stuck trying to exit plan mode.${pid ? ` <button style="background:var(--green);color:#fff;border:none;padding:6px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer" onclick="approvePlan('${window.jsAttr(pid)}','${esc(sessionId)}')">Approve Plan</button>` : ''}`;
       el.appendChild(warn);
       if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
       exitPlanModeCount[sessionId] = 0; // Reset so it doesn't spam
@@ -5256,14 +5256,14 @@ function appendAgentLine(sessionId, text, dateHint, promptTs = dateHint) {
                 if (!label) label = planFileLabel(cached.task || fname);
                 const container = document.getElementById(`plan-file-btn-${sessionId}`);
                 if (container && !container.innerHTML.trim()) {
-                  container.innerHTML = `<button class="btn-plan-file" onclick="openPlanFileViewer('${esc(cached.projectId)}','${esc(sessionId)}')" title="${esc(fname)}">&#128196; ${esc(label)}</button>`;
+                  container.innerHTML = `<button class="btn-plan-file" onclick="openPlanFileViewer('${window.jsAttr(cached.projectId)}','${esc(sessionId)}')" title="${esc(fname)}">&#128196; ${esc(label)}</button>`;
                 }
               }).catch(() => {
                 const fname = s.plan_file.split(/[/\\]/).pop();
                 const label = planFileLabel(cached.task || fname);
                 const container = document.getElementById(`plan-file-btn-${sessionId}`);
                 if (container && !container.innerHTML.trim()) {
-                  container.innerHTML = `<button class="btn-plan-file" onclick="openPlanFileViewer('${esc(cached.projectId)}','${esc(sessionId)}')" title="${esc(fname)}">&#128196; ${esc(label)}</button>`;
+                  container.innerHTML = `<button class="btn-plan-file" onclick="openPlanFileViewer('${window.jsAttr(cached.projectId)}','${esc(sessionId)}')" title="${esc(fname)}">&#128196; ${esc(label)}</button>`;
                 }
               });
           }
@@ -5315,7 +5315,7 @@ function _planCardHTML(projectId, sessionId, rawLines) {
   return `<div class="plan-card-header"><span class="plan-card-title">&#128203; Plan ready to approve</span></div>`
     + body
     + `<div class="plan-card-actions">`
-    +   `<button class="btn-plan-approve" onclick="approvePlan('${esc(projectId)}','${esc(sessionId)}')">Approve Plan</button>`
+    +   `<button class="btn-plan-approve" onclick="approvePlan('${window.jsAttr(projectId)}','${esc(sessionId)}')">Approve Plan</button>`
     +   `<button class="btn-plan-review" onclick="openPlanViewer('${esc(sessionId)}')">Review</button>`
     + `</div>`;
 }
@@ -5425,13 +5425,13 @@ function renderAgentQuestion(sessionId, projectId, questions, questionId) {
       // Pass `this` (not the label) into the handler and read data-label — the
       // attribute is HTML-escaped safely, avoiding the nested-quote break a
       // label with an apostrophe would cause inside an onclick JS string.
-      html += `<button type="button" class="agent-question-chip" dir="auto" data-label="${esc(opt.label)}" onclick="submitQuestionChip('${esc(projectId)}','${esc(sessionId)}','${formId}',0,this)">${esc(opt.label)}</button>`;
+      html += `<button type="button" class="agent-question-chip" dir="auto" data-label="${esc(opt.label)}" onclick="submitQuestionChip('${window.jsAttr(projectId)}','${esc(sessionId)}','${formId}',0,this)">${esc(opt.label)}</button>`;
     });
-    html += `<button type="button" class="agent-question-chip agent-question-chip-other" onclick="submitQuestionOther('${esc(projectId)}','${esc(sessionId)}','${formId}',0)">Other&#8230;</button>`;
+    html += `<button type="button" class="agent-question-chip agent-question-chip-other" onclick="submitQuestionOther('${window.jsAttr(projectId)}','${esc(sessionId)}','${formId}',0)">Other&#8230;</button>`;
     html += `</div>`;
     html += `<div class="agent-question-other-wrap" data-qidx="0">
-      <input type="text" class="agent-question-other" placeholder="Type your answer..." onkeydown="if(event.key==='Enter'){event.preventDefault();submitQuestionOther('${esc(projectId)}','${esc(sessionId)}','${formId}',0);}">
-      <button type="button" class="agent-question-other-send" onclick="submitQuestionOther('${esc(projectId)}','${esc(sessionId)}','${formId}',0)">Send</button>
+      <input type="text" class="agent-question-other" placeholder="Type your answer..." onkeydown="if(event.key==='Enter'){event.preventDefault();submitQuestionOther('${window.jsAttr(projectId)}','${esc(sessionId)}','${formId}',0);}">
+      <button type="button" class="agent-question-other-send" onclick="submitQuestionOther('${window.jsAttr(projectId)}','${esc(sessionId)}','${formId}',0)">Send</button>
     </div>`;
   } else {
     questions.forEach((q, qi) => {
@@ -5455,7 +5455,7 @@ function renderAgentQuestion(sessionId, projectId, questions, questionId) {
       html += `</div>`;
     });
     html += `<div class="agent-question-actions">
-      <button onclick="submitQuestionAnswer('${esc(projectId)}','${esc(sessionId)}','${formId}',${questions.length})">Submit Answer</button>
+      <button onclick="submitQuestionAnswer('${window.jsAttr(projectId)}','${esc(sessionId)}','${formId}',${questions.length})">Submit Answer</button>
     </div>`;
   }
 

@@ -64,7 +64,7 @@ async function _mobilePairRenderAuto(body, remote) {
         <div style="font-size:13px;color:var(--text);font-weight:500">${esc(t.label || 'Mobile device')}</div>
         <div style="font-size:11px;color:var(--text-dim)">paired ${esc((t.created_at || '').slice(0, 10))}${t.last_used_at ? ' · last seen ' + esc(t.last_used_at.slice(0, 10)) : ''}</div>
       </div>
-      <button class="btn-dispatch" style="font-size:11px;padding:4px 10px;background:transparent;border:1px solid var(--border);color:var(--text-dim)" onclick="_mobilePairRevokeToken('${esc(t.token_id)}', '${esc(t.label || 'this phone').replace(/'/g, '\\\'')}')">Revoke</button>
+      <button class="btn-dispatch" style="font-size:11px;padding:4px 10px;background:transparent;border:1px solid var(--border);color:var(--text-dim)" onclick="_mobilePairRevokeToken('${window.jsAttr(t.token_id)}', '${window.jsAttr(t.label || 'this phone')}')">Revoke</button>
     </div>`).join('');
 
   body.innerHTML = `

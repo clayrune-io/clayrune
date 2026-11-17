@@ -509,14 +509,14 @@ function rulesTabHTML(p) {
     <textarea spellcheck="true" class="rules-textarea" id="rules-agent-${esc(p.id)}" rows="8"
       placeholder="Project-specific rules for the agent...">${esc(loaded.agent_rules || '')}</textarea>
     <div style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-shrink:0">
-      <button class="btn-save-rules" onclick="saveProjectRules('${esc(p.id)}')">Save Agent Rules</button>
+      <button class="btn-save-rules" onclick="saveProjectRules('${window.jsAttr(p.id)}')">Save Agent Rules</button>
       <span class="rules-saved" id="rules-saved-agent-${esc(p.id)}">Saved</span>
     </div>
     <div class="rules-label" style="margin-top:14px">Shared Baseline (SHARED_RULES.md)</div>
     <textarea spellcheck="true" class="rules-textarea" id="rules-shared-${esc(p.id)}" rows="8"
       placeholder="Shared rules applied to all projects...">${esc(loaded.shared_rules || '')}</textarea>
     <div style="display:flex;align-items:center;gap:8px;margin-top:6px;flex-shrink:0">
-      <button class="btn-save-rules" onclick="saveSharedRules('${esc(p.id)}')">Save Shared Rules</button>
+      <button class="btn-save-rules" onclick="saveSharedRules('${window.jsAttr(p.id)}')">Save Shared Rules</button>
       <span class="rules-saved" id="rules-saved-shared-${esc(p.id)}">Saved</span>
     </div>
   </div>`;
@@ -530,7 +530,7 @@ function rulesPanelHTML(p) {
   const hasContent = loaded && (loaded.agent_rules || loaded.shared_rules);
 
   return `<div class="rules-panel">
-    <div class="rules-toggle" onclick="toggleRulesPanel('${esc(p.id)}')">
+    <div class="rules-toggle" onclick="toggleRulesPanel('${window.jsAttr(p.id)}')">
       <div class="section-title" style="margin-bottom:0">Rules</div>
       <span class="rules-chevron" id="rules-chevron-${esc(p.id)}">&#9654;</span>
     </div>
@@ -539,14 +539,14 @@ function rulesPanelHTML(p) {
       <textarea spellcheck="true" class="rules-textarea" id="rules-agent-${esc(p.id)}" rows="6"
         placeholder="Loading...">${esc(loaded ? loaded.agent_rules : '')}</textarea>
       <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
-        <button class="btn-save-rules" onclick="saveProjectRules('${esc(p.id)}')">Save Agent Rules</button>
+        <button class="btn-save-rules" onclick="saveProjectRules('${window.jsAttr(p.id)}')">Save Agent Rules</button>
         <span class="rules-saved" id="rules-saved-agent-${esc(p.id)}">Saved</span>
       </div>
       <div class="rules-label" style="margin-top:14px">Shared Baseline (SHARED_RULES.md)</div>
       <textarea spellcheck="true" class="rules-textarea" id="rules-shared-${esc(p.id)}" rows="6"
         placeholder="Loading...">${esc(loaded ? loaded.shared_rules : '')}</textarea>
       <div style="display:flex;align-items:center;gap:8px;margin-top:6px">
-        <button class="btn-save-rules" onclick="saveSharedRules('${esc(p.id)}')">Save Shared Rules</button>
+        <button class="btn-save-rules" onclick="saveSharedRules('${window.jsAttr(p.id)}')">Save Shared Rules</button>
         <span class="rules-saved" id="rules-saved-shared-${esc(p.id)}">Saved</span>
       </div>
     </div>

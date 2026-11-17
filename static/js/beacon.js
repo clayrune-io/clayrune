@@ -238,14 +238,14 @@ function _rowHTML(p) {
     ? `<span class="bt-standtext">${_esc(stand)}</span>`
     : `<span class="bt-nostand">No summary yet</span>`;
   const refreshing = !!beaconRefreshing[p.id];
-  const main = `<tr class="bt-row ${p.status} ${open ? 'open' : ''}" onclick="beaconToggleRow('${_esc(p.id)}')">
+  const main = `<tr class="bt-row ${p.status} ${open ? 'open' : ''}" onclick="beaconToggleRow('${window.jsAttr(p.id)}')">
     <td class="bt-status">${_statusPill(p)}</td>
     <td class="bt-proj"><span class="bt-chev ${open ? 'open' : ''}">❯</span>${_esc(p.name)}</td>
     <td class="bt-stand">${standCell}</td>
     <td class="bt-age">${_esc(_ago(p.last_touched))}</td>
     <td class="bt-act" onclick="event.stopPropagation()">
-      <button class="bt-iconbtn" title="Open project" onclick="beaconOpen('${_esc(p.id)}')">↗</button>
-      <button class="bt-iconbtn" title="Refresh summary" onclick="beaconRefreshRow('${_esc(p.id)}')" ${refreshing ? 'disabled' : ''}>${refreshing ? '…' : '↻'}</button>
+      <button class="bt-iconbtn" title="Open project" onclick="beaconOpen('${window.jsAttr(p.id)}')">↗</button>
+      <button class="bt-iconbtn" title="Refresh summary" onclick="beaconRefreshRow('${window.jsAttr(p.id)}')" ${refreshing ? 'disabled' : ''}>${refreshing ? '…' : '↻'}</button>
     </td>
   </tr>`;
   return main + (open ? _detailHTML(p) : '');
@@ -282,7 +282,7 @@ function _fieldRowHTML(p, key, label) {
   const open = !!beaconItemOpen[k];
   const expandable = f.detail && f.detail !== f.line;
   return `<div class="bt-item ${open ? 'open' : ''}">
-    <div class="bt-itemhead ${expandable ? 'clickable' : ''}" onclick="event.stopPropagation();${expandable ? ` beaconItemToggle('${_esc(p.id)}','${key}')` : ''}">
+    <div class="bt-itemhead ${expandable ? 'clickable' : ''}" onclick="event.stopPropagation();${expandable ? ` beaconItemToggle('${window.jsAttr(p.id)}','${key}')` : ''}">
       <span class="bt-ilabel">${label}</span>
       <span class="bt-iline">${_esc(f.line)}</span>
       ${expandable ? `<span class="bt-ichev ${open ? 'open' : ''}">❯</span>` : ''}
@@ -303,17 +303,17 @@ function _detailHTML(p) {
       ${_fieldRowHTML(p, 'next', 'Next')}
     </div>`;
   } else {
-    body = `<div class="bt-nobrief">No cached summary yet — <a onclick="event.stopPropagation(); beaconRefreshRow('${_esc(p.id)}')">generate one</a> (Haiku reads this project's recent context).</div>`;
+    body = `<div class="bt-nobrief">No cached summary yet — <a onclick="event.stopPropagation(); beaconRefreshRow('${window.jsAttr(p.id)}')">generate one</a> (Haiku reads this project's recent context).</div>`;
   }
   const reviewPlan = (p.blocker && p.blocker.type === 'plan_pending')
-    ? `<button class="bm-btn" onclick="beaconOpen('${_esc(p.id)}')">Review plan</button>` : '';
+    ? `<button class="bm-btn" onclick="beaconOpen('${window.jsAttr(p.id)}')">Review plan</button>` : '';
   const refreshing = !!beaconRefreshing[p.id];
   return `<tr class="bt-detailrow"><td colspan="5"><div class="bt-detail" onclick="event.stopPropagation()">
     ${blk}${body}
     <div class="bt-actions">
       ${reviewPlan}
-      <button class="bm-btn" onclick="beaconOpen('${_esc(p.id)}')">Open project</button>
-      <button class="bm-btn ghost" onclick="beaconRefreshRow('${_esc(p.id)}')" ${refreshing ? 'disabled' : ''}>${refreshing ? 'Refreshing…' : '↻ Refresh summary'}</button>
+      <button class="bm-btn" onclick="beaconOpen('${window.jsAttr(p.id)}')">Open project</button>
+      <button class="bm-btn ghost" onclick="beaconRefreshRow('${window.jsAttr(p.id)}')" ${refreshing ? 'disabled' : ''}>${refreshing ? 'Refreshing…' : '↻ Refresh summary'}</button>
     </div>
   </div></td></tr>`;
 }

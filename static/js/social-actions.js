@@ -88,7 +88,7 @@ function openSocialEditModal(projectId, itemId) {
           value="${esc(item.note || '')}">
       </div>
       <div id="social-edit-error-${esc(itemId)}" class="social-attr-warn" style="display:none"></div>
-      <button class="btn-add" style="width:100%" onclick="saveSocialEditModal('${esc(projectId)}','${esc(itemId)}')">Save</button>
+      <button class="btn-add" style="width:100%" onclick="saveSocialEditModal('${window.jsAttr(projectId)}','${esc(itemId)}')">Save</button>
     </div>`;
   win.appendChild(content);
   document.getElementById('modal-layer').appendChild(win);
@@ -215,7 +215,7 @@ function openPushBackModal(projectId, itemId) {
           placeholder="Tell the writer what's wrong and what to do instead">${esc((item.note || '').trim())}</textarea>
       </div>
       <div id="social-pushback-error-${esc(itemId)}" class="social-attr-warn" style="display:none"></div>
-      <button class="btn-social-pushback" style="width:100%" onclick="submitPushBack('${esc(projectId)}','${esc(itemId)}')">Push back</button>
+      <button class="btn-social-pushback" style="width:100%" onclick="submitPushBack('${window.jsAttr(projectId)}','${esc(itemId)}')">Push back</button>
     </div>`;
   win.appendChild(content);
   document.getElementById('modal-layer').appendChild(win);

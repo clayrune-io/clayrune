@@ -181,7 +181,7 @@ function _floorProviderBadge(provider) {
 function _floorAvatar(f) {
   const has = !!(f.avatar || '').trim();
   return `<span class="fl-face" title="${has ? 'click to change the face' : 'click to give this figure a face'}"
-      onclick="event.stopPropagation();floorSetAvatar('${esc(f.session_id)}','${esc(f.avatar || '')}')"
+      onclick="event.stopPropagation();floorSetAvatar('${window.jsAttr(f.session_id)}','${esc(f.avatar || '')}')"
     >${_floorAvatarHTML(f.avatar, FLOOR_FACE_PX)}${_floorProviderBadge(f.provider)}</span>`;
 }
 
@@ -247,10 +247,10 @@ function _floorFigure(pid, f) {
   const type = f.character
     ? `<span class="fl-type">${esc(f.character.display)}</span><button class="fl-edit"
         title="Edit this persona — face, description, instructions, engine"
-        onclick="event.stopPropagation();floorEditType('${esc(f.character.scope || 'global')}','${esc(f.character.name)}','${esc(pid)}')"
+        onclick="event.stopPropagation();floorEditType('${esc(f.character.scope || 'global')}','${esc(f.character.name)}','${window.jsAttr(pid)}')"
         >&#9998;</button><button class="fl-hire-to"
         title="Hire ${esc(f.character.display)} onto a project — the no-drag path (docs/DRAG_TO_HIRE_SPEC.md §8)"
-        onclick="event.stopPropagation();floorHireMenu('${esc(pid)}','${esc(f.character.scope || 'global')}','${esc(f.character.name)}','${esc(f.character.display)}')"
+        onclick="event.stopPropagation();floorHireMenu('${window.jsAttr(pid)}','${esc(f.character.scope || 'global')}','${esc(f.character.name)}','${esc(f.character.display)}')"
         >&#8981;</button>`
     : `<span class="fl-type fl-untyped">no type</span>`;
   const nameTitle = chosen
@@ -285,7 +285,7 @@ function _floorFigure(pid, f) {
   // (spec §11). No pointerdown handler at all for those, so a plain Vector
   // run behaves exactly as before: click opens the chat, nothing else.
   const dragAttrs = f.character
-    ? ` onpointerdown="floorFigDown(event,'${esc(pid)}','${esc(f.character.scope || 'global')}','${esc(f.character.name)}','${esc(f.character.display)}','${esc(f.avatar || '')}')"`
+    ? ` onpointerdown="floorFigDown(event,'${window.jsAttr(pid)}','${esc(f.character.scope || 'global')}','${esc(f.character.name)}','${esc(f.character.display)}','${esc(f.avatar || '')}')"`
     : '';
   // data-fl-* are the identity + action hooks the Learn lesson resolves by
   // (docs/TUTORIALS_SPEC.md "Persistence and maintenance"); role/tabindex make
@@ -293,19 +293,19 @@ function _floorFigure(pid, f) {
   return `<div class="fl-fig fl-${esc(visualState)}${f.character ? ' fl-draggable' : ''}"${dragAttrs}
       data-fl-session="${esc(f.session_id)}" data-fl-pid="${esc(pid)}" data-fl-action="open-chat"
       role="button" tabindex="0" aria-label="Open chat: ${esc(f.name || 'unnamed')}"
-      onclick="floorOpenFigure('${esc(pid)}','${esc(f.claude_session_id)}','${esc(f.session_id)}')"
+      onclick="floorOpenFigure('${window.jsAttr(pid)}','${esc(f.claude_session_id)}','${window.jsAttr(f.session_id)}')"
       title="${esc(f.task || '')}">
     ${_floorAvatar(f)}
     <div class="fl-fig-body">
       <div class="fl-fig-top">${_floorDot(visualState)}<span class="${nameCls}"
           title="${esc(nameTitle)}"
-          onclick="event.stopPropagation();floorRename('${esc(f.session_id)}','${esc(f.name || '')}')"
+          onclick="event.stopPropagation();floorRename('${window.jsAttr(f.session_id)}','${window.jsAttr(f.name || '')}')"
         >${esc(f.name || 'unnamed')}</span>${type}
         <span class="fl-state">${esc(stateWord)}</span>${helpers}
         <span class="fl-age">${esc(f.age || '')}</span></div>
       <div class="fl-engine">${esc(engine)}</div>
       ${f.limit_resume ? `<div class="fl-allowance">${f.limit_resume.phase === 'submitting' ? 'Reset continuation needs review' : 'Waiting for reset until ' + esc(new Date(f.limit_resume.resume_at).toLocaleString())}
-        <button type="button" onclick="event.stopPropagation();floorCancelLimitResume('${esc(pid)}','${esc(f.session_id)}')">Cancel resume</button></div>` : ''}
+        <button type="button" onclick="event.stopPropagation();floorCancelLimitResume('${window.jsAttr(pid)}','${window.jsAttr(f.session_id)}')">Cancel resume</button></div>` : ''}
       ${f.allowance_exhausted ? `<div class="fl-allowance">${esc(f.allowance_exhausted)}</div>` : ''}
       <div class="fl-act">${esc(_floorLine(f, helperActive))}</div>
       ${testRunFloorHTML(f.test_runs, { secondary: f.state === 'asking' })}
@@ -423,7 +423,7 @@ function _floorBench(bench, rooms, quiet) {
         <span class="fl-bench-top"><span class="fl-who">${esc(b.display)}</span>
           ${b.display === b.name ? '' : `<span class="fl-type">${esc(b.name)}</span>`}
           <button class="fl-edit" title="Edit this persona — face, description, instructions, engine"
-            onclick="event.stopPropagation();floorEditType('${esc(b.scope || 'global')}','${esc(b.name)}','${esc(b.project_id || '')}')"
+            onclick="event.stopPropagation();floorEditType('${esc(b.scope || 'global')}','${esc(b.name)}','${window.jsAttr(b.project_id || '')}')"
             >&#9998;</button></span>
         <span class="fl-bench-desc">${esc(b.description || 'no description — nothing tells an agent when to use this one')}</span>
         ${b.project_name

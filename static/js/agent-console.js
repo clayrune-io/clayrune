@@ -81,7 +81,7 @@ function renderAgentConsole() {
     })();
 
     const stopBtn = (h.status === 'running' || h.status === 'idle')
-      ? `<button class="ac-stop-btn" onclick="event.stopPropagation();stopAgent('${esc(h.projectId)}','${esc(h.sessionId)}')" title="Stop agent">Stop</button>`
+      ? `<button class="ac-stop-btn" onclick="event.stopPropagation();stopAgent('${window.jsAttr(h.projectId)}','${esc(h.sessionId)}')" title="Stop agent">Stop</button>`
       : '';
 
     // Show last tool activity in console header for running sessions
@@ -178,7 +178,7 @@ function memoryTabHTML(p) {
       placeholder="# Project Memory\n\n## Architecture Decisions\n- ...\n\n## Gotchas\n- ..."
     >${esc(cached.content || '')}</textarea>
     <div style="display:flex;align-items:center;gap:8px;margin-top:10px;flex-shrink:0">
-      <button class="btn-save-rules" onclick="saveMemory('${esc(p.id)}')">Save</button>
+      <button class="btn-save-rules" onclick="saveMemory('${window.jsAttr(p.id)}')">Save</button>
       <span class="rules-saved" id="memory-saved-${esc(p.id)}">Saved</span>
     </div>
   </div>`;
@@ -317,8 +317,8 @@ function positionCardHTML(pid, r) {
     <input class="dave-input" data-k="triggers" value="${esc(r.triggers || '')}"
       placeholder="left blank, it fires on words from the subject">
     <div class="dave-actions">
-      <button class="btn-save-rules" onclick="savePosition('${esc(pid)}','${f}')">Save</button>
-      <button class="dave-forget" onclick="forgetPosition('${esc(pid)}','${f}')">Forget</button>
+      <button class="btn-save-rules" onclick="savePosition('${window.jsAttr(pid)}','${f}')">Save</button>
+      <button class="dave-forget" onclick="forgetPosition('${window.jsAttr(pid)}','${f}')">Forget</button>
     </div>
   </div>`;
 }

@@ -72,7 +72,7 @@ function convPreviewHTML(projectId) {
     <div class="conv-preview-head">
       <span class="conv-preview-title">Preview</span>
       <span class="conv-preview-sub" title="${esc(label)}">${esc(label.substring(0, 100)) || '(empty conversation)'}</span>
-      <button class="conv-preview-open" onclick="previewOpenFull('${esc(projectId)}','${esc(csid)}')" title="Open full transcript">Open &#8599;</button>
+      <button class="conv-preview-open" onclick="previewOpenFull('${window.jsAttr(projectId)}','${esc(csid)}')" title="Open full transcript">Open &#8599;</button>
     </div>
     <div class="conv-preview-body" id="conv-preview-body-${esc(projectId)}"
       data-csid="${esc(csid)}"${cached ? ` data-painted="${esc(csid)}"` : ''}>${bodyHTML}</div>
@@ -209,7 +209,7 @@ function sessionPickerHTML(projectId) {
     const meta = [item.ts, item.turns ? `${item.turns} turn${item.turns !== 1 ? 's' : ''}` : '']
       .filter(Boolean).join(' · ');
     return `<div class="session-picker-opt ${isSelected ? 'selected' : ''} ${item.pinned ? 'pinned-conv' : ''}"
-      onclick="selectResumeSession('${esc(projectId)}','${esc(csid)}','${esc(item.provider)}','${esc(item.mcSessionId)}')"
+      onclick="selectResumeSession('${window.jsAttr(projectId)}','${esc(csid)}','${esc(item.provider)}','${esc(item.mcSessionId)}')"
       title="${esc(item.label)}">
       <div class="sp-radio"></div>
       <div class="sp-label">
@@ -224,7 +224,7 @@ function sessionPickerHTML(projectId) {
     <div class="session-picker-label">Resume a prior conversation (label = user's last message)</div>
     <div class="session-picker-options">
       <div class="session-picker-opt ${freshSelected ? 'selected' : ''}"
-        onclick="selectResumeSession('${esc(projectId)}','')">
+        onclick="selectResumeSession('${window.jsAttr(projectId)}','')">
         <div class="sp-radio"></div>
         <div class="sp-label"><div class="sp-task">Fresh session (no prior context)</div></div>
       </div>
