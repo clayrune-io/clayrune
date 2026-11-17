@@ -23,7 +23,8 @@ def test_no_tracked_file_names_it():
     stem = NAME[:-4]
     hits = []
     for rel in _tracked():
-        if rel.startswith('docs/_review/') or rel == 'CHANGELOG.md' or rel.endswith('.png'):
+        if (rel.startswith('docs/_review/') or rel in ('CHANGELOG.md', 'tests/test_mc_restart_helper_removed.py')
+                or rel.endswith('.png')):
             continue
         try:
             text = (ROOT / rel).read_text(encoding='utf-8')
