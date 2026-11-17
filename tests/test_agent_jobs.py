@@ -225,3 +225,17 @@ def test_default_shell_runs_a_real_posix_sleep_command(tmp_path):
     assert captured['exit_code'] == 0
     assert captured['timed_out'] is False
     assert 'OK' in captured['tail']
+
+
+def test_tail_reads_only_the_end_of_a_large_log(tmp_path, monkeypatch):
+    # AP12: _tail used to read the whole file to return its last 4 KB.
+    log = tmp_path / 'big.log'
+    log.write_bytes(b'A' * 5_000_000 + b'THE-END')
+    assert aj._tail(log).endswith('THE-END') and len(aj._tail(log)) == aj.TAIL_BYTES
+    monkeypatch.setattr(Path, 'read_bytes', lambda self: (_ for _ in ()).throw(
+        AssertionError('whole-file read')))
+    assert aj._tail(log).endswith('THE-END')
+    small = tmp_path / 'small.log'
+    small.write_bytes(b'abc')
+    assert aj._tail(small) == 'abc'
+    assert aj._tail(tmp_path / 'missing.log') == ''

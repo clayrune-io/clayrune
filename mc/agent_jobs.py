@@ -48,10 +48,14 @@ class ShellResolutionError(ValueError):
 
 def _tail(path: Path, n: int = TAIL_BYTES) -> str:
     try:
-        data = path.read_bytes()
+        # Seek to the end: a full test-suite log is megabytes (AP12).
+        with open(path, 'rb') as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - n))
+            data = fh.read()
     except OSError:
         return ''
-    return data[-n:].decode('utf-8', errors='replace')
+    return data.decode('utf-8', errors='replace')
 
 
 def _is_wsl_launcher(path: str, name: str) -> bool:
