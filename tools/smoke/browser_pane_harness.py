@@ -105,7 +105,10 @@ def _session_state(sid):
             'mobile': s.get('mobile'), 'ua': (s.get('ua_override') or {}).get('userAgent'),
             'window_chrome': {str(k): v for k, v in (s.get('window_chrome') or {}).items()},
             'error': s.get('error'), 'dpr': s.get('dpr'),
-            'frame_seq': s.get('frame_seq', 0), 'frame_b64_len': len(s.get('frame') or '')}
+            'frame_seq': s.get('frame_seq', 0), 'frame_b64_len': len(s.get('frame') or ''),
+            # browser_frame_guard's episode: `since` is set while the frame and the
+            # override disagree (a mobile launch can sit there ~1-2.5s before it heals).
+            'frame_guard_since': (s.get('frame_guard') or {}).get('since')}
 
 
 @app.route('/_harness/registered')

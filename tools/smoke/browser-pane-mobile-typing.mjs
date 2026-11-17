@@ -675,12 +675,29 @@ async function testRealBackendTapOnZoomedOutPage() {
       return img && img.complete && img.naturalWidth > 0 && window._bpStats?.frames > 0;
     });
     // Wait for the zoomed-out premise: frames report a pageScaleFactor < 1.
-    let st = null;
-    for (let i = 0; i < 100; i++) {
+    // A mobile launch settles in steps (measured on this box: server frame 500x807 -> 412x807 and the
+    // decoded picture 428x691 -> 412x807, 1-2.5s after launch, flapping in between until
+    // browser_frame_guard re-asserts the override). The server's newest frame is only the tap's
+    // coordinate space once that episode has ended AND the phone has decoded a picture of exactly that
+    // size, and it stays so for longer than the guard's own GRACE_S + RETRY_S (1.0 + 1.5s): the frame
+    // flaps between the two sizes and a guard episode ends the moment a correct frame lands.
+    const QUIET_POLLS = 20;   // x150ms = 3s
+    let st = null, settled = false, okRun = 0;
+    for (let i = 0; i < 200; i++) {
       st = await getJson('/_harness/session/' + sid);
-      if (st.page_scale && st.page_scale < 0.6 && st.frame && st.frame[0]) break;
+      if (st.page_scale && st.page_scale < 0.6 && st.frame && st.frame[0]) {
+        const here = !st.frame_guard_since && st.view && Math.abs(st.frame[0] - st.view[0]) <= 2 && Math.abs(st.frame[1] - st.view[1]) <= 2
+          && await page.evaluate(([fw, fh]) => {
+            const img = document.querySelector('#mc-browser-pane [data-bp="screen"]');
+            return !!img && img.complete && img.naturalWidth === fw && img.naturalHeight === fh;
+          }, st.frame);
+        okRun = here ? okRun + 1 : 0;
+        settled = okRun >= QUIET_POLLS;
+        if (settled) break;
+      }
       await page.waitForTimeout(150);
     }
+    if (!settled && st && st.page_scale && st.page_scale < 0.6) { fail(`real-backend: the pane never decoded a picture of the server's frame size ${st.frame} within 30s`); return; }
     if (!(st && st.page_scale && st.page_scale < 0.6)) { fail(`real-backend: premise lost, the no-meta page is not drawn zoomed out (page_scale=${st && st.page_scale}); the test no longer proves anything`); return; }
     ok(`real-backend: the no-viewport-meta page is drawn zoomed out (pageScaleFactor ${st.page_scale.toFixed(3)})`);
     // The server's newest frame/scale can precede the phone's decoded frame:
