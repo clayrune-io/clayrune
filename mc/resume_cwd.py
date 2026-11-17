@@ -34,6 +34,8 @@ def recorded_cwd(transcript: str | Path) -> str | None:
     """
     with Path(transcript).open(encoding='utf-8', errors='replace') as stream:
         for line in stream:
+            if '"cwd"' not in line:
+                continue  # cannot hold a cwd; skip the decode
             try:
                 row = json.loads(line)
             except ValueError:
