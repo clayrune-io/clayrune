@@ -4,7 +4,7 @@ import { readFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 import { chromium } from 'playwright';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 import { loadFixtures, workspaceFromFixtures, seedDeskV1Fixtures } from './desk-v1-fixture-api.mjs';
 
 const root = fileURLToPath(new URL('../..', import.meta.url));
@@ -63,6 +63,7 @@ try {
       return route.abort();
     });
     await page.goto(origin);
+    await deskLoaded(page);
     await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
     await page.evaluate(() => window.sidebarNav('social'));
     await page.waitForSelector('.desk-v1-shell');
@@ -247,6 +248,7 @@ try {
     });
     await seedDeskV1Fixtures(demo);
     await demo.goto(origin);
+    await deskLoaded(demo);
     await demo.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
     await demo.evaluate(() => { window.sidebarNav('social'); window.deskV1Nav('studio-create', { kind: 'video' }); });
     await demo.waitForSelector('[data-sc-body] [data-storyboard]');

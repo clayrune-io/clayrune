@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -57,6 +57,7 @@ await page.route('**/*', async (route) => {
   return route.abort();
 });
 await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+await deskLoaded(page);
 await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
 await page.waitForFunction(() => !!window.DeskV1ConnectSignin && typeof window.humanProofFetch === 'function', null, { timeout: 8000 });
 

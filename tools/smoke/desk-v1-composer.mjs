@@ -75,6 +75,7 @@ async function boot(browser, width, live = true) {
     return route.abort();
   });
   await page.goto('http://mc.smoke.test/', { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
   await deskLoaded(page);
   await page.evaluate(() => window.sidebarNav('social'));
@@ -174,6 +175,7 @@ try {
     await page.waitForSelector('[data-composer]');
     assert.equal(await page.inputValue('[data-composer-text]'), fam.body, 'post card opens saved copy');
     await page.reload();
+    await deskLoaded(page);
     await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
     await page.evaluate(() => window.sidebarNav('social'));
     await page.waitForFunction(() => window.DeskV1Store.state().campaigns.length);

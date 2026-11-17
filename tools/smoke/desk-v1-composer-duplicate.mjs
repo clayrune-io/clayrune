@@ -5,6 +5,7 @@ import { mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { deskLoaded } from './_static.mjs';
 import { installDemoFixtures } from './desk-v1-fixture-api.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -24,6 +25,7 @@ fixture.stderr.on('data', (data) => { stderr += data; });
 const state = async (page) => (await page.request.get(origin + '/__state')).json();
 async function boot(page, campaignId = 'source') {
   await page.goto(origin);
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForSelector('.desk-v1-shell');
@@ -145,7 +147,7 @@ try {
   });
   let demoWrites = 0;
   page.on('request', (r) => { if (r.method() !== 'GET' && new URL(r.url()).pathname.startsWith('/api/desk/')) demoWrites++; });
-  await page.goto(origin); await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
+  await page.goto(origin); await deskLoaded(page); await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
   await page.evaluate(() => window.sidebarNav('social')); await page.waitForSelector('.desk-v1-shell');
   await what(page, await page.evaluate(() => window.DeskV1Fixtures.campaigns[0].id));
   await menu(page, 'demo-original'); await page.click('[data-menu-dup]');

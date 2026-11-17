@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { deskLoaded } from './_static.mjs';
 import { installDemoFixtures } from './desk-v1-fixture-api.mjs';
 const root = fileURLToPath(new URL('../..', import.meta.url));
 const shots = resolve(root, '_scratch/composer_c2');
@@ -29,6 +30,7 @@ async function boot(page, demo = false) {
     await page.route('**/api/config', r => r.fulfill({ json: { desk_v1: true, desk_v1_live: false } }));
   }
   await page.goto(origin);
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForSelector('.desk-v1-home');
@@ -144,7 +146,7 @@ try {
     assert.equal(await count(page), 5, 'invalid file is not attached');
     assert.match(await page.locator('[data-composer-media-status]').innerText(), /Choose a PNG/);
     // Reload through the actual workspace; no blob URLs or fixture-only media.
-    await page.reload(); await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
+    await page.reload(); await deskLoaded(page); await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
     await page.evaluate(() => window.sidebarNav('social')); await page.waitForSelector('.desk-v1-home');
     await page.evaluate(pid => window.deskV1Nav('composer', { campaignId: 'camp-test', familyId: pid }), pieceId);
     await page.waitForSelector('[data-composer-media-assets] [data-pmed-open]');

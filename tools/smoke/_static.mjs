@@ -27,11 +27,17 @@ function walk(dir, urlPrefix, ext, out) {
 
 // The Desk is not in index.html any more: static/js/desk-load.js imports it in the
 // background after boot (MC-1205). The smokes were written for a page whose Desk
-// was loaded before DOMContentLoaded (they `goto`, then read `window.DeskV1*`), so
-// by default the loader they are served ends with a top-level await on the same
-// single load; a module script holds DOMContentLoaded until that settles. The two
-// smokes that test the real loading (desk-v1-lazy-load) passes
-// `{ lazyDesk: true }` and get the file as shipped.
+// was loaded before DOMContentLoaded, and that is no longer true of any page.
+// By default the loader they are served ends with a top-level await on the same
+// single load, which only makes the load START at once (as shipped it waits for
+// the dashboard's boot, then an idle moment). It does NOT hold DOMContentLoaded:
+// a module's top-level await never does (measured: `page.goto(..., {waitUntil:
+// 'domcontentloaded'})` returns while the awaiting module is still pending). So
+// every smoke that touches the Desk must `await deskLoaded(page)` after each
+// goto and reload, before it reads a window.DeskV1* global: the entry imports
+// its modules one after another, and one global being present says nothing about
+// the rest. desk-v1-lazy-load passes `{ lazyDesk: true }` and gets the file as
+// shipped, because it tests the loading itself.
 export function loadStaticJsCss(repoRoot, { isolateConnectScreens = false, lazyDesk = false } = {}) {
   const out = {};
   walk(resolve(repoRoot, 'static', 'js'), '/static/js', '.js', out);
@@ -52,9 +58,17 @@ export function loadStaticJsCss(repoRoot, { isolateConnectScreens = false, lazyD
   return out;
 }
 
-// A smoke that opens the Desk right after the dashboard's first card appears must
-// wait for the background Desk load first (a top-level await does not hold
-// DOMContentLoaded). The smokes that test the loading itself do not call this.
+// Resolves once the whole Desk has loaded (DeskLoad.isLoaded(): the entry has
+// imported every script and stylesheet). Call it after EVERY page.goto and
+// page.reload of the dashboard, before reading any window.DeskV1* global or
+// opening the Desk: navigation resolves at DOMContentLoaded, which the background
+// load does not hold. The smokes that test the loading itself do not call this.
 export function deskLoaded(page) {
-  return page.waitForFunction(() => !!(window.DeskLoad && window.DeskLoad.isLoaded()), null, { timeout: 30000 });
+  // On a page served as shipped the load only starts after boot and an idle
+  // moment (up to 4 s); starting it here costs nothing and makes the wait short.
+  return page.waitForFunction(() => {
+    if (!window.DeskLoad) return false;
+    if (!window.__deskLoadKicked) { window.__deskLoadKicked = true; window.DeskLoad.ready().catch(() => {}); }
+    return window.DeskLoad.isLoaded();
+  }, null, { timeout: 30000 });
 }

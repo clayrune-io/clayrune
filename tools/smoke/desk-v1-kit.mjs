@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { seedDeskV1Fixtures, FIXTURES_SOURCE } from './desk-v1-fixture-api.mjs';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -86,6 +86,7 @@ async function runToneRenderChecks(browser, tone) {
 
   await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
 
   const result = await page.evaluate(() => {
@@ -160,6 +161,7 @@ async function runInteractionChecks(browser) {
 
   await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
 
   // ── copy lint (A12) ────────────────────────────────────────────────────
@@ -389,6 +391,7 @@ async function runTaskLifecycleChecks(browser) {
 
   await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
   await page.clock.install();
 
@@ -538,6 +541,7 @@ async function runShellBootedPage(browser) {
 
   await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
@@ -580,6 +584,7 @@ async function runR21PlanBoundsChecks(browser) {
 
   await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
 
   const result = await page.evaluate(() => {
@@ -729,6 +734,7 @@ async function runR21FixtureProductionKeyCheck(browser) {
 
   await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
 
   // The file the page loads, read straight off disk.
@@ -752,6 +758,7 @@ async function runR214RetroVerdictChecks(browser) {
 
   await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
 
   const result = await page.evaluate(() => {

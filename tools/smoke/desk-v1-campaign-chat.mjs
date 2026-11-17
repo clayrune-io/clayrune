@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { loadFixtures, workspaceFromFixtures, installDemoFixtures } from './desk-v1-fixture-api.mjs';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -116,6 +116,7 @@ async function newPage(browser, { live = true, srv, viewport = { width: 1400, he
     return route.abort();
   });
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
@@ -395,6 +396,7 @@ async function chrome(browser) {
     ? ok(`A+ twice scales the thread ${t0}->${t1}px, the box ${a0}->${a1}px and the status line ${s0}->${s1}px (130%)`) : fail('scale: ' + JSON.stringify({ t0, t1, a0, a1, s0, s1 }));
   await page.waitForTimeout(300);
   await page.reload({ waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForSelector('.modal-window[data-modal-id="__desk"] .desk-v1-shell', { timeout: 8000 });
@@ -484,6 +486,7 @@ async function productMaterials(browser) {
     await settle(page, () => document.querySelector('[data-product-reads]').textContent.startsWith('Reads: README.md. Can search'));
     srv.research = { web: false, project_read: false, toolless: true, label: 'Toolless: qwen has no certified Desk read-only tool boundary' };
     await page.reload({ waitUntil: 'domcontentloaded' });
+    await deskLoaded(page);
     await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
     await page.evaluate(() => window.sidebarNav('social'));
     await settle(page, () => !!window.DeskV1Store.state().campaigns.length);
@@ -529,6 +532,7 @@ async function dispatchCards(browser) {
     const overflow = await page.$eval('[data-camp-chat]', (e) => e.scrollWidth > e.clientWidth + 1);
     !overflow ? ok(`${width}: dispatch cards fit the chat column`) : fail(`${width}: dispatch card overflow`);
     await page.reload({ waitUntil: 'domcontentloaded' });
+    await deskLoaded(page);
     await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
     await page.evaluate(() => window.sidebarNav('social'));
     await settle(page, () => window.DeskV1Store.state().campaigns.length > 0);

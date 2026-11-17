@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { loadFixtures, workspaceFromFixtures, installDemoFixtures } from './desk-v1-fixture-api.mjs';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const index = readFileSync(resolve(root, 'static/index.html'), 'utf8');
@@ -69,6 +69,7 @@ async function boot(browser, { live = true, width = 1440 } = {}) {
     });
   }
   await page.goto(origin + '/', { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
   await open();
   return { ctx, page, srv, errors, open };
@@ -106,6 +107,7 @@ try {
   assert.deepEqual(srv.patches, [{ body: text }]);
   assert.equal(srv.fx.families.find((f) => f.id === pieceId).body, text.trim());
   await page.reload({ waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
   await open();
   assert.equal(await page.locator(editor).inputValue(), text.trim());
@@ -126,6 +128,7 @@ try {
   await page.locator('[data-piece-copy-save]').click();
   await saved(page);
   await page.reload({ waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
   await open();
   assert.equal(await page.locator(editor).inputValue(), 'Imported .txt\nSecond line');

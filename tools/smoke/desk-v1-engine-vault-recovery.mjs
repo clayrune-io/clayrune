@@ -5,7 +5,7 @@ import { readFileSync, mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 import { loadFixtures } from './desk-v1-fixture-api.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -62,6 +62,7 @@ try {
       return route.abort();
     });
     await page.goto('http://mc.smoke.test/', { waitUntil: 'domcontentloaded' });
+    await deskLoaded(page);
     await page.waitForFunction(() => !!window.DeskV1Engines && !!window.DeskV1VaultGate && !!window.VaultUnlock);
     await page.evaluate(() => {
       const area = document.createElement('div'); area.id = 'recovery-test';

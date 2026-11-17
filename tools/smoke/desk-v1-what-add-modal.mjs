@@ -5,6 +5,7 @@ import { mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { deskLoaded } from './_static.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SHOTS = resolve(ROOT, '_scratch/composer_c1');
@@ -13,6 +14,7 @@ const before = process.argv.includes('--before');
 const state = async (page) => (await page.request.get(origin + '/__state')).json();
 async function boot(page) {
   await page.goto(origin);
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForSelector('.desk-v1-shell');

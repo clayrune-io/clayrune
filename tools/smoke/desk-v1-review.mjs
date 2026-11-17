@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { seedDeskV1Fixtures } from './desk-v1-fixture-api.mjs';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
@@ -95,6 +95,7 @@ async function newBootedPage(browser, tone, viewport) {
 
   await seedDeskV1Fixtures(page);
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   // Phone widths (<=960px) render #projects-col in mc-chat-mode — a WhatsApp-
   // style .mc-chat-row list, never .card (mobile.js renderMobileChatList()).
   // Wait for whichever the current viewport actually produces.

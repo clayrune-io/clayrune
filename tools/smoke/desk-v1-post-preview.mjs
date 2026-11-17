@@ -18,7 +18,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { chromium } from 'playwright';
 import { loadFixtures, workspaceFromFixtures } from './desk-v1-fixture-api.mjs';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const index = readFileSync(resolve(root, 'static/index.html'), 'utf8');
@@ -55,6 +55,7 @@ async function boot(browser, width, touch) {
     return route.abort();
   });
   await page.goto('http://mc.smoke.test/', { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForFunction(() => window.DeskV1Store.state().campaigns.length > 0);

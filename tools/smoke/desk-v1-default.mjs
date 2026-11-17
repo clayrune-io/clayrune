@@ -9,6 +9,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { deskLoaded } from './_static.mjs';
 
 const base = new URL(process.env.MC_SMOKE_BASE_URL || 'http://invalid/');
 assert(['127.0.0.1', 'localhost'].includes(base.hostname)
@@ -44,6 +45,7 @@ try {
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));
       await page.goto(base.href, { waitUntil: 'domcontentloaded' });
+      await deskLoaded(page);
       await page.waitForFunction(() => typeof window.openDesk === 'function'
         && typeof _globalConfig !== 'undefined' && _globalConfig.desk_v1 === true);
       const workspace = page.waitForResponse(r => new URL(r.url()).pathname === '/api/desk/workspace');

@@ -11,6 +11,7 @@ import { mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { deskLoaded } from './_static.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const SHOTS = resolve(ROOT, '_scratch/mc1152-p4');
@@ -22,6 +23,7 @@ const cfg = (q) => fetch(`${origin}/__cfg?${q}`).then((r) => r.json());
 
 async function goal(page) {
   await page.goto(origin, { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForSelector('#projects-col .card, #projects-col .mc-chat-row');
   await page.evaluate(() => window.sidebarNav('social'));
   await page.waitForSelector('.desk-v1-shell');

@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
-import { loadStaticJsCss } from './_static.mjs';
+import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 import { loadFixtures, workspaceFromFixtures, installDemoFixtures } from './desk-v1-fixture-api.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -54,6 +54,7 @@ async function setup(states, kind = 'post', isLive = true) {
   family = { id: 'dv10', campaignId: camp.id, kind, title: 'DV10 family',
     versions: states.map((state, i) => ({ id: 'v' + i, channelId: fx.channels[i % fx.channels.length].id, state, revision: 0 })) };
   await page.goto(origin, { waitUntil: 'domcontentloaded' });
+  await deskLoaded(page);
   await page.waitForFunction(() => window.deskV1CampaignWhatBridge && window.DeskV1Store && window.DeskV1Kit);
   await page.evaluate(async ({ family, camp, live }) => {
     if (live) await window.DeskV1Store.load();
@@ -86,7 +87,7 @@ try {
   assert.equal(await page.evaluate(() => window.DeskV1Kit.commandBus.history.length), 0);
   await page.waitForFunction(() => window.dv10toasts.some(t => t.includes('Undo')));
   pass('approved/scheduled disposal has no fake Undo or route to restore publishing');
-  await page.reload(); await page.waitForFunction(() => window.DeskV1Store); await page.evaluate(() => window.DeskV1Store.load());
+  await page.reload(); await deskLoaded(page); await page.waitForFunction(() => window.DeskV1Store); await page.evaluate(() => window.DeskV1Store.load());
   assert.deepEqual(await page.evaluate(() => window.DeskV1Store.state().families[0].versions.map(v => v.state)), ['skipped', 'skipped']);
   pass('Skip survives workspace reload');
 
