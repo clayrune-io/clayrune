@@ -163,4 +163,131 @@ last. If you are resuming after a rollover: read "Progress log" first.
 - Sound: holders carry pid + create_time so a recycled pid cannot read as
   alive (`:141-143`); every public function catches its own errors.
 
+### N7. `mc/background_tasks.py` (254 lines, read fully)
+
+- Sound. Pure functions over session keys; the CLI's own list is authoritative
+  (`:118-137`), timeout-moved shell calls are told apart by the tool_use input
+  (`:89-94`). No finding. (`drain` `:209-218` leaves `INTERIM_KEY`,
+  `LAST_END_AUTO_KEY` and `TOOL_USES_KEY` set; whether a stale `INTERIM_KEY`
+  matters is decided in `agent_routes.py`, pass 2's file. Not followed.)
+
+### N8. `mc/agent_jobs.py` (321 lines, read fully), route `agent_routes.py:1956-2060`
+
+- **AP11 (E/L, low) `agent_jobs.py:41`, `:251-252`, `:283-289`** — `_jobs`
+  is never pruned. Every job ever started keeps its record AND its live
+  `Popen` object (`'proc'`, `:245`) for the life of the server; on Windows
+  that is one open process handle per finished job. `open_job_count`,
+  `describe_open_jobs` and `list_open_jobs` (`:146-179`) scan all of them
+  under the lock. Fix: drop `proc` when the watcher finishes and prune
+  finished jobs older than a day.
+- **AP12 (E, low) `agent_jobs.py:49-54`** — `_tail` reads the whole log file
+  to return the last 4 KB. A full test-suite log is megabytes. Fix: seek.
+- **AP13 (L, low) `agent_routes.py:2032-2040` + `agent_jobs.py:259-262`** —
+  `"timeout_minutes": "nan"` passes the route's `<= 0` check, survives
+  `min(nan, cap)` (measured in Python: `min(float('nan'), 120.0)` is `nan`),
+  and in the watcher `max(0.0, nan*60)` is `0.0`, which `:262` turns into "no
+  timeout". An agent-supplied NaN removes the cap. Fix: `math.isfinite`.
+  (The route line is pass 2's file; the consequence is here.)
+- **AP14 (L, low) `agent_jobs.py:99`** — a non-string `shell` (a number, a
+  list) raises `AttributeError` on `.strip()`, which the route does not catch
+  (`agent_routes.py:2050` catches `ShellResolutionError` only): 500.
+- Known and documented, not a new finding: jobs live only in memory
+  (`:170-172`); the restart endpoints block on open jobs
+  (`system_routes.py:1728-1745`), a crash or forced restart loses the wake.
+- Sound: argv invocation with `pipefail` (`:136`), WSL launcher rejected
+  (`:106-109`), stdin is DEVNULL, tree kill is supplied by the caller, the
+  capture hooks cannot change a job (`test_run_capture.py:197-216`).
+
+### N9. `mc/agent_shim.py` (936 lines, read fully)
+
+The whole shim family (N9 to N12, about 3,100 lines) is behind
+`agent_survive_restart_enabled`, default False (`agent_shim_client.py:45`) and
+absent from this install's config (checked, read-only). Every finding in
+N9 to N12 is therefore LATENT here.
+
+- **AP15 (L, low, latent) `agent_shim.py:602-611`, `:777-797`, `:914-917`** —
+  the lifetime loop can block for ever. `_do_send` holds `_send_lock` across
+  `cli.stdin.write` (`:796`); if the CLI is hung and the payload exceeds the
+  pipe buffer the write never returns. Once the owner is gone the loop reaches
+  `A_CLOSE_STDIN` (a hung CLI is idle and silent, so the idle test passes),
+  calls `_close_stdin()` on the main thread (`:917`), and that waits on
+  `_send_lock` (`:603`). The loop never ticks again, so `orphan_max` (`:458`)
+  never kills the hung CLI: shim and CLI live until the machine reboots. This
+  is the 2026-09-23 stdin deadlock (`agent_routes.py:15302-15310`) moved into
+  the shim, without the watchdog that fixed it there. Fix: `acquire(timeout=)`
+  in `_close_stdin`, or run the close off the main loop. Read, not measured
+  (the interactive path needs a listening socket, which this pass may not open).
+- **AP16 (L, medium, latent) `agent_shim.py:920`** — the final
+  `_write_manifest()` is unconditional. `write_spec` (`agent_shim_client.py:
+  214-218`) deletes `shim.json` for a relaunch in the SAME directory, and the
+  new shim writes its own; an older shim for that directory that is still
+  draining (waiting for its owner connection to close, up to `exit_grace_s`,
+  60 minutes by default) then writes its OLD manifest over the new one when it
+  finishes. In-memory the new run is safe (`ShimProc` keeps the manifest it
+  was given, `agent_shim_client.py:608-611`), but everything that re-reads
+  the directory is now looking at dead pids: `ShimClient.connect` on a
+  reconnect (`:317-319` -> "shim not alive") and adoption after a restart
+  (`inspect`, `:253-265`). The live CLI is then invisible to the next server.
+  Fix: before the final write, re-read `spec.json` and skip if its
+  `launch_id` is no longer this shim's. Read, not measured.
+- **AP17 (L, low, latent) `agent_shim.py:455-459`, `:874-876`, `:894`** — a
+  oneshot shim has no socket, so after a server restart nothing can ever
+  re-attach: its only owner is `spec.owner_pid`, the dead server. It stays
+  "orphaned" from the restart on and is tree-killed at `orphan_max` (12 h)
+  whether or not the new server adopted it and is reading its log. Only a
+  turn that runs 12 hours past a restart is hit.
+- **AP18 (M, low, latent) `agent_shim.py:389-407`** — one tmp name per process
+  per target (`.shim.json.tmp<pid>`), written from the serve threads
+  (`_claim_owner` -> `:662`) and the main thread with no lock around the
+  write. Same pattern as pass 1 **C1**; two owner claims at once can tear or
+  lose the manifest. The manifest dict is built under `_lock`, the file write
+  is not.
+- **AP19 (M, low) `agent_shim.py:877-884`** — `run()` catches `OSError` from
+  `_spawn_cli`, but `spec['argv']` missing or not a list raises
+  `KeyError`/`TypeError` there (`:562`) and the shim dies with a traceback to
+  DEVNULL and no `exit.json`; the server waits out the 20 s ready timeout and
+  then cannot tell "slow" from "dead" (`agent_shim_client.py:797-800`).
+- Sound: identity is (pid, create time) from one reader with per-platform
+  tolerance (`:159-188`); kill-if-ours holds the handle / pidfd across the
+  kill (`:273-368`); no remote kill command; token compared in constant time
+  (`:708`); sequence numbers re-checked under the write lock (`:777-814`).
+
+### N10. `mc/agent_shim_client.py` (816 lines, read fully)
+
+- **AP20 (E, medium, latent) `agent_shim_client.py:639-656` with
+  `agent_shim.py:130-141`** — on macOS `proc_create_time` is a `ps`
+  subprocess. `ShimProc.poll()` calls `process_state(self.pid, ...)` whenever
+  there is no `exit.json` (`:652`), and `LogTail.__next__` calls
+  `self._finished()` -> `poll()` on every idle poll, every 50 ms (`:525`,
+  `:537`). That is about 20 `ps` launches per second per running agent for
+  the whole of every quiet stretch of a turn. Read, not measured (no macOS
+  host; the design doc itself says this reader is unmeasured on a Mac).
+  Fix: sample liveness at most once a second in `poll()`; `exit.json` is the
+  fast path and needs no process probe.
+- **AP21 (L, low, latent) `agent_shim_client.py:381-405`** — `send` is not
+  idempotent after a TIMEOUT, only after a dropped connection. If the second
+  attempt times out (`:386-388`) the method raises but leaves `self._sock`
+  connected and `self._seq` un-advanced. If the shim's blocked write later
+  completes it sends `ACK seq` into that socket. The next `send` reuses the
+  same `seq` for a NEW payload, reads the stale `ACK`, and reports success;
+  the shim sees `seq <= last_seq` and drops the new payload as a duplicate
+  (`agent_shim.py:786-788`). Not reachable from the server today: a failed
+  write marks the session errored and the proc is replaced
+  (`agent_routes.py:15354-15363`). Fix: `self._drop()` before raising at `:388`.
+- **AP22 (E, low, latent) `agent_shim_client.py:473-492`, `:539-543`** —
+  `LogTail._cut` walks the buffer byte by byte in Python and re-slices the
+  remainder per line; a partial line is re-scanned from byte 0 after every
+  read. Measured: 2.5 MB/s on 100-byte lines, 0.78 s for one 8 MB line
+  (0.07 s for 2 MB, so quadratic). `_read_more` re-opens the file every poll.
+  Fix: `buf.find(b'\n', scan_from)` and keep the handle open.
+- **AP23 (L, low, latent) `agent_shim_client.py:668-671`** — `ShimProc.kill`
+  checks identity, then calls the unchecked `kill_tree`. The module's own
+  `kill_tree_if_ours` (`agent_shim.py:371`) exists to close that window. And
+  when the manifest has no `cli_ct` (the shim could not read it,
+  `agent_shim.py:576`), `_cli_alive()` is always False and `kill()` silently
+  does nothing: Stop has no effect on that run.
+- Sound: spawn refuses rather than work around a job that forbids breakaway
+  (`:144-149`); `launch` never reports "nothing running" unless it verified it
+  (`:784-800`, `cli_running`); spec carries env NAMES only (`:201`).
+
 <!-- APPEND-HERE -->
