@@ -252,24 +252,48 @@ def _empty_store() -> dict:
     return {'version': STORE_VERSION, 'suggestions': {}, 'decisions': {}}
 
 
-def _read_store() -> dict:
+class StoreUnreadable(Exception):
+    """The suggestion store exists but cannot be parsed. Writers must not
+    treat this as an empty store: they would write back an object holding only
+    their own change and erase every latched decision (MC-1179 OS41)."""
+
+
+def _read_store(strict: bool = False) -> dict:
+    """Reads fall back to an empty store on damage; WRITERS pass strict=True
+    and get StoreUnreadable instead, so a damaged file is never overwritten
+    with a store that has forgotten the human's "no"s."""
     if STORE_PATH is None or not STORE_PATH.exists():
         return _empty_store()
     try:
         data = json.loads(STORE_PATH.read_text(encoding='utf-8'))
     except Exception as e:
-        # A corrupt store must never re-open a latched "no". Report and treat as
-        # empty for READS; the write path below only ever merges, so a later
-        # write cannot silently erase decisions it could not parse.
         _log(f'[automation] suggestion store unreadable, treating as empty: {e}')
+        if strict:
+            raise StoreUnreadable(str(e)) from e
         return _empty_store()
     if not isinstance(data, dict):
         _log('[automation] suggestion store is not an object, treating as empty')
+        if strict:
+            raise StoreUnreadable('not an object')
         return _empty_store()
     data.setdefault('version', STORE_VERSION)
     data.setdefault('suggestions', {})
     data.setdefault('decisions', {})
     return data
+
+
+def _set_aside_unreadable_store() -> None:
+    """Keep the damaged bytes (decisions in them may be recoverable by hand)
+    before a human's explicit decision starts a fresh store."""
+    if STORE_PATH is None or not STORE_PATH.exists():
+        return
+    aside = STORE_PATH.with_name(STORE_PATH.name + '.corrupt-' + now_iso().replace(':', '-'))
+    try:
+        STORE_PATH.replace(aside)
+        _log(f'[automation] unreadable suggestion store kept as {aside.name}')
+    except OSError as e:
+        _log(f'[automation] could not set the unreadable suggestion store aside: {e}')
+        raise StoreUnreadable(str(e)) from e
 
 
 def _write_store(store: dict) -> None:
@@ -298,7 +322,13 @@ def record_decision(fp: str, decision: str, source: str = 'ui',
                            'source': source}
     rec.update(extra)
     with _store_lock:
-        store = _read_store()
+        try:
+            store = _read_store(strict=True)
+        except StoreUnreadable:
+            # A human's explicit answer is always recorded; the damaged file is
+            # kept aside rather than overwritten in place.
+            _set_aside_unreadable_store()
+            store = _read_store()
         store.setdefault('decisions', {})[fp] = rec
         # Decided suggestions leave the pending pool. The decision record stays.
         (store.get('suggestions') or {}).pop(fp, None)
@@ -317,7 +347,10 @@ def refresh_project(project_id: str, entries: Iterable[dict],
     candidates = mine_recurring_manual_tasks(project_id, entries, scheduled_tasks)
     added = 0
     with _store_lock:
-        store = _read_store()
+        try:
+            store = _read_store(strict=True)
+        except StoreUnreadable:
+            return 0  # regenerable; never overwrite a store we could not parse
         sugg = store.setdefault('suggestions', {})
         decisions = store.setdefault('decisions', {})
         for c in candidates:
@@ -341,7 +374,10 @@ def prune_project(project_id: str, live_ids: Iterable[str]) -> int:
     """
     keep = set(live_ids)
     with _store_lock:
-        store = _read_store()
+        try:
+            store = _read_store(strict=True)
+        except StoreUnreadable:
+            return 0
         sugg = store.setdefault('suggestions', {})
         stale = [k for k, v in sugg.items()
                  if v.get('project_id') == project_id and k not in keep]
