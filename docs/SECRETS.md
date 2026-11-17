@@ -429,7 +429,7 @@ Replacement-path audit:
 | Frozen macOS `/api/system/update` | `_spawn_swap` passes the pipe to the bounded swap helper; its first launch runs the verified bundle executable directly, because LaunchServices `open` drops inherited descriptors |
 | Swap rollback after the new app was launched | Cold reopen, locked; pipe metadata is one-use |
 | `app.py` desktop/frozen and `server.py` | Both capture early and consume through shared boot |
-| Autostart, installer, terminal launch, external crash/full-restart helper (`tools/_mc_restart.ps1`) | Cold start, no server-created pipe, locked |
+| Autostart, installer, terminal launch | Cold start, no server-created pipe, locked |
 
 No Tauri server launcher remains in the current tracked tree; historical Tauri
 notes describe an older launcher. No external launcher, scheduled task, crash

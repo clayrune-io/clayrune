@@ -54,7 +54,7 @@ $TaskName = 'ClayruneAutostart'
 $WindowTaskName = 'ClayruneAutostartWindow'
 
 # Derive the install dir from this script's own location (tools/ -> repo root)
-# rather than hardcoding one machine's path — same rule as tools/_mc_restart.ps1.
+# rather than hardcoding one machine's path.
 # MC_DIR overrides it for a non-standard layout.
 $dir = if ($env:MC_DIR) { $env:MC_DIR }
        else { Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path) }

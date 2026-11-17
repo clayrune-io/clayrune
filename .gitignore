@@ -384,10 +384,8 @@ data/secrets*
 /_scratch/
 
 # Loose scratch under tools/ — the `_`-prefix (and repro-) = scratch convention.
-# tools/_mc_restart.ps1 is a real tracked helper, so keep it.
 tools/_*
 tools/repro-*
-!tools/_mc_restart.ps1
 
 # Demo bundle (demo-export/) dev-only output — verify/capture screenshots
 # (_shot-*.png, _cap-*.png) and one-off scratch .mjs; the committed _verify.mjs
