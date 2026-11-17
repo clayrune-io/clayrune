@@ -876,7 +876,7 @@ ROWS = (
      'agent-facing endpoint: data/agent_reference/CLAYRUNE_API.md:171',
      ''),
     ('POST', '/api/project/<project_id>/agent/send', 'open',
-     'agent-facing endpoint: data/agent_reference/CLAYRUNE_API.md:166',
+     'agent-facing endpoint: data/agent_reference/CLAYRUNE_API.md:166; a child it starts is stamped from caller attribution rather than refused (caller_attribution.resolve_send)',
      ''),
     ('DELETE', '/api/project/<project_id>/agent/session', 'open',
      "agent-facing endpoint: data/agent_reference/CLAYRUNE_API.md:172 ('Reset the live session')",

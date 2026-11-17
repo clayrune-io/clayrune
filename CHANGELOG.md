@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - /agent/send attributes its caller when it starts a child (MC-1179 R48)
+
+- `POST /agent/send` reached `_dispatch_agent_internal` on its fresh-dispatch and native-resume (codex) paths with no `trigger_type` or `source`, so the dispatcher's `manual` default applied. A managed agent that POSTed `/agent/send` with no live `session_id` got a child the fence, the secrets vault and the config gate all read as attended. Only `/agent/dispatch` attributed its caller.
+- Both paths now call `caller_attribution.resolve_send` (a thin wrapper over `resolve_dispatch` with the hints `/agent/send` always launched with, `manual` and no source). A caller under a managed session, or one that cannot be attributed and sent no `Origin`, gets `dispatch`/`agent`. The chat composer (an `Origin`, not a session descendant) is unchanged. It only tightens.
+- Not changed: the `character` the route does not forward, and the revive paths (`_revive_from_agent_log`, `_revive_non_claude_from_agent_log`), which take trigger and source from the stored log row.
+- `mc/caller_attribution.py`, `mc/blueprints/agent_routes.py` (two call sites), `data/agent_reference/CLAYRUNE_API.md`. New `tests/test_agent_send_caller_attribution.py` (8 tests; 4 failed on the old code, all pass now).
+
 ## [2026-11-17] - Uploaded HTML and SVG can no longer run script on the app's origin through /api/attachments and /api/serve-image (MC-1179 P56)
 
 - An `.html` attached to a backlog item came back from `/api/attachments/<name>` as `text/html`, `inline`, with no `nosniff` and no CSP, and an `.svg` with a `<script>` came back the same way from `/api/serve-image`. Opened by link, either was a first-party page with a same-origin `fetch()` against every API (over the tunnel, in the signed-in session). `/api/serve-file` already refused this; these two routes did not.
