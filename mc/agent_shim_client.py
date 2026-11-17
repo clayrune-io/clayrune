@@ -385,6 +385,7 @@ class ShimClient:
                     reply = self._readline()
                 except (OSError, ConnectionError):
                     if attempt == 1:
+                        self._drop()    # a late ACK must not answer the next send
                         raise ShimUnavailable('send failed after reconnect')
                     hello = self.connect()              # may raise ShimUnavailable/Refused
                     if hello.last_seq >= seq:

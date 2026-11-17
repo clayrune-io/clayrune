@@ -1496,3 +1496,27 @@ def test_same_pid_reconnect_mid_write_keeps_the_seq(tmp_path):
     assert sh.last_seq == 1
     assert sh._do_send(c2, _StubRF(b'ONE\n'), ['SEND', '1', '4']) is True
     assert stdin.writes == [b'ONE\n'] and c2.replies == ['ACK 1']
+
+
+def test_send_drops_the_socket_when_the_retry_also_times_out(tmp_path):
+    """AP21: a second timeout used to raise with the socket still connected and
+    the sequence number un-advanced, so a late ACK for the old payload was read
+    as the answer to the next send."""
+    class _Dead:
+        def sendall(self, data):
+            raise socket.timeout('timed out')
+
+        def close(self):
+            pass
+
+    client = C.ShimClient(tmp_path)
+    client._sock, client._rf = _Dead(), _Dead()
+
+    def reconnect():
+        client._sock, client._rf = _Dead(), _Dead()
+        return C.Hello(0, 1, True)
+
+    client.connect = reconnect
+    with pytest.raises(C.ShimUnavailable):
+        client.send(b'payload\n')
+    assert client._sock is None and client._rf is None
