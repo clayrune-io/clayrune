@@ -254,3 +254,21 @@ def test_codex_exec_stream_usage_limit_is_detected():
         assert got and got['limit_kind'] == 'usage_limit'
         assert got['resets_at_display'].startswith('Sep 24th, 2026')
     assert a.detect_from_codex_message({"type": "error", "message": "stream disconnected"}) is None
+
+
+# MC-1179 OS23: "429" inside a number is not a rate limit.
+@pytest.mark.parametrize('provider,msg', [
+    ('gemini', {'type': 'result', 'status': 'error',
+                'error': {'message': 'Tool failed: read 1429 bytes then EOF'}}),
+    ('qwen', {'type': 'result', 'is_error': True,
+              'result': 'wrote file 4290 lines'}),
+])
+def test_a_429_inside_a_number_is_not_exhaustion(provider, msg):
+    assert al.detect(provider, msg) is None
+
+
+@pytest.mark.parametrize('text', ['HTTP 429 Too Many Requests', 'error 429: slow down',
+                                  'status=429', 'quota exceeded'])
+def test_real_rate_limit_text_still_detected(text):
+    assert al.detect('gemini', {'type': 'result', 'status': 'error',
+                                'error': {'message': text}}) is not None
