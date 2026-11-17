@@ -848,10 +848,10 @@ one unresolved link (4,280 vault directories exist on the reviewed install;
 agent worktrees each get one). `memory_gate_tap.begin` runs this for every
 automated mint, and `write_topic_note` calls it inside
 `_get_mem_write_lock(f'topic:{project_id}')` (`mc/memory.py:2320`,
-`:2337`). The gate is in report mode, so the answer is only logged.
+`:2340`). The gate is in report mode, so the answer is only logged.
 
 Smallest fix: call the tap after releasing the lock (it already has a
-`finish` half outside it, `:2339`), and resolve foreign vaults from a cached
+`finish` half outside it, `:2342`), and resolve foreign vaults from a cached
 slug-to-vault map with a short TTL.
 
 Test: none on cost.
@@ -894,6 +894,190 @@ Test: none concurrent.
   gate row.
 - `mc/skill_scoping.py:116-130` — content-addressed settings files are never
   removed, one per distinct override set.
+
+## 4. `mc/distiller.py` and `mc/skills.py` (beyond the rails)
+
+#### ML30 · medium · L/M — three controls in the Distiller are configured and read but never take effect
+
+- **The daily cost cap never trips.** `_within_cost_cap` (`:1375`) reads
+  `stats['cost'][today]` (`mc/distiller.py:1385`) against
+  `distiller_cost_cap_tokens_per_project_per_day` (100,000 on the reviewed
+  install). Nothing writes `stats['cost']`: a grep finds the empty schema
+  (`:479`) and two reads (`:1385`, `:2283`), no assignment. Read-only, the
+  sidecar's `cost` is empty after 2,762 signals. The cap, `cap_hits` and the
+  loop-health field that reports them are inert.
+- **"Later" is not honoured.** `_evaluate_candidate` (`:1316-1322`) consults a
+  `later` suppression only below the recurrence threshold, where both arms
+  return None anyway. Above the threshold it is never consulted, so
+  `record_push` computes and stores `wait_until_recurrence`
+  (`:2238-2254`) for nothing: a pattern the human deferred is proposed again
+  at the next recurrence.
+- **The cross-project walk and the summary cache have no consumer.** The walk
+  (`:1448-1525`) reads every project's stats file and emits
+  `cross_project_candidate` log lines; `_update_summary_cache` (`:1530`,
+  called at `:1018` on every commit of signals) writes
+  `<project>_skill_stats_summary.json` (161 KB on the reviewed install). The
+  only references to that file elsewhere are the lists that exclude it from
+  project loading (`project_routes.py:444` and two tools).
+
+Smallest fix: record tokens where the model call returns, or delete the cap
+and say so; consult `later` before the threshold test; delete the summary
+write until something reads it.
+
+Test: none sets a cost and expects a refusal; none records "later" and then
+crosses the threshold.
+
+#### ML31 · medium · M — a model or transport error during rendering is counted as a refusal, with no log
+
+`_render_skill`, `_render_exploration`, `_render_preference` and the reframe
+each wrap the model call in `except Exception: return None, Path()`
+(`mc/distiller.py:1934`, `:1960`, `:1995`, `:2038`). The caller counts
+`None` as `render_refuse:<kind>` (`:1789-1791`), the same counter a real
+`REFUSE` answer bumps. Read-only: `render_refuse:preference` is 1,540,
+`:skill` 153, `:exploration` 31. Nobody can tell from that how many were the
+model declining and how many were timeouts, quota errors or a missing CLI,
+and `loop_health` reports the sum as the refuse rate. Project exception
+policy: a swallowed network or subprocess failure must log.
+
+Smallest fix: log the exception and bump `render_error:<kind>` instead.
+
+Test: none separates the two.
+
+#### ML32 · medium · M — extraction output is used without a type guard; one malformed item loses the whole session's signals
+
+`_normalize_signals` (`mc/distiller.py:1043-1108`): `signals` is assumed to
+be a dict and each item of `topics`, `preferences` and the rest is assumed to
+be a dict (`sig.get(...)`, `:1059`). A model that returns a list for
+`signals`, or a bare string inside `topics`, raises `AttributeError`; the
+daemon thread's handler counts `daemon_thread_exception` and every signal of
+that session is dropped. `paths_tried` items are stored and later replayed
+into prompts with no type or length cap.
+
+Smallest fix: `if not isinstance(sig, dict): continue` per item, coerce
+`signals` to `{}` when it is not a dict, cap `paths_tried` items to strings of
+a fixed length.
+
+Test: fixtures are well-formed.
+
+#### ML33 · medium · L — promote installs with `overwrite=True` under a model-chosen name
+
+`mc/blueprints/distiller_routes.py:192-206` passes `overwrite=True`;
+`write_skill` (`mc/skills.py:338-351`) then replaces any existing
+`SKILL.md` of that name in the target scope. The name comes from the
+artifact's frontmatter or from the reframe model's output
+(`distiller_routes.py:176`). A proposal that happens to be named like a
+hand-written or built-in skill replaces it, with no backup and nothing in the
+response to say so. The `name:` is also searched in the whole model output,
+not only its frontmatter (`mc/distiller.py:2087-2094`).
+
+Smallest fix: `overwrite=False` unless the existing skill's
+`extraction_fingerprint_exact` matches the artifact's; otherwise return 409
+and let the human choose.
+
+Test: none promotes onto an existing name.
+
+#### ML34 · medium · L — frontmatter dump escapes, parse does not unescape: every edit doubles the backslashes
+
+`dump_skill_md` writes `"` as `\"` and `\` as `\\` when it quotes a value
+(`mc/skills.py:216-218`); `_strip_quotes` removes the outer quotes and
+nothing else (`:185-188`). **Measured** (`_scratch/p3/verify1.py`): a
+description containing `"hi"` reads back as `\"hi\"` after one round trip,
+`\\\"hi\\\"` after two, and doubles each time. Every read-then-write path
+does a round trip: the `PUT` route, `mc/skills.py:767`, `:1214`, and
+`write_position`, which uses the same dump (`mc/memory.py:2258`) and is
+re-read on every supersession.
+
+The value is quoted whenever it contains any of `:#&*!|>%@` or a backtick, so
+any description with a colon and a quote is affected.
+
+Smallest fix: unescape `\\` and `\"` in `_strip_quotes` for double-quoted
+values.
+
+Test: none round-trips a value containing a quote.
+
+### Lesser findings, distiller and skills (low)
+
+- `mc/skills.py:1284-1352` — `skill_usage_stats` re-reads every transcript
+  line of every project modified in the window on each
+  `GET /api/skills/usage` (called when the Skills panel opens,
+  `static/js/skills-panel.js:356`); no cache. `:1310` calls `stat()` outside
+  the `try`. Read, not measured.
+- `mc/skills.py:759-761` — overwrite is `rmtree` then `copytree`; a failed
+  copy leaves no skill at all. `copytree` follows symlinks, and the only link
+  rejection is for pinned refs (`:900`).
+- `mc/skills.py:497-502` — a built-in the user archived or deleted is
+  reinstalled at the next start; there is no tombstone.
+- `mc/distiller.py:907-909` — the kill-switch gate is called with
+  `incognito: False, housekeeping: False` hard-coded; it relies on the caller
+  having filtered both.
+- `mc/distiller.py:507-515` — `_increment_counter` swallows every exception
+  with no log; with an empty-file sidecar (`{}`), `stats['counters']` raises
+  `KeyError` and every counter silently stops.
+
+## 5. Small modules and the topics routes
+
+#### ML35 · medium · L — the continuity liveness label reads ordinary words as branch names and labels a normal finish as lost in a restart
+
+`mc/continuity_liveness.py:15`, `:59`: `_BRANCH` takes the word after any
+"branch ". **Measured**: "on a branch of the worktree" yields `of`, "the
+branch is pushed" yields `is`. When the same line also has a session id, that
+word goes to `git show-ref` and the thread is rendered
+`STATE MISMATCH … branch absent`. Separately, `:36-39` with `:77`: a session
+that finished normally has `live is False`, and the label for that is
+`LOST IN RESTART`, whether or not anything restarted.
+
+Both labels go into the continuity block of every later system prompt
+(`mc/memory.py:1976`), where they tell the next agent that work it could
+safely continue is in an inconsistent state. Each named branch is also one
+`git` subprocess (5 s timeout) per render.
+
+Smallest fix: require a path-like token after "branch" (contains `/` or
+`-`, not in a small stop-word set); label a finished session `ENDED`, and
+keep `LOST IN RESTART` for a session that was running at the last boot.
+
+Test: none for prose after "branch"; none for a normally finished session.
+
+#### ML36 · medium · L/M — the topic state route never loads the project, swallows write failures and answers `ok`
+
+`POST /api/project/<project_id>/topics/<topic_id>/state`
+(`mc/blueprints/topics_routes.py:507-521`) uses `project_id` from the URL
+directly in `_DATA_DIR / f'{pid}_topic_state.json'` (`:76-77`). It never
+calls `_load_project`, so:
+
+- a mistyped id creates a state file for a project that does not exist (the
+  suffix is excluded from project loading, so this does not trip the
+  `DATA_DIR` rule);
+- on Windows an id containing backslashes and `..` places a
+  `…_topic_state.json` file outside the data directory (same class as pass 2
+  R55; the content is constrained to state records).
+
+In the same module `_load_json` returns the default on any error (`:85-89`)
+and `_atomic_write` swallows every write error (`:92-96`), both with no log.
+A corrupt state file therefore reads as `{}` and the next click persists only
+that one topic (every other done or archived mark is gone), and a failed
+write still returns `{'ok': True}` (`:521`).
+
+Smallest fix: 404 when `_load_project` returns nothing; log in both helpers;
+return 500 when the write fails.
+
+Test: none for a missing project or a failed write.
+
+### Lesser findings, small modules (low)
+
+- `mc/positions_review.py:93-102`, `:145-147` — a corrupt sidecar reads as
+  `{}` and the locked write persists only the entry being recorded; every
+  other position's `flagged` state is gone and each is raised again as new.
+  Logged. Same class as ML8.
+- `mc/positions_review.py:126-152` — lock break: two waiters past the
+  deadline can both unlink and both create; the `finally` unlink removes
+  whichever lock file is there, including a successor's.
+- `mc/rollover_threshold.py:78` — a per-character pin of 0 or less becomes
+  `MIN_THRESHOLD` (60k, the most aggressive value); the global setting treats
+  0 or less as "rollover off" (`:68`). The same number means opposite things
+  at the two levels.
+- `mc/unattended.py:16-17` says the function "never reads anything the caller
+  sends (no header …)"; `:76-77` reads a header. The docstring's later
+  paragraphs explain the change; the first paragraph was not updated.
 
 ---
 
