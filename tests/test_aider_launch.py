@@ -70,3 +70,16 @@ def test_version_drift_refuses_before_importing_aider(monkeypatch, name):
     monkeypatch.setattr(pin.importlib.metadata, 'version', version)
     with pytest.raises(RuntimeError, match='drift'):
         pin.verify_installed()
+
+
+def test_preflight_proof_version_is_the_pinned_constant_not_a_literal(monkeypatch, tmp_path):
+    # AP59: the audited version was a literal in three files; a bump that
+    # changed only the pin made every launch fail the proof comparison.
+    monkeypatch.setitem(state.CONFIG, launch.FLAG, True)
+    monkeypatch.setattr(cli_install, 'sibling_python', lambda path: 'selected-python')
+    monkeypatch.setattr(pin, 'VERSION', '9.9.9')
+    monkeypatch.setattr(launch.subprocess, 'run', lambda *a, **kw: SimpleNamespace(
+        returncode=0, stdout=json.dumps({'restricted_aider': '9.9.9', 'guard': 'ready'}),
+        stderr=''))
+    assert launch.prepare(['selected-aider'], str(tmp_path), {})[:3] == [
+        'selected-python', '-I', '-B']

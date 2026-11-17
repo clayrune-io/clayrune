@@ -53,7 +53,8 @@ def probe(guard: Any) -> None:
             continue
         raise RuntimeError(f'Aider fence probe did not refuse {tool}')
     guard.check('Bash', {'command': 'git status'})
-    print(json.dumps({'restricted_aider': '0.86.2', 'guard': 'ready'}))
+    from mc.aider_source_pin import VERSION
+    print(json.dumps({'restricted_aider': VERSION, 'guard': 'ready'}))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
