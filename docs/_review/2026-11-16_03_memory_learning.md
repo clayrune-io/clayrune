@@ -477,6 +477,244 @@ uses. No passcode needed; the decision is reversible by editing the sidecar.
 
 Test: none.
 
+## 2. `mc/memory.py` — the writers (Scribe, checkpoint, commit, condense, continuity)
+
+#### ML15 · high · L — a task whose first 80 characters contain a newline loses its Scribe summary at the next commit
+
+`_entry_label` (`mc/memory.py:4623-4629`) returns `t[:80]` with newlines
+kept. `_write_session_memory` builds
+`- [date] **{label}**{tag} — {brief}` (`:4950`) and flattens newlines in
+`brief` only. A label with a newline makes the entry two or more physical
+lines. On the next commit `_mem_split_full` keeps only lines that start with
+`- [` (`:597-602`), so the first line survives and the rest, which holds the
+closing `**` and the whole summary, is dropped. The checkpoint path builds its
+entry the same way (`:5328`).
+
+Second effect: `last_entry_hash` is the hash of the multi-line string
+(`:4791`), which never matches a single stored line again, so each later
+checkpoint of that session appends a new entry instead of superseding the old
+one. That is the pile-up `supersede_sid` was added to stop
+(`:4749-4760`).
+
+**Measured.** Pure function (`_scratch/p3/verify1.py`): a two-line entry comes
+back from `_mem_split_full` as `- [2026-11-16] **Fix the login bug` and
+nothing else. Read-only count on a copy of the reviewed install's archive:
+1,226 of 7,727 entries (16%) have exactly one `**`, that is, a label cut at a
+newline and no summary. 423 of those start with a turn-clock stamp line, which
+the stored task no longer carries (current entries on the reviewed install do
+not show it); 167 start with another bracketed marker line; 636 are ordinary
+multi-line messages with a short first line, which is a path any user takes.
+The per-month spread of the 1,226 was not taken.
+
+What is lost is the paid part: the model call ran, and its output was written
+once and deleted by the next write.
+
+Smallest fix: `return ' '.join(t.split())[:80]` in `_entry_label`, and assert
+in `_commit_managed_entry` that `mem_entry` has no newline.
+
+Test: none. `tests/test_memory_entry_dedup.py:48` checks one single-line
+label.
+
+#### ML16 · high · E/L — the shipped-default condense (`agent` mode) fires on a trigger that can never clear, and its prompt describes a file layout that no longer exists
+
+Default: `condense_mode: 'agent'` (`server.py:161`), threshold 30 KB
+(`:154`).
+
+- **Trigger.** `_should_condense` sums `MEMORY.md` + `SESSION_LOG.md` + the
+  permanent archive (`mc/memory.py:4366-4372`), and at the commit call site
+  also `CLAUDE.md` (`:4846`, `include_claude_md=True`, `:4373-4380`), against
+  `condense_threshold_kb` (`:4381-4382`). The archive is append-only by design
+  (`:4689-4691`). Once the sum passes 30 KB it stays above it for the life of
+  the project; a 20 KB `CLAUDE.md` alone gets most of the way there. Only the
+  cooldown (`:4299-4301`, one hour) limits the rate. The structured branch got
+  exactly this fix ("would let a large CLAUDE.md … keep the trigger permanently
+  hot", `:4307-4312`); the comment ends "The legacy agent path keeps its
+  existing combined-byte trigger below, unchanged."
+- **Cost of one fire.** `_dispatch_condense` (`:6728-6852`) launches a Claude
+  agent with `--dangerously-skip-permissions`, `--max-turns 14`, default model
+  `sonnet` (`:6840`, hard-coded to the `claude` provider whatever the project
+  uses), with the project as its working directory. There is no "nothing to
+  do" check before the launch.
+- **What it is told.** The prompt (`:6769-6812`) describes a managed region
+  inside `MEMORY.md`: sentinels, a `## Session Log` heading, watermark lines,
+  and asks the agent to keep that structure. Since the `SESSION_LOG.md` split
+  the entries and watermarks are not in `MEMORY.md` (`_write_curated_only`,
+  `:4844`), the agent is never told `SESSION_LOG.md` exists, and the integrity
+  guard's sentinel and watermark checks (`:6340`, `:6354`) compare against an
+  empty pre-image. On a migrated project the run can only rewrite the curated
+  index, which is the part the design says condense must not shrink.
+
+So a fresh install, once its project passes the threshold, pays one
+tool-capable agent run per active hour, reading Scribe lines (summaries of
+arbitrary transcripts) and editing the always-loaded index, to do a job the
+current file layout no longer gives it. Read, not measured: the reviewed
+install runs `structured`, so no agent-mode run was observed.
+
+Smallest fix: make `structured` the shipped default (the comment at
+`server.py:158-160` says `agent` stays "until the structured path is
+telemetry-validated"; it has been the live mode on the reviewed install), or
+give the agent branch the structured branch's trigger and delete the stale
+prompt sections.
+
+Test: none on the agent-mode trigger after the split.
+
+#### ML17 · medium · L — `write_continuity` is an unlocked read-modify-write of one file shared by every agent on the project
+
+`mc/memory.py:1829-1950` reads the whole record, replaces one owner's slots
+and writes the whole file back (`:1943-1947`), with no lock.
+`write_position` took a lock for this exact race (`:2182-2191`). Two agents
+finishing a turn together: the second write drops the first's update.
+
+Worse, `read_continuity` returns the empty record on any read or parse error
+(`:1755-1763`); the write that follows then persists a file containing only
+the caller's bucket, and every other owner's threads and commitments are gone.
+Pass 1 C1 (one temp name per process, measured torn reads) makes that read
+error reachable from the write path itself. Callers: the extraction worker
+(`:2126`) and `PUT …/memory/continuity` (`guide_routes.py:513`); neither
+holds a lock.
+
+Smallest fix: wrap read-to-write in `_get_mem_write_lock(f'continuity:{pid}')`
+and have the internal read raise on error instead of returning empty.
+
+Test: none concurrent; none with an unreadable file.
+
+#### ML18 · medium · L — `_mem_split_full` treats the first literal `## Session Log` in a sentinel-free index as the start of the managed region
+
+`mc/memory.py:590-593`. Every commit runs `_mem_migrate(existing)` on
+`MEMORY.md` (`:4775`). In a file with no sentinels, the first occurrence of
+the string `## Session Log` anywhere, including in a curated sentence that
+mentions it, starts the managed region: `- [` pointer lines after it move to
+`SESSION_LOG.md` (and from there age out to the archive), every other line
+after it is dropped, and `_write_curated_only` (`:4844`) persists the cut.
+
+Two more edges in the same function: text after the END sentinel is dropped
+by the next compose (`:585-589`), and END before BEGIN raises `ValueError`
+from `content.index(_MEM_END, i)` (`:587`), which fails every later commit
+for that project.
+
+Smallest fix: match the legacy heading only as a whole line
+(`^## Session Log\s*$`), keep text after END as curated, and treat
+END-before-BEGIN as "no managed region" with a log line.
+
+Test: none with the heading inside prose, a tail after END, or reversed
+sentinels.
+
+#### ML19 · medium · L — commit ordering: the archive is appended first and `MEMORY.md` is stripped before `SESSION_LOG.md` is written
+
+`mc/memory.py:4843-4845`: `_append_to_archive`, `_write_curated_only`,
+`_write_session_log`. Three files, three separate atomic writes, no rollback.
+
+- Failure after the first: the evicted lines are in the permanent archive and
+  still in the session log; the next commit evicts and appends them again.
+- Failure after the second, on a project not yet migrated: the inline entries
+  and watermark markers have been removed from `MEMORY.md` and are not yet in
+  `SESSION_LOG.md`. They are lost, and a live session's watermark with them,
+  so its next checkpoint starts from offset zero.
+
+`_append_to_archive` (`:4687-4697`) reads with strict UTF-8 and the docstring
+of `_commit_managed_entry` says file failures propagate (`:4746`): one
+undecodable byte in the archive fails every later eviction.
+
+Smallest fix: write `SESSION_LOG.md` first, then the archive, then the
+curated strip; read the archive with `errors='replace'`.
+
+Test: none injects a failure between the writes.
+
+#### ML20 · medium · L — a failed checkpoint launch leaves the session marked in flight for ever
+
+`mc/memory.py:5161-5173` and `:5197-5211`: the session id is added to
+`_checkpoint_inflight`, then the snapshot dict is built, which calls
+`_model_for_provider` and `_session_owner`. If either raises (pass 1 P1:
+`background_model` trusts stored value shapes), the outer
+`except Exception: return False` (`:5216-5217`) returns with the id still in
+the set. Every later boundary for that session takes the
+`checkpoint_coalesced` branch (`:5162-5164`). The session never checkpoints
+again and nothing is logged.
+
+Smallest fix: build `snap` before taking `_checkpoint_guard`, or discard the
+id in an `except` around the build; log the exception at `:5216`.
+
+Test: none.
+
+#### ML21 · medium · L — the agent-mode restore and heal write `MEMORY.md` outside the write lock, minutes after the pre-image was taken
+
+`mc/memory.py:6909`, `:6923`, `:6931` use plain `write_text` (not atomic) and
+do not take `_get_mem_write_lock`. The pre-image is captured before the agent
+run, which lasts up to 14 turns. Any commit to `MEMORY.md` in between is
+overwritten by the restore. Other half of pass 1 C1 for this file.
+
+Smallest fix: take the lock, re-read, and restore only if the file still
+equals what the agent wrote; use `_atomic_write_text`.
+
+Test: none.
+
+#### ML22 · medium · L — "busy" guards drop a second session's work instead of queueing it
+
+`mc/distiller.py:874-881`: a session of project P that ends while another
+session of P is being distilled is counted `skipped_reentrant` and its signals
+are never extracted. **Measured**, read-only: that counter is 447 in the
+reviewed install's largest sidecar. With several agents per project this is
+the normal case, and it biases recurrence counts downward.
+
+`mc/memory.py:6137-6140` has the same shape for the Scribe. It is unreachable
+today only because pass 2 R38 holds the project lock across the Scribe call.
+R38's proposed fix says the busy guard is enough once the lock is released;
+with this guard as written, that change turns a slow completion into a lost
+summary. The two fixes have to land together.
+
+Smallest fix: a per-project queue of pending session ids drained by the
+running worker, in both places.
+
+Test: none with two overlapping session ends.
+
+#### ML23 · low · M — `_write_session_memory` says "Never raises" and does
+
+`mc/memory.py:4925` vs `:4957`: `_commit_managed_entry` propagates file
+errors and is called unguarded. Both callers catch and log
+(`agent_routes.py:10593-10610`, `server.py:1646`), so nothing crashes, but
+the exception also skips the Distiller dispatch and the mint that follow in
+the same function, and leaves the row unscribed, so the startup reconciler
+pays a second Scribe call for it.
+
+Smallest fix: catch around `:4957`, log, and continue to the Distiller step.
+
+Test: none.
+
+### Lesser findings, memory.py writers (low)
+
+- `mc/memory.py:6256`, `:6292` — a Scribe summary is discarded if it contains
+  any refusal marker as a substring (`:5437-5444`), and the list includes
+  "don't have access to", "did not receive" and "no transcript". A true
+  summary of a session about a permission problem is thrown away and the entry
+  falls back. One hit in any map chunk fails the whole summary. Fix: test the
+  markers only against the first sentence.
+- `mc/memory.py:6164-6165` — a transcript render I/O error is reported as
+  `parse_empty`, no log. `:5505-5506`, `:5490-5491`, `:5850-5851`, `:5080`,
+  `:6507-6508` swallow state-file or transcript I/O with no log (project
+  exception policy).
+- `mc/memory.py:5808` — no dict guard on a parsed transcript line; one
+  non-dict JSON line raises and the outer handler abandons the rest of that
+  transcript's telemetry.
+- `mc/memory.py:4879-4880` — `live` is computed before the lock; the docstring
+  (`:4861-4862`) says the membership test is redone inside it. Same class as
+  pass 2 R41.
+- `mc/memory.py:2098-2136` — continuity extraction: model output goes into the
+  record and from there into every later system prompt as a commitment the
+  agent made. Only length caps apply (`:1554-1565`); the mint and negation
+  writers run the authority guard on comparable text, this one does not.
+- `mc/memory.py:6018` with `:5960-5970` — the habit miner's "a human said it"
+  test is `trigger_type == 'manual'` plus a label match. Pass 2 R48
+  (`/agent/send` is always labelled attended) is the upstream hole.
+- `mc/memory.py:785`, `:806` say the module has no top-level `re` import; it
+  does (`:32`). `:5995-6008` says `_memory_search` has no origin filter; it
+  has (`:2571`).
+- `mc/memory.py:2355-2356` — `list_positions` reads each file unguarded; one
+  unreadable file fails the whole list. `_parse_position` logs its validation
+  warnings on every parse (`:1512-1515`), which is every corpus rebuild.
+- `mc/memory.py:6893-6896` — the condense session is added to `agent_sessions`
+  and the manager's id set; no removal was found in `_run`. Not followed into
+  the housekeeping reaper, so this is unconfirmed.
+
 ---
 
 ## Working notes (candidates, NOT yet verified; removed when the pass completes)
