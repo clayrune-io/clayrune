@@ -35,8 +35,8 @@ classic script as well as ES modules, through `window`, before any renderer runs
 `mc/blueprints/project_routes.py`, `settings_routes.py` and `hivemind_routes.py`:
 
 - Backlog status: `open`, `in_progress`, `blocked`, `done`, `wontdo`.
-- Backlog priority: `low`, `normal`, `high`.
-- Project IDs: `^[a-z0-9][a-z0-9_-]{0,63}$`; safe human-owned ID edits remain
+- Backlog priority: 1-24 letters, digits, `_` or `-` (Dave widened this from a three-word list: 125 live items use `medium`, and agents post it).
+- Project IDs: `^[a-z0-9_][a-z0-9_-]{0,63}$` (Dave allowed the leading underscore for `_ideas` and `_incognito`); safe human-owned ID edits remain
   supported. The routing/passcode gate has not been weakened.
 - Colors: `^(#[0-9a-fA-F]{3,8}|var\(--[a-z0-9-]+\))$`; project modal color
   may also be cleared with `null`.

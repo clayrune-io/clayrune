@@ -4,17 +4,22 @@ Validate submitted values only; legacy records remain readable and unchanged.
 """
 import re
 
-_PROJECT_ID = re.compile(r'[a-z0-9][a-z0-9_-]{0,63}', re.ASCII)
+# A leading underscore is allowed: `_ideas` and `_incognito` are real reserved
+# workspaces, and refusing them would stop every write to those records.
+_PROJECT_ID = re.compile(r'[a-z0-9_][a-z0-9_-]{0,63}', re.ASCII)
 _COLOR = re.compile(r'(?:#[0-9a-fA-F]{3,8}|var\(--[a-z0-9-]+\))', re.ASCII)
 _STATUSES = ('open', 'in_progress', 'blocked', 'done', 'wontdo')
-_PRIORITIES = ('low', 'normal', 'high')
+# Priority is a shape rule, not a list. Agents and older records use words the
+# dashboard does not offer ('medium', 'P1'); the rule only has to keep markup
+# and script out, which the renderers also escape on their own.
+_PRIORITY = re.compile(r'[A-Za-z0-9_-]{1,24}', re.ASCII)
 
 
 def validate_project_fields(project_id, data):
     if not isinstance(project_id, str) or not _PROJECT_ID.fullmatch(project_id):
-        return 'project id must match ^[a-z0-9][a-z0-9_-]{0,63}$'
+        return 'project id must match ^[a-z0-9_][a-z0-9_-]{0,63}$'
     if 'id' in data and (not isinstance(data['id'], str) or not _PROJECT_ID.fullmatch(data['id'])):
-        return 'id must match ^[a-z0-9][a-z0-9_-]{0,63}$'
+        return 'id must match ^[a-z0-9_][a-z0-9_-]{0,63}$'
     if 'modal_color' in data and data['modal_color'] is not None:
         colors = data['modal_color']
         if not isinstance(colors, dict):
@@ -31,9 +36,11 @@ def validate_colors(data):
 
 
 def validate_backlog_fields(data):
-    for key, allowed in (('status', _STATUSES), ('priority', _PRIORITIES)):
-        if key in data and data[key] not in allowed:
-            return f'{key} must be one of: {", ".join(allowed)}'
+    if 'status' in data and data['status'] not in _STATUSES:
+        return f'status must be one of: {", ".join(_STATUSES)}'
+    if 'priority' in data and (not isinstance(data['priority'], str)
+                               or not _PRIORITY.fullmatch(data['priority'])):
+        return 'priority must be 1-24 letters, digits, _ or -'
     return None
 
 

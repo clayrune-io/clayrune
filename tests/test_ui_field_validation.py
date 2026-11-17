@@ -50,7 +50,7 @@ def test_backlog_refuses_bad_fields_without_touching_legacy(client, field, bad, 
     assert record.read_bytes() == before
 
 
-@pytest.mark.parametrize('field,values', [('status', ['open', 'in_progress', 'blocked', 'done', 'wontdo']), ('priority', ['low', 'normal', 'high'])])
+@pytest.mark.parametrize('field,values', [('status', ['open', 'in_progress', 'blocked', 'done', 'wontdo']), ('priority', ['low', 'normal', 'high', 'medium', 'P1'])])
 def test_backlog_accepts_supported_values(client, field, values):
     c, record, _, _ = client
     for value in values:
@@ -63,6 +63,7 @@ def test_backlog_accepts_supported_values(client, field, values):
 
 @pytest.mark.parametrize('pid', ["bob's_site", 'bad"id', '../bad', 'BadId', 'x' * 65])
 def test_project_id_refused_before_workspace_creation(client, pid):
+    # see test_reserved_underscore_project_ids_pass_the_shape_rule for the ids that must pass
     c, _, _, root = client
     from urllib.parse import quote
     r = c.post('/api/project/' + quote(pid, safe=''), json={'name': 'Must not create'})
@@ -133,3 +134,11 @@ def test_workstream_priority_refused_before_save(client, value, target):
         r = c.put('/api/hivemind/hm/workstreams/ws', json={'priority': value})
     assert r.status_code == 400
     assert 'priority' in r.get_json()['error']
+
+
+@pytest.mark.parametrize('pid', ['_ideas', '_incognito', 'mission_control', 'a'])
+def test_reserved_underscore_project_ids_pass_the_shape_rule(pid):
+    # `_ideas` and `_incognito` are real workspaces on every install.
+    from mc.ui_field_validation import validate_project_fields
+    assert validate_project_fields(pid, {}) is None
+    assert validate_project_fields('fixture', {'id': pid}) is None
