@@ -114,6 +114,7 @@ def test_pull_client_sets_the_event_only_after_custody_commits(w):
         assert len(w.rows('events')) == 1
         assert seen == [(1, True)]          # committed before the signal and before the ack
     finally:
+        peer.stop.set()  # the client closes its socket abruptly; that reset is not a peer error
         assert client.stop()
         peer.close()
 

@@ -82,6 +82,7 @@ def test_one_failed_ticket_request_is_retried_not_halted(w, mode):
         eventually(lambda: peer.connections == 1, timeout=8)
         assert client.running and opener.calls == 2
     finally:
+        peer.stop.set()  # the client closes its socket abruptly; that reset is not a peer error
         assert client.stop()
         peer.close()
 
@@ -106,6 +107,7 @@ def test_one_failed_manifest_refresh_is_retried_not_halted(w):
         eventually(lambda: peer.connections == 2, timeout=8)
         assert client.running
     finally:
+        peer.stop.set()  # the client closes its socket abruptly; that reset is not a peer error
         assert client.stop()
         peer.close()
 
@@ -132,5 +134,6 @@ def test_halt_reasons_still_halt_the_worker(w, reason):
         eventually(lambda: not client.running)
         assert client.reason == reason and peer.connections == 0
     finally:
+        peer.stop.set()
         client.stop()
         peer.close()
