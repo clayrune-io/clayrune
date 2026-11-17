@@ -16,6 +16,9 @@ from mc.agent_mail_outbound_state import initialize
 from mc.agent_mail_store import MailStore
 
 
+HUMAN = {'Origin': 'http://localhost:5199'}  # a person at the dashboard; an agent's curl sends none
+
+
 def fake(store, root):
     return SimpleNamespace(open_store=lambda: store, paths=SimpleNamespace(root=root))
 
@@ -185,7 +188,7 @@ def test_project_delete_route_refuses_and_keeps_the_project_when_revocation_fail
         calls.append(project_id)
         raise deletion.DeletionRefused('deletion_intent_unwritable')
     monkeypatch.setattr(deletion, 'revoke_project', refuse)
-    response = client.delete('/api/project/tproj')
+    response = client.delete('/api/project/tproj', headers=HUMAN)
     assert response.status_code == 503
     assert response.get_json() == {'error': 'agent_mail_revocation_failed', 'reason': 'deletion_intent_unwritable'}
     assert (client.data_dir / 'tproj.json').exists(), 'a refused revocation must not delete the project'
@@ -196,6 +199,6 @@ def test_project_delete_route_revokes_only_that_project_then_deletes(client, mon
     _seed(client)
     calls = []
     monkeypatch.setattr(deletion, 'revoke_project', lambda project_id, **k: calls.append(project_id) or 'revoked')
-    assert client.delete('/api/project/tproj').status_code == 200
+    assert client.delete('/api/project/tproj', headers=HUMAN).status_code == 200
     assert calls == ['tproj', 'tproj'], 'one fence before side effects, one after to close a raced bind'
     assert not (client.data_dir / 'tproj.json').exists()

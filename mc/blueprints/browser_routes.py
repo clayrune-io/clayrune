@@ -87,6 +87,7 @@ from typing import Any, Callable
 from flask import Blueprint, Response, jsonify, request
 
 from mc import state, browser_stream as _bstream
+from mc.human_only_gate import human_only
 from mc.browser_stream import bump as _bump
 from mc.core import _log
 from mc.state import browser_sessions, browser_lock
@@ -3963,6 +3964,7 @@ def browser_profiles():
 
 
 @bp.route('/api/browser/profiles/<name>', methods=['DELETE'])
+@human_only('delete a saved browser profile: it signs the user out of every site in it')
 def browser_profile_delete(name):
     """Forget a saved profile — this is the sign-out."""
     path = _profile_dir(name)

@@ -28,6 +28,9 @@ from mc import desk  # noqa: E402
 from mc.blueprints import project_routes  # noqa: E402
 
 
+HUMAN = {'Origin': 'http://localhost:5199'}  # a person at the dashboard; an agent's curl sends none
+
+
 @pytest.fixture
 def ctx(tmp_path, monkeypatch):
     monkeypatch.setattr(desk, 'STORE_PATH', tmp_path / 'desk.json')
@@ -53,7 +56,7 @@ def ctx(tmp_path, monkeypatch):
 
 def test_marking_posted_writes_a_ledger_row(ctx):
     r = ctx.post('/api/project/p/social/queue/d1/posted',
-                 json={'url': 'https://x.com/RanLevi15/status/1'})
+                 json={'url': 'https://x.com/RanLevi15/status/1'}, headers=HUMAN)
     assert r.status_code == 200
     body = r.get_json()
     assert body['ledger_written'] is True
@@ -70,21 +73,21 @@ def test_the_repetition_guard_can_now_actually_fire(ctx):
     """The whole point: before this route existed, `already_said` was always
     False because nothing ever populated the ledger."""
     assert desk.already_said('Shipped drag-to-hire today. Three days, two rewrites.') is False
-    ctx.post('/api/project/p/social/queue/d1/posted', json={'url': 'https://x.com/a/1'})
+    ctx.post('/api/project/p/social/queue/d1/posted', json={'url': 'https://x.com/a/1'}, headers=HUMAN)
     assert desk.already_said('Shipped drag-to-hire today. Three days, two rewrites.') is True
 
 
 def test_the_signal_is_spent(ctx):
     assert desk.list_signals(unconsumed_only=True)
-    ctx.post('/api/project/p/social/queue/d1/posted', json={'url': 'https://x.com/a/1'})
+    ctx.post('/api/project/p/social/queue/d1/posted', json={'url': 'https://x.com/a/1'}, headers=HUMAN)
     assert desk.list_signals(unconsumed_only=True) == []
 
 
 def test_marking_posted_is_idempotent(ctx):
     first = ctx.post('/api/project/p/social/queue/d1/posted',
-                     json={'url': 'https://x.com/a/1'}).get_json()
+                     json={'url': 'https://x.com/a/1'}, headers=HUMAN).get_json()
     second = ctx.post('/api/project/p/social/queue/d1/posted',
-                      json={'url': 'https://x.com/a/1'}).get_json()
+                      json={'url': 'https://x.com/a/1'}, headers=HUMAN).get_json()
     assert second['already'] is True
     assert second['post_id'] == first['post_id']
     assert len(desk.list_ledger()) == 1, 'a double-click must not double the ledger'
@@ -92,7 +95,7 @@ def test_marking_posted_is_idempotent(ctx):
 
 def test_a_pending_draft_cannot_route_around_approval(ctx):
     ctx.project['social_queue'][0]['status'] = 'pending'
-    r = ctx.post('/api/project/p/social/queue/d1/posted', json={'url': 'https://x.com/a/1'})
+    r = ctx.post('/api/project/p/social/queue/d1/posted', json={'url': 'https://x.com/a/1'}, headers=HUMAN)
     assert r.status_code == 409
     assert desk.list_ledger() == []
 
@@ -100,7 +103,7 @@ def test_a_pending_draft_cannot_route_around_approval(ctx):
 def test_no_permalink_still_records_but_says_so(ctx):
     """Honest degradation: the row exists, and the caller is told plainly that
     reactions can never be read for it."""
-    body = ctx.post('/api/project/p/social/queue/d1/posted', json={}).get_json()
+    body = ctx.post('/api/project/p/social/queue/d1/posted', json={}, headers=HUMAN).get_json()
     assert body['ledger_written'] is True
     assert body['reactions_readable'] is False
     assert desk.list_ledger()[0]['url'] is None
@@ -113,16 +116,16 @@ def test_a_ledger_failure_never_leaves_the_queue_lying(ctx, monkeypatch):
         raise RuntimeError('ledger on fire')
     monkeypatch.setattr(desk, 'record_published', boom)
 
-    r = ctx.post('/api/project/p/social/queue/d1/posted', json={'url': 'https://x.com/a/1'})
+    r = ctx.post('/api/project/p/social/queue/d1/posted', json={'url': 'https://x.com/a/1'}, headers=HUMAN)
     assert r.status_code == 200
     assert r.get_json()['ledger_written'] is False
     assert ctx.project['social_queue'][0]['status'] == 'posted'
 
 
 def test_missing_item_and_project(ctx, monkeypatch):
-    assert ctx.post('/api/project/p/social/queue/nope/posted', json={}).status_code == 404
+    assert ctx.post('/api/project/p/social/queue/nope/posted', json={}, headers=HUMAN).status_code == 404
     monkeypatch.setattr(project_routes, 'load_project', lambda pid: None)
-    assert ctx.post('/api/project/p/social/queue/d1/posted', json={}).status_code == 404
+    assert ctx.post('/api/project/p/social/queue/d1/posted', json={}, headers=HUMAN).status_code == 404
 
 
 def test_this_route_does_not_publish():

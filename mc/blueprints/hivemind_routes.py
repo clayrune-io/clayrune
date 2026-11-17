@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from mc.ui_field_validation import validate_workstream_priority
+from mc.human_only_gate import human_only
 
 from flask import Blueprint, Response, jsonify, request
 
@@ -1697,6 +1698,7 @@ def hivemind_escalate(hivemind_id):
 
 
 @bp.route('/api/hivemind/<hivemind_id>/intervene', methods=['POST'])
+@human_only('send a directive to a hivemind')
 def hivemind_intervene(hivemind_id):
     """User sends directive to orchestrator or specific workstream."""
     manifest = _hm_load_manifest(hivemind_id)
@@ -1726,6 +1728,7 @@ def hivemind_intervene(hivemind_id):
 
 
 @bp.route('/api/hivemind/<hivemind_id>/findings/<finding_id>/review', methods=['POST'])
+@human_only('review a hivemind finding: it records that a person decided')
 def hivemind_finding_review(hivemind_id, finding_id):
     """User approves/rejects a finding."""
     manifest = _hm_load_manifest(hivemind_id)
@@ -1749,6 +1752,7 @@ def hivemind_finding_review(hivemind_id, finding_id):
 
 
 @bp.route('/api/hivemind/<hivemind_id>/decisions/<decision_id>/approve', methods=['POST'])
+@human_only('approve a hivemind decision: it records that a person decided')
 def hivemind_decision_approve(hivemind_id, decision_id):
     """User approves/rejects a decision."""
     manifest = _hm_load_manifest(hivemind_id)

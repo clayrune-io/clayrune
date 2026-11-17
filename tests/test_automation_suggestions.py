@@ -33,6 +33,9 @@ EXPECTED_ROUTES = {
 }
 
 
+HUMAN = {'Origin': 'http://localhost:5199'}  # a person at the dashboard; an agent's curl sends none
+
+
 def _log_entries(task, n, start_day=1, trigger='manual', hour=14, step=3):
     """n manual runs of `task`, `step` days apart — far enough apart to clear
     both the distinct-day gate and the span gate (a habit, not a burst)."""
@@ -181,7 +184,7 @@ def test_fingerprint_ignores_dispatcher_wrappers(ctx):
 
 def test_accept_creates_exactly_one_real_schedule(ctx):
     s = _one_pending(ctx)
-    resp = ctx.client.post(f"/api/automation/suggestions/{s['id']}/accept")
+    resp = ctx.client.post(f"/api/automation/suggestions/{s['id']}/accept", headers=HUMAN)
     assert resp.status_code == 201, resp.get_json()
 
     scheds = _schedules(ctx)
@@ -199,9 +202,9 @@ def test_accept_creates_exactly_one_real_schedule(ctx):
 
 def test_accept_is_idempotent_and_never_creates_a_second_schedule(ctx):
     s = _one_pending(ctx)
-    first = ctx.client.post(f"/api/automation/suggestions/{s['id']}/accept")
+    first = ctx.client.post(f"/api/automation/suggestions/{s['id']}/accept", headers=HUMAN)
     assert first.status_code == 201
-    second = ctx.client.post(f"/api/automation/suggestions/{s['id']}/accept")
+    second = ctx.client.post(f"/api/automation/suggestions/{s['id']}/accept", headers=HUMAN)
     assert second.status_code == 409
     assert second.get_json()['decision'] == 'accepted'
     assert len(_schedules(ctx)) == 1
@@ -212,7 +215,7 @@ def test_accept_honours_a_cadence_override_but_not_the_project_or_task(ctx):
     resp = ctx.client.post(
         f"/api/automation/suggestions/{s['id']}/accept",
         json={'schedule_type': 'interval', 'interval_minutes': 30,
-              'project_id': 'somewhere-else', 'task': 'rm -rf /'})
+              'project_id': 'somewhere-else', 'task': 'rm -rf /'}, headers=HUMAN)
     assert resp.status_code == 201
     created = _schedules(ctx)[0]
     assert created['schedule_type'] == 'interval'
@@ -226,7 +229,7 @@ def test_failed_create_leaves_the_suggestion_pending(ctx):
     """A rejected spec must not consume the human's consent."""
     s = _one_pending(ctx)
     resp = ctx.client.post(f"/api/automation/suggestions/{s['id']}/accept",
-                           json={'schedule_type': 'fortnightly'})
+                           json={'schedule_type': 'fortnightly'}, headers=HUMAN)
     assert resp.status_code == 400
     assert _schedules(ctx) == []
     assert ctx.sg.get_decision(s['id']) is None
@@ -236,7 +239,7 @@ def test_failed_create_leaves_the_suggestion_pending(ctx):
 def test_accepted_suggestion_is_not_re_offered(ctx):
     s = _one_pending(ctx)
     assert ctx.client.post(
-        f"/api/automation/suggestions/{s['id']}/accept").status_code == 201
+        f"/api/automation/suggestions/{s['id']}/accept", headers=HUMAN).status_code == 201
     assert ctx.client.get('/api/automation/suggestions').get_json() == []
 
 
@@ -256,7 +259,7 @@ def test_dismiss_then_accept_is_refused(ctx):
     """"No" outranks a later stray accept — the decision record is the gate."""
     s = _one_pending(ctx)
     ctx.client.post(f"/api/automation/suggestions/{s['id']}/dismiss")
-    resp = ctx.client.post(f"/api/automation/suggestions/{s['id']}/accept")
+    resp = ctx.client.post(f"/api/automation/suggestions/{s['id']}/accept", headers=HUMAN)
     assert resp.status_code == 409
     assert _schedules(ctx) == []
 

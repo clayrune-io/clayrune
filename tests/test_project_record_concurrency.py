@@ -29,6 +29,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+HUMAN = {'Origin': 'http://localhost:5199'}  # a person at the dashboard; an agent's curl sends none
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     import server  # noqa: F401  (registers the blueprint on first import)
@@ -255,7 +258,7 @@ def test_desk_overview_pending_drafts_matches_the_real_queue(client, tmp_path):
                 json={'body': 'three', 'platform': 'x', 'originated': False})
     # An approved draft is not a pending one.
     q2 = _queue(client, 'proj2')
-    client.post(f"/api/project/proj2/social/queue/{q2[0]['id']}/approve", json={})
+    client.post(f"/api/project/proj2/social/queue/{q2[0]['id']}/approve", json={}, headers=HUMAN)
 
     real_pending = sum(
         1 for pid in ('proj1', 'proj2')

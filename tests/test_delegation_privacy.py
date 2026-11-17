@@ -6,6 +6,9 @@ from mc.blueprints import agent_routes as ar
 from mc.blueprints import project_routes as pr
 
 
+HUMAN = {'Origin': 'http://localhost:5199'}  # a person at the dashboard; an agent's curl sends none
+
+
 def _payload(child='child', summary='private full result'):
     return {'event_id': 'e1', 'child_session_id': child, 'who': 'worker',
             'status': 'completed', 'task': 'secret task', 'summary': summary,
@@ -330,7 +333,7 @@ def test_real_project_delete_route_revokes_delivery_before_record_removal(tmp_pa
     monkeypatch.setattr(pr, '_unregister_process', lambda _pid: None)
     app = Flask(__name__)
     app.register_blueprint(pr.bp)
-    response = app.test_client().delete(f'/api/project/{project_id}')
+    response = app.test_client().delete(f'/api/project/{project_id}', headers=HUMAN)
     assert response.status_code == 200
     assert not (data_dir / f'{project_id}.json').exists()
     reopened = DeliveryStore(tmp_path / 'delegation_delivery.sqlite3')

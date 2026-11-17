@@ -52,6 +52,7 @@ import mc.agent_runtime as _agent_runtime
 from mc import engine_selection
 from mc import provider_preferences
 from mc import state
+from mc.human_only_gate import human_only
 from mc.ui_field_validation import validate_project_fields, validate_backlog_fields
 from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
@@ -1066,6 +1067,7 @@ def generate_project_summary(project_id):
 
 
 @bp.route('/api/project/<project_id>', methods=['DELETE'])
+@human_only('delete a project')
 @_role_writes.project_delete
 def delete_project(project_id):
     filepath = _record_path(project_id)
@@ -1976,6 +1978,7 @@ def update_social_queue_item(project_id, item_id):
 
 
 @bp.route('/api/project/<project_id>/social/queue/<item_id>/approve', methods=['POST'])
+@human_only('approve a social draft: it records that a person released it')
 def approve_social_queue_item(project_id, item_id):
     p = load_project(project_id)
     if p is None:
@@ -2013,6 +2016,7 @@ def approve_social_queue_item(project_id, item_id):
 
 
 @bp.route('/api/project/<project_id>/social/queue/<item_id>/posted', methods=['POST'])
+@human_only('record a social draft as posted: it records that a person posted it')
 def mark_social_queue_item_posted(project_id, item_id):
     """Record that a released draft actually went out. THIS CLOSES THE RECEIPT CHAIN.
 

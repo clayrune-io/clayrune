@@ -52,7 +52,7 @@ UNDECIDED = 'UNDECIDED'
 # DOWN: resolve a row by finding or deciding its reason and lowering this in the
 # same edit. A new route that lands as UNDECIDED fails the count until someone
 # raises it here, in plain sight of the reviewer.
-UNDECIDED_CEILING = 161
+UNDECIDED_CEILING = 140
 
 # Rows that cannot be probed live, each with the reason. (method, rule) -> reason.
 LIVE_EXCLUDED = {

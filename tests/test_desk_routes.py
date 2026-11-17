@@ -23,6 +23,9 @@ from mc.blueprints import desk_routes  # noqa: E402
 from mc import desk as _desk  # noqa: E402
 
 
+HUMAN = {'Origin': 'http://localhost:5199'}  # a person at the dashboard; an agent's curl sends none
+
+
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     # MC-1187 DK3: the ledger routes need the human check (unattended refusal + dashboard
@@ -433,7 +436,7 @@ def test_accept_proposal_resolves_the_picked_agent(client, monkeypatch):
     seen = {}
     _dispatch_capture(monkeypatch, seen)
 
-    r = client.post(f'/api/desk/proposals/{prop["id"]}/accept')
+    r = client.post(f'/api/desk/proposals/{prop["id"]}/accept', headers=HUMAN)
     assert r.status_code == 202
     assert seen['character'] == 'global:claydo'
 
@@ -446,7 +449,7 @@ def test_accept_proposal_without_a_picked_agent_is_409_pick_agent(client, monkey
     prop = client.post('/api/desk/proposals', json={
         'signal_id': sig['id'], 'why': 'worth saying', 'voice': 'personal'}).get_json()
 
-    r = client.post(f'/api/desk/proposals/{prop["id"]}/accept')
+    r = client.post(f'/api/desk/proposals/{prop["id"]}/accept', headers=HUMAN)
     assert r.status_code == 409
     assert r.get_json()['pick_agent'] is True
 

@@ -29,6 +29,7 @@ from typing import Callable, Optional
 from flask import Blueprint, jsonify, request
 
 from mc import automation_suggestions as _sugg
+from mc.human_only_gate import human_only
 from mc.core import _log
 from mc.blueprints import scheduler_routes as _sched
 
@@ -111,6 +112,7 @@ def list_automation_suggestions():
 
 
 @bp.route('/api/automation/suggestions/<suggestion_id>/accept', methods=['POST'])
+@human_only('accept an automation suggestion: it records that a person said yes')
 def accept_automation_suggestion(suggestion_id):
     """THE consent point. A human clicked Accept; create the real schedule.
 

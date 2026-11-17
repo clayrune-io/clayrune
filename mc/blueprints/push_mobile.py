@@ -20,6 +20,7 @@ from typing import Any, Callable
 from flask import Blueprint, jsonify, request
 
 from mc import push_delivery_queue, state
+from mc.human_only_gate import human_only
 from mc.core import _harden_secret_perms, _log
 from mc.state import (
     PRESENCE_FRESH_SEC,
@@ -1012,6 +1013,7 @@ def mobile_pair_get():
 
 
 @bp.route('/api/mobile-pair/config', methods=['PUT'])
+@human_only('save the mobile-pairing config')
 def mobile_pair_put():
     body = request.get_json(silent=True) or {}
     tunnel_url = (body.get('tunnel_url') or '').strip()
@@ -1045,6 +1047,7 @@ def mobile_pair_put():
 
 
 @bp.route('/api/mobile-pair/config', methods=['DELETE'])
+@human_only('delete the mobile-pairing config')
 def mobile_pair_delete():
     try:
         MOBILE_PAIRING_PATH.unlink()
@@ -1107,6 +1110,7 @@ def _mobile_pair_load_keystore_identity():
 
 
 @bp.route('/api/mobile-pair/generate', methods=['POST'])
+@human_only('pair a new phone')
 def mobile_pair_generate():
     """Mint a new per-device mobile-pairing token via the control plane.
 
@@ -1195,6 +1199,7 @@ def mobile_pair_tokens_list():
 
 
 @bp.route('/api/mobile-pair/tokens/<token_id>', methods=['DELETE'])
+@human_only("revoke a paired phone's token")
 def mobile_pair_token_delete(token_id):
     """Revoke a paired phone via the control plane."""
     p = _get_remote_provider()

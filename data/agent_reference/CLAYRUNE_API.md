@@ -17,7 +17,7 @@ When asking a human to unlock the vault, include `http://<dashboard-host>:<port>
 |---|---|---|
 | GET | `/api/projects` | List all projects + state (live_agent, last_updated, …). |
 | POST | `/api/project/<project_id>` | Create or update a project. Body is the project dict. Agent writes of `id` or `project_path` are refused (403), including creation. Human writes containing either field require browser Origin; creation needs no passcode, while existing-record writes still require the dashboard `passcode` in the body. Proof is discarded, never saved. Ordinary agent fields remain writable. |
-| DELETE | `/api/project/<project_id>` | Delete a project (records only; not the workspace). |
+| DELETE | `/api/project/<project_id>` | Delete a project (records only; not the workspace). **Human-only: agent and unattended callers get 403.** |
 | POST | `/api/project/<project_id>/generate_summary` | Re-generate the project's one-line summary from recent activity. |
 | GET | `/api/project/<project_id>/scribe-stats` | Memory-Scribe telemetry: extracted/checkpoint/skipped counters. |
 | POST | `/api/project/<project_id>/import` | Import legacy session/data into a project. |
@@ -239,7 +239,7 @@ whenever a task means visiting a web page.
 | POST | `/api/browser/input-timing` | Opt-in phone diagnostics batch: numeric `samples` (max 50) and `user_agent` only; no text, keys, URLs or session/profile identifiers. Holds the newest 1,000 samples in RAM. |
 | GET | `/api/browser/input-timing?after=0` | Read bounded timing samples after a ring `index`. Enable on the phone dashboard with `?bp_input_timing=1` and fully reload. Stage meanings and limits: `docs/BROWSER_INPUT_TIMING.md`. |
 | GET | `/api/browser/profiles` | Saved signed-in profiles (names/sizes only, never cookies). |
-| DELETE | `/api/browser/profiles/<name>` | Forget a profile — **this is the sign-out. Destructive; ask first.** |
+| DELETE | `/api/browser/profiles/<name>` | Forget a profile — **this is the sign-out. Destructive; ask first. Human-only: agent and unattended callers get 403.** |
 
 Surfacing it to the user (chat markers, each on its OWN line):
 
@@ -309,9 +309,9 @@ questions about scope/priorities/constraints BEFORE creating.
 | GET/PUT | `/api/hivemind/<hivemind_id>/knowledge/[synthesis\|decisions\|findings]` | Shared knowledge layer. |
 | POST | `/api/hivemind/<hivemind_id>/knowledge/questions/<qid>/resolve` | Resolve a worker question. |
 | POST | `/api/hivemind/<hivemind_id>/escalate` | Escalate to user. |
-| POST | `/api/hivemind/<hivemind_id>/intervene` | Inject a directive mid-run. |
-| POST | `/api/hivemind/<hivemind_id>/findings/<fid>/review` | Review a finding. |
-| POST | `/api/hivemind/<hivemind_id>/decisions/<did>/approve` | Approve a proposed decision. |
+| POST | `/api/hivemind/<hivemind_id>/intervene` | Inject a directive mid-run. **Human-only: agent and unattended callers get 403.** |
+| POST | `/api/hivemind/<hivemind_id>/findings/<fid>/review` | Review a finding. **Human-only: agent and unattended callers get 403.** |
+| POST | `/api/hivemind/<hivemind_id>/decisions/<did>/approve` | Approve a proposed decision. **Human-only: agent and unattended callers get 403.** |
 | GET | `/api/hivemind/<hivemind_id>/runs` | Run history for this hivemind. |
 
 Versioned roster runs (`config.roster_version == 1`) use serial reviewed
