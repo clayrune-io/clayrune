@@ -10,6 +10,7 @@ that happen to live under /api/project/ (feature cohesion wins; same call as
 
 import json
 import os
+import secrets as _secrets
 import threading
 import time as _time
 from pathlib import Path
@@ -299,6 +300,12 @@ _MCP_JSON_MAX_BYTES = 5 * 1024 * 1024
 
 @bp.route('/api/mcp/url/preview', methods=['POST'])
 def mcp_url_preview():
+    # No passcode here: nothing is registered by a preview, and the install route behind it asks
+    # for one. But a preview clones a stranger's repo and hands its source to a model, so an
+    # unattended agent session must not be the one asking (MC-1179 SF2).
+    refusal = refuse_unattended('preview an MCP server install')
+    if refusal is not None:
+        return refusal
     data = request.get_json() or {}
     raw_url = (data.get('url') or '').strip()
     ref = (data.get('ref') or '').strip() or None
@@ -372,8 +379,14 @@ def mcp_url_preview():
 
     github = _mcpinst.fetch_github_signals(owner, repo) if owner and repo else {'available': False}
 
+    # The hardened twin Desk Connect uses (mc/desk_connect/github_connection.py): a staging id
+    # selects the branch of stage_clone that neutralises git hooks and global/system git config,
+    # the audit never installs or builds the clone's code, and the scan runs with no tools.
+    # Do not "fall back" to the tooled scan when the tool-free one has less to say; the panel
+    # shows its reason instead.
     try:
-        clone = _mcpinst.stage_clone(url, owner=owner, repo=repo, ref=git_ref)
+        clone = _mcpinst.stage_clone(url, owner=owner, repo=repo, ref=git_ref,
+                                     staging_id=_secrets.token_hex(16))
     except Exception as e:
         return jsonify({'error': str(e), 'github': github}), 500
 
@@ -382,8 +395,8 @@ def mcp_url_preview():
 
     extracted = _mcpinst.extract_config(install_dir, allow_claude_fallback=True)
     secrets = _mcpinst.detect_secrets(extracted.get('servers') or {})
-    audit = _mcpinst.dependency_audit(install_dir)
-    scan = _mcpinst.security_scan(install_dir, sha)
+    audit = _mcpinst.dependency_audit(install_dir, read_only=True)
+    scan = _mcpinst.security_scan(install_dir, sha, toolless=True)
     install_cmds = _mcpinst.install_commands(install_dir)
 
     return jsonify({

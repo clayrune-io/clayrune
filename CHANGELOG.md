@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - MCP "Add from URL" preview is gated and uses the hardened clone and scan (MC-1179 pass 11 / SF2)
+
+- `POST /api/mcp/url/preview` now starts with `refuse_unattended`, like the other write routes in `mcp_routes.py`, so an unattended agent session can no longer point it at a repository (or an npm name or JSON URL). No passcode is asked on preview: it registers nothing, and `POST /api/mcp/url/install` behind it still asks.
+- A git preview clones with a fresh `staging_id` (hooks path, global/system git config neutralised, as Desk Connect does), audits with `read_only=True` (no `npm install --package-lock-only` in the clone) and scans with `toolless=True` (no `claude -p` with the user's tools over the cloned source). Where the tool-free scan or the read-only audit has less to say, the panel shows its reason ("Tool-free scan unavailable; this code has not been reviewed.", "No existing lockfile; read-only audit ..."); it does not fall back to the tooled scan.
+- Not changed: the tooled branch of `security_scan` and the unhardened branch of `stage_clone` stay in `mc/mcp_installer.py` (no caller in the preview route now); removing them is a separate cleanup. A preview the user abandons without Cancel now leaves its own staged directory (one per preview) instead of overwriting one per repository.
+- Tests: `tests/test_mcp_url_preview_hardened.py` (10).
+
 ## [2026-11-16] - Every new Desk account starts with Read and Post off (MC-1187 / DCW-C2)
 
 - `desk_accounts.create_account` now writes the default-deny consent policy on the account it builds, so the X developer-app, purpose-bindings and pane-wizard (Instagram, YouTube, TikTok) paths no longer start with no policy, which the permission check read as "no consent needed". The browser-setup and saved-site paths were already denied; browser-setup now gets it through `create_account` (it passes the account kind). New `mc/desk_connect/new_account_consent.py`.
