@@ -9,7 +9,7 @@ API in the signed-in session (review finding P56, 2026-11-16).
 Policy, decided by the file's extension (never a guessed mimetype, which on
 Windows comes from the registry and which an upload controls the name of):
 
-* raster images, PDF, plain text  -> inline, `nosniff`.
+* raster images, PDF, plain text, audio and video -> inline, `nosniff`.
 * SVG                             -> inline as a picture, but under a
   sandbox Content-Security-Policy with no `allow-scripts`, so opening it as a
   page cannot run script. In an `<img>` it never could.
@@ -31,7 +31,10 @@ _RASTER_EXTS = frozenset({
     '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico',
     '.tif', '.tiff', '.avif',
 })
-_INLINE_OTHER_EXTS = frozenset({'.pdf', '.txt', '.md', '.log', '.csv', '.json'})
+# Audio and video cannot carry script, and "Open" on an attached clip should
+# play it in the tab, as it did before this module existed.
+_MEDIA_EXTS = frozenset({'.mp4', '.webm', '.mov', '.m4v', '.mp3', '.wav', '.m4a', '.ogg'})
+_INLINE_OTHER_EXTS = frozenset({'.pdf', '.txt', '.md', '.log', '.csv', '.json'}) | _MEDIA_EXTS
 _SVG_EXT = '.svg'
 
 # No `allow-scripts` / `allow-same-origin`: the document gets an opaque origin
