@@ -94,13 +94,16 @@ class PullClient:
                  install_id: str, reviewed_service: Callable[[], tuple[ServiceKeyCandidate, str]],
                  socket_factory: Callable[[], Any] = _Socket,
                  monotonic: Callable[[], float] = time.monotonic,
-                 jitter: Callable[[float, float], float] = random.uniform):
+                 jitter: Callable[[float, float], float] = random.uniform,
+                 custody_event: threading.Event | None = None):
         _need(_match(I, install_id), 'invalid_scope')
         self.store, self.seal, self.transport = store, seal, transport
         self.install_id, self.reviewed_service = install_id, reviewed_service
         self.socket_factory, self.monotonic, self.jitter = socket_factory, monotonic, jitter
         self._mutex = threading.RLock()
         self._stop = threading.Event()
+        # MC-1186: set after every durable custody commit; the supervisor owns the waiter.
+        self.custody_event = custody_event
         self._thread: threading.Thread | None = None
         self._socket: Any = None
         self._file: BinaryIO | None = None
@@ -269,7 +272,14 @@ class PullClient:
         headers = {'x-mail-' + k: v for k, v in fields.items()}
         headers.update({'content-type': 'application/json', 'cache-control': 'no-store',
             'x-content-type-options': 'nosniff', 'x-mail-signature': self.seal.sign_pull(self._ref(a), transcript)})
-        status, supplied, raw = self.transport('POST', TICKET, headers, body)
+        try:
+            status, supplied, raw = self.transport('POST', TICKET, headers, body)
+        except EnrollmentRefused as exc:
+            # MC-1186: a dropped connection, DNS failure or timeout carries nothing
+            # to distrust; retry under the normal backoff instead of halting.
+            if str(exc) == 'connection_lost':
+                raise _Failure('connection_lost') from None
+            raise
         try:
             _need(type(status) is int and isinstance(supplied, Mapping)
                   and isinstance(raw, bytes) and len(raw) <= 32768, 'response_unverified')
@@ -321,6 +331,10 @@ class PullClient:
                         retry = max(retry, int(date.timestamp() * 1000))
                 raise _Failure(value['code'], halt=value['code'] in HALT or status == 426, retry_ms=retry)
         except (ValueError, TypeError, KeyError, InvalidSignature, RecursionError, IngressRefused):
+            # MC-1186: an unverifiable 5xx page (an edge's HTML 502) is trusted for
+            # nothing, including a halt; a 2xx/4xx that fails verification still halts.
+            if type(status) is int and 500 <= status <= 599:
+                raise _Failure('service_unavailable') from None
             raise _Failure('response_unverified', halt=True) from None
         self._authority()  # Recheck local consent, vault and reviewed pin after HTTP.
         return value['ticket']
@@ -519,6 +533,8 @@ class PullClient:
                 return
             _need(ack is not None, 'protocol_failure')
             assert ack is not None
+            if self.custody_event is not None:
+                self.custody_event.set()  # custody is durable: let the supervisor deliver now
             self._send('custody_ack', ack['payload'], ack['request_id'])
             self._sent_acks.add(ack['payload']['event_id'])
         elif kind == 'ack_committed':
@@ -702,7 +718,10 @@ class PullClient:
                     reason = str(exc)
                     # Do not leak arbitrary adapter strings, even typed exceptions.
                     safe = reason if reason in ERRORS | HALT | _HOLD_REASONS else 'local_refused'
-                    failure = _Failure(safe, halt=True)
+                    # MC-1186: a failed manifest refresh (reviewed_service) is the
+                    # service being unreachable, not a verdict about trust.
+                    failure = _Failure(safe, halt=not (
+                        safe == 'service_unavailable' and isinstance(exc, EnrollmentRefused)))
                 except ManifestRefused:
                     failure = _Failure('service_key_changed', halt=True)
                 except MailStoreError:

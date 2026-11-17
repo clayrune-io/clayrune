@@ -22,6 +22,7 @@ from mc import question_channel_retention as retention
 from mc.agent_mail_enrollment_keys import EnrollmentRefused
 from mc.agent_mail_lifecycle_steps import BACKOFF_START_S, BACKOFF_MAX_S
 from mc.agent_mail_outbound import cleanup as outbound_cleanup
+from mc.agent_mail_transient_holds import is_retryable_hold
 from mc.core import _log
 
 STEPS = ('store', 'deletion', 'revocations', 'flows', 'pull', 'acks', 'inbound', 'cleanup', 'retention')
@@ -332,6 +333,9 @@ class Recovery:
                     if result.get('state') not in ('ready', 'submitted', 'turn_completed', 'held', 'blocked', 'retryable',
                                                    'rejected', 'expired', 'revoked', 'uncertain', 'failed'):
                         raise EnrollmentRefused('step_failed')
+                    if name == 'wake' and result.get('state') == 'retryable' and is_retryable_hold(result.get('reason')):
+                        done += 1  # MC-1186: a reply waiting out a transient refusal is not a failed pass
+                        continue
                     if result.get('state') in ('failed', 'held', 'blocked', 'retryable', 'uncertain'):
                         raise EnrollmentRefused('step_failed')
                     done += 1

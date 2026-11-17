@@ -62,6 +62,9 @@ class Supervisor:
         self._lock = threading.RLock()
         self._transition = threading.Lock()
         self._stop = threading.Event()
+        # MC-1186: set by the pull client after a custody commit (and by stop), so the
+        # loop's wait ends early when there is mail to deliver instead of at the tick.
+        self.custody_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._tick_lock = threading.Lock()
         self.last_attempt: float | None = None
@@ -125,7 +128,11 @@ class Supervisor:
             attempted = self._timestamp()
             try:
                 report = self.recovery.run()
-                bad = report.get('ok') is not True
+                # MC-1186: 'pending' is a normal wait (a signup link not yet clicked, an
+                # ack in flight); only failed/held steps back the tick off. A report that
+                # is not ok for any other reason (malformed) still counts as bad.
+                bad = report.get('ok') is not True and any(
+                    step['state'] not in ('ok', 'skipped', 'pending') for step in report['steps'])
                 for step in report['steps']:
                     if step['state'] in ('failed', 'held'):
                         self._failed('recovery', _code(step.get('reason')))
@@ -161,6 +168,7 @@ class Supervisor:
                     or (self._owns_client and self._client.running)):
                 return False
             self._stop.clear()
+            self.custody_event.clear()
             self._client_started = False
             self.last_attempt = self.last_tick = None
             self.report = {}
@@ -179,6 +187,9 @@ class Supervisor:
     def _loop(self) -> None:
         try:
             while not self._stop.is_set():
+                # Cleared BEFORE the pass: a commit that lands during it leaves the event
+                # set, so the wait below returns at once rather than losing the signal.
+                self.custody_event.clear()
                 if self.enabled():
                     try:
                         self._drive_client()
@@ -195,11 +206,13 @@ class Supervisor:
                     self.tick()
                 else:
                     self._cancel_client(0)
-                if self._stop.wait(self.delay()):
+                self.custody_event.wait(self.delay())
+                if self._stop.is_set():
                     break
         except Exception as exc:
             self._failed('thread', 'worker_failed', exc)
             self._stop.set()
+            self.custody_event.set()
             self._cancel_client(0)
 
     def _drive_client(self) -> None:
@@ -267,6 +280,7 @@ class Supervisor:
                 # Publish and start under the same lock used by stop's snapshot.
                 # stop can never miss a newly started worker.
                 self._client = client
+                client.custody_event = self.custody_event  # MC-1186: wake the loop on commit
                 try:
                     client.start()
                 except Exception:
@@ -368,6 +382,7 @@ class Supervisor:
         with self._lock:
             thread = self._thread
             self._stop.set()
+            self.custody_event.set()
         stopped = self._cancel_client(max(0.0, deadline - time.monotonic()))
         if thread is not None and thread is not threading.current_thread():
             thread.join(max(0.0, deadline - time.monotonic()))

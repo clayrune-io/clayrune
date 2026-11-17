@@ -12,6 +12,7 @@ from mc.agent_mail_questions import consume, matching
 from mc.agent_mail_store import (EXPIRED, REVOKED, MailStore, SUBMITTED, SUBMITTING, TURN_COMPLETED,
                                  UNCERTAIN, hash_thread_token)
 from mc.agent_mail_target import MailHeld, resolve, snapshot, validate
+from mc.agent_mail_transient_holds import is_retryable_hold
 from mc.core import _log
 
 
@@ -184,6 +185,8 @@ class MailWake:
             if reason == 'session_busy':
                 self.store._move(db, event['event_id'], SUBMITTING, 'ready', reason='deferred',
                                  fence=event['fence_token'], next_attempt=self.store.clock() + 1)
+            elif is_retryable_hold(reason):  # MC-1186: clears on its own; the store's backoff applies
+                self.store._fail_locked(db, row, reason, True)
             else:
                 self.store._fail_locked(db, row, reason, False)
 

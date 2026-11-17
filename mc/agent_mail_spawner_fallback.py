@@ -89,6 +89,10 @@ def try_forward(wake: Any, app: Any, event: dict[str, Any], bound: dict[str, Any
         return True
     except MailHeld as exc:
         _log(f"[agent-mail] spawner fallback refused: {exc}", flush=True)
+        if str(exc) == 'session_busy' and not (scope is not None and scope.started):
+            # MC-1186: a spawner mid-turn is a wait, not a refusal; retry under the store's backoff.
+            wake.hold(event, 'spawner_busy')
+            return True
     except Exception as exc:
         _log(f'[agent-mail] spawner fallback failed: {type(exc).__name__}: {exc}', flush=True)
     if scope is not None and scope.started:
