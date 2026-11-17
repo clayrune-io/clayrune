@@ -9636,6 +9636,14 @@
   }
   .wfb-toolbar-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
   .wfb-toolbar-btn:disabled { opacity: 0.4; cursor: default; }
+  /* MC-1201: Update/Create and Run now carried only `btn-sched-save` /
+     `btn-sched-cancel`, which app.css styles under `.schedule-form` alone, so
+     in the workflow toolbar they rendered as browser-default buttons (white,
+     square, Arial). They now also wear `.wfb-toolbar-btn`; these two
+     modifiers only add the accent the old inline/schedule styling meant. */
+  .wfb-toolbar-btn.wfb-toolbar-btn-primary { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+  .wfb-toolbar-btn.wfb-toolbar-btn-primary:hover:not(:disabled) { background: var(--accent); color: var(--bg); }
+  .wfb-toolbar-btn.wfb-toolbar-btn-accent { border-color: var(--accent); color: var(--accent); }
   /* Action / Approval gate / Wait (MC-871 follow-up, Ron: "these should go to
      the top of the canvas screen same row as create and run now... to the
      left of them"). Moved out of the palette (formerly `.wfb-palette-block`,
