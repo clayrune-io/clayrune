@@ -90,3 +90,62 @@ or clear, with the line that raised it.
   record and from there into every later system prompt as "YOU SAID YOU WOULD";
   only length caps (`:1554-1565`). Compare with the Scribe's guards.
 
+Read so far (update): `mc/memory.py:1-6219`.
+
+- K14 `memory.py:4950` + `:4624-4630` `_entry_label(task)` keeps newlines; the
+  entry is then two physical lines, and `_mem_split_full` `:597-602` keeps only
+  lines starting `- [`. So a session whose task has a newline in its first 80
+  chars loses its Scribe summary at the NEXT commit (stub title survives), and
+  `last_entry_hash` (`:4791`, hash of the two-line string) never matches again,
+  so each checkpoint appends instead of superseding. Same at `:5328`.
+  VERIFY with the pure functions, and count stub lines in a real log read-only.
+- K15 `memory.py:4775` on every commit: `_mem_migrate(existing)` treats the
+  first literal `## Session Log` in a sentinel-free MEMORY.md as the start of the
+  managed region; `- [` pointer lines after it move to SESSION_LOG.md, other
+  lines are dropped, `_write_curated_only` `:4844` persists the cut. (K9 path.)
+- K16 `memory.py:4844-4845` (and `:4246-4247`): MEMORY.md is stripped BEFORE
+  SESSION_LOG.md is written; a failure between loses the inline entries and
+  markers of an unmigrated project. Archive append `:4843` precedes both: a
+  failure after it duplicates the evicted lines in the permanent archive.
+- K17 `memory.py:4919-4958` `_write_session_memory` says "Never raises";
+  `_commit_managed_entry` propagates read/write errors (`:4746`) and is called
+  unguarded at `:4957`. An exception also skips Distiller, Beacon, topics, mint.
+  Check both call sites for a guard.
+- K18 `memory.py:4684-4697` `_append_to_archive` reads and rewrites the whole
+  archive per append (strict utf-8 read). O(archive) per eviction; measure size.
+- K19 `memory.py:4362-4382` legacy `agent` condense trigger sums MEMORY.md +
+  SESSION_LOG.md + the permanent archive against `condense_threshold_kb` (30).
+  The archive only grows, so the trigger is permanently true once it passes
+  30 KB; only the 1 h cooldown limits it. `agent` is the shipped default.
+  Read `_dispatch_condense` to confirm what a fire costs.
+- K20 `memory.py:4846` passes `include_claude_md=True`, which also skips the
+  `_has_running_agent` check (`:4303`), at checkpoint time when an agent is live.
+- K21 `memory.py:4879-4880` `live` is computed before the lock; docstring
+  `:4861-4862` says the membership test is re-done inside it. R41 class.
+- K22 `memory.py:5161-5173`, `:5197-5211`: sid is added to
+  `_checkpoint_inflight` before `_model_for_provider` runs; if that raises
+  (pass 1 P1) the outer `except Exception: return False` `:5217` leaves the sid
+  in the set forever and the session never checkpoints again. No log.
+- K23 `memory.py:6137-6140` the `busy` guard drops the Scribe for a second
+  session of the same project instead of queueing it. Unreachable today only
+  because R38 serialises completions under the project lock; R38's proposed fix
+  ("the busy guard is enough") would turn the wait into lost summaries.
+- K24 `memory.py:6164-6165` render I/O failure is reported as `parse_empty`,
+  no log. `:5505-5506`, `:5490-5491`, `:5217`, `:5850-5851`, `:5080` swallow
+  state-file or transcript I/O with no log (policy).
+- K25 `memory.py:5808` no dict guard on `m`; a non-dict JSON line raises and the
+  outer handler abandons the rest of that transcript's telemetry.
+- K26 `memory.py:5995-6008` docstring says `_memory_search` has no origin
+  filter; `_mem_unit_allowed` `:2571` is one. Stale comment.
+- K27 `memory.py:3355-3358` `resolve_mint` writes request `candidate` raw into
+  frontmatter via `_rewrite_frontmatter_field` `:3316`; a newline adds lines
+  after the stamped `origin:`. Not checked against `mint_candidates`. Check the
+  route and the parser's duplicate-key rule (with K3).
+- K28 `memory.py:3180-3181` mint description = first 160 chars of the subject
+  (backlog text, hivemind title), newlines kept, into `write_topic_note`'s
+  hand-built frontmatter. If the parse then loses `origin`, an unattended mint
+  reads as unstamped and passes `_mem_unit_allowed`. Flag is off by default.
+- K29 `memory.py:6018` + `_habit_source_statements` `:5960-5970`: "human said
+  it" = `trigger_type == 'manual'` and the seed label equals the configured user
+  name. Pass 2 R48 (`/agent/send` is always attended) is the upstream hole.
+
