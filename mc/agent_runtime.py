@@ -61,6 +61,7 @@ from datetime import timedelta
 from mc import allowance_state as _allowance_state
 from mc import codex_run_error as _codex_run_error
 from mc import empty_turn as _empty_turn
+from mc import reply_line_kind as _reply_line_kind  # which log lines are MC status, not reply (A1)
 from mc import turn_clock as _turn_clock  # elapsed-since-last-reply stamp (mc/turn_clock.py)
 from mc import transform_sandbox as _transform_sandbox
 from mc import transform_deadline as _transform_deadline
@@ -941,7 +942,7 @@ def _collect_trailing_reply_text(lines: Optional[List[str]]) -> str:
                 break
             continue
         stripped = line.strip()
-        if stripped.startswith('['):
+        if _reply_line_kind.is_status_line(stripped):
             if collected:
                 break
             continue
