@@ -96,6 +96,9 @@ def resolve_shell(requested: Optional[str]) -> Dict[str, Any]:
     bash/sh exists anywhere on a Windows host, falls back to powershell and
     says so in `note` rather than failing the job outright.
     """
+    if requested is not None and not isinstance(requested, str):
+        raise ShellResolutionError(
+            f"unknown shell {requested!r} -- must be one of {', '.join(VALID_SHELLS)}")
     name = (requested or 'bash').strip().lower()
     if name not in VALID_SHELLS:
         raise ShellResolutionError(
