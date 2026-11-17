@@ -6,7 +6,7 @@ created here and read through pinned descriptors; arbitrary paths are not input.
 """
 from __future__ import annotations
 
-import copy
+import contextlib
 import hashlib
 import json
 import os
@@ -19,7 +19,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from mc.atomic_json import write_json_atomic
 from mc import test_run_store as runs
 from mc import test_run_anchor
 
@@ -165,12 +164,13 @@ class TestRunIngest:
                     'runner', 'unit', 'display_label', 'target_id'}):
                 raise ValueError('Invalid enrollment metadata')
             _encoded(metadata, runs.MAX_EVENT_BYTES)
-            # Parent validation and child creation share the finalizer/store lock:
+            # Parent validation and child creation share the parent's run lock:
             # a concurrent terminal transition cannot slip between them.
-            with runs._LOCK:
+            if parent_run_id is not None and not isinstance(parent_run_id, str):
+                raise ValueError('Invalid parent run')
+            with (self.store.locked(project_id, parent_run_id) if parent_run_id is not None
+                  else contextlib.nullcontext()):
                 if parent_run_id is not None:
-                    if not isinstance(parent_run_id, str):
-                        raise ValueError('Invalid parent run')
                     parent = self.store.get(project_id, parent_run_id)
                     if (owner.session_id is None
                             or parent['owner_session_id'] != owner.session_id
@@ -212,14 +212,13 @@ class TestRunIngest:
                 raise ValueError('Invalid telemetry batch')
             # Detach nested payloads from the caller before validation/persistence.
             events = json.loads(_encoded(events, MAX_BATCH_BYTES))
-            # Shared lock and frozen envelope are deliberate private store seams.
-            # No store implementation or on-disk format changes for batching.
-            with runs._LOCK:
-                record = self.store._read(project_id, run_id)
-                if record['enrollment']['owner_session_id'] != grant.owner.session_id:
+            # The store keeps an open run's reducer in memory, so this batch is
+            # checked and applied against it: no re-read of the run's history.
+            with self.store.locked(project_id, run_id) as run:
+                enrollment = run.enrollment
+                if enrollment['owner_session_id'] != grant.owner.session_id:
                     raise IngestRefused('Owner mismatch')
-                history = record['events']
-                known = {(e['producer_id'], e['producer_seq']): e for e in history}
+                pending: dict[tuple[str, int], dict[str, Any]] = {}
                 additions: list[dict[str, Any]] = []
                 at = self._clock()
                 for raw in events:
@@ -231,28 +230,30 @@ class TestRunIngest:
                     event = dict(raw, run_id=run_id, producer_id=grant.receipt.producer_id,
                                  observed_at=at)
                     key = (grant.receipt.producer_id, raw['producer_seq'])
-                    prior = known.get(key)
-                    if prior is not None:
-                        event['observed_at'] = prior['observed_at']
+                    earlier = pending.get(key)
+                    stored = None if earlier is not None else run.stored_observed_at(*key)
+                    if earlier is not None:
+                        event['observed_at'] = earlier['observed_at']
+                    elif stored is not None:
+                        event['observed_at'] = stored
                     try:
                         # Validate even events ignored by a frozen terminal record.
-                        runs.replay(record['enrollment'], [event])
+                        runs.replay(enrollment, [event])
                     except (ValueError, TypeError, KeyError, OverflowError):
                         raise ValueError('Invalid producer event') from None
-                    if prior is not None:
-                        if prior != event:
+                    if earlier is not None:
+                        if earlier != event:
+                            raise ValueError('Conflicting producer sequence')
+                    elif stored is not None:
+                        if not run.matches_stored(event):
                             raise ValueError('Conflicting producer sequence')
                     else:
-                        known[key] = event
+                        pending[key] = event
                         additions.append(event)
-                # Full replay also catches conflicting phase/collection revisions.
-                snapshot = runs.replay(record['enrollment'], [*history, *additions])
-                if additions and record['snapshot']['state'] not in runs.TERMINAL_STATES:
-                    record['events'] = [*history, *additions]
-                    record['snapshot'] = snapshot
-                    write_json_atomic(self.store._path(project_id, run_id), record,
-                                      allow_nan=False)
-                return copy.deepcopy(record['snapshot'])
+                # The reducer also catches conflicting phase/collection revisions;
+                # a batch that raises there writes nothing. A terminal run
+                # ignores the additions and keeps its snapshot.
+                return run.commit(additions)
 
     def create_spool(self, project_id: str, caller: Any, run_id: str, token: str) -> Path:
         """Create the only permissible attachment; never open a producer path.

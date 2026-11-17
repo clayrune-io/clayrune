@@ -159,8 +159,8 @@ def test_producer_generation_and_owner_check(env):
 def test_batch_uses_one_atomic_write_and_is_store_replay_compatible(env, monkeypatch):
     _, receipt = enroll(env)
     writes = []
-    original = ingest.write_json_atomic
-    monkeypatch.setattr(ingest, 'write_json_atomic', lambda *a, **k: (
+    original = runs.tail_log.append
+    monkeypatch.setattr(runs.tail_log, 'append', lambda *a, **k: (
         writes.append(a[0]), original(*a, **k))[-1])
     batch = [report(i + 1, str(i)) for i in range(64)]
     snapshot = submit(env, receipt, batch)
@@ -252,14 +252,14 @@ def test_reporter_finish_never_mints_process_success_and_terminal_is_frozen(env)
 
 def test_failed_atomic_write_is_retryable_without_lost_history(env, monkeypatch):
     _, receipt = enroll(env)
-    original = ingest.write_json_atomic
+    original = runs.tail_log.append
     def broken(*args, **kwargs):
         raise OSError('injected replace failure')
-    monkeypatch.setattr(ingest, 'write_json_atomic', broken)
+    monkeypatch.setattr(runs.tail_log, 'append', broken)
     with pytest.raises(OSError):
         submit(env, receipt, [report()])
     assert env[1].events('a', receipt.run_id) == []
-    monkeypatch.setattr(ingest, 'write_json_atomic', original)
+    monkeypatch.setattr(runs.tail_log, 'append', original)
     assert submit(env, receipt, [report()])['completed'] == 1
 
 
@@ -354,14 +354,14 @@ def test_spool_failed_commit_retries_same_offset(env, monkeypatch):
     _, receipt = enroll(env)
     path = spool(env, receipt)
     path.write_text(json.dumps(report()) + '\n')
-    original = ingest.write_json_atomic
+    original = runs.tail_log.append
     def broken(*args, **kwargs):
         raise OSError('disk failure')
-    monkeypatch.setattr(ingest, 'write_json_atomic', broken)
+    monkeypatch.setattr(runs.tail_log, 'append', broken)
     with pytest.raises(OSError):
         poll(env, receipt)
     assert next(iter(env[0]._grants.values())).offset == 0
-    monkeypatch.setattr(ingest, 'write_json_atomic', original)
+    monkeypatch.setattr(runs.tail_log, 'append', original)
     assert poll(env, receipt) == 1
     assert env[1].get('a', receipt.run_id)['completed'] == 1
 

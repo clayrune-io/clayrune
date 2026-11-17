@@ -10,9 +10,8 @@ from __future__ import annotations
 import time
 
 from mc import state
-from mc.atomic_json import write_json_atomic
 from mc.core import TimestampedLines, _log
-from mc.test_run_store import TestRunStore, _LOCK
+from mc.test_run_store import TestRunStore
 
 FLAG = 'test_run_progress_enabled'
 _CLAIM = 'chat_anchor_claimed'
@@ -23,15 +22,15 @@ def post(store: TestRunStore, project_id: str, run_id: str) -> bool:
 
     The authoritative enrollment binds project and owner. The claim is
     internal metadata, outside replay/snapshots and reporter event payloads.
-    All store writers share _LOCK and preserve that metadata. The installation
-    has one server, matching the store's single-server concurrency contract.
+    The claim and the append run under this run's lock (store.locked), and every
+    store writer preserves the metadata. The installation has one server,
+    matching the store's single-server concurrency contract.
     """
     try:
         if state.CONFIG.get(FLAG) is not True:
             return False
-        with _LOCK:
-            record = store._read(project_id, run_id)
-            owner = record['enrollment']['owner_session_id']
+        with store.locked(project_id, run_id) as run:
+            owner = run.enrollment['owner_session_id']
             if not owner:
                 return False
             session = state.agent_sessions.get(owner)
@@ -40,13 +39,12 @@ def post(store: TestRunStore, project_id: str, run_id: str) -> bool:
                     or session.get('session_id', owner) != owner
                     or session.get('incognito') or session.get('_codex_unattended_sandbox')):
                 return False
-            if record.get(_CLAIM) is True:
+            if run.claimed(_CLAIM):
                 return False
             line = f'[test-run:{run_id}]'
             lines = session.setdefault('log_lines', TimestampedLines())
             # Persist first, even if an earlier line survived without a claim.
-            record[_CLAIM] = True
-            write_json_atomic(store._path(project_id, run_id), record, allow_nan=False)
+            run.claim(_CLAIM)
             if line in lines:
                 return False
             lines.append(line)

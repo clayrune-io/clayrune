@@ -234,6 +234,8 @@ _CONFIG_EDITABLE_KEYS = {
     'aider_restricted_adapter_enabled',
     # MC-1148 dark API, read live; existing human/passcode gates apply.
     'test_run_progress_enabled',
+    # MC-1179 SF30: retention window in days, read live by the daily sweep.
+    'test_run_retention_days',
     # Codex unattended sandbox (UNATTENDED_AGENT_PERMISSIONS_AUDIT §4 risk #1).
     # Read at dispatch/followup time by mc/blueprints/agent_routes.py
     # (_dispatch_via_runtime) — no respawn or restart needed. Same
@@ -405,6 +407,10 @@ def update_config():
     if (isinstance(state.CONFIG.get('provider_defaults'), dict) or 'provider_defaults' in data) and any(
             key in data for key in ('agent_model', 'agent_effort', *provider_preferences.ROLE_FIELDS)):
         return jsonify({'error': 'Use provider_defaults for model and effort preferences'}), 409
+    if 'test_run_retention_days' in data:
+        value = data['test_run_retention_days']
+        if type(value) is not int or value < 0:
+            return jsonify({'error': 'test_run_retention_days must be a non-negative integer (0 keeps everything)'}), 400
     if 'delegation_payload_warning_bytes' in data:
         value = data['delegation_payload_warning_bytes']
         if isinstance(value, bool):

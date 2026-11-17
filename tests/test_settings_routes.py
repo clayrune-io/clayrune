@@ -203,6 +203,22 @@ def test_delegation_warning_setting_round_trips_and_rejects_invalid_values(ctx):
         assert ctx.config_path.read_text(encoding='utf-8') == saved_baseline
 
 
+def test_test_run_retention_setting_round_trips_and_rejects_invalid_values(ctx):
+    floor_source = (PROJECT_ROOT / 'static' / 'js' / 'floor-preferences.js').read_text(encoding='utf-8')
+    assert "key: 'test_run_retention_days'" in floor_source
+    for good in (0, 14, 90):
+        response = ctx.client.put('/api/config', json={'test_run_retention_days': good})
+        assert response.status_code == 200, good
+        assert json.loads(ctx.config_path.read_text(encoding='utf-8'))['test_run_retention_days'] == good
+    baseline = dict(ctx.state.CONFIG)
+    saved_baseline = ctx.config_path.read_text(encoding='utf-8')
+    for invalid in (-1, True, 1.5, '7', None):
+        response = ctx.client.put('/api/config', json={'test_run_retention_days': invalid})
+        assert response.status_code == 400, invalid
+        assert ctx.state.CONFIG == baseline
+        assert ctx.config_path.read_text(encoding='utf-8') == saved_baseline
+
+
 def test_update_config_cleans_the_agent_face(ctx):
     """`agent_avatar` is the one editable key with a SHAPE. Cleaned on write,
     not just where it is drawn — config.json is read by more than one surface,

@@ -337,6 +337,10 @@ def _load_config():
         'aider_restricted_adapter_enabled': False,
         # MC-1148 dark telemetry API; no ingest service until explicitly enabled.
         'test_run_progress_enabled': False,
+        # MC-1179 SF30: days a finished test run is kept before the daily
+        # sweep deletes it (mc/test_run_retention.py). 0 keeps everything;
+        # a run still active is never deleted by age.
+        'test_run_retention_days': 14,
         # UNATTENDED_AGENT_PERMISSIONS_AUDIT §4 risk #1: Codex has no fence
         # equivalent (steward/fence.py is a Claude Code PreToolUse hook), so
         # every Codex session ever ran with
@@ -3283,6 +3287,11 @@ if CONFIG.get('test_run_progress_enabled') is True:
     from mc import test_run_lost_sweep as _test_run_lost_sweep  # noqa: E402
     _test_run_lost_sweep.start_startup_sweep(
         _bp_test_runs._storage, _bp_projects.load_projects, _bp_agent.agent_sessions)
+# SF30: delete finished test runs past test_run_retention_days, once at startup
+# off the boot path and then daily. Independent of the flag: whatever is on disk
+# ages out whether or not the feature is currently on.
+from mc import test_run_retention as _test_run_retention  # noqa: E402
+_test_run_retention.start(_bp_test_runs._storage)
 from mc.blueprints.agent_mail_routes import create_blueprint as _mail_ingress_blueprint  # noqa: E402
 app.register_blueprint(_mail_ingress_blueprint(DATA_DIR))
 # Only the server process may sweep orphaned Chromium profile dirs: it is the

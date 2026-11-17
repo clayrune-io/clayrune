@@ -54,7 +54,7 @@ def test_launcher_evidence_persists_and_exact_retry_is_write_free(core, monkeypa
     assert 'server_observed' not in raw
     assert runs.TestRunStore(core.store.root.parent).get('a', run['run_id']) == snapshot
     core.now[0] += 100000  # The live process can finish/retry past reporter expiry.
-    monkeypatch.setattr(runs, 'write_json_atomic', lambda *a, **kw: pytest.fail('retry wrote'))
+    monkeypatch.setattr(runs.tail_log, 'append', lambda *a, **kw: pytest.fail('retry wrote'))
     assert core.service.finalize('a', 'alice', run['run_id'], capability.token, result()) == snapshot
 
 
@@ -220,14 +220,14 @@ def test_reported_failure_still_outranks_launcher_exit_zero(core):
 
 def test_atomic_failure_can_be_retried_without_false_terminal_state(core, monkeypatch):
     run, _, cap = core.service.enroll('a', 'alice', {})
-    original = runs.write_json_atomic
+    original = runs.tail_log.append
     def fail(*a, **kw):
         raise OSError('test storage failure')
-    monkeypatch.setattr(runs, 'write_json_atomic', fail)
+    monkeypatch.setattr(runs.tail_log, 'append', fail)
     with pytest.raises(OSError):
         core.service.finalize('a', 'alice', run['run_id'], cap.token, result())
     assert core.store.get('a', run['run_id']) == run
-    monkeypatch.setattr(runs, 'write_json_atomic', original)
+    monkeypatch.setattr(runs.tail_log, 'append', original)
     assert core.service.finalize('a', 'alice', run['run_id'], cap.token, result())['state'] == 'passed'
 
 

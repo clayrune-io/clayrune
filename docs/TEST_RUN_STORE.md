@@ -22,26 +22,46 @@ are trusted server metadata, immutable after creation. There are no command,
 environment or arbitrary stdout fields. Text identifiers must already be safe
 for telemetry; this module cannot identify a secret hidden in a test name.
 
-An atomic JSON envelope contains schema 1, immutable enrollment, canonical
-accepted events and the derived snapshot. `write_json_atomic` flushes/fsyncs
-before replacement. Events and snapshot commit together; a failed replacement
-preserves the prior record and allows the same event to be retried. There is no
-separate append log whose torn tail could disagree with the snapshot. Stranded
-temporary files are ignored. A corrupt envelope or snapshot/replay mismatch
-raises `StoreError`, without replacing it or manufacturing an empty/passed run.
+A JSON envelope contains schema 1, immutable enrollment, canonical accepted
+events and the derived snapshot. `create` writes it atomically (`write_json_atomic`
+flushes/fsyncs before replacement). While a run is open (MC-1179 SF30) the
+envelope is not touched again: each accepted event batch is appended to a
+sibling `<run-id>.log`, one canonical JSON event per line (`mc/test_run_log.py`),
+with one `write` and one `fsync` of just that batch's bytes. When the run ends
+the tail is folded into the envelope in one atomic write and removed, so a
+finished run is the single `.json` file it always was. A record written before
+this change (events and snapshot in the envelope, no tail) loads exactly as
+before and is never rewritten or converted; it just ages out (see Retention).
+
+Crash model: a crash mid-append can leave an unterminated last line. Loading
+drops exactly that line (it was never acknowledged) and the next append
+truncates it away before writing, so nothing is ever glued to garbage; a complete
+line that is not a JSON object is corruption and raises `StoreError`. A crash
+between the compacted envelope landing and the tail being removed leaves both:
+the envelope is terminal and wins. Stranded temporary files are ignored. A
+corrupt envelope or snapshot/replay mismatch raises `StoreError`, without
+replacing it or manufacturing an empty/passed run. A failed append drops the
+run's in-memory state and the next call rebuilds it from the files, which hold
+exactly the acknowledged events.
 
 `get`, `events`, `apply`, `finish` and `list_runs` require project identity.
 Cross-project lookups raise `KeyError` just like a missing run. Returned values
 are copies. `list_runs` sorts newest first, filters by optional owner session,
 and accepts offset plus a limit of 1-100 (default 100). Null owner is a valid
-project-level run. A shared process-local reentrant lock prevents lost updates
-across threads and store instances; this is not a multi-server lock.
+project-level run. Writes take one process-local reentrant lock **per run file**
+(`mc/test_run_open.py` `RunLocks`, shared by store instances, dropped when idle),
+held only across reducing the batch in memory, one append and, when the batch
+ends the run, one compaction. Two runs never wait for each other. A run's
+reducer state is kept in a bounded in-memory LRU (`OpenRegistry`, 16 runs) tagged
+with the file fingerprint; a write applies only its own batch, and a run that was
+evicted, restarted over or edited outside is rebuilt by one replay on its next
+write. This is not a multi-server lock.
 
 `all_snapshots(project_id)` returns the same newest-first defensive copies in
 one directory pass, with no page cap. The Floor uses `active_snapshots` instead;
 `list_runs` retains its public limit of 100 and its owner/offset semantics.
-Enumeration and sorting run outside the shared lock. Validation/cache access
-holds it for one file at a time, allowing submits between records, including
+Enumeration and sorting run outside any lock. Validation/cache access
+holds one run's lock at a time, allowing submits between records, including
 on a cold cache. A list is a per-file observation, not a project-wide atomic
 snapshot; a newly created run may appear on the next poll.
 Files disappearing after enumeration/stat are skipped, including when they
@@ -79,14 +99,18 @@ projection. Active files use the snapshot LRU and can evict history snapshots;
 Floor does not admit terminal snapshots into that cache. Changed terminal
 fingerprints invalidate markers and require canonical validation again.
 Creates/appends invalidate both structures before persistence, even if a
-fingerprint is reused. The global store lock guards both indexes.
+fingerprint is reused. A small module-level guard protects both indexes.
 
 Terminal markers grow linearly with observed terminal paths over the process
 lifetime (one absolute path and two integers per path); this is an intentional
-metadata budget independent of the bounded snapshot heap. No retention limit
-is inferred and no run is deleted. Missing paths are forgotten on direct read;
+metadata budget independent of the bounded snapshot heap. Missing paths are forgotten on direct read;
 paths absent from subsequent enumerations may retain a small marker until
-restart. Cache state is rebuilt after restart. Warm Floor validation/copying
+restart. The in-memory caches are rebuilt after restart, but a terminal file
+validated once is trusted across restarts by `mc/test_run_ledger.py`: a
+`_validated.jsonl` per project folder records `(path, mtime_ns, size)` of each
+validated terminal file, so the first Floor read after boot stats the files
+instead of replaying them. It is a cache only: missing, truncated or stale, it
+costs a re-validation and nothing else. Warm Floor validation/copying
 and projection scale with active/changed files, but enumeration and stat still
 scale with all files. If active snapshots themselves exceed the LRU bounds,
 active validation may recur; terminal history still requires no replay.
@@ -180,20 +204,27 @@ reconstructs snapshots without launching processes or validating PID adoption.
 
 ## Retention, trust and remaining work
 
-Snapshots retain the latest 100 failure-phase details and 100 diagnostics with
-explicit totals/omission counts. Canonical events retain full accepted history;
-there is no automatic pruning policy or deletion path. Failure totals count
-failing phases, whereas outcome counters count completed logical units.
-`events()` is an internal full-history accessor, not a bounded public route.
+`mc/test_run_retention.py` deletes a run once it reached a terminal state more
+than `test_run_retention_days` ago (default 14; `0` keeps everything; no size
+bound). An active run is never deleted by age: the orphan sweep ends a dead one
+and it then ages out like any other. The sweep runs once at startup off the boot
+path, then at most once a day, and logs one line with the runs and bytes removed.
+Files modified inside the window are not opened. For an older candidate the store
+rechecks under that run's lock that it is terminal, old and unchanged, then
+removes the tail and the record. A file that cannot be read or removed is logged
+and the sweep continues. Nothing else is deleted, and no file is rewritten.
 
-Cache misses, event reads and write validation verify replay; every accepted
-update rewrites one envelope. Replay is linear in retained events plus phase
-details. Whole-record write I/O still grows with history; batching/compaction
-remain separate integration considerations. The snapshot cache only removes
-repeated validation from unchanged snapshot reads. Phase 2's
-`TEST_RUN_CAPTURE.md` bounds log reads and coalesces output heartbeats before
-using this API; the store format and per-event append behavior remain unchanged.
-Structured reporter ingestion/batch persistence is still a later concern.
+Snapshots retain the latest 100 failure-phase details and 100 diagnostics with
+explicit totals/omission counts. Canonical events retain full accepted history
+for the life of the run. Failure totals count failing phases, whereas outcome
+counters count completed logical units. `events()` is an internal full-history
+accessor, not a bounded public route.
+
+Cache misses and event reads verify replay. An accepted update on an open run
+costs the batch's own bytes, not the history; replay happens only when a run is
+loaded from disk. Phase 2's `TEST_RUN_CAPTURE.md` bounds log reads and coalesces
+output heartbeats before using this API. Structured reporter ingestion/batch
+persistence is still a later concern.
 
 Authorization, producer receipts, timestamp provenance, owner attribution,
 reporter adaptation and process evidence verification belong to later phases.
@@ -204,13 +235,13 @@ sandbox/incognito policy or offer an ephemeral store; Q4 remains deferred.
 Validation:
 
 ```text
-python -m pytest tests/test_test_run_store.py tests/test_atomic_json.py
-pyright mc/test_run_store.py
+python -m pytest tests/test_test_run_store.py tests/test_test_run_append_log.py tests/test_test_run_retention.py tests/test_atomic_json.py
+pyright mc/test_run_store.py mc/test_run_log.py mc/test_run_open.py mc/test_run_ledger.py mc/test_run_retention.py
 ```
 
 The focused tests exercise torn replacement/corruption, duplicate/reordered
 events, retries and phase accounting, all terminal states, changed totals,
 project/session boundaries, concurrent store instances and bounded details.
 Existing atomic-writer regressions cover its shared fsync/replace behavior.
-No user-visible surface changes, so no user guide or user-facing changelog
-entry is appropriate at this dark-backend phase.
+The only user-visible surface is the `test_run_retention_days` setting
+(Settings > Working defaults); see the CHANGELOG entry for MC-1179 / SF30.

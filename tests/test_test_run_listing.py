@@ -9,6 +9,7 @@ from mc import test_run_store as runs
 from mc.test_run_listing import ListIndex
 from mc.test_run_snapshots import SnapshotCache
 from mc.test_run_terminal import TerminalIndex
+from tests.run_store_cold import cold
 
 
 @pytest.fixture
@@ -16,6 +17,7 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(runs, '_LIST', ListIndex())
     monkeypatch.setattr(runs, '_SNAPSHOTS', SnapshotCache())
     monkeypatch.setattr(runs, '_TERMINAL', TerminalIndex())
+    cold(monkeypatch)
     return runs.TestRunStore(tmp_path)
 
 
@@ -246,7 +248,7 @@ def test_writes_invalidate_index_even_with_reused_fingerprint(store, monkeypatch
             def fail(*args, **kwargs):
                 raise OSError('write refused')
             with monkeypatch.context() as patch:
-                patch.setattr(runs, 'write_json_atomic', fail)
+                patch.setattr(runs.tail_log, 'append', fail)
                 with pytest.raises(OSError):
                     store.apply('a', record['run_id'], event)
             expected = record

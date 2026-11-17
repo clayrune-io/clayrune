@@ -285,19 +285,19 @@ def test_getters_and_input_never_share_mutable_state(store, run):
     assert store.get('project-a', run['run_id'])['diagnostics'][0]['code'] == 'reporter_lost'
 
 
-def test_atomic_replace_failure_preserves_previous_snapshot_and_dedupe(store, run, monkeypatch):
+def test_failed_append_preserves_previous_snapshot_and_dedupe(store, run, monkeypatch):
     target = store._path('project-a', run['run_id'])
     previous = target.read_bytes()
-    def torn_replace(tmp, path):
-        assert path == target
-        from pathlib import Path
-        assert json.loads(Path(tmp).read_text(encoding='utf-8'))['snapshot']['completed'] == 1
-        raise OSError('injected crash before replace')
+    def refused(path, lines, **kwargs):
+        assert path == target.with_suffix('.log')
+        assert len(lines) == 1 and json.loads(lines[0])['producer_seq'] == 1
+        raise OSError('injected crash before append')
     with monkeypatch.context() as patch:
-        patch.setattr(atomic_json, '_replace_with_retry', torn_replace)
+        patch.setattr(runs.tail_log, 'append', refused)
         with pytest.raises(OSError, match='injected crash'):
             report(store, run, 1)
     assert target.read_bytes() == previous
+    assert not target.with_suffix('.log').exists()
     assert runs.TestRunStore(store.root.parent).get('project-a', run['run_id']) == run
     # Failed events were not marked seen in memory and can be retried verbatim.
     assert report(store, run, 1)['completed'] == 1
