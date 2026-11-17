@@ -61,6 +61,7 @@ from datetime import timedelta
 from mc import allowance_state as _allowance_state
 from mc import codex_run_error as _codex_run_error
 from mc import empty_turn as _empty_turn
+from mc import oneshot_exit_check as _oneshot_exit_check  # exit-code check for oneshot (G1, Q1)
 from mc import reply_line_kind as _reply_line_kind  # which log lines are MC status, not reply (A1)
 from mc import turn_clock as _turn_clock  # elapsed-since-last-reply stamp (mc/turn_clock.py)
 from mc import transform_sandbox as _transform_sandbox
@@ -8008,23 +8009,45 @@ class QwenRuntime(AgentRuntime):
         # _settings_auth_env()'s docstring.
         for k, v in self._settings_auth_env().items():
             env[k] = v
+        self.last_error = ''
         try:
             r = subprocess.run(
                 cmd, input=full,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 cwd=_transform_sandbox.neutral_cwd(),
                 text=True, encoding='utf-8', errors='replace',
                 timeout=180, env=env,
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
             )
-        except Exception:
+        except subprocess.TimeoutExpired:
+            self.last_error = 'timeout after 180s'
             return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e!r}'
+            print(f'[runtime:qwen] text transform spawn failed: {e!r}', flush=True)
+            return None
+        # MC-1179 Q1: the answer is a structured assistant event, never the raw
+        # stdout. parse_event turns any non-JSON line into ASSISTANT_TEXT, so
+        # only an event that carries its parsed envelope (`raw` is a dict) counts
+        # (same rule as CodexRuntime.oneshot); an is_error result is a failure
+        # whatever the exit code says; the exit code and stderr are read.
         last_text = ''
+        error_text = ''
         for raw_line in (r.stdout or '').splitlines():
             ev = self.parse_event(raw_line)
-            if ev and ev.type == EventType.ASSISTANT_TEXT:
+            if ev is None:
+                continue
+            if ev.type == EventType.ASSISTANT_TEXT and isinstance(ev.raw, dict):
                 last_text = ev.payload.get('text', last_text)
-        return OneshotResult(text=last_text or (r.stdout or '').strip())
+            elif ev.type in (EventType.ERROR, EventType.ALLOWANCE_EXHAUSTED):
+                error_text = str(ev.payload.get('text') or ev.payload.get('raw_ref') or 'error result')
+        detail = _oneshot_exit_check.failure_detail(
+            r.returncode, r.stderr, last_text, error_text=error_text,
+            benign_exit=_oneshot_exit_check.is_qwen_teardown_crash(r.stderr))
+        if detail:
+            self.last_error = detail
+            return None
+        return OneshotResult(text=last_text.strip())
 
     VISION_DESCRIBE_MODEL = 'qwen3-vl-plus'
 
