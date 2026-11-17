@@ -485,3 +485,146 @@ Read, not measured; the call site at `agent_routes.py:2410` is pass 2.
   collide.
 
 ---
+
+### 4b. Lines 3846-5433: `GeminiRuntime`
+
+#### G1 · high · L, M — Gemini `oneshot` never looks at the exit code and reports a failed transform as a successful one
+
+`mc/agent_runtime.py:5369-5380`: `subprocess.run(...)`, then
+`text = (r.stdout or '').strip(); return OneshotResult(text=text, raw=None)`.
+`r.returncode` and `r.stderr` are never read. `run_text_transform` raises only
+when the runtime returns `None` (`:1570-1576`), so:
+
+- a Gemini transform that exits non-zero with nothing on stdout (quota, auth,
+  network: the CLI's reason goes to stderr) returns `''` to the caller as a
+  completed transform, not a `TransformFailure`;
+- one that exits non-zero after printing part of an answer returns the fragment
+  as the answer;
+- the allowance layer never sees the stderr text it would use to recognise
+  exhaustion, because `last_error` is not set on this path at all. On the two
+  paths that do return `None` (`:5363-5364`, `:5377-5378`) `last_error` still
+  holds whatever the previous Gemini call left there (A5), so the failure is
+  classified by another call's reason.
+
+`describe_image` twenty lines below does it correctly (`:5417-5421`: rc and
+empty text both set `last_error` and return `None`), so the two transform
+entry points of one class disagree. The bare `except Exception: return None`
+at `:5377` swallows a subprocess failure with no log line (project policy says
+log). The 180 s timeout is `subprocess.run` on what is a `.cmd` shim on
+Windows, so it does not hold either (A2). Read, not measured: no Gemini CLI was
+launched.
+**Fix:** copy `describe_image`'s tail: `rc != 0 or not text` sets `last_error`
+from stderr and returns `None`; log in the `except`.
+**Test coverage:** not found for a non-zero exit; tests stub `subprocess.run`
+with rc 0.
+
+#### G2 · medium · L — a follow-up sent while a Gemini turn is still running makes the old reader report a crash and fire `on_process_exit`
+
+`write_followup`, `:5251-5254`: kills the old process, then
+`session.pop('_interrupted', None)`. `session['proc']` still points at the old
+process until `:5318`, after the binary lookup, prompt assembly and spawn. The
+old reader's `finally` (`:5206-5245`) runs as soon as the kill closes stdout and
+tests exactly `session.get('proc') is proc`, `status == 'running'` and
+`not _interrupted`: all three hold in that window. It sets `status = 'error'`,
+appends `[gemini exited with code N]` plus a `[hint]`, sets
+`process_alive = False` and calls the `on_process_exit` callback with the kill's
+rc, for a turn the user merely superseded. `write_followup` then overwrites the
+status with `'running'`, so the log lines and whatever the callback did are what
+remain. `interrupt()` documents this exact race and closes it by setting
+`_interrupted` first (`:5330-5336`); the follow-up path clears that flag
+instead. Read, not measured. Whether the route lets a follow-up reach a running
+Mode A turn is pass 2; the runtime method itself does not refuse it.
+**Fix:** before the kill, detach the old reader (`session['proc'] = None`, or
+set a per-proc "superseded" marker the `finally` checks).
+**Test coverage:** not found.
+
+#### G3 · medium · L (security, multi-user hosts) — the tool-free transform's isolation lives at a fixed path in the shared temp directory and is checked once per process
+
+`_transform_home_dir` and `_transform_policy_path` (`:3948-3971`) use
+`<tempdir>/clayrune-transform-isolation/…` with `mkdir(exist_ok=True)` and cache
+the answer in a class attribute. On a host where the temp directory is shared
+between users (any Linux box), whoever creates that directory first owns it:
+they can place `gemini-home/.gemini/settings.json` (the file whose absence is
+the first isolation layer, per the comment at `:3917-3919`) and replace
+`gemini-tool-free.toml` after the one content check at `:3966`. The content is
+verified only the first time; after that `transform_evidence` certifies the
+profile by checking that the argv *contains the path* (`:4010-4012`), not that
+the file still holds the deny-all policy, so a deleted or replaced policy file
+is certified as `argv-self-check` passed. A temp cleaner removing the file has
+the same effect without an attacker. On a single-user Windows desktop the temp
+directory is per-user and this does not apply. Read, not measured.
+**Fix:** keep both under the app's own private data directory (0700), and
+re-verify the policy file's content in `_transform_argv` (it is 300 bytes).
+**Test coverage:** none could catch it; the tests assert the argv shape.
+
+#### G4 · low · L — one unexpected line shape ends the Gemini reader while the process is still alive
+
+`_read_stream` wraps the whole `for` loop in one `try` (`:5003-5174`). Any
+exception from the loop body leaves the loop, logs `[stream error: …]`, and the
+`finally` calls `proc.wait()` with no timeout (`:5177`). Nothing reads stdout
+from then on, so a CLI that keeps writing fills the pipe and blocks, and the
+session stays `running` until someone interrupts it. `parse_event` can raise on
+shapes it does not guard: `err = msg.get('error') or {}` followed by
+`err.get('message')` (`:4250-4251`) raises `AttributeError` when `error` is a
+string. That particular event is the last one of a run, so it is harmless
+there; the structure is what is reported. `_probe_live_quota` has the same
+unguarded shape inside its `except HTTPError` handler
+(`viol = (d.get('violations') or [{}])[0]; viol.get(...)`, `:4516-4518`), which
+breaks its "never raises" contract.
+**Fix:** `try`/`except` per line inside the loop; `isinstance(err, dict)` guards.
+
+#### G5 · low · L — the error classifier reads stale stderr and the agent's own reply text
+
+`_gemini_stderr_tail` is a per-session list that is trimmed to 40 lines but
+never cleared at the start of a turn (`:5019-5022`), and the exit path feeds its
+last 30 lines plus the last 30 `log_lines` to `explain_exit_error`
+(`:5228-5231`). That function is ordered substring matching (`:4899-4950`),
+with `'oauth'`, `'quota'`, `'timed out'` and `'permission denied'` among the
+needles. So a crash on turn 6 is explained by a rate-limit line turn 2 wrote to
+stderr, or by the model's own answer if it happened to mention OAuth. The
+OAuth-rejected branch also writes `status: 'oauth_rejected'` into the auth cache
+from the same text (`:4901-4908`).
+**Fix:** clear the tail in `begin_turn`; classify on stderr and `[gemini error]`
+lines only, not on reply text.
+
+#### G6 · low · L — `_slim_system_prompt` matches three anchors and two of them no longer exist
+
+`:4715-4718`, `:4744`: the prefixes `'IMPORTANT — Plan Mode:'` and
+`'Questions: When you need to ask the user'`, and the header
+`--- CLAYRUNE API REFERENCE ---`. The prompt builder now writes
+`"IMPORTANT — Plans: …"` and `"Questions: when you need the user to CHOOSE…"`
+(`agent_routes.py:4753`, `:4777`), and `grep` finds no producer of the
+`API REFERENCE` header in `mc/` or `server.py`. Steps 1 and 2 are no-ops; only
+the `Current task:` removal still fires. The docstring's "degrades gracefully
+(less slimming)" is accurate, which is why nothing failed: Gemini has been
+receiving the plan-mode and question instruction lines the function says it
+removes, on every dispatch.
+**Fix:** delete steps 1-2, or anchor them on constants shared with the builder.
+**Test coverage:** a test that feeds the old strings would still pass.
+
+#### G7 · low · E — the `mc:` fence check re-joins the whole turn on every delta
+
+`:5034`: the fence test runs `''.join(turn_text_parts)` once per text delta, so
+a turn costs O(deltas × turn length). Small in absolute terms for a normal
+reply (read, not measured); a rolling window of the last few characters plus
+the new delta gives the same answer in O(1).
+
+#### G8 · low · L — the class docstring describes a runtime that no longer exists
+
+`:3849-3860` says the reader "falls back to plain-text", follow-ups use
+`--checkpoint` or a one-line summary, and "Tools/MCP/Skills are NOT injected".
+The code drops every non-JSON line (`:5018-5023`, which also makes
+`parse_event`'s non-JSON branch at `:4147-4152` unreachable from the reader),
+resumes with `--resume <id>` (`:5294`), and filters MCP servers through
+`--allowed-mcp-server-names` (`:4105-4107`).
+
+#### Sound in lines 3846-5433
+
+- `build_command` never falls through to native MCP discovery: empty or
+  malformed input yields the deny sentinel (`:4105-4107`).
+- Text deltas are written to `log_lines` as one element per contiguous run and
+  flushed before any non-text event and at EOF (`:4985-4993`, `:5030`, `:5185`).
+- `interrupt` sets state before the kill, and the reader honours it.
+- `auth_probe` is the only path that spends a live call; `health_check` only
+  reads the cache it left (`:4367-4372`).
+- The tool-name map is bounded at 64 entries (`:5072-5074`).
