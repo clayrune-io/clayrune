@@ -368,3 +368,30 @@ Read so far (update): `mc/memory_fts.py`, `mc/memory_delivery.py`,
   counts search calls (turns), not tasks. Measure the file read-only.
 - Sound: `memory_state_trigger.py` (bare-filename guard, frontmatter only,
   bounded read); `memory_fts.py` incognito exclusion fails closed.
+
+Read so far (update): `mc/positions_review.py`, `mc/continuity_liveness.py`,
+`mc/continuity_threads.py`, `mc/rollover_threshold.py`,
+`mc/rollover_model_table.py` (all whole).
+
+- K90 `positions_review.py:93-102` + `:145-147` a corrupt sidecar reads as `{}`
+  and the locked write then persists only the entry being recorded: every other
+  position's `flagged`/`flagged_hash` is gone, so each re-raises as "new" (the
+  once-only property the module exists for). Logged. K42 class.
+- K91 `positions_review.py:126-152` lock break: two waiters past the deadline
+  can both unlink and both create; the `finally` unlink removes whichever lock
+  is there, including a successor's. Narrow, low.
+- K92 `continuity_liveness.py:15`, `:59` `_BRANCH` takes the word after any
+  "branch " as a branch name ("branch of", "branch is", "branch was"); with a
+  session id in the same line that word goes to `git show-ref` and the thread is
+  labelled `STATE MISMATCH ... branch absent`. Test the regex. One `git`
+  subprocess (5 s timeout) per named branch per render: find the render call
+  site and its frequency.
+- K93 `continuity_liveness.py:36-39`, `:77` a session that finished normally is
+  `live is False`, and the label for that is `LOST IN RESTART`, restart or not.
+- K94 `rollover_threshold.py:78` a per-character pin of 0 or less becomes
+  `MIN_THRESHOLD` (60k, the most aggressive value), while the global setting
+  treats 0 or less as "rollover off" (`:68`). Low.
+- Sound: `continuity_threads.py` (pure; invalid stamps fail stale),
+  `rollover_model_table.py` (static table, unknown model returns None and the
+  legacy limit applies), `positions_review.py` writes only its sidecar and the
+  flag logic matches its docstring.
