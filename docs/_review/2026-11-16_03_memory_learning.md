@@ -275,3 +275,35 @@ Read so far (update): `mc/skills.py` (whole), `mc/blueprints/distiller_routes.py
 - K66 `skills.py:497-502` a built-in the user archived or deleted is reinstalled
   on the next start (no tombstone).
 
+
+Read so far (update): `mc/memory_note_gate.py`, `mc/blueprints/memory_note_routes.py`,
+`mc/unattended.py`, `mc/skill_scoping.py`, `mc/memory_gate_tap.py`,
+`mc/memory_overlap_df.py`, `mc/scribe_user_turn.py` (all whole).
+
+- K70 `memory_note_gate.py:96-97` (and `mc/unattended.py:76-77`): a request
+  with ANY `Origin` header is stamped `interactive` / treated as human. An agent
+  adds `-H 'Origin: x'` to its curl. `unattended.py:16-17` says "never reads
+  anything the caller sends (no header...)"; line 76 reads a header. For the
+  note route the stamp is the whole of rail 2. Check for a server-level Origin
+  allowlist before ranking.
+- K71 `memory_note_gate.py:60`, `:163-181`, `:362` server keys are popped by a
+  case-sensitive match on `origin`/`generated`/`verified`. Test `Origin:` and
+  an indented `origin:` under `metadata:` against the parser `_mem_unit_allowed`
+  uses (first or last key wins? case folded?).
+- K72 `memory_note_routes.py:143` PATCH reads `existing` outside the topic lock;
+  `atomic_write(must_exist=True)` `:172` only re-checks existence, so a write
+  between the read and the lock is overwritten, and `merged_origin` `:164` used
+  the stale origin (an `unattended` stamp set in the gap is laundered back).
+- K73 `memory_note_gate.py:212-245` `_vault_keys` reads the head of every note
+  per call; `_foreign_vault_of` repeats that for EVERY sibling vault for EACH
+  unresolved link target. `memory_gate_tap.begin` runs this on every automated
+  mint. Count vault dirs read-only.
+- K74 `memory_note_gate.py:438-446` rename: write new, then `unlink` old; a
+  failed unlink leaves both files (same link identity) and raises to a 500 with
+  no gate row. Low.
+- K75 `skill_scoping.py:116-130` content-addressed settings files are never
+  removed (one per distinct override set). Low. Sound otherwise: fails open to
+  "demote nothing", per-writer temp name.
+- Sound: `scribe_user_turn.py` (positional cut, never raises),
+  `memory_overlap_df.py` (pure), `memory_gate_tap.py` (observer, both calls
+  guarded and logged).
