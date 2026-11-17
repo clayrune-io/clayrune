@@ -1520,3 +1520,21 @@ def test_send_drops_the_socket_when_the_retry_also_times_out(tmp_path):
     with pytest.raises(C.ShimUnavailable):
         client.send(b'payload\n')
     assert client._sock is None and client._rf is None
+
+
+@pytest.mark.parametrize('argv', [None, [None]])
+def test_spec_without_a_usable_argv_still_writes_exit_json(tmp_path, argv):
+    """AP19: a missing or malformed argv raised past run()'s OSError catch, so
+    the shim died with no exit.json and the server could not tell dead from
+    slow. It is a spawn failure and is recorded as one."""
+    sdir = C.session_dir(tmp_path, 'bad-argv')
+    spec = C.build_spec(argv=['placeholder'], cwd=None, mode='oneshot',
+                        session_id='bad-argv', owner_pid=0)
+    if argv is None:
+        spec.pop('argv')
+    else:
+        spec['argv'] = argv
+    C.write_spec(sdir, spec)
+    assert shim.Shim(str(sdir)).run() == 1
+    info = json.loads((Path(sdir) / 'exit.json').read_text(encoding='utf-8'))
+    assert info['reason'] == 'spawn_failed' and info['rc'] is None

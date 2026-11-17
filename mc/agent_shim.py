@@ -876,7 +876,7 @@ class Shim:
             self.owner = _Owner(int(owner_pid), proc_create_time(int(owner_pid)), '', None)
         try:
             self._spawn_cli()
-        except OSError as e:
+        except (OSError, KeyError, TypeError, ValueError) as e:   # a spec with no usable argv too
             self._slog(f'cli spawn failed: {e}')
             write_json_atomic(self._p('exit.json'), {
                 'schema': SCHEMA, 'launch_id': self.spec.get('launch_id'), 'rc': None,
