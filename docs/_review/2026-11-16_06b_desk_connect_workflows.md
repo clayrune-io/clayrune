@@ -310,3 +310,33 @@ each node branch.
   Final message must list keys classed DONE or OBSOLETE.
 - Then: ranked summary, feature table, streamlining, prior audits, coverage.
 
+
+### Desk Connect: working notes, batch 1 (candidates, not yet ranked)
+
+Read fully so far: `__init__`, `providers/{__init__,base,key_paste,x,higgsfield,mcp_package,notion}`,
+`commit`, `provider_commit`, `signin_login_store`, `saved_key_update`, `saved_fields`,
+`reference_save`, `reference_draft`, `signin_fill`, `signin_fill_cdp`, `signin_fill_js`,
+`signin_reuse`, `undo`, `verification`, `usage_keys`, `url_check`, `net_guard`, `guard_proxy`,
+`pane_reader`, `discovery`, `classifier`, `registry_lookup`, `registry`, `methods`, `resolve`,
+`mcp_catalogue`, `mcp_activation`, `mcp_package_store`, `profile_loader`.
+
+- cand DC-a (low, L): `guard_proxy.py:163-167` increments `_tunnels` and nothing ever
+  decrements it (grep: three uses, no `-= 1`). The docstring (`:19`) says "`max_tunnels` at
+  once"; the code is 64 CONNECTs for the life of one discovery, refused ones included. Page
+  number 65 onward gets 429.
+- cand DC-b (low, L/M): typed-credential creates use `set_secret` without `create_only`
+  (`providers/key_paste.py:83`, `providers/x.py:108`, `reference_save.py:35`) after a
+  names check taken earlier; `signin_login_store.py:91-94` uses `create_only=True` and says
+  why ("the check above is a courtesy message; this is the guard"). A vault create by
+  another route between check and write is replaced, and a later failure in the same Save
+  then deletes it through the undo stack.
+- cand DC-c (low, L): `saved_key_update.py:58-59` raises `FieldRefError` (a `SecretsError`)
+  outside `key_paste.apply`'s `try` (`key_paste.py:70-73` returns before `:77`), so
+  `provider_commit.py:90-93` turns "source unavailable" into a 500 "could not save; see the
+  server log" and the log line carries the class name only.
+- sound: sign-in fill reads the origin from the browser, types in an isolated world,
+  fetches the password only when a password field is showing, at most once
+  (`signin_fill.py:293-366`); discovery is fail-closed with no fallback fetch
+  (`pane_reader.py`, `guard_proxy.py`, `net_guard.py`); curated MCP install checks sha512
+  before writing and extracts member by member (`mcp_package_store.py:135-211`); no
+  credential value reaches a log line in the files above (every `_log` call opened).
