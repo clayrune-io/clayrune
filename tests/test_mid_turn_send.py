@@ -291,3 +291,15 @@ def test_failed_steer_is_not_recorded_as_absorbed(client, tmp_path, monkeypatch,
     assert _post(client, {'message': 'not delivered by stdin'}).get_json()['route'] == 'interrupt'
     assert not s.get('_mt_unanswered_msgs'), 'the interrupt delivers it as the turn\'s own prompt'
     assert s['_mt_latest_user_msg'] == 'not delivered by stdin'
+
+
+def test_drain_exception_in_delivery_writes_the_not_sent_line():
+    # AP41: the message was popped before delivery; an exception must not
+    # lose it silently.
+    def boom(sess, m):
+        raise RuntimeError('handler exploded')
+
+    s = _sess(provider='codex', mode='A', status='completed', pending_followups=['keep me'])
+    assert mts.drain_next(s, boom)
+    last = s['log_lines'][-1]
+    assert 'queued follow-up not sent' in last and 'handler exploded' in last and 'keep me' in last
