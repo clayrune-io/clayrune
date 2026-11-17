@@ -1,5 +1,20 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Every new Desk account starts with Read and Post off (MC-1187 / DCW-C2)
+
+- `desk_accounts.create_account` now writes the default-deny consent policy on the account it builds, so the X developer-app, purpose-bindings and pane-wizard (Instagram, YouTube, TikTok) paths no longer start with no policy, which the permission check read as "no consent needed". The browser-setup and saved-site paths were already denied; browser-setup now gets it through `create_account` (it passes the account kind). New `mc/desk_connect/new_account_consent.py`.
+- New accounts only. Existing accounts with no policy still read as legacy; nothing is migrated or rewritten. A platform with no permission profile (blog) is left alone, and LinkedIn created without an explicit member/organization kind is not initialized (the kind is part of the policy and is never guessed).
+- Tests that used `create_account` as a stand-in for a legacy account now say so with `tests/desk_legacy_account.make_legacy`.
+
+## [2026-11-16] - Six high Desk core defects (MC-1187 / MC-1179 pass 06a, DK1-DK5 and DK7)
+
+- DK1: unarchive, campaign restore and PATCH `state=running` on a paused, done or dropped campaign are refused to an unattended caller. Unarchive and campaign restore return a previously approved version as `needs_review` with the approval stamp cleared (as piece-trash restore already did). A human resuming a paused campaign is unchanged. New `mc/desk_withdrawal.py`.
+- DK2: on an approved, scheduled version a new `scheduled_at` is accepted only from a human caller, on the same calendar day as the current slot and not in the past; any other change must arrive with `state: needs_review` or is refused; `null` on a scheduled version is refused. New `mc/desk_schedule_rule.py`.
+- DK3: `POST /api/desk/ledger` and `/api/desk/ledger/<id>/outcome` refuse an unattended caller; cost must be a finite number >= 0; `published_at` must parse, be UTC and not in the future (400). New `mc/desk_ledger_input.py`.
+- DK4: the incognito pseudo-project is never indexed or shown by project media; its rows leave an existing index on the next refresh.
+- DK5: removed `POST /api/desk/retro` (no caller in the product; it let any caller mark a human-confirmed finding stale) and its tests. `desk_retro.run_retro` stays: the per-campaign retro uses it.
+- DK7: an unreadable or non-object `desk.json` is moved to `desk.json.unreadable-<timestamp>` and never deleted; writers raise `StoreUnreadable` until a readable `desk.json` is restored or `desk.start_empty_store()` is called. Reads stay empty meanwhile. New `mc/desk_store_guard.py`.
+
 ## [2026-11-16] - Process guard: ordinary spellings of an image-name or listener-PID kill, and a lazy listener lookup (MC-1190 / MC-1179 AP1, AP3)
 
 - AP1: the process-guard hook now finds the kill command word (`kill`, the Windows kill tool, `Stop-Process`, `spps`) and reads its whole segment. Every integer in it is checked against the listener PIDs, so `kill -TERM <pid>`, `kill 111 <pid>`, a second `/PID`, `/FI "PID eq <pid>"`, positional `Stop-Process <pid>` and `-Id 111,<pid>` are refused. Image-name spellings added: the `/FI "IMAGENAME eq x"` filter and `-im`, `-ProcessName` and the `-Na`/`-Pr` prefixes, `spps -Name`, `Get-Process x | kill`, `gps x | spps`, `(Get-Process x).Kill()`, and the CIM/WMI `Terminate` form.

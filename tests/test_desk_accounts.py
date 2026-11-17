@@ -247,7 +247,8 @@ def test_no_route_takes_or_returns_a_credential(env):
     with _desk._store_lock:
         stored = _desk._read_store()['accounts']['ch-x']
     assert 'hunter2' not in str(stored) and set(stored) == {
-        'id', 'platform', 'identity', 'label', 'capability', 'voice', 'created_at', 'credentials', 'browser_profile', 'oauth_profile_binding'}
+        'id', 'platform', 'identity', 'label', 'capability', 'voice', 'created_at', 'credentials', 'browser_profile', 'oauth_profile_binding',
+        'permission_policy', 'permission_policy_version'}   # MC-1187 DCW-C2: new accounts start denied
     assert stored['credentials'] == {'oauth_vault': 'oauth.x', 'oauth_profile': 'main'}
     assert set(_by_id(client)['ch-x']['publish']) == {'ready', 'reason', 'secret', 'unattended_ok'}
     # a secret is reachable only by NAME in `publish.secret`; no field carries a value

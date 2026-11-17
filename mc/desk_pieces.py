@@ -39,6 +39,7 @@ from urllib.parse import quote
 
 from mc import desk as _desk
 from mc import desk_piece_names as _names
+from mc import desk_schedule_rule as _schedule_rule
 from mc.core import _log, now_iso
 from mc.desk_media_formats import MEDIA_FORMAT_ERROR, VIDEO_EXTS
 
@@ -542,7 +543,7 @@ def _clean_claims_state(value, piece: dict) -> dict:
     return out
 
 
-def update_version(piece_id: str, version_id: str, patch: dict) -> dict:
+def update_version(piece_id: str, version_id: str, patch: dict, *, human: bool = False) -> dict:
     if not isinstance(patch, dict):
         raise PieceError('body must be a JSON object')
     unknown = sorted(k for k in patch if k not in _VERSION_PATCHABLE)
@@ -585,6 +586,9 @@ def update_version(piece_id: str, version_id: str, patch: dict) -> dict:
             if locked:
                 raise PieceError(f'this version is {cur}: send it back to review before changing '
                                  f'its {", ".join(locked)}', 409)
+            if 'scheduled_at' in patch:                 # MC-1187 DK2: mc/desk_schedule_rule.py
+                _schedule_rule.check_time_change(ver.get('scheduled_at'), clean['scheduled_at'],
+                                                 human=human, error=PieceError)
         if 'account_id' in patch:
             acc = patch['account_id']
             for other in piece.get('versions') or []:

@@ -22,6 +22,7 @@ Pinned:
 import io
 import json
 import sys
+from datetime import timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -34,6 +35,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from mc.blueprints import desk_routes  # noqa: E402
 from mc import desk as _desk  # noqa: E402
 from mc import desk_pieces as _pieces  # noqa: E402
+from mc import desk_schedule_rule as _schedule_rule  # noqa: E402
 
 PROJECTS = [{'id': 'alpha', 'name': 'Alpha'}]
 CID = 'camp-p'
@@ -43,6 +45,8 @@ PNG = b'\x89PNG\r\n\x1a\n' + b'0' * 64
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     monkeypatch.setattr(desk_routes, '_require_human_passcode', lambda data: None)
+    # The same-day rule reads the install timezone; pin it so these tests do not depend on the host's.
+    monkeypatch.setattr(_schedule_rule, '_zone', lambda: timezone.utc)
     uploads = tmp_path / 'uploads'
     uploads.mkdir()
     app = Flask(__name__)
@@ -208,12 +212,13 @@ def test_approved_text_cannot_change_behind_the_approval(env):
     client, _, tmp = env
     p = _piece(client)
     v = _version(client, p['id'], body='approved text')
-    _force(tmp, p['id'], v['id'], state='approved', approved={'at': 'x', 'by': 'human'})
+    _force(tmp, p['id'], v['id'], state='approved', approved={'at': 'x', 'by': 'human'},
+           scheduled_at='2099-10-06T08:00:00Z')
     url = f"/api/desk/pieces/{p['id']}/versions/{v['id']}"
     for bad in ({'body': 'sneaky'}, {'format': '1:1'}):
         assert client.patch(url, json=bad).status_code == 409, bad
-    # the time may move while approved
-    assert client.patch(url, json={'scheduled_at': '2026-10-06T09:00:00Z'}).status_code == 200
+    # the time may move within its day while approved (MC-1187 DK2: same day, future, human)
+    assert client.patch(url, json={'scheduled_at': '2099-10-06T09:00:00Z'}).status_code == 200
     # going back to review clears the stamp, then the body is editable
     r = client.patch(url, json={'state': 'needs_review'})
     out = r.get_json()['versions'][0]
@@ -252,17 +257,74 @@ def test_an_approved_version_keeps_its_approval_through_a_time_change(env):
     client, _, tmp = env
     p = _piece(client)
     v = _version(client, p['id'])
+    # MC-1187 DK2: far-future UTC times, because an approved version's time may now
+    # only move on the same calendar day and never into the past.
     _force(tmp, p['id'], v['id'], state='scheduled', approved={'at': 'x', 'by': 'human'},
-           scheduled_at='2026-10-05T10:00:00-07:00')
+           scheduled_at='2099-10-05T12:00:00Z')
     url = f"/api/desk/pieces/{p['id']}/versions/{v['id']}"
-    out = client.patch(url, json={'scheduled_at': '2026-10-05T16:00:00-07:00'}).get_json()['versions'][0]
-    assert (out['state'], out['approved']['by'], out['publishAt']) == ('scheduled', 'human', '2026-10-05T16:00:00-07:00')
+    out = client.patch(url, json={'scheduled_at': '2099-10-05T13:00:00Z'}).get_json()['versions'][0]
+    assert (out['state'], out['approved']['by'], out['publishAt']) == ('scheduled', 'human', '2099-10-05T13:00:00Z')
     # moving it to another day goes back through review in the same PATCH: time + needs_review, approval cleared
-    out = client.patch(url, json={'scheduled_at': '2026-10-08T09:00:00-07:00', 'state': 'needs_review'}).get_json()['versions'][0]
-    assert (out['state'], out['approved'], out['publishAt']) == ('needs_review', None, '2026-10-08T09:00:00-07:00')
+    out = client.patch(url, json={'scheduled_at': '2099-10-08T09:00:00Z', 'state': 'needs_review'}).get_json()['versions'][0]
+    assert (out['state'], out['approved'], out['publishAt']) == ('needs_review', None, '2099-10-08T09:00:00Z')
     # the approval does not come back by moving the time again
     out = client.patch(url, json={'scheduled_at': None}).get_json()['versions'][0]
     assert out['state'] == 'needs_review' and out['approved'] is None and 'publishAt' not in out
+
+
+def _armed(client, tmp, at='2099-10-05T12:00:00Z', state='scheduled'):
+    p = _piece(client)
+    v = _version(client, p['id'])
+    _force(tmp, p['id'], v['id'], state=state, approved={'at': 'x', 'by': 'human'}, scheduled_at=at)
+    return p, v, f"/api/desk/pieces/{p['id']}/versions/{v['id']}"
+
+
+def _stored(client, p):
+    return client.get(f'/api/desk/pieces?campaign_id={CID}').get_json()[0]['versions'][0]
+
+
+@pytest.mark.parametrize('when, status', [
+    ('2020-01-01T00:00:00Z', 409),      # the past: the tick would send it at once
+    ('2099-10-06T12:00:00Z', 409),      # another day without needs_review
+    (None, 409),                        # null leaves a scheduled version never due, never held
+])
+def test_an_approved_versions_time_change_outside_the_rule_is_refused(env, when, status):
+    client, _, tmp = env
+    p, v, url = _armed(client, tmp)
+    r = client.patch(url, json={'scheduled_at': when})
+    assert r.status_code == status, r.get_json()
+    got = _stored(client, p)
+    assert (got['state'], got['approved']['by'], got['publishAt']) == ('scheduled', 'human', '2099-10-05T12:00:00Z')
+
+
+def test_an_approved_versions_time_is_not_writable_by_an_unattended_caller(env, monkeypatch):
+    client, _, tmp = env
+    p, v, url = _armed(client, tmp)
+    monkeypatch.setattr(desk_routes, 'is_unattended_caller', lambda *a, **k: True)
+    r = client.patch(url, json={'scheduled_at': '2099-10-05T13:00:00Z'})
+    assert r.status_code == 403, r.get_json()
+    assert _stored(client, p)['publishAt'] == '2099-10-05T12:00:00Z'
+    # an unattended caller may still send it back to review, which drops the approval
+    r = client.patch(url, json={'scheduled_at': '2099-10-09T12:00:00Z', 'state': 'needs_review'})
+    assert r.status_code == 200 and r.get_json()['versions'][0]['approved'] is None
+
+
+def test_the_library_call_defaults_to_not_human(env):
+    client, _, tmp = env
+    p, v, _ = _armed(client, tmp)
+    with pytest.raises(_pieces.PieceError):
+        _pieces.update_version(p['id'], v['id'], {'scheduled_at': '2099-10-05T13:00:00Z'})
+    # restating the time it already has is not a change
+    _pieces.update_version(p['id'], v['id'], {'scheduled_at': '2099-10-05T12:00:00Z'})
+
+
+def test_the_same_day_rule_uses_the_install_timezone(env, monkeypatch):
+    check = _schedule_rule.check_time_change
+    a, b = '2099-10-05T07:30:00Z', '2099-10-05T08:30:00Z'
+    check(a, b, human=True, error=_pieces.PieceError)            # one day in UTC
+    monkeypatch.setattr(_schedule_rule, '_zone', lambda: timezone(timedelta(hours=-8)))
+    with pytest.raises(_pieces.PieceError, match='within the day'):   # 23:30 and 00:30 in UTC-8
+        check(a, b, human=True, error=_pieces.PieceError)
 
 
 @pytest.mark.parametrize('state', ['sending', 'submitted', 'verified_published', 'you_reported',

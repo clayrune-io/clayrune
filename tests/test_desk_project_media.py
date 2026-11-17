@@ -388,3 +388,42 @@ def test_worker_retries_after_failure_and_keeps_last_success(env, monkeypatch):
     with pytest.raises(StopIteration):
         media._loop()
     assert times == [300, 300] and len(calls) == 2
+
+
+# -- MC-1187 DK4: the incognito pseudo-project is never indexed or shown -------
+
+def _incognito(tmp_path, projects):
+    folder = tmp_path / 'incog'
+    folder.mkdir()
+    pic = put(folder, 'secret.png')
+    projects.append({'id': '_incognito', 'name': 'Incognito', '_is_incognito_project': True,
+                     'project_path': str(folder)})
+    return pic
+
+
+def test_refresh_never_indexes_the_incognito_project(env, tmp_path):
+    root, uploads, media_dir, projects, client = env
+    put(root, 'shots/a.png')
+    _incognito(tmp_path, projects)
+    value = media.refresh()
+    assert {r['project_id'] for r in value['items']} == {'p'}
+    assert 'secret.png' not in (media_dir / '_desk_project_index.json').read_text(encoding='utf-8')
+    assert [g['project_id'] for g in media.grouped()] == ['p']
+
+
+def test_an_index_that_already_holds_incognito_rows_loses_them(env, tmp_path):
+    root, uploads, media_dir, projects, client = env
+    put(root, 'shots/a.png')
+    pic = _incognito(tmp_path, projects)
+    # an index written by the old code: incognito rows present, and wired from disk
+    media._snapshot = {'items': [
+        {'id': 'old', 'project_id': '_incognito', 'project_name': 'Incognito', 'path': str(pic),
+         'title': 'secret.png', 'folder': 'incog', 'kind': 'image', 'size': 1, 'mtime': 1.0,
+         'mtime_ns': 1, 'origin': 'scan'}], 'updated_at': 1.0}
+    # not shown even before the next refresh runs
+    assert media.grouped() == [] and media.items_page('_incognito')['total'] == 0
+    with pytest.raises(pieces.PieceError):
+        media._source('old')
+    value = media.refresh()
+    assert all(r['project_id'] != '_incognito' for r in value['items'])
+    assert all(r['project_id'] != '_incognito' for r in media._snapshot['items'])

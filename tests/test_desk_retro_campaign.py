@@ -35,7 +35,8 @@ CID = 'camp-r'
 
 
 @pytest.fixture
-def client(tmp_path):
+def client(tmp_path, monkeypatch):
+    monkeypatch.setattr(desk_routes, '_require_human_passcode', lambda data: None)   # MC-1187 DK3: ledger needs the human check
     app = Flask(__name__)
     app.config['TESTING'] = True
     desk_routes.wire(

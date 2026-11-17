@@ -483,12 +483,73 @@ def test_store_is_not_inside_data_projects(store):
             'Desk state is a SIBLING of DATA_DIR, never a member'
 
 
-def test_corrupt_store_degrades_to_empty_not_to_crash(store):
+def _corrupt(store):
+    """A desk.json cut in half, as a crash mid-write or a bad restore leaves it."""
     store.create_campaign('t', 'thesis')
-    store.STORE_PATH.write_text('{ broken json', encoding='utf-8')
+    good = store.STORE_PATH.read_text(encoding='utf-8')
+    broken = good[:len(good) // 2]
+    store.STORE_PATH.write_text(broken, encoding='utf-8')
+    return good, broken
+
+
+def test_corrupt_store_reads_as_empty_but_is_set_aside_not_overwritten(store):
+    """MC-1187 DK7 (inverts the old "a write after corruption still works", which was
+    the loss: the next write replaced the unreadable file with an empty store)."""
+    _good, broken = _corrupt(store)
     assert store.list_campaigns() == []
-    # And a write after corruption still works rather than raising.
+    aside = list(store.STORE_PATH.parent.glob('desk.json.unreadable-*'))
+    assert len(aside) == 1 and aside[0].read_text(encoding='utf-8') == broken
+    assert not store.STORE_PATH.exists()
+    with pytest.raises(store.StoreUnreadable):
+        store.create_campaign('t2', 'thesis2')
+    with pytest.raises(store.StoreUnreadable):
+        store.record_published(platform='x', voice='ron', body='b')
+    assert not store.STORE_PATH.exists(), 'a refused write creates no empty store'
+    assert aside[0].read_text(encoding='utf-8') == broken, 'the set-aside file is never touched'
+
+
+def test_a_non_object_store_is_set_aside_too(store):
+    store.create_campaign('t', 'thesis')
+    store.STORE_PATH.write_text('[1, 2, 3]', encoding='utf-8')
+    assert store.list_campaigns() == []
+    assert len(list(store.STORE_PATH.parent.glob('desk.json.unreadable-*'))) == 1
+    with pytest.raises(store.StoreUnreadable):
+        store.create_campaign('t2', 'thesis2')
+
+
+def test_writers_stay_refused_after_a_restart_until_a_readable_store_returns(store):
+    good, _broken = _corrupt(store)
+    store.list_campaigns()                      # sets the file aside
+    # a fresh process sees only a missing desk.json and the set-aside file
+    with pytest.raises(store.StoreUnreadable):
+        store.create_campaign('t2', 'thesis2')
+    # restoring a readable store (here: the good copy) lifts the refusal
+    store.STORE_PATH.write_text(good, encoding='utf-8')
     assert store.create_campaign('t2', 'thesis2')['title'] == 't2'
+    assert {c['title'] for c in store.list_campaigns()} == {'t', 't2'}
+
+
+def test_an_explicit_empty_start_lifts_the_refusal_and_keeps_the_set_aside_file(store):
+    _good, broken = _corrupt(store)
+    store.list_campaigns()
+    store.start_empty_store()
+    assert store.create_campaign('t2', 'thesis2')['title'] == 't2'
+    aside = list(store.STORE_PATH.parent.glob('desk.json.unreadable-*'))
+    assert len(aside) == 1 and aside[0].read_text(encoding='utf-8') == broken
+    # a store that exists is not an empty start: that would erase it
+    with pytest.raises(ValueError):
+        store.start_empty_store()
+
+
+def test_the_set_aside_name_is_not_a_store_a_project_or_a_temp_file(store):
+    import fnmatch
+    import re
+    _corrupt(store)
+    store.list_campaigns()
+    name = next(store.STORE_PATH.parent.glob('desk.json.unreadable-*')).name
+    assert not fnmatch.fnmatch(name, '*.json')                  # load_projects / backup globs
+    assert Path(name).suffix not in ('.json', '.jsonl')          # backup._enumerate_records
+    assert re.match(r'^\..+\.tmp\d+$', name) is None              # core.sweep_orphan_tmpfiles
 
 
 # -- a campaign is an argument, and carries the voices that carry it ----------

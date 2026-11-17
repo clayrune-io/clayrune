@@ -98,7 +98,11 @@ def test_corrupt_store_is_not_overwritten(env, monkeypatch):
     desk.STORE_PATH.write_text('{broken', encoding='utf-8')
     monkeypatch.setattr(routes, '_human_typed', lambda: True)
     r = env.put('/api/desk/capture/projects/alpha', json={'app_address': 'http://127.0.0.1:3000'})
-    assert r.status_code == 503 and desk.STORE_PATH.read_text() == '{broken'
+    assert r.status_code == 503
+    # MC-1187 DK7: the unreadable file is set aside (kept), not left in place or replaced
+    assert not desk.STORE_PATH.exists()
+    (aside,) = desk.STORE_PATH.parent.glob('desk.json.unreadable-*')
+    assert aside.read_text() == '{broken'
 
 
 def test_real_file_shape_library_and_recent(env, monkeypatch):

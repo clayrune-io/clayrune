@@ -46,6 +46,8 @@ from mc import desk_engagement as _engagement
 from mc.desk_engagement_targets import read_targets as _read_targets
 from mc import desk_harvest as _harvest
 from mc import desk_pieces as _pieces
+from mc import desk_withdrawal as _withdrawal
+from mc import desk_ledger_input as _ledger_input
 from mc import desk_publish as _publish
 from mc import desk_retro as _retro
 from mc import desk_research as _research
@@ -513,7 +515,9 @@ def update_campaign(campaign_id):
     v1 = _wants_v1()
     try:
         camp = _desk.update_campaign(campaign_id, _desk.v1_campaign_in(d) if v1 else d,
-                                     forbid_start=v1)
+                                     forbid_start=v1, forbid_resume=is_unattended_caller())
+    except _withdrawal.ResumeRefused as e:      # MC-1187 DK1; a ValueError, so first
+        return jsonify({'error': str(e)}), 403
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     if camp is None:
@@ -733,7 +737,8 @@ def add_piece_version(piece_id):
 
 @bp.route('/api/desk/pieces/<piece_id>/versions/<version_id>', methods=['PATCH'])
 def update_piece_version(piece_id, version_id):
-    return _piece_call(_pieces.update_version, piece_id, version_id, request.get_json(silent=True) or {})
+    return _piece_call(_pieces.update_version, piece_id, version_id, request.get_json(silent=True) or {},
+                       human=not is_unattended_caller())
 
 
 # M19. The approval gate, and the one route that can make a version go out. Human
@@ -1243,8 +1248,16 @@ def list_ledger():
 def record_published():
     """Record that a human RELEASED something. Not a publish path — see module docstring."""
     d = request.get_json(silent=True) or {}
+    # MC-1187 DK3: writes the story ledger, which the budget and cadence rules read,
+    # so it is human-only exactly like "I posted it" below.
+    refused = _human_only('write the ledger of', d, 'the Desk')
+    if refused:
+        return refused
     if not d.get('platform') or not d.get('body'):
         return jsonify({'error': 'platform and body are required'}), 400
+    bad = _ledger_input.problem(d)
+    if bad:
+        return jsonify({'error': bad}), 400
     voice = d.get('voice') or _desk.default_voice() or ''
     if not _desk.is_voice(voice):
         return jsonify({'error': f'unknown voice {voice!r}'}), 400
@@ -1265,6 +1278,9 @@ def record_outcome(post_id):
     """Append one per-post outcome entry (§8 R1-L: `outcomes[]` replaces the
     free-form `outcome` dict)."""
     d = request.get_json(silent=True) or {}
+    refused = _human_only('write an outcome to', d, 'the ledger')      # MC-1187 DK3
+    if refused:
+        return refused
     if not d.get('metric') or 'value' not in d:
         return jsonify({'error': 'metric and value are required'}), 400
     row = _desk.record_outcome(post_id, d['metric'], d['value'],
@@ -1542,21 +1558,9 @@ def _unattended_refusal():
                              'playbook finding'}), 403
 
 
-@bp.route('/api/desk/retro', methods=['POST'])
-def run_retro():
-    """Compute a retro over caller-supplied per-dimension evidence (§10.1).
-    Code-only and deterministic; this route itself may run unattended (a
-    scheduled term-end retro) — proposed findings always land `origin:
-    'unattended'` regardless (mc.desk.propose_finding), so this route is NOT
-    gated on `is_unattended_caller`, unlike the finding state-change routes."""
-    d = request.get_json(silent=True) or {}
-    if not d.get('project_id') or not d.get('dimension_arms'):
-        return jsonify({'error': 'project_id and dimension_arms are required'}), 400
-    result = _retro.run_retro(
-        d['project_id'], dimension_arms=d['dimension_arms'],
-        account=d.get('account'), metric=d.get('metric', 'clicks'),
-        interim=bool(d.get('interim')))
-    return jsonify(result)
+# MC-1187 DK5: the raw `POST /api/desk/retro` is gone. It had no caller, was open to any
+# caller, and one request could mark a human-confirmed finding stale. The retro is
+# the per-campaign route above, which reads the ledger itself.
 
 
 @bp.route('/api/desk/findings', methods=['GET'])

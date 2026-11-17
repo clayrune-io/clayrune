@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from mc import desk, desk_pieces as pieces, desk_piece_lifecycle as lifecycle
 from mc import desk_studio_items as items, desk_suggestion_pieces as suggestions
 from mc.blueprints import desk_routes, desk_piece_lifecycle_routes, desk_studio_items_routes
+from mc.blueprints import desk_campaign_restore_routes
 
 
 @pytest.fixture
@@ -23,6 +24,7 @@ def env(tmp_path):
     app.register_blueprint(desk_routes.bp)
     app.register_blueprint(desk_piece_lifecycle_routes.bp)
     app.register_blueprint(desk_studio_items_routes.bp)
+    app.register_blueprint(desk_campaign_restore_routes.bp)
     return app.test_client(), uploads
 
 
@@ -58,7 +60,12 @@ def test_archive_roundtrips_exact_original_versions_and_preserves_history(env, s
     with pytest.raises(pieces.PieceError):
         pieces.update_version(pid, 'v-test', {'body': 'cannot alter suspended text'})
     lifecycle.archive(pid, True)
-    assert pieces.get_stored_piece(pid)['versions'][0] == before
+    after = pieces.get_stored_piece(pid)['versions'][0]
+    if state in pieces.APPROVED_STATES:
+        # MC-1187 DK1: unarchive never re-arms a withdrawn post. It comes back for
+        # review with the approval stamp and slot cleared, like piece-trash restore.
+        before.update(state='needs_review', approved=None, slot_id=None)
+    assert after == before
 
 
 def test_mixed_post_history_can_advance_while_archived(env):
@@ -177,3 +184,84 @@ def test_document_discovery_cannot_escape_library_within_uploads(env, monkeypatc
     # must still refuse it, as when a library directory resolves through a link.
     monkeypatch.setattr(pieces, '_resolve_under_uploads', lambda rel: outside)
     assert desk_article_media.decorate({}) == {}
+
+
+# -- MC-1187 DK1: a withdrawn post never comes back armed ---------------------
+
+def _put_version(pid, state='scheduled', vid='v-armed'):
+    pieces.add_version(pid, 'ch-blog', version_id=vid, body='armed body')
+    with desk._store_lock:
+        store = desk._read_store()
+        store['pieces'][pid]['versions'][0].update(
+            state=state, approved={'at': 'x', 'by': 'human', 'body_sha': 'abc'},
+            slot_id='slot-1', scheduled_at='2030-01-01T10:00:00+00:00')
+        desk._write_store(store)
+
+
+def test_unarchive_returns_an_approved_version_for_review_not_armed(env):
+    client, _ = env
+    pid = make()['id']
+    _put_version(pid)
+    assert client.post(f'/api/desk/pieces/{pid}/archive').status_code == 200
+    assert client.post(f'/api/desk/pieces/{pid}/unarchive').status_code == 200
+    v = pieces.get_stored_piece(pid)['versions'][0]
+    assert (v['state'], v['approved'], v['slot_id']) == ('needs_review', None, None)
+
+
+def test_unarchive_is_refused_to_an_unattended_caller(env, monkeypatch):
+    client, _ = env
+    pid = make()['id']
+    _put_version(pid)
+    client.post(f'/api/desk/pieces/{pid}/archive')
+    monkeypatch.setattr(desk_piece_lifecycle_routes, 'is_unattended_caller', lambda *a, **k: True)
+    assert client.post(f'/api/desk/pieces/{pid}/unarchive').status_code == 403
+    assert pieces.get_stored_piece(pid)['archive'] is not None
+    assert pieces.get_stored_piece(pid)['versions'][0]['state'] == 'archived'
+
+
+def test_campaign_restore_returns_approved_versions_for_review(env):
+    client, _ = env
+    pid = make()['id']
+    _put_version(pid)
+    assert desk.delete_campaign('camp-a') is True
+    assert client.post('/api/desk/campaigns/camp-a/restore').status_code == 200
+    v = pieces.get_stored_piece(pid)['versions'][0]
+    assert (v['state'], v['approved'], v['slot_id']) == ('needs_review', None, None)
+
+
+def test_campaign_restore_clears_approval_inside_an_archive_snapshot(env):
+    client, _ = env
+    pid = make()['id']
+    _put_version(pid)
+    lifecycle.archive(pid)
+    desk.delete_campaign('camp-a')
+    client.post('/api/desk/campaigns/camp-a/restore')
+    lifecycle.archive(pid, True)
+    v = pieces.get_stored_piece(pid)['versions'][0]
+    assert (v['state'], v['approved']) == ('needs_review', None)
+
+
+def test_campaign_restore_is_refused_to_an_unattended_caller(env, monkeypatch):
+    client, _ = env
+    make()
+    desk.delete_campaign('camp-a')
+    monkeypatch.setattr(desk_campaign_restore_routes, 'is_unattended_caller', lambda *a, **k: True)
+    assert client.post('/api/desk/campaigns/camp-a/restore').status_code == 403
+    assert 'camp-a' not in desk._read_store()['campaigns']
+
+
+@pytest.mark.parametrize('prior', ['paused', 'done', 'dropped'])
+def test_an_unattended_caller_cannot_resume_a_withdrawn_campaign(env, monkeypatch, prior):
+    client, _ = env
+    with desk._store_lock:
+        store = desk._read_store()
+        store['campaigns']['camp-a'].update(state=prior, approved={'at': 'x', 'by': 'human'})
+        desk._write_store(store)
+    monkeypatch.setattr(desk_routes, 'is_unattended_caller', lambda *a, **k: True)
+    r = client.patch('/api/desk/campaigns/camp-a', json={'state': 'running'})
+    assert r.status_code == 403
+    assert desk._read_store()['campaigns']['camp-a']['state'] == prior
+    # a human (no live unattended session) still resumes it, as before
+    monkeypatch.setattr(desk_routes, 'is_unattended_caller', lambda *a, **k: False)
+    r = client.patch('/api/desk/campaigns/camp-a', json={'state': 'running'})
+    assert r.status_code == 200 and r.get_json()['state'] == 'running'

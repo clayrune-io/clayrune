@@ -2,6 +2,7 @@
 from flask import Blueprint, jsonify, request
 from mc import desk_piece_lifecycle as lifecycle, desk_suggestion_pieces as suggestions
 from mc.desk_pieces import PieceError
+from mc.unattended import is_unattended_caller
 
 bp = Blueprint('desk_piece_lifecycle', __name__)
 
@@ -20,6 +21,10 @@ def archive(piece_id):
 
 @bp.post('/api/desk/pieces/<piece_id>/unarchive')
 def unarchive(piece_id):
+    # MC-1187 DK1: bringing a withdrawn post back is a person's decision.
+    if is_unattended_caller():
+        return jsonify({'error': 'this action needs a human: an unattended agent session '
+                                 'cannot unarchive a post'}), 403
     return _call(lifecycle.archive, piece_id, True)
 
 

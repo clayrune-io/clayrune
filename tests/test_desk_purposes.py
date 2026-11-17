@@ -107,7 +107,10 @@ def pane(monkeypatch):
 
 def _x(identity='@ron'):
     from mc import desk_accounts
-    return desk_accounts.create_account('x', identity)
+    from tests.desk_legacy_account import make_legacy
+    acc = desk_accounts.create_account('x', identity)
+    make_legacy(acc['id'])          # these tests bind routes; consent is a separate layer (DCW-C2)
+    return acc
 
 
 def _li(identity, org=None):
@@ -115,6 +118,8 @@ def _li(identity, org=None):
     acc = desk_accounts.create_account('linkedin', identity)
     if org:
         desk_accounts.update_account(acc['id'], {'organization_id': org})
+    from tests.desk_legacy_account import make_legacy
+    make_legacy(acc['id'])
     return acc
 
 

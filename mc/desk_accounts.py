@@ -245,7 +245,7 @@ def _clean_text(value, what: str, *, required: bool = False) -> str:
 
 
 def create_account(platform, identity, *, label=None, capability=None, voice=None,
-                   account_id: str | None = None) -> dict:
+                   account_id: str | None = None, account_kind: str | None = None) -> dict:
     if platform not in ACCOUNT_PLATFORMS:
         raise AccountError(f'platform must be one of {", ".join(ACCOUNT_PLATFORMS)}; '
                            'other channels are not available yet')
@@ -280,6 +280,10 @@ def create_account(platform, identity, *, label=None, capability=None, voice=Non
         if platform != 'blog':
             from mc import desk_browser_profiles
             rec['browser_profile'] = desk_browser_profiles.new_account(platform, accounts, rec)
+        # MC-1187 DCW-C2: a new account starts with Read and Post off. `account_kind`
+        # matters only for a platform with more than one (LinkedIn); see the module.
+        from mc.desk_connect import new_account_consent
+        new_account_consent.initialize(rec, account_kind)
         accounts[rec['id']] = rec
         _refs.bind(store, new_account_id=rec['id'])
         _desk._write_store(store)

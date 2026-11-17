@@ -51,7 +51,6 @@ from mc import desk_accounts as _accounts
 from mc.core import _log, now_iso
 from mc.desk_connect import browser_setup_record as _record
 from mc.desk_connect import commit as _commit
-from mc.desk_connect import permission_policy as _permissions
 from mc.desk_connect import purpose_bindings as _bindings
 from mc.desk_connect import registry as _registry
 from mc.desk_connect import signin_fill as _fill
@@ -365,16 +364,20 @@ def _write_setup(clean: dict, login_created: bool) -> dict:
         new = clean['account']['new']
         org_id = new['organization_id']
         try:
-            created = _accounts.create_account(clean['service'], new['identity'], label=new['label'] or None)
+            created = _accounts.create_account(clean['service'], new['identity'], label=new['label'] or None,
+                                               account_kind=clean['account_kind'])
         except _accounts.AccountError as e:
             raise SetupError(str(e), e.status, 'account_refused') from e
+        except Exception as e:
+            # create_account now also writes the default-deny policy (MC-1187 DCW-C2); this was
+            # the `record_failed` path when that step ran here.
+            _log(f'[desk_connect] browser setup account create failed ({type(e).__name__})', flush=True)
+            raise SetupError('the browser connection could not be saved; see the server log', 500, 'record_failed') from e
         account_id = created['id']
     try:
         with _desk._store_lock:
             store = _desk._read_store()
             shared, unchanged = _apply(store, account_id, clean, org_id)
-            if created is not None:
-                _permissions.initialize_new_account(store['accounts'][account_id], clean['account_kind'])
             if not unchanged:
                 _desk._write_store(store)
     except Exception as e:

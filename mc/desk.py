@@ -63,6 +63,9 @@ from mc.core import _atomic_write_text, _log, now_iso
 from mc import distiller as _distiller
 from mc import desk_campaign_hold as _hold
 from mc import desk_campaign_trash as _trash
+from mc import desk_withdrawal as _withdrawal
+from mc import desk_store_guard as _guard
+from mc.desk_store_guard import StoreUnreadable
 from mc.desk_pane_pages import PANE_ONLY_PLATFORMS
 from mc.desk_campaign_term import MAX_TERM_DAYS, prepare_campaign_patch
 
@@ -298,15 +301,19 @@ def _read_store() -> dict:
         return _empty_store()
     try:
         data = json.loads(STORE_PATH.read_text(encoding='utf-8'))
+    except ValueError as e:
+        # MC-1187 DK7: reads degrade to empty, but the file is MOVED aside and
+        # writers refuse (mc/desk_store_guard.py). It used to stay in place and the
+        # next write replaced it with this empty store.
+        _guard.set_aside(STORE_PATH, f'{type(e).__name__}: {e}')
+        return _empty_store()
     except Exception as e:
-        # Treat an unreadable store as empty for READS only. Every write below
-        # merges into a freshly-read store rather than overwriting wholesale,
-        # so a parse failure cannot silently erase voice history we could not
-        # read — it degrades to "learned nothing yet", never to "unlearned".
+        # An I/O error (locked, permissions) is not proof the bytes are bad: read
+        # as empty, leave the file alone.
         _log(f'[desk] store unreadable, treating as empty: {e}')
         return _empty_store()
     if not isinstance(data, dict):
-        _log('[desk] store is not an object, treating as empty')
+        _guard.set_aside(STORE_PATH, 'not a JSON object')
         return _empty_store()
     data.setdefault('version', STORE_VERSION)
     data.setdefault('voices', {})
@@ -327,8 +334,21 @@ def _read_store() -> dict:
 def _write_store(store: dict) -> None:
     if STORE_PATH is None:
         return
+    _guard.check_writable(STORE_PATH)
     STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(STORE_PATH, json.dumps(store, indent=2, ensure_ascii=False))
+
+
+def start_empty_store() -> None:
+    """The explicit "begin again" after an unreadable store was set aside.
+
+    Refuses when a store exists: that would erase it. The set-aside file stays."""
+    if STORE_PATH is None:
+        return
+    if STORE_PATH.exists():
+        raise ValueError(f'{STORE_PATH.name} exists; start_empty_store would erase it')
+    STORE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_text(STORE_PATH, json.dumps(_empty_store(), indent=2, ensure_ascii=False))
 
 
 def _new_id(prefix: str) -> str:
@@ -1452,13 +1472,16 @@ def _clean_campaign_when(value, store: dict, campaign_id: str) -> dict:
     return {'slots': out}
 
 
-def update_campaign(campaign_id: str, patch: dict, *, forbid_start: bool = False) -> dict | None:
+def update_campaign(campaign_id: str, patch: dict, *, forbid_start: bool = False,
+                    forbid_resume: bool = False) -> dict | None:
     # `approved`, `approvals`, `terms`, `started_at`, `policy_record` are
     # deliberately NOT here: they are written only by the human-action routes
     # (`start_campaign`, `approve_campaign`, `renew_campaign`), never by a PATCH.
     # `forbid_start` (the v1 route sets it) refuses a PATCH that would put a
     # campaign into `running` without a human approval snapshot on file; the
     # legacy Desk's "Start it" still activates through a plain PATCH.
+    # `forbid_resume` (an unattended caller) refuses putting a paused, done or
+    # dropped campaign back to `running` (MC-1187 DK1, mc/desk_withdrawal.py).
     allowed = {'title', 'thesis', 'agenda', 'voice', 'voices', 'project_ids',
                'planned', 'state', 'visual',
                'project_id', 'subject', 'plan', 'goal', 'term', 'how', 'map',
@@ -1490,6 +1513,8 @@ def update_campaign(campaign_id: str, patch: dict, *, forbid_start: bool = False
         prev_bounds = (camp.get('approval') or {}).get('bounds') or _campaign_bounds(camp)
         prev_hash = (camp.get('approval') or {}).get('bounds_hash') or compute_bounds_hash(prev_bounds)
         prev_state = camp.get('state')
+        if forbid_resume:
+            _withdrawal.check_resume(prev_state, patch)
         if (forbid_start and patch.get('state') == 'running' and prev_state != 'running'
                 and not camp.get('approved')):
             raise ValueError('a campaign is started with POST /api/desk/campaigns/<id>/start, and '
