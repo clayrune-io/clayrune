@@ -5672,7 +5672,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             from mc.blueprints import coordination_routes as _coord
             _coord.reconcile_commits(project)  # publish any just-landed commits
             sib = _coord.sibling_activity(
-                project['id'], (project.get('_coord_session_id') or ''), task,
+                project['id'], session_id or '', task,
                 int(state.CONFIG.get('coordination_read_floor_topk', 3) or 3))
             block = _coord.render_readfloor(sib)
             if block:
