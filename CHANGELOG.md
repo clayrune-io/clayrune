@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - /agent/send attributes its caller when it starts a child (MC-1179 R48)
+
+- `POST /agent/send` reached `_dispatch_agent_internal` on its fresh-dispatch and native-resume (codex) paths with no `trigger_type` or `source`, so the dispatcher's `manual` default applied. A managed agent that POSTed `/agent/send` with no live `session_id` got a child the fence, the secrets vault and the config gate all read as attended. Only `/agent/dispatch` attributed its caller.
+- Both paths now call `caller_attribution.resolve_send` (a thin wrapper over `resolve_dispatch` with the hints `/agent/send` always launched with, `manual` and no source). A caller under a managed session, or one that cannot be attributed and sent no `Origin`, gets `dispatch`/`agent`. The chat composer (an `Origin`, not a session descendant) is unchanged. It only tightens.
+- Not changed: the `character` the route does not forward, and the revive paths (`_revive_from_agent_log`, `_revive_non_claude_from_agent_log`), which take trigger and source from the stored log row.
+- `mc/caller_attribution.py`, `mc/blueprints/agent_routes.py` (two call sites), `data/agent_reference/CLAYRUNE_API.md`. New `tests/test_agent_send_caller_attribution.py` (8 tests; 4 failed on the old code, all pass now).
+
 ## [2026-11-17] - Workflow toolbar: buttons that add a block no longer look like buttons that do something
 
 - Action, Approval gate and Wait (which drop a block on the canvas) looked identical to Undo, Redo, Reset, Check workflow, Update and Run now. The toolbar is now three groups with a rule between each: Undo / Redo / Reset | a muted "Add" label then Action / Approval gate / Wait | Check workflow / Update / Run now.

@@ -13805,9 +13805,13 @@ def agent_send(project_id):
             else:
                 try:
                     turns = runtime.extract_chat_turns(tpath)  # pyright: ignore[reportAttributeAccessIssue]
+                    # MC-1179 R48: same caller attribution as /agent/dispatch.
+                    _tt, _src = _caller_attribution.resolve_send(
+                        request, agent_sessions, tracked_processes)
                     sid = _dispatch_agent_internal(
                         project_id, _apply_mobile_brief(message, data),
-                        resume_id=native_id, provider_override='codex', incognito=incognito)
+                        resume_id=native_id, provider_override='codex', incognito=incognito,
+                        trigger_type=_tt, source=_src)
                     session = agent_sessions.get(sid)
                     if session is not None:
                         label = state.CONFIG.get('user_name') or 'User'
@@ -14039,9 +14043,13 @@ def agent_send(project_id):
         # there is no prior session yet).
         try:
             claude_message = _apply_mobile_brief(message, data)
+            # MC-1179 R48: same caller attribution as /agent/dispatch.
+            _tt, _src = _caller_attribution.resolve_send(
+                request, agent_sessions, tracked_processes)
             new_session_id = _dispatch_agent_internal(
                 project_id, claude_message, resume_id=resume_from, incognito=incognito,
-                provider_override=(data.get('provider') or '').strip().lower())
+                provider_override=(data.get('provider') or '').strip().lower(),
+                trigger_type=_tt, source=_src)
         except _resume_cwd.ResumeCwdMissing as e:
             return jsonify(_resume_cwd.refusal(
                 e, data, project_id, _update_agent_log, _log, now_iso())), 409

@@ -291,6 +291,18 @@ def resolve_dispatch(request, trigger_type: str, source: str,
     return trigger_type, source
 
 
+def resolve_send(request, agent_sessions: Dict[str, Any],
+                 tracked_processes: Dict[int, Dict[str, Any]]) -> Tuple[str, str]:
+    """(trigger_type, source) for the paths of POST .../agent/send that START a
+    child (MC-1179 R48). /agent/send never honoured a body `source`, so the
+    hints are what it has always launched with -- ('manual', '') -- and an
+    unattributed caller (the chat composer) keeps them. A caller descending
+    from a managed session, or one that cannot be attributed and sent no
+    Origin, comes out ('dispatch', 'agent') exactly as on /agent/dispatch.
+    Only ever tightens. Never raises."""
+    return resolve_dispatch(request, 'manual', '', agent_sessions, tracked_processes)
+
+
 def warn_if_degraded() -> bool:
     """Startup check: True when attribution can run. Without psutil every
     dispatch lookup is `unavailable`, so a request carrying an Origin header
