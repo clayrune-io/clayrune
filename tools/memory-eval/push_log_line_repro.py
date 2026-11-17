@@ -8,7 +8,7 @@ those were archive rows, and none of the 83 said WHICH archive line, so "was
 the top-up fact ever near" was unanswerable without a corpus replay.
 
 The 83 archive rows and their `query` text are real, already on disk in
-`data/memory_push_log/mission_control.jsonl` — the OLD log has the right
+`data/memory_push_log/<project id>.jsonl` — the OLD log has the right
 QUERIES, just the wrong (anonymous) telemetry shape. This script:
 
   1. Pulls those exact historical queries back out of the old log (read-only).
@@ -88,7 +88,7 @@ def main():
     # this script file happens to be running from (a worktree, per-agent) —
     # unlike `_harness.repo_root()`, which is derived from `__file__` and is
     # correct for the CODE but not for this one piece of operator data.
-    real_log = Path(a.project_path) / 'data' / 'memory_push_log' / 'mission_control.jsonl'
+    real_log = Path(a.project_path) / 'data' / 'memory_push_log' / f"{project['id']}.jsonl"
 
     queries = real_window_queries(real_log)
     print(f'pulled {len(queries)} distinct real query(ies) from the 09-18/19 '

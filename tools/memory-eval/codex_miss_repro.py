@@ -1,6 +1,13 @@
-"""Replay the 2026-09-19 Codex-top-up miss (MC-964) against the corpus as it
-stood when Ron sent "We have plenty of codex token allowance, I added some
-more" (2026-09-20T00:20:16Z, session 4ae1b44f).
+"""Replay the shape of the 2026-09-19 Codex-top-up miss (MC-964) against the
+corpus as it stood at a cutoff (CUTOFF below).
+
+The two user messages below are SYNTHETIC stand-ins of the same shape and
+length class as the real ones (a short statement, then a longer complaint that
+the agent did not remember it). The real words, their timestamp and their
+session id are not kept in this tracked file: they were a person's own messages
+(CLAUDE.md, "nothing operator-specific goes in the repo"). CUTOFF is likewise a
+made-up time on the day of the miss, so the snapshot is a representative
+as-of-cutoff corpus, not a reconstruction of one exact message.
 
 Read-only. Builds a point-in-time snapshot of the memory dir in a temp dir:
   * topic files CREATED after the cutoff are dropped (st_birthtime on Windows,
@@ -32,17 +39,17 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _harness  # noqa: E402
 
-CUTOFF = dt.datetime(2026, 9, 20, 0, 20, 16, tzinfo=dt.timezone.utc)
+CUTOFF = dt.datetime(2026, 9, 20, 9, 30, 0, tzinfo=dt.timezone.utc)   # made up
 NEEDLE = 'after adding Codex credits'
 
 QUERIES = {
-    # Ron's own words, verbatim (the per-turn query is the raw message text).
-    'ron_0020Z': "We have plenty of codex token allowance, I added some more",
-    'ron_0021Z': ("I'm bit worried since  I told you earlier already about the codex "
-                  "allowance. The fact that you did not remember it is worrying"),
-    # The turn where Dave first acted on the stale record (a test failure, not a
+    # Synthetic user messages (the per-turn query is the raw message text).
+    'user_msg_first': "Our codex quota is nowhere near used up, the balance was topped up today",
+    'user_msg_followup': ("It worries me that this already came up once before, "
+                          "about the codex quota, and you acted as if it never had"),
+    # The turn where the agent first acted on the stale record (a test failure, not a
     # human message; shown for completeness — a tool result never reaches the ranker).
-    'dave_plan_query': "codex is out of allowance (usage_limit), resets Sep 24th",
+    'agent_plan_query': "codex is out of allowance (usage_limit), resets Sep 24th",
     # An oracle query: the words a retriever WOULD need to match the stored fact.
     'oracle': "Codex credits added access problem cleared",
 }

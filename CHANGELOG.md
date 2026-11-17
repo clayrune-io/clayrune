@@ -1,5 +1,16 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Tools: nothing operator-specific in the memory-eval probes, the mobile-test adb path or two READMEs (MC-1179 pass 12, TL26)
+
+- Transcript lookup: new `tools/memory-eval/_checkout.py` finds this checkout's session directories from the path encoding `mc.memory._encode_project_path` already gives (plus the CLI's `_`/`.` flattened variants and the per-agent worktree directories), instead of `'mission-control' in <dir name>`. `delivery_backfill.py`, `pin_suite.py`, `scorer_ab.py`, `retrieval_probe.py` and `fact_canary_probe.py` use it; a clone under any folder name finds its own sessions. When no directory matches, the tool says "no transcript directory found for this checkout" and stops (`fact_canary_probe.py` prints "NOT MEASURED" for that one section) instead of reporting 0 tasks as a result. Run from an agent worktree, "this checkout" is the project's own checkout.
+- `retrieval_probe.py`: the "never opened" block derives its memory directory from the checkout, and prints that it was skipped, and why, when the directory does not exist.
+- Project id: `_harness.wire`, `push_review.py` (`--project` now defaults to the resolved id), `memory-link-check.py` (`--project` kept) and `push_log_line_repro.py` take the id from the project record whose `project_path` is this checkout, using the existing `find_project` in `tools/merge-review-check.py`. No match exits naming `--project` / `MC_DATA_DIR`.
+- `codex_miss_repro.py`: the two real user messages, their timestamp and session id are replaced with synthetic stand-ins of the same shape; the repro still loads and runs, but its cutoff is now a made-up time on the day of the miss.
+- `tools/mobile-test/lib/adb.js`: adb resolves from `MC_ADB`, then `ANDROID_HOME/platform-tools`, then `PATH`, at first use; with none it fails naming all three. The drive-letter default is gone.
+- `tools/memory-eval/README.md`, `tools/worktree-sandbox/README.md`, `tools/mobile-test/README.md`: operator name and the "this machine" result wording removed; adb resolution documented.
+- Tests: new `tests/test_tools_no_operator_data.py` (44). Not done here: `tools/backlog-journal-export.py` and `tools/backlog-journal-migrate.py` still default `--project` to a literal id (another change is editing the first); git history is not rewritten.
+- Branch candidate for review; no merge, push, deployment or server restart.
+
 ## [2026-11-16] - Process guard: ordinary spellings of an image-name or listener-PID kill, and a lazy listener lookup (MC-1190 / MC-1179 AP1, AP3)
 
 - AP1: the process-guard hook now finds the kill command word (`kill`, the Windows kill tool, `Stop-Process`, `spps`) and reads its whole segment. Every integer in it is checked against the listener PIDs, so `kill -TERM <pid>`, `kill 111 <pid>`, a second `/PID`, `/FI "PID eq <pid>"`, positional `Stop-Process <pid>` and `-Id 111,<pid>` are refused. Image-name spellings added: the `/FI "IMAGENAME eq x"` filter and `-im`, `-ProcessName` and the `-Na`/`-Pr` prefixes, `spps -Name`, `Get-Process x | kill`, `gps x | spps`, `(Get-Process x).Kill()`, and the CIM/WMI `Terminate` form.

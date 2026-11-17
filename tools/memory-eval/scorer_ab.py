@@ -20,12 +20,12 @@ Read-only.
 """
 import os
 import sys
-import glob
 import json
 import argparse
 import collections
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _checkout
 import _harness
 
 ROOT = os.path.join(os.path.expanduser("~"), ".claude", "projects")
@@ -144,11 +144,7 @@ def main():
     mem_dir = m._get_memory_path(project).parent
     on_disk = {x.lower() for x in os.listdir(mem_dir) if x.endswith(".md")}
 
-    dirs = [x for x in os.listdir(ROOT)
-            if "mission-control" in x and "scratch" not in x and "demo" not in x]
-    files = []
-    for x in dirs:
-        files += glob.glob(os.path.join(ROOT, x, "*.jsonl"))
+    files = _checkout.transcript_files(ROOT)
 
     tasks = []
     trivial = 0

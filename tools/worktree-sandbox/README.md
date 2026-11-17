@@ -37,7 +37,7 @@ that happen to share a file.
 | **A — shared tree** | both agents in one checkout (today) | 1/2 survive — silent loss |
 | **B — worktrees** | each agent in its own worktree, then merged | 2/2 survive — clean merge |
 
-## Result (2026-07-29, this machine, 3 consecutive runs)
+## Expected result (3 consecutive runs when first measured, 2026-07-29)
 
 ```
 VERDICT   shared tree: 1/2 survived   |   worktrees: 2/2 survived

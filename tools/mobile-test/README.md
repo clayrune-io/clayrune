@@ -36,6 +36,10 @@ and no credential gate (debug-only — never ship it).
 `MC_TEST_PROJECT=<id>` · `MC_PROMPT="..."` · `MC_HOST_API` · `MC_ADB` ·
 `MC_SERIAL` · `MC_CDP_PORT`.
 
+`adb` is found from `MC_ADB` (path to the binary), then `ANDROID_HOME`
+(`<ANDROID_HOME>/platform-tools`), then `PATH`; with none of them it fails
+naming all three.
+
 ## Notes
 
 - The harness reloads the WebView each run so it tests the current

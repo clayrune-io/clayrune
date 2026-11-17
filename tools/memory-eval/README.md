@@ -10,7 +10,7 @@ python tools/memory-eval/eval.py                # the invariant + corpus report
 python tools/memory-eval/eval.py --inject-canary  # prove the invariant can fail
 python tools/memory-eval/retrieval_probe.py     # do agents open memory at all?
 python tools/memory-eval/scorer_ab.py           # old TF vs live BM25
-python tools/memory-eval/fact_canary_probe.py   # MC-971: does THIS fact reach Ron's own wording?
+python tools/memory-eval/fact_canary_probe.py   # MC-971: does THIS fact reach the user's own wording?
 ```
 
 ## Structure is not the same question as delivery (`fact_canary_probe.py`, MC-971)
@@ -19,20 +19,20 @@ python tools/memory-eval/fact_canary_probe.py   # MC-971: does THIS fact reach R
 delivery counts). Neither would have caught the Codex top-up miss (MC-964):
 the fact was never uncited-and-unreachable by M1's definition, and it never
 showed up as a promotion gap, because the miss was about ONE specific fact and
-ONE specific way Ron phrases things, not about the corpus overall.
+ONE specific way the user phrases things, not about the corpus overall.
 
 `fact_canary_probe.py` asks the narrower question directly: pin real facts
 (`data/memory-eval/fact_canaries.jsonl`, gitignored) each with the date they
-were recorded and 2-3 queries in Ron's own wording (never the fact's own
+were recorded and 2-3 queries in the user's own wording (never the fact's own
 words — an oracle query that reuses the fact's vocabulary proves nothing
-about whether Ron's phrasing reaches it), and check whether the unit that
+about whether the user's phrasing reaches it), and check whether the unit that
 should answer lands within the live per-turn delivery depth
 (`max(topk*2, topk+4)` — the same count `agent_routes.py` actually asks for,
 not a hardcoded topk`).
 
 The Codex top-up canary is pinned to the ORIGINAL archive record (a `needle`
 match on "after adding codex credits" in `MEMORY_ARCHIVE.md`), not to the
-topic note Ron's complaint caused someone to write two minutes later — the
+topic note the user's complaint caused someone to write two minutes later — the
 topic note already ranks fine today, which would silently launder the exact
 failure this canary exists to keep visible. **It must fail until Step A
 (content-containment dedupe) ships; a pass means the harness stopped
@@ -45,7 +45,7 @@ you" / "we already" / "you forgot" / "as I said". **That scan strips injected
 context first** (`_strip_injected_context`) — the first real run flagged a
 `--- STANDING POSITIONS ---` reminder block whose own prose said "because we
 already ARE that vault shape" as a live miss. That block is harness
-boilerplate, not Ron, and `tests/test_fact_canary_probe.py` pins the
+boilerplate, not the user, and `tests/test_fact_canary_probe.py` pins the
 regression.
 
 ## NEVER import `server` from a probe

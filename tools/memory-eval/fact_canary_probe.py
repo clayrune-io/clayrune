@@ -39,7 +39,6 @@ once.
     python tools/memory-eval/fact_canary_probe.py --all       # reprint already-flagged drops too
 """
 import argparse
-import glob
 import hashlib
 import json
 import os
@@ -49,6 +48,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _checkout  # noqa: E402
 import _harness  # noqa: E402
 
 _rc = getattr(sys.stdout, 'reconfigure', None)
@@ -213,19 +213,13 @@ _TOOL_PROMPT_MARKERS = (
 def scan_misses(days=MISS_WINDOW_DAYS):
     """Real user messages in the last N days containing a miss phrase.
 
-    Mirrors delivery_backfill.collect_tasks's session discovery (glob every
-    session dir with 'mission-control' in the name), but scans EVERY user
+    Mirrors delivery_backfill.collect_tasks's session discovery (this
+    checkout's session dirs, via _checkout), but scans EVERY user
     message in-window, not just the first, since a miss can land mid-chat.
     """
     root = os.path.join(os.path.expanduser('~'), '.claude', 'projects')
-    if not os.path.isdir(root):
-        return 0, []
     cutoff = _now() - timedelta(days=days)
-    dirs = [x for x in os.listdir(root)
-            if 'mission-control' in x and 'scratch' not in x and 'demo' not in x]
-    files = []
-    for x in dirs:
-        files += glob.glob(os.path.join(root, x, '*.jsonl'))
+    files = _checkout.transcript_files(root)   # raises NoTranscriptDir when none
 
     tasks_in_window = 0
     hits = []
@@ -393,11 +387,17 @@ def main():
                   f'corrected rank={c["corrected_rank"]} (query: {c["query"]!r})')
 
     # ---- 4. REAL-WORLD MISS RATE ----
-    tasks_in_window, misses = scan_misses(args.miss_days)
-    miss_rate = 100.0 * len(misses) / max(1, tasks_in_window)
     print(f'\n== REAL-WORLD MISS RATE (last {args.miss_days}d) ==')
-    print(f'{len(misses)} miss-phrase hit(s) over {tasks_in_window} real tasks '
-          f'({miss_rate:.1f} per 100 tasks)')
+    try:
+        tasks_in_window, misses = scan_misses(args.miss_days)
+    except _checkout.NoTranscriptDir as e:
+        # Not a measurement: "0 tasks" here would read as a miss rate of 0.
+        tasks_in_window, misses = None, []
+        print(f'NOT MEASURED - {e}')
+    miss_rate = 100.0 * len(misses) / max(1, tasks_in_window or 0)
+    if tasks_in_window is not None:
+        print(f'{len(misses)} miss-phrase hit(s) over {tasks_in_window} real tasks '
+              f'({miss_rate:.1f} per 100 tasks)')
     if misses:
         print('  candidate canaries (human approval required, none auto-added):')
         for hit in misses[:15]:
@@ -413,7 +413,9 @@ def main():
     print(f'contradiction pass rate: '
           f'{100.0 * sum(1 for c in contradictions if c["passed"]) / max(1, len(contradictions)):.0f}%'
           if contradictions else 'contradiction pass rate: n/a (no pairs pinned)')
-    print(f'miss rate: {miss_rate:.1f}/100 tasks  |  new rank-drop flags: {len(fresh_drops)}')
+    miss_text = ('not measured' if tasks_in_window is None
+                 else f'{miss_rate:.1f}/100 tasks')
+    print(f'miss rate: {miss_text}  |  new rank-drop flags: {len(fresh_drops)}')
 
     if not args.dry_run:
         state['ranks'] = new_ranks
