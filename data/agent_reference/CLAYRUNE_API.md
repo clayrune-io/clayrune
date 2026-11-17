@@ -466,7 +466,11 @@ global and project engine defaults are edited in Providers.
 
 | Verb | Path | Purpose |
 |---|---|---|
-| POST | `/api/distill` | Write a proposed SKILL.md to `data/skills/_proposed/<sid>/`. The `mc-distill` skill mediates this. |
+| GET | `/api/distiller/_proposed` | List the proposal queue (global and per-project), newest first. |
+| POST | `/api/distiller/promote` | Install a proposal as a skill. Human only: an unattended session gets 403, and the body needs the retyped dashboard passcode. |
+| POST | `/api/distiller/reject` | Reject a proposal (`{"directory": ...}`); it is not proposed again. |
+
+No route writes a proposal. The `mc-distill` skill writes `SKILL.md` straight to `data/skills/_proposed/<scope>/<sid>/`.
 
 ---
 
