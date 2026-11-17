@@ -6,10 +6,8 @@
 // hooks below — this file owns their content; the skeleton itself never
 // changes (T0a's own comment on _renderCampaignSkeleton).
 //
-// Fixtures only (ground rule 3): every drop/attach/move/skip/archive mutates
-// the in-memory DeskV1Fixtures objects directly through DeskV1Kit.commandBus
-// — the same "client-side over fixture data with Undo" contract T1/T3/T4
-// already established. Nothing here calls a backend route.
+// Demo actions use fixture data and the command bus. Live actions use the
+// store's server routes; disconnected card actions are disabled in live mode.
 (function () {
   function esc(s) { return window.esc ? window.esc(s) : String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
@@ -1208,6 +1206,7 @@
     menu.querySelector('[data-menu-archive]').onclick = () => { close(); _archiveFamily(fam); };
     window.DeskV1PieceLifecycle.menu(menu, close, fam);
     window.DeskV1ComposerDuplicate.menu(menu, close, fam, camp, triggerEl);
+    window.DeskV1CampaignDispose.menu(menu, close, fam, () => _renderList());
     // The lifecycle adds Delete after the first placement: measure again so the
     // taller menu flips above or scrolls instead of ending under the phone tab bar.
     DeskV1Kit.placePopover(menu, triggerEl);
