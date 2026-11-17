@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - A stalled push service can no longer freeze an agent's output reader (MC-1179 pass 11, SF15)
+
+- `_handle_push_signal` runs on the agents' stream-reader threads and delivered inline: one `webpush` call per subscribed device with no timeout (pywebpush's default is none), so an endpoint that accepted the connection and never answered held the reader that reads the CLI's output; the session stopped showing anything and nothing was logged.
+- New `mc/push_delivery_queue.py`: one FIFO worker (a daemon thread started on first use) fed by a queue of at most 200 pending pushes. When it is full the new push is dropped and one log line says so; queuing never blocks or raises. Whether to push is still decided on the caller's thread; only the `_notify_push` call moves. `webpush` now gets `timeout=10`.
+- A failed or timed-out delivery now logs the endpoint host, the status code and the exception class; the endpoint path and any key value are removed from the logged text (library errors echo the URL, and the path is the subscription's capability). The nonce prefix is no longer logged.
+- Nothing reads `_notify_push`'s result on the `_handle_push_signal` path (3 callers in `agent_routes.py`, all discard it), so no caller sees a change. Direct `_notify_push` callers (the test-push route, scheduler, workflows) stay synchronous and only gain the timeout and the log line. A push dropped on a full queue is not written to the Inbox, because that row is written when the job runs.
+- New `tests/test_push_delivery_queue.py` (9 tests, no network: `pywebpush` is stubbed): a blocking `webpush` does not block `_handle_push_signal`, order is kept, `timeout=10` is passed, a full queue drops and logs once, the worker is one daemon thread, failure logs hold the host only. The blocking, stalled-endpoint, timeout and log-leak tests failed before the change.
+
 ## [2026-11-17] - The terminal pop-out no longer goes silent after 5,000 output chunks (MC-1179 pass 11, SF20)
 
 - The readers keep at most 5,000 chunks and cut to the last 3,000; the SSE stream followed the buffer with a list index, so after the first trim it never again had anything to send while the process kept running and `status` stayed `running`. Measured with one poll per chunk: 20,000 produced, 5,000 delivered.

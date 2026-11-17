@@ -19,7 +19,7 @@ from typing import Any, Callable
 
 from flask import Blueprint, jsonify, request
 
-from mc import state
+from mc import push_delivery_queue, state
 from mc.core import _harden_secret_perms, _log
 from mc.state import (
     PRESENCE_FRESH_SEC,
@@ -30,6 +30,15 @@ from mc.state import (
 )
 
 bp = Blueprint('push_mobile', __name__)
+
+# Seconds `webpush` may spend on one subscriber. pywebpush defaults to no
+# timeout at all, so a push service that accepts and never answers held the
+# call forever (MC-1179 SF15).
+WEBPUSH_TIMEOUT_S = 10
+
+# The one worker that delivers pushes raised by agent turns. _handle_push_signal
+# runs on the agents' stream-reader threads and must not wait on a push service.
+_push_queue = push_delivery_queue.DeliveryQueue()
 
 # ── wired by server.py (see wire()) ──────────────────────────────────────────
 load_project: Callable[[str], Any] = None  # type: ignore[assignment]
@@ -473,6 +482,9 @@ def _notify_push(title: str, body: str, *, url: str = '',
         }
         if not sub_info['endpoint']:
             continue
+        # Never let a failure line carry a key: the subscriber's, or ours.
+        _sub_keys = sub_info['keys'] if isinstance(sub_info['keys'], dict) else {}
+        _secrets = [*_sub_keys.values(), keys['private']]
         try:
             webpush(
                 subscription_info=sub_info,
@@ -480,6 +492,7 @@ def _notify_push(title: str, body: str, *, url: str = '',
                 vapid_private_key=keys['private'],
                 vapid_claims={'sub': _push_subject()},
                 ttl=300,
+                timeout=WEBPUSH_TIMEOUT_S,
             )
             sub['last_used_at'] = int(_time.time())
             sent += 1
@@ -492,11 +505,17 @@ def _notify_push(title: str, body: str, *, url: str = '',
                 failed += 1
                 detail = (resp.text[:200] if resp is not None and resp.text else str(e))
                 last_error = f'code={code} {detail}'
-                _log(f"[push] delivery failed for {nonce[:12]}…: code={code} {e} body={detail}", flush=True)
+                # Host only: the endpoint path is the subscription's capability
+                # and library text echoes it (see push_delivery_queue).
+                _log(f"[push] delivery failed host={push_delivery_queue.endpoint_host(sub_info['endpoint'])}: "
+                     f"code={code} {type(e).__name__}: "
+                     f"{push_delivery_queue.redact(detail, sub_info['endpoint'], _secrets)[:200]}", flush=True)
         except Exception as e:
             failed += 1
             last_error = f'{type(e).__name__}: {e}'
-            _log(f"[push] unexpected error for {nonce[:12]}…: {e}", flush=True)
+            _log(f"[push] delivery failed host={push_delivery_queue.endpoint_host(sub_info['endpoint'])}: "
+                 f"{type(e).__name__}: "
+                 f"{push_delivery_queue.redact(e, sub_info['endpoint'], _secrets)[:200]}", flush=True)
     if removed:
         for n in removed:
             subs.pop(n, None)
@@ -506,6 +525,12 @@ def _notify_push(title: str, body: str, *, url: str = '',
         'ok': True, 'sent': sent, 'failed': failed, 'removed': len(removed),
         'last_error': last_error,
     }
+
+
+def _queue_push(title: str, body: str, **kwargs) -> None:
+    """Hand one push to the delivery worker. The result of `_notify_push` is
+    dropped, as it was when it was called inline (nothing read it)."""
+    _push_queue.submit(lambda: _notify_push(title, body, **kwargs))
 
 
 def _handle_push_signal(project_id: str, session_id: str, msg: dict) -> None:
@@ -526,6 +551,10 @@ def _handle_push_signal(project_id: str, session_id: str, msg: dict) -> None:
 
     Both flags default to True when the key is absent, and ANY falsy value
     opts out (False, None, 0, ''), not only the literal False.
+
+    Delivery itself (`_notify_push`) runs on the one background worker in
+    `_push_queue`, never on the caller's thread; whether to push at all is
+    decided here, on the caller's thread, at the moment the message arrives.
 
     Wrapped in a broad try so a delivery problem never breaks the reader.
     """
@@ -552,9 +581,9 @@ def _handle_push_signal(project_id: str, session_id: str, msg: dict) -> None:
                         continue
                     title = (p.get('name') or 'Clayrune')[:60]
                     target = f'/?project={project_id}&session={session_id}'
-                    _notify_push(title, text, url=target,
-                                 project_id=project_id, session_id=session_id,
-                                 kind='agent')
+                    _queue_push(title, text, url=target,
+                                project_id=project_id, session_id=session_id,
+                                kind='agent')
         elif msg_type == 'result':
             p = load_project(project_id) or {}
             if not p.get('notify_push_enabled', True):
@@ -577,9 +606,9 @@ def _handle_push_signal(project_id: str, session_id: str, msg: dict) -> None:
             body = ' '.join(rt.split()).strip() if isinstance(rt, str) else ''
             if not body:
                 body = 'Waiting for you'
-            _notify_push(title, body, url=target,
-                         project_id=project_id, session_id=session_id,
-                         kind='turn_complete')
+            _queue_push(title, body, url=target,
+                        project_id=project_id, session_id=session_id,
+                        kind='turn_complete')
     except Exception as e:
         _log(f"[push] _handle_push_signal error: {e}", flush=True)
 
