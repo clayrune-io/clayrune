@@ -806,3 +806,234 @@ described three times in comments) has to be remembered in the others.
 - `codex_model_rejection` requires the exact vendor phrase and, when a status is
   present, status 400 (`:8172-8183`); `codex_error_is_notice` is an exact-phrase
   allowlist.
+
+### 4e. Lines 8243-11530: `CodexRuntime`, `OpenCodeRuntime`, `GooseRuntime`, `AiderRuntime`, `KiroRuntime`
+
+No provider CLI was launched for this range. Reader measurements used a Python
+child that prints synthetic protocol lines; `oneshot` measurements replaced
+`subprocess.run` with a stub.
+
+#### X1 · medium · L — a follow-up sent during a running turn is recorded as a crash on OpenCode, Goose, Aider and Kiro
+
+`mc/agent_runtime.py:10432-10434` (OpenCode), `:10795-10797` (Goose),
+`:11096-11098` (Aider), `:11441-11443` (Kiro). Each kills the old process and
+only later assigns `session['proc'] = proc` (`:10461`, `:10823`, `:11132`,
+`:11459`). The old reader's `finally` guards on `session.get('proc') is proc`
+(`:6739`, `:6790`), which is still true until the new process has been built
+and spawned, so it writes the exit line, the hint, `status='error'` and fires
+`on_process_exit`.
+
+The same file explains this exact race and its fix at `:9760-9778` (Codex:
+"Clearing the reference first makes the guard win instead of racing") and
+applies it in Codex (`:9779`) and Qwen (`:7839-7843`). Gemini is G2. Four
+runtimes still have the pre-fix order.
+
+**Measured** (OpenCode `write_followup`, old turn = a sleeping Python child,
+spawn stubbed to a second Python child): the log gained
+`[opencode exited with code 1]` and `on_process_exit` fired once for the old
+process with `(rc=1, status='error')`, after which the session was `running`
+again on the new process.
+**Fix:** set `session['proc'] = None` before `_kill_pid` in all four, or move
+the kill-and-disown into one helper every `write_followup` calls.
+**Test coverage:** `tests/test_codex_resume_followup_e2e.py` covers Codex only.
+
+#### X2 · medium · E, L — Aider leaves two temp files per turn, holding the system prompt and the conversation, and never deletes them
+
+`mc/agent_runtime.py:11070-11084` (dispatch), `:11108-11125` (follow-up),
+`:11156-11169` (oneshot). Every one is `NamedTemporaryFile(delete=False)`;
+`mc_aider_` appears nowhere else in the repository, so nothing removes them.
+The `ctx` file is the full system prompt (rules, memory index, persona); the
+`msg` file is the task or the last 20 log lines plus the new message. An
+incognito session writes them too.
+
+**Measured:** one `oneshot` call left 1 file, a second with a system prompt
+left 2 more. The review box's temp directory held 2,353 `mc_aider_msg_*` files
+(4.1 MB) dated across the previous month; their source was not traced (the
+test suite drives the same code).
+**Fix:** delete both in the reader's `finally` (the handle can carry the
+paths), and in `oneshot` after `subprocess.run` returns.
+**Test coverage:** none found.
+
+#### X3 · medium (latent) · L, M — `oneshot` on OpenCode, Goose, Kiro and Aider reports a failed run as a successful answer
+
+`:10489-10503`, `:10854-10868`, `:11488-11502`, `:11170-11179`. Same defect as
+G1/Q1: the exit code is never read, stderr goes to `DEVNULL`, `last_error` is
+never set, `except Exception: return None` logs nothing, and three of them fall
+back to `(r.stdout or '').strip()`.
+
+**Measured** (stubbed `subprocess.run`, rc=1, stdout = one error event):
+OpenCode returned the error event's JSON as `text`; Goose the same; Kiro the
+same; Aider returned `'Traceback: no api key'`. `last_error` was `None` in all
+four.
+
+Two Aider-only additions:
+- `stdin_text` is written only inside `if system_prompt:` (`:11155-11162`). A
+  call with a prompt and a data body but no system prompt runs without the
+  data. **Measured:** the body reached no file aider was given.
+- it runs `aider --yes --no-auto-commits` (`:10961`) in `cwd or home`
+  (`:11173`), so a "text transform" may edit files there.
+
+Latent, not live: none of the four sets `tool_free_transform_enforced`, so
+`run_text_transform` refuses them. They are reachable through the explicit
+`runtime=` argument of `mc/browser_digest.py:124` and `mc/mail_launder.py:200`,
+and all four advertise `oneshot_supported=True`.
+**Fix:** one shared `_oneshot_result(r, parse)` that fails on a non-zero exit
+and never returns raw stdout; set `oneshot_supported=False` until a profile is
+certified.
+**Test coverage:** not found for a non-zero exit on any of the four.
+
+#### X4 · medium · L — OpenCode and Goose claim session resume and never use it for a follow-up
+
+- OpenCode: `supports_session_resume=True` (`:10367`); `dispatch` honours
+  `resume_id` (`:10416`); the reader stores the native id from the synthesised
+  INIT (`:6655-6657`). `write_followup` then builds the command with the model
+  only (`:10442`), so every follow-up starts a new OpenCode session whose only
+  history is a 20-line, 3,000-character tail (`:10435-10436`).
+- Goose: `supports_session_resume=True` (`:10727`); `build_command` hard-codes
+  `--no-session` (`:10581`) and has no resume parameter; `dispatch` ignores
+  `resume_id` (`:10771`).
+
+The Codex follow-up describes the consequence it fixed for itself at
+`:9793-9810`: one chat stored as N separate conversations, each with no memory
+of the others. Read, not measured.
+**Fix:** OpenCode: pass `resume_id=session.get('provider_session_id')` and send
+the message alone, as Codex does. Goose: set the capability to `False` until a
+resume form is wired.
+**Test coverage:** `tests/test_provider_runtimes.py` checks the command
+builders, not that a follow-up resumes.
+
+#### X5 · low · L — one Codex shell command is logged two or three times
+
+`CodexRuntime.parse_event`, `:8726-8742` and `:8766-8783`: `item.started`,
+`item.updated` and `item.completed` for a `command_execution` each return
+`TOOL_USE`. The shared reader appends one `[tool: shell] <command>` line and
+adds one to `tool_calls` per event (`:6614-6626`). The comment at `:8727-8729`
+says other item types are suppressed early because they "would double up with
+the item.completed event"; the shell call is the one type that does.
+
+**Measured** (the real `_mode_a_reader`, one command sent as
+started/updated/completed): three identical `[tool: shell] git status` lines.
+Without `item.updated` it is two. Those lines are also what
+`_compose_respawn_prompt` replays as the prior-turn tail.
+**Fix:** key on `tool_use_id`; log on first sight, and on completion only add
+the exit status.
+**Test coverage:** `tests/test_provider_runtimes.py:667` pins that
+`item.started` is a `TOOL_USE`; nothing runs a started/completed pair through
+the reader.
+
+#### X6 · low · L — the exit-hint classifiers match the agent's own words, and Codex's remedy names a key the file says does not work
+
+`:10024-10043` (Codex), `:10871-10875` (Goose), `:11182-11187` (Aider),
+`:11505-11509` (Kiro). Each lower-cases the last 30 log lines (`:6821`), which
+include the model's reply and tool lines, and tests bare substrings before
+looking at anything structured. G5 reported this for Gemini.
+
+**Measured** (Codex, rc=1): a tail containing `Processed 4290 files` returns
+"Codex is out of allowance" (`'429'`); a tail containing `I compared it with
+ChatGPT.` returns "Codex isn't authenticated" (`'chatgpt'`). `oneshot` in the
+same class states the hazard (`:9990-9993`) and avoids it.
+
+The authentication hint says "Set CODEX_API_KEY or OPENAI_API_KEY"
+(`:10042`). `_codex_auth_state`'s docstring records a live test that a bare
+`OPENAI_API_KEY` is never sent by this CLI and says "Do not resurrect that
+branch" (`:9346-9351`).
+**Fix:** classify only lines the reader tagged `[<engine> error]`; drop
+`OPENAI_API_KEY` from the Codex hint.
+**Test coverage:** not found for a false positive.
+
+#### X7 · low · E — Codex rollout lookups scan the whole store each time
+
+- `transcript_path` globs `*/*/*/rollout-*-<id>.jsonl` and stats every match
+  (`:8985-8988`). It runs once per `TURN_END` through `turn_context_tokens`
+  (`:9019`, called at `:6529`) and again on a failed exit (`:6815-6816`).
+  **Measured:** 7.2 ms per call with 217 rollouts on disk.
+- `list_sessions` walks every rollout of every project and calls
+  `_codex_same_path` on each (`:9041-9049`), then stats the file a second time
+  (`:9046`; `_codex_read_meta` already did). **Measured:** 30 ms warm for a
+  project with zero matching rollouts; `_codex_same_path` is 91 µs per call.
+
+Both are linear in all Codex history on the machine, not in the project's.
+**Fix:** let the meta cache double as a `thread_id -> path` index; remember the
+resolved path on the session dict after the first turn.
+
+#### X8 · low · L — unguarded shapes end the reader (measured)
+
+Codex: `{"type":"item.completed","item":"oops"}` (`:8746`),
+`{"type":"error","error":"boom"}` and `{"type":"turn.failed","error":"boom"}`
+(`:8920`) raise `AttributeError`. Each ends the shared reader (MA2).
+Kiro: `:11291` parses as `(params.session_id or result.session_id) if
+isinstance(result, dict) else None`, so a notification's `params.session_id`
+is always discarded. **Measured:** `session/new` with
+`params.session_id="abc"` yields an INIT whose `session_id` is `None`.
+Goose: an assistant message with no text block falls through to
+`str(msg.get('content'))` (`:10640`). **Measured:** a content list holding one
+thinking block is shown as the chat line
+`[{'type': 'thinking', 'thinking': 'hm'}]`.
+
+#### X9 · low · L — OpenCode reports the last step's tokens as the turn's
+
+`parse_event` returns `TURN_END` for every `step_finish` (`:10290-10299`);
+`_finish_turn` overwrites `session['usage']` each time (`:6544`).
+**Measured** (two steps, 500 then 7 output tokens): `usage.output_tokens` is
+7; `on_turn_end` fired twice; cost summed correctly (0.03). The per-step
+`TURN_END` is pinned by `tests/test_provider_runtimes.py:1779-1782`; nothing
+checks what the session ends up holding.
+**Fix:** sum output and reasoning tokens across the steps of one process; keep
+the last step's input side for the context figure.
+
+#### X10 · low · M — three parsers for one Codex cache file, two of them silent
+
+`model_choices` (`:8385-8400`), `discover_models` (`:8411-8428`) and
+`_cache_slugs` (`:9506-9514`) each open and parse `models_cache.json`. Only the
+first has an mtime cache and a log line; the other two are
+`except Exception: return None` on a JSON state read (policy). `_cache_slugs`
+runs on every dispatch and every follow-up (`_gate_model`, `:9528`).
+**Fix:** one cached loader returning the raw entries; the three become filters.
+
+#### Also in this range
+
+- `CodexRuntime.dispatch` replaces a `None` `session_dict` at `:9665`, then
+  tests `session_dict is not None` at `:9693`, `:9701` and `:9736` under a
+  comment (`:9732-9735`) describing a case that can no longer happen.
+- `read_rate_limits` refuses to probe through the npx fallback (`:8521`);
+  `health_check` (`:9429`) and `_codex_auth_state` (`:9372`) run
+  `npx --yes @openai/codex ...` there, and `health_check` does not use the
+  `--version` memo next to it (`:9478-9499`). Read, not measured.
+- `_codex_auth_state` reports failures with bare `print` (`:9387`, `:9403`);
+  on a cp1252 console a non-Latin character in the exception text raises from
+  inside the handler, which is what `_log` exists to prevent (C2).
+- `list_sessions` swallows a read failure (`:9110`) and caches the partial row
+  under the file's `(mtime, size)`; `_CODEX_ROW_CACHE` evicts mid-pass
+  (`:9120-9122`, A9).
+- `_transform_cwd_dir` is a fixed path in the shared temp directory (`:9923`),
+  the G3 shape; latent while `tool_free_transform_enforced` is `False`.
+- `env_extra` is a parameter of every `dispatch`; no caller in `mc/` or
+  `server.py` passes it.
+- Goose and Aider report auth `ok` from a generic `OPENAI_API_KEY` /
+  `ANTHROPIC_API_KEY` in the environment (`:10709-10716`, `:11011-11018`), the
+  false positive Codex's docstring documents removing.
+- The Goose parser accepts five different names for the turn end (`:10653`)
+  and its docstring cites no CLI version; it could not be checked without the
+  CLI.
+
+#### Sound in lines 8243-11530
+
+- Codex `oneshot` fails on a non-zero exit, sets `last_error`, and accepts only
+  structured assistant events (`:9994-10011`).
+- Codex `write_followup` disowns before killing, restates model, effort,
+  sandbox and fence from values stored at dispatch, and fails safe to sandboxed
+  and fenced when a key is missing (`:9779`, `:9825-9836`).
+- `_spawn_turn` waits for the prompt write to be acknowledged (`:9858-9879`).
+- `build_command` uses the sandbox flag form each subcommand accepts and never
+  emits both bypass and sandbox (`:8608-8625`).
+- `_gate_model` drops an unlisted slug with a visible line instead of failing
+  the turn; `retry_without_model` is bounded to one retry per turn
+  (`:9549-9555`, `:9837`).
+- `_installed_cli_version` is memoised on binary identity, not path
+  (`:9464-9499`).
+- OpenCode's `_announced` map is locked and capped (`:10308-10313`).
+- `_guard_win_argv_length` is raised outside the `try` in Kiro's `oneshot`
+  (`:11487`), so an over-long prompt is an error, not a `None`.
+- Follow-up environments were compared with dispatch: `retry_budgets.apply_env`
+  affects only Claude and Qwen and `vendor_fence.prepare_command` only Aider,
+  so the follow-ups that skip them lose nothing.
