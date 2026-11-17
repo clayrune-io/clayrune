@@ -567,6 +567,106 @@ the terminal test refuses when there is one.
 - Restarting a `completed` run re-dispatches synthesis and mints a second
   topic node on the next tick (`:799`, `:1856-1898`).
 
+### OS33 · high · L/F — reviewed integration (roster runs) holds for good on timing that is normal, and a hold has no release anywhere in the product
+`mc/hivemind_integration_cycle.py`. `held` is terminal (`:31`): `advance`
+returns it untouched (`:286-287`), `start` refuses to drive it (`:454-455`),
+and the orchestrator loop no longer visits the run because its manifest is
+`completed` (`hivemind_routes.py:1774`). Every exception inside a tick becomes
+a hold (`:429-431`). Four of those exceptions are ordinary timing:
+(a) **The last worker is still in its turn.** A worker is told to mark its own
+workstream complete with a curl (`hivemind_worker.py:463-465`; route
+`hivemind_routes.py:967-988`), so the row is `completed` while the session is
+still `running`. The loop ticks every 10 s (`:1760-1763`), sees every row
+complete, sets the manifest and starts integration (`:1855-1872`). The first
+tick calls `_native_idle` (`:317`, body `:144-167`), which refuses unless every
+contributing session is `completed` or `idle` with no live process. The worker
+has only to spend 10 more seconds writing its closing message.
+(b) **The landing lock is busy.** `landing()` waits 5 s and raises
+`LandingBusy` (`landing_serialization.py:105-112`, `:127-132`). The handler at
+`:425-428` files that as `native standards held` and marks the worker branch
+`awaiting_standards`: a busy lock is recorded as a standards failure.
+(c) **The server restarts during a review.** `agent_sessions` is empty after a
+restart, so `hivemind_reviewer.py:282-283` turns a pending review into `held`.
+A review may run 45 minutes (`:30`).
+(d) **The synthesis lands while a candidate is being smoked.** Synthesis is
+dispatched at the same instant as integration (`hivemind_routes.py:1868`) and
+its notify route rewrites `manifest['updated_at']` (`:1608-1609`). `advance`
+hands `launch_reviewer` the manifest it read at `:331`, before the merge and
+the smokes (the re-check at `:366` discards its return value);
+`hivemind_reviewer.py:371-373` compares whole manifests and refuses with
+`stale reviewer launch inputs`.
+No release: the only writer of the state file is `_hm_write_integration`
+(`hivemind_routes.py:241`), reached from `_save` and the legacy thread; there
+is no route, and the file carries a digest (`:59-60`), so an edit by hand that
+does not recompute it reads as corrupt, which is again `held`
+(`hivemind_routes.py:236-238`). `docs/HIVEMIND_INTEGRATION_REVIEW.md` says
+holds are sticky by design and that a coordinating agent "must arrange scoped
+reconciliation"; no tool for that exists.
+**Read, not measured** end to end (it needs a live run).
+`tests/test_hivemind_integration_review.py:213-231` (`native`) and `:445` pin
+that a session which is not finished produces the hold; nothing covers the
+timing. Smallest fix: stay `running` and re-tick while a contributor is still
+`running` (bounded by a grace period) and on `LandingBusy`; compare the
+manifest's identity fields, not the whole dict; add one human-only route that
+archives a held attempt (state file, branch, worktree) so the run can be
+integrated again.
+
+### OS34 · medium · L — legacy integration starts while the last worker may still be committing, runs once, and can never be run again
+`hivemind_routes.py:279-293`, `mc/hivemind_integration.py:100-187`. The legacy
+path has no check on worker sessions at all. Same trigger as OS33(a): the row
+is `completed` before the worker's turn ends. Then either the worker tree is
+dirty and the whole integration stops (`hivemind_integration.py:229-232`), or
+it is clean at that instant, the tip is merged, and whatever the worker commits
+afterwards is not on the integration branch while the state says `completed`.
+One attempt only: `_hm_start_integration` returns for ANY existing state
+(`:285-286`), including `error`, `stopped` and the `interrupted` a restart
+writes (`:561-565`); and `integrate` refuses when the branch exists
+(`hivemind_integration.py:147-149`), which it does after the first attempt
+because only the worktree is removed (`:177-179`). A run that is restarted and
+completes again is never integrated. **Read, not measured.** Smallest fix:
+wait until the contributing sessions have left `running`; allow a new attempt
+when the previous one did not succeed (a numbered branch, or reuse when the
+branch holds no merge). Tests cover a single attempt only.
+
+### OS35 · low · E — a pending review re-checks the whole run every 5 seconds
+`hivemind_integration_cycle.py:436-442` drives `advance` every 5 s; while a
+review is pending each tick runs `_check` (`:170-190`): `_hm_list_workstreams`,
+three git processes on the integration tree, and a `status` plus a `rev-parse`
+per queued workstream, then relinks the smoke dependencies (`:324-325`). With
+5 workstreams that is 13 git processes per tick, about 7,000 over a 45-minute
+review. **Read, not measured.** Smallest fix: while `awaiting_review` poll only
+`reviewer_status`; `_check` already runs again when the verdict arrives
+(`:403`).
+
+### OS36 · low · L — a recorded pass is discarded if the reviewer's session then ends badly
+`hivemind_reviewer.py:275-285` tests the session's state before the recorded
+result: a reviewer that posted `pass` inside its deadline and then ends
+`error`, `blocked` or `stopped` before the next 5 s poll is `held` (`:276-277`),
+and the hold is permanent (OS33). Smallest fix: test `result` first. No test.
+
+### OS37 · low · M — an operator's persona name is in strings the API returns
+`mc/hivemind_routing.py:250` (`hold_reason`) and
+`hivemind_integration_cycle.py:335` (the hold reason shown on the run) name a
+specific agent persona that exists only on the authors' install; eight more
+mentions are in docstrings of the same files. Project rule: nothing
+operator-specific in the repo. Smallest fix: "the coordinating agent".
+
+### Hivemind roster, routing, review modules: sound
+`hivemind_roster.py`, `hivemind_fallback.py`, `hivemind_routing.py`,
+`hivemind_lineage.py`, `hivemind_review.py` and
+`blueprints/hivemind_review_routes.py` were read fully and no defect was
+found. Reviewer identity is taken from the OS-attributed caller, never the
+body (`hivemind_review.py:241-252`, `hivemind_review_routes.py:246-249`);
+records are digest-checked and a corrupt one is a hold, never a pass
+(`hivemind_review.py:161-202`); an unusable engine is a refusal, never another
+vendor (`hivemind_roster.py:165-173`, `hivemind_fallback.py:1-5`); every
+swallowed I/O error logs. Streamlining: `hivemind_roster.lookup_character`
+(`:93-109`) has no caller but its own test (17 lines).
+Of the 341 smoke suites, 32 name the live port; an integration smoke that is
+one of those tests the running server, not the merged tree
+(`hivemind_integration.py:69-91` runs it in the integration worktree). Count
+measured, effect read.
+
 ## Measurements
 
 - OS24, OS25, OS26, OS27: `_scratch` script driving the real blueprint through a
@@ -609,6 +709,10 @@ the terminal test refuses when there is one.
 - Rollover 2 (2026-11-16): `engine_selection`, `engine_fallback`, `engine_pace` and
   `hivemind_routes` were read before the rollover but their notes were not yet in this file;
   they are being re-read, findings written as found.
-- Next: engine_* (re-read), hivemind_routes (re-read), hivemind_worker, the other hivemind_*,
+- Rollover 3 (2026-11-16): read fully and written up: `hivemind_routes`, `hivemind_worker`,
+  `hivemind_roster`, `hivemind_fallback`, `hivemind_routing`, `hivemind_lineage`,
+  `hivemind_integration`, `hivemind_integration_cycle`, `hivemind_review`,
+  `hivemind_review_routes`, `hivemind_reviewer` (OS24-OS37).
+- Next: `hivemind_run_roles`, `hivemind_native_workflow`, engine_* (re-read: notes lost),
   coordination_routes, automation_*, model_upgrade*, usage_breakdown_*, wake_lock, then the
   backlog cross-check, then the assembled sections.
