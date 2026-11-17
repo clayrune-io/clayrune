@@ -239,3 +239,39 @@ Read so far (update): `mc/distiller.py:1-2884` (whole file).
 - K54 `distiller.py:2087-2094` `name:` is searched in the whole model output, not
   the frontmatter (low).
 
+Read so far (update): `mc/skills.py` (whole), `mc/blueprints/distiller_routes.py`
+(whole), `mc/blueprints/skills_routes.py` (whole).
+
+- K43 CONFIRMED by reading `distiller_routes.py:111-212`: no
+  `_authority_violation` call anywhere on the promote path; the reframed body
+  (`:173-180`) and any `_proposed/` file not written by
+  `_generate_and_write_artifact` install unchecked. Human + passcode present.
+- K47 CONFIRMED by grep: `_skill_stats_summary.json` has no reader under `mc/`
+  or `server.py`; `cross_project_candidate` is a log line only.
+- K48 CONFIRMED by grep: nothing writes `stats['cost']`; read at
+  `distiller.py:1385` and `:2283` only.
+- K60 `skills_routes.py:125-156` (`POST /api/skills`), `:158-183` (`PUT`),
+  `:261-302` (paste import, `force` is a body boolean), `:305`, `:357`, `:426`
+  (plugin: also writes the global agents and commands dirs), `:487`, `:186`
+  (DELETE), `:212`: none calls `is_unattended_caller` or the passcode gate, and
+  none runs the authority check. The 2026-09-10 security review F5 closed
+  `/api/distiller/promote`; these reach the same `write_skill` with no
+  proposal needed. Rail 1 route. Check `server.py` before_request hooks first.
+- K61 `distiller_routes.py:215-228` reject has no unattended or passcode gate:
+  an unattended session can permanently suppress and move any pending proposal.
+- K62 `distiller_routes.py:192-206` + `skills.py:338-351` promote passes
+  `overwrite=True` with a model-chosen `name:`; an existing installed skill of
+  that name (hand-written or built-in) is replaced, no backup, no warning.
+- K63 `skills.py:216-218` vs `:185-188` dump escapes `\` and `"`, parse strips
+  the outer quotes and does not unescape; every read-then-write (`:767`,
+  `:1214`, the PUT route) grows the value. Test with the pure functions.
+- K64 `skills.py:1284-1352` `skill_usage_stats` re-reads every transcript line
+  of every project modified in the window on each `GET /api/skills/usage`
+  (called on Skills panel open, `static/js/skills-panel.js:356`); no cache.
+  `:1310` `stat()` outside the try. Measure the byte volume read-only.
+- K65 `skills.py:759-761` overwrite = `rmtree` then `copytree`; a failed copy
+  leaves no skill. `:761` `copytree` follows symlinks (`:900` rejects links only
+  for pinned refs). Check the import guard for a symlink rule.
+- K66 `skills.py:497-502` a built-in the user archived or deleted is reinstalled
+  on the next start (no tombstone).
+
