@@ -751,4 +751,175 @@ carry live evidence: the state block this session was handed.
   route, so an import goes through the same create-project checks as a
   hand-added project (`claude_import_routes.py:8-11`).
 
+### N22. `mc/claude_cli_min_version.py` (107), `claude_resume_snapshot.py` (32), `claude_signin_channel.py` (41), `claude_usage_source.py` (192): read fully
+
+- **AP55 (E, low) `claude_usage_source.py:78-89`** — a failed usage read is
+  never cached, only a good one (`:86-88`). While the usage endpoint is
+  unreachable, throttled, or the stored token has expired, every caller pays
+  the full 6 s timeout again: the two usage routes
+  (`system_routes.py:1201`, `:1325`), the allowance reader
+  (`provider_allowance.py:80`) and, on the dispatch path, the pace check for a
+  named character (`engine_pace_dispatch.py:15`). Its Codex twin already
+  caches failures for exactly this reason (`codex_live_usage.py:14-15`,
+  `:92-93`). Also no single-flight: callers arriving together after the 60 s
+  expiry each make the request. Read, not measured (one timeout line in the
+  server log sampled). Fix: store `ts` on failure too, with a shorter TTL.
+- **AP56 (M, low) `claude_cli_min_version.py:89-91`** — the version probe
+  inherits stdin. `cli_update._run` and `midturn_rollover._git` both say why
+  that is unsafe on a server started without a console (the launch raises
+  before the child runs). Here the exception is logged and the model gate
+  then passes the model through, because an unreadable version is "no
+  evidence" (`:58`). So on a console-less server the floor for a new model is
+  silently not applied. The server log sampled holds no such failure line
+  (grep, count 0), so it works on this install; one keyword argument closes
+  it. Related duplication: three modules each run and parse the Claude
+  `--version` text their own way (`cli_update.py:151`, here `:74`,
+  `fence_fail_closed.py`); see Streamlining.
+- Sound: an unknown sign-in or usage-source value lands on the stricter side
+  (`claude_signin_channel.py:36-37`, `claude_usage_source.py:69-70`); a runner
+  document is size-capped, age-checked and reduced to numbers and short
+  strings (`:122-139`, `:174-189`); the snapshot flag is added to resumes only
+  and is idempotent (`claude_resume_snapshot.py:20-32`).
+
+### N23. `mc/codex_live_usage.py` (94), `codex_usage_checkpoint.py` (178), `codex_run_error.py` (204): read fully
+
+- **AP57 (L, low) `codex_usage_checkpoint.py:120-126` with
+  `usage_breakdown_sampler.py:111`** — a Codex mid-turn usage tick is
+  "complete" only when the session's own rollout holds a token record at
+  exactly the allowance sample's source time. That time is the event time of
+  the newest rollout on the machine, or the probe time of the live app-server
+  read; so of several Codex sessions running at once at most the one whose
+  rollout produced the sample can match, and after a live probe none can.
+  **Measured**, read-only, on this install's usage store: Codex sample ticks
+  2,635 complete against 2,674 unavailable (Claude: 23,348 against 123). The
+  server logs name the reason: 150 of 216 logged transitions are "no token
+  observation at allowance source time". The module is doing what its
+  docstring says (never move an older reading to a newer time); the result is
+  that mid-turn Codex usage attribution is missing half the time. Fix, if the
+  number matters: accept the newest token record at or before the boundary
+  and store ITS time as the tick's `observed_at`, which keeps the rule and
+  loses nothing. Each tick also re-reads the whole rollout from byte 0
+  (`:59-60`).
+- Sound: a live probe is single-flight and failures are cached
+  (`codex_live_usage.py:77-94`); the rollout error reader takes only the last
+  `task_complete`, refuses one that finished before this run began, and reads
+  a bounded tail (`codex_run_error.py:92-120`); tracing lines are matched on
+  timestamp + level + module path, so a reply that starts with "ERROR" is not
+  swallowed (`:36-38`); every counter in a usage record is type- and
+  order-checked before it is believed (`codex_usage_checkpoint.py:29-49`,
+  `:107-119`).
+
+### N24. `mc/aider_guard.py` (252), `aider_launch.py` (46), `aider_runner.py` (107), `aider_source_pin.py` (58): read fully; reached from `vendor_fence.py:56-78`
+
+- **AP58 (L, medium, latent) `aider_source_pin.py:11-17`, `:45-51` with
+  `cli_update.py:55`, `cli_install.py:128-134`** — two modules in this region
+  undo each other. The restricted Aider adapter runs only against
+  `aider-chat` 0.86.2 on CPython 3.12 with six dependencies at exact versions,
+  and refuses on any drift. The daily CLI updater is on by default, lists
+  `aider` among the CLIs it keeps current, and upgrades it with pip, pipx or
+  uv to whatever is newest. Nothing in `cli_update.py` consults the adapter
+  flag or the pin (read fully; no reference). So on an install where the
+  owner turns on `aider_restricted_adapter_enabled`, the first daily pass that
+  sees a newer release moves Aider off the audited version and every
+  unattended Aider run is refused from then on with "version drift", until
+  someone downgrades by hand, and the next pass upgrades it again. Latent
+  here: the flag is off and Aider is not installed. Fix: `check_one` reports
+  `pinned` and does not update a CLI whose adapter pin is active. No test
+  runs the two together.
+- **AP59 (M, low) `aider_launch.py:44`, `aider_runner.py:56`,
+  `aider_source_pin.py:11`** — the audited version is written as a literal in
+  three files. The next audit bump that changes one or two of them makes
+  every launch fail the proof comparison. One constant.
+- Sound: the guard is installed before any coder exists and fails closed on
+  any internal-shape drift (`aider_guard.py:107-110`, `:190-193`); every
+  subprocess goes through one checked constructor with the environment diffed
+  against the parent (`:210-250`); the source tree is hashed, and extension
+  modules or stray bytecode are refused (`aider_source_pin.py:20-33`); an
+  upstream-caught refusal still ends the run non-zero (`aider_runner.py:100`).
+
+### N25. `mc/attend_once_pass.py` (134), `attend_once_replay.py` (82), `background_model_policy.py` (27), `caller_attribution.py` (305): read fully
+
+- No finding. `caller_attribution` was checked for the obvious way round it (a
+  request to the machine's own LAN address is not loopback, so it is reported
+  unattributed and the caller's hints stand): that request is stopped earlier
+  by the local-auth gate, which only exempts loopback and tunnelled sessions
+  (`blueprints/local_auth.py:271-291`), so an agent without the passcode
+  cannot use it. The lookup never raises, an unavailable lookup with no
+  `Origin` fails closed (`:285-290`), and a missing dependency is announced at
+  boot (`:294-305`). The pass record is pure, never extends or stacks
+  (`attend_once_pass.py:107-116`), and a replay matches one tool call id plus
+  one action digest (`attend_once_replay.py:56-71`).
+
+### N26. `mc/resume_context.py` (100), `resume_cwd.py` (178), `resume_target.py` (149): read fully
+
+- **AP60 (E, medium) `resume_cwd.py:125-138` with
+  `agent_runtime.py:2520-2550`** — when a Claude conversation's transcript is
+  not found, the lookup repeats a search that had already covered everything.
+  `transcript_cwd` asks the runtime for the transcript under the project and
+  then under EVERY directory in `.clayrune/agents`; but the runtime's lookup
+  for the project path already globs every agent-worktree transcript
+  directory, so the later candidates can only repeat the miss, and each
+  repeat is another glob over the whole transcript store. **Measured**,
+  read-only, on this install (288 worktree directories, 5,718 transcript
+  directories): one miss through `transcript_cwd` takes 12.5 s; a single
+  runtime lookup takes 0.05 s. It runs inside the dispatch request
+  (`agent_routes.py:12826`) and the revive path (`:7903`). A miss is the
+  resume-target incident this region already documents
+  (`resume_target.py:3-9`: an id that never got a transcript) and any
+  conversation whose transcript was pruned. Fix: for Claude, one runtime
+  lookup with the project path, no candidate loop. For the hit case the cost
+  is one lookup; no test has more than a few worktree directories.
+- **AP61 (E, low) `resume_cwd.py:35-49`** — `recorded_cwd` JSON-decodes every
+  line until it finds a `cwd`. For a provider whose transcript never records
+  one (the Qwen case the caller handles at `:134-135`), that is a full decode
+  of the whole transcript on every resume, to return nothing. Fix: stop after
+  the first N lines, or test the substring before decoding.
+- Sound: a transcript is never taken as proof of its directory; a missing or
+  unusable tree refuses, keeps the user's message on the row and starts no
+  process (`resume_cwd.py:52-65`, `:141-178`); a Codex transcript from another
+  project cannot relocate this one (`:117-123`); the delivered-context stamp
+  moves only after the pipe accepted the bytes (`resume_context.py:47-61`);
+  a session id is not adopted from a pre-stdin hook event, and a quoted
+  "No conversation found" line in a reply is not mistaken for the CLI's own
+  error (`resume_target.py:41-70`).
+
+### N27. `mc/state.py` (207), `transform_deadline.py` (22), `transform_http_deadline.py` (115), `transform_process_deadline.py` (123), `transform_sandbox.py` (62), `pty_backend.py` (255): read fully
+
+- **AP62 (L, low) `pty_backend.py:221-240`** — the Windows close does its
+  "defense in depth" in the wrong order. It terminates the root first
+  (`:223`), then asks the OS tree-kill tool for that PID's tree (`:237`). With
+  the root gone the tool finds no such process and no descendants, so the
+  second step can only ever be a no-op: it backs up nothing in the one case
+  the comment describes (the platform cascade not reaping the children). The
+  sibling module states the rule the other way round
+  (`transform_process_deadline.py:36`, never hand an exited root to the tree
+  kill). The PID is not reusable while the PTY object holds its handle, so
+  this is not a stranger-kill; it is a dead step with a 10 s timeout on every
+  terminal close. Fix: tree-kill first while the root is alive, then
+  terminate. Read; a scratch run closed a PTY in 0.29 s and left no child,
+  which does not separate the two steps.
+- **AP63 (M, low) `transform_process_deadline.py:36-52`** — unreachable. Both
+  callers are in this file (`:107`, `:117`) and pass `job` on Windows (or the
+  function has already raised, `:74-89`) and `pgid` plus `reader` elsewhere,
+  so the third branch, including its own tree-kill call, never runs. See
+  Streamlining.
+- **AP64 (M, low) `state.py:7-13`** — the module docstring says objects here
+  are never rebound and that four named globals "deliberately stayed behind"
+  in `server.py`. All four now live here and are rebound (`:149-150`,
+  `:175-176`, and `CONFIG` at `:23`). The rule that actually protects them is
+  "always read through `state.<name>`"; a `from mc.state import CONFIG` at
+  module level would bind the empty dict for ever. Grep finds one such
+  import, inside a function, so nothing is broken today; the docstring
+  teaches the wrong rule.
+- **AP65 (E, low) `transform_http_deadline.py:41-81`** — every transform call
+  builds four classes, an adapter pair and a new session, so no connection is
+  ever reused and each call pays a fresh TLS handshake. By design for
+  cancellation; a per-thread session with the tracking hook would keep both.
+- Sound: the transform child is created suspended and put in a kill-on-close
+  job before it can run (`transform_process_deadline.py:65-78`); the deadline
+  includes the cleanup reserve; the HTTP watchdog shuts the socket down
+  rather than waiting on an idle timeout (`transform_http_deadline.py:101-110`);
+  the neutral directory keeps project context out of a tool-free transform
+  (`transform_sandbox.py:41-62`).
+
 <!-- APPEND-HERE -->
