@@ -5,6 +5,7 @@
 - Adding or duplicating a person with another step's inspector open no longer replaces that step's persona with the temporary empty loading option. Persona writes resume after the roster loads, including an intentional choice of Project default.
 - Added a hermetic browser regression covering palette drag, node/trigger insertion, duplication, explicit selections and a delayed roster response. WB2-WB4 have separate causes and remain outside this change.
 - Branch candidate for review; no merge, push, deployment or server restart.
+
 ## [2026-11-16] - Persist campaign card Skip before changing its display (MC-1183 / DV10)
 
 - Live card Skip now PATCHes every non-terminal version through the existing Review route; before this it only changed the browser's copy and was lost on reload. Refusals retain that version's state and show the server's reason; other versions are still attempted.
