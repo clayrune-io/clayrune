@@ -67,6 +67,8 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from mc.blueprints.project_routes import EXCLUDED_SIDECAR_SUFFIXES
+from mc import backup_path_guard as _path_guard
+from mc import backup_restore_point_guard as _rp_guard
 from mc import secrets_store as _secrets_store
 from mc import state as _state
 from mc.atomic_json import write_json_atomic
@@ -839,7 +841,9 @@ def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = 
     dest_dir.mkdir(parents=True, exist_ok=True)
     fname = _filename_for(cats, unprotected_excl)
     if label:
-        fname = fname.replace('.crbackup', f'-{label}.crbackup')
+        # P28: a label is a name segment, not a path (it used to carry
+        # separators and '..' straight into dest_dir / fname).
+        fname = fname.replace('.crbackup', f'-{_slugify(label)}.crbackup')
     final_path = dest_dir / fname
     tmp_path = _partial_path_for(dest_dir, fname)
 
@@ -1134,6 +1138,19 @@ def _validate_records_write(dest: Path, paths: dict, manifest: dict) -> Optional
     return f'refused: {name} is not a known project id or sidecar suffix — will not write into DATA_DIR'
 
 
+def _restore_allowed_roots(paths: dict) -> list[Path]:
+    """Where a same-machine restore may write: every location ``_paths()``
+    names, plus the project path of each project registered on this machine.
+    ``root`` (the install directory, which holds the source tree) is left out;
+    its one legitimate file, config.json, is its own ``_paths()`` entry."""
+    roots = [v for k, v in paths.items() if k != 'root']
+    for proj in _iter_registered_projects(paths['data_dir']):
+        pp = proj.get('project_path')
+        if pp and isinstance(pp, str):
+            roots.append(Path(pp))
+    return roots
+
+
 def restore_backup(archive_path: Path, categories: Optional[list[str]] = None,
                    dest_root: Optional[Path] = None) -> dict:
     archive_path = Path(archive_path)
@@ -1151,6 +1168,38 @@ def restore_backup(archive_path: Path, categories: Optional[list[str]] = None,
 
         # Stage: verify EVERY selected file's sha256 into memory/temp before
         # any write happens (spec §4.5/§6) — one bad hash aborts pre-write.
+        # P27: a member name that could leave its root, or a recorded dest
+        # outside every location a backup may write to, fails the whole
+        # restore here, before the first read or write. Every member is
+        # checked, selected or not: a hostile archive is refused outright.
+        allowed_roots = _restore_allowed_roots(paths) if dest_root is None else [Path(dest_root)]
+        # A project path named only by a record INSIDE the archive also counts
+        # (the records may be the very thing that was lost); reported below.
+        from_archive: list[Path] = []
+        if dest_root is None:
+            from_archive = [p for p in _path_guard.archive_project_paths(manifest, zf.read)
+                            if not any(_path_guard.is_within(p, k) and _path_guard.is_within(k, p)
+                                       for k in allowed_roots)]
+            allowed_roots = allowed_roots + from_archive
+        planned: dict[str, Path] = {}
+        for arcname, meta in manifest.get('files', {}).items():
+            refusal = _path_guard.member_name_refusal(arcname)
+            if refusal:
+                raise BackupError(f"refused archive member '{arcname}': {refusal}")
+            recorded = meta.get('dest')
+            if not recorded or not isinstance(recorded, str):
+                if meta.get('category') in selected:
+                    raise BackupError(f"refused archive member '{arcname}': no destination recorded")
+                continue
+            dest = _remap(Path(recorded), Path(dest_root) if dest_root else None)
+            refusal = _path_guard.dest_refusal(arcname, dest, allowed_roots)
+            if refusal:
+                hint = ('' if meta.get('category') != 'unprotected' else
+                        ' (an unprotected file is restored only under a project path that '
+                        'a project record on this machine, or in this archive, names)')
+                raise BackupError(f'refused archive member: {refusal}{hint}')
+            planned[arcname] = dest
+
         staged: list[tuple[str, dict, bytes]] = []
         for arcname, meta in manifest.get('files', {}).items():
             if meta.get('category') not in selected:
@@ -1165,13 +1214,13 @@ def restore_backup(archive_path: Path, categories: Optional[list[str]] = None,
             'announcement': announcement_for(manifest),
             'absent_categories': _absent_categories(manifest),
             'restored_categories': sorted(selected),
+            'project_paths_from_archive': [str(p) for p in from_archive],
             'per_category': {c: {'restored': 0, 'conflicts': 0, 'refused': 0, 'errors': []} for c in selected},
         }
 
         for arcname, meta, data in staged:
             cat = meta['category']
-            dest = Path(meta['dest'])
-            dest = _remap(dest, Path(dest_root) if dest_root else None)
+            dest = planned[arcname]
             bucket = report['per_category'][cat]
 
             refusal = _validate_records_write(dest, paths, manifest) if dest_root is None else None
@@ -1431,7 +1480,9 @@ def export_project(project_id: str, *, categories: Optional[dict] = None,
     if vault_status == 'included':
         fname = fname.replace('.crbackup', '-SECRETS.crbackup')
     if label:
-        fname = fname.replace('.crbackup', f'-{label}.crbackup')
+        # P28: a label is a name segment, not a path (it used to carry
+        # separators and '..' straight into dest_dir / fname).
+        fname = fname.replace('.crbackup', f'-{_slugify(label)}.crbackup')
     final_path = dest_dir / fname
     tmp_path = _partial_path_for(dest_dir, fname)
 
@@ -1577,6 +1628,45 @@ def _safety_copy_before_replace(paths: dict, project_id: str) -> Path:
     return dest
 
 
+def _remap_import_target(arcname: str, paths: dict, *,
+                         old_id: str, new_id: str, new_path: str,
+                         new_encoded: str) -> Optional[tuple[Path, Path]]:
+    """``(dest, root)`` for an archive member: where it would be written and
+    the directory its branch computed it under, which ``dest`` must not leave
+    (P27). None if no branch maps the member."""
+    parts = arcname.split('/')
+    if arcname.startswith('records/projects/'):
+        rel = parts[-1]
+        if old_id != new_id and rel.startswith(old_id):
+            rel = new_id + rel[len(old_id):]
+        return paths['data_dir'] / rel, paths['data_dir']
+    if arcname.startswith(f'records/memory/{old_id}/'):
+        root = paths['claude_projects_dir'] / new_encoded / 'memory'
+        return root / '/'.join(parts[3:]), root
+    if arcname == 'records/rules/AGENT_RULES.md':
+        return Path(new_path) / 'AGENT_RULES.md', Path(new_path)
+    if arcname == 'records/mcp_project/.mcp.json':
+        return Path(new_path) / '.mcp.json', Path(new_path)
+    if arcname.startswith(f'artifacts/journal/{old_id}/'):
+        root = Path(new_path) / 'docs' / '_journal'
+        return root / '/'.join(parts[3:]), root
+    if arcname.startswith(f'artifacts/workspace/{old_id}/'):
+        root = paths['data_dir'] / new_id
+        return root / '/'.join(parts[3:]), root
+    if arcname.startswith('media/uploads/'):
+        rel = parts[-1]
+        if old_id != new_id and rel.startswith(f'{old_id}_'):
+            rel = f'{new_id}_' + rel[len(old_id) + 1:]
+        return paths['uploads_dir'] / rel, paths['uploads_dir']
+    if arcname.startswith('transcripts/claude/') and len(parts) > 3:
+        root = paths['claude_projects_dir'] / new_encoded
+        return root / '/'.join(parts[3:]), root
+    if arcname.startswith(f'unprotected/checkout/{old_id}/') or \
+       arcname.startswith(f'unprotected/nongit/{old_id}/'):
+        return Path(new_path) / '/'.join(parts[3:]), Path(new_path)
+    return None
+
+
 def _remap_import_dest(arcname: str, paths: dict, *,
                        old_id: str, new_id: str, new_path: str,
                        new_encoded: str) -> Optional[Path]:
@@ -1584,34 +1674,23 @@ def _remap_import_dest(arcname: str, paths: dict, *,
     rather than trusting the manifest's recorded absolute ``dest`` (which is
     only valid for Phase 1's same-machine restore). This is the §8 remap: the
     same relpath, re-rooted under whatever this machine's project_path and
-    project id turned out to be."""
-    parts = arcname.split('/')
-    if arcname.startswith('records/projects/'):
-        rel = parts[-1]
-        if old_id != new_id and rel.startswith(old_id):
-            rel = new_id + rel[len(old_id):]
-        return paths['data_dir'] / rel
-    if arcname.startswith(f'records/memory/{old_id}/'):
-        return paths['claude_projects_dir'] / new_encoded / 'memory' / '/'.join(parts[3:])
-    if arcname == 'records/rules/AGENT_RULES.md':
-        return Path(new_path) / 'AGENT_RULES.md'
-    if arcname == 'records/mcp_project/.mcp.json':
-        return Path(new_path) / '.mcp.json'
-    if arcname.startswith(f'artifacts/journal/{old_id}/'):
-        return Path(new_path) / 'docs' / '_journal' / '/'.join(parts[3:])
-    if arcname.startswith(f'artifacts/workspace/{old_id}/'):
-        return paths['data_dir'] / new_id / '/'.join(parts[3:])
-    if arcname.startswith('media/uploads/'):
-        rel = parts[-1]
-        if old_id != new_id and rel.startswith(f'{old_id}_'):
-            rel = f'{new_id}_' + rel[len(old_id) + 1:]
-        return paths['uploads_dir'] / rel
-    if arcname.startswith('transcripts/claude/') and len(parts) > 3:
-        return paths['claude_projects_dir'] / new_encoded / '/'.join(parts[3:])
-    if arcname.startswith(f'unprotected/checkout/{old_id}/') or \
-       arcname.startswith(f'unprotected/nongit/{old_id}/'):
-        return Path(new_path) / '/'.join(parts[3:])
-    return None
+    project id turned out to be.
+
+    Raises BackupError, naming the member, for a member name that could leave
+    its root (a '..' segment, a backslash, a drive, a leading slash) or a
+    destination that resolves outside the root its branch computed (P27)."""
+    refusal = _path_guard.member_name_refusal(arcname)
+    if refusal:
+        raise BackupError(f"refused archive member '{arcname}': {refusal}")
+    target = _remap_import_target(arcname, paths, old_id=old_id, new_id=new_id,
+                                  new_path=new_path, new_encoded=new_encoded)
+    if target is None:
+        return None
+    dest, root = target
+    refusal = _path_guard.dest_refusal(arcname, dest, [root])
+    if refusal:
+        raise BackupError(f'refused archive member: {refusal}')
+    return dest
 
 
 def import_project(archive_path: Path, *,
@@ -1687,19 +1766,26 @@ def import_project(archive_path: Path, *,
 
         # Stage + verify EVERY non-vault file's sha256 before any write, same
         # pre-write-abort discipline as Phase 1's restore_backup.
-        staged: list[tuple[str, dict, bytes]] = []
+        # P27: every member's name and destination is checked here, before the
+        # first read or write, so one hostile member fails the whole import.
+        records_manifest = {'projects': [{'id': final_id}]}
+        staged: list[tuple[str, dict, bytes, Optional[Path]]] = []
         for arcname, meta in manifest.get('files', {}).items():
             if meta.get('category') == 'vault':
                 continue
-            data = zf.read(arcname)
-            if _sha256_bytes(data) != meta.get('sha256'):
-                raise BackupIntegrityError(f'sha256 mismatch for {arcname} — aborting before any write')
-            staged.append((arcname, meta, data))
-
-        for arcname, meta, data in staged:
             dest = _remap_import_dest(arcname, paths,
                                       old_id=old_id, new_id=final_id,
                                       new_path=new_path, new_encoded=new_encoded)
+            if dest is not None:
+                refusal = _validate_records_write(dest, paths, records_manifest)
+                if refusal:
+                    raise BackupError(f"refused archive member '{arcname}': {refusal}")
+            data = zf.read(arcname)
+            if _sha256_bytes(data) != meta.get('sha256'):
+                raise BackupIntegrityError(f'sha256 mismatch for {arcname} — aborting before any write')
+            staged.append((arcname, meta, data, dest))
+
+        for arcname, meta, data, dest in staged:
             if dest is None:
                 report['warnings'].append(f'could not map destination for {arcname} — skipped')
                 continue
@@ -1820,8 +1906,28 @@ def _slugify(label: Optional[str]) -> str:
     return kept.strip('-')[:40] or 'point'
 
 
+def _registered_ids(paths: dict) -> list[str]:
+    return [p['id'] for p in _iter_registered_projects(paths['data_dir'])]
+
+
+def _restore_point_project_dir(paths: dict, project_id: str, *, require_known: bool = True) -> Path:
+    """A project's restore-point directory, refused (BackupError) unless it
+    is a direct child of the restore-points root and the project is registered
+    or already has points on disk (P28; rules in backup_restore_point_guard)."""
+    try:
+        return _rp_guard.project_dir(paths['restore_points_dir'], project_id,
+                                     lambda: _registered_ids(paths),
+                                     require_known=require_known)
+    except ValueError as exc:
+        raise BackupError(str(exc)) from exc
+
+
 def _restore_point_dir(paths: dict, project_id: str, snap_id: str) -> Path:
-    return paths['restore_points_dir'] / project_id / snap_id
+    try:
+        return _rp_guard.snap_dir(paths['restore_points_dir'], project_id, snap_id,
+                                  lambda: _registered_ids(paths))
+    except ValueError as exc:
+        raise BackupError(str(exc)) from exc
 
 
 def _enumerate_restore_point_entries(paths: dict, project: dict) -> tuple[list[_Entry], list[_Warning]]:
@@ -1940,7 +2046,7 @@ def _load_restore_point_manifest(paths: dict, project_id: str, snap_id: str) -> 
 
 def list_restore_points(project_id: str) -> list[dict]:
     paths = _paths()
-    d = paths['restore_points_dir'] / project_id
+    d = _restore_point_project_dir(paths, project_id, require_known=False)
     out: list[dict] = []
     if not d.is_dir():
         return out

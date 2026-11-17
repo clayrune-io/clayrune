@@ -1068,16 +1068,30 @@ async function _exportRun(projectId) {
   st.exporting = true; st.error = null; st.result = null;
   _exportRender(modalId);
   try {
-    const res = await fetch(API_BASE + `/api/backup/export-project/${encodeURIComponent(projectId)}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        categories: st.checklist, vault: st.vault,
-        vault_passphrase: st.vault ? st.vaultPassphrase : undefined,
-        label: st.label || undefined,
-      }),
+    const url = API_BASE + `/api/backup/export-project/${encodeURIComponent(projectId)}`;
+    const body = JSON.stringify({
+      categories: st.checklist, vault: st.vault,
+      vault_passphrase: st.vault ? st.vaultPassphrase : undefined,
+      label: st.label || undefined,
     });
-    const data = await res.json();
-    if (!res.ok) st.error = data.error || `Export failed (HTTP ${res.status})`;
+    let ok, status, data;
+    if (st.vault === true) {
+      // P26: reading the vault out is human-only-gated server-side, so a
+      // vault export collects the retyped dashboard passcode like restore
+      // and import do. An export without the vault stays a plain fetch.
+      const result = await humanProofFetch(url, { method: 'POST', body }, {
+        title: 'Export project with secrets',
+        description: 'Re-enter your dashboard passcode to export this project\'s secrets.',
+      });
+      if (result === null) return;   // cancelled: finally{} clears the busy state
+      ok = result.ok; status = result.status; data = result.body;
+    } else {
+      const res = await fetch(url, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body,
+      });
+      ok = res.ok; status = res.status; data = await res.json();
+    }
+    if (!ok) st.error = data.error || `Export failed (HTTP ${status})`;
     else st.result = data;
   } catch (e) {
     st.error = 'Export failed: ' + e.message;

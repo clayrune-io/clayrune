@@ -234,6 +234,10 @@ def cmd_restore(args):
     except bk.BackupIntegrityError as e:
         print(f'ABORTED before any write: {e}', file=sys.stderr)
         return 1
+    except bk.BackupError as e:
+        # P27: a hostile member name or destination refuses the whole restore.
+        print(f'REFUSED before any write: {e}', file=sys.stderr)
+        return 1
     print(f"\nrestored categories: {', '.join(report['restored_categories']) or '(none)'}")
     for cat, stats in report['per_category'].items():
         print(f"  {cat}: {stats['restored']} restored, {stats['conflicts']} conflicts, "
