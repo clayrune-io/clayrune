@@ -873,8 +873,14 @@ def hivemind_start(hivemind_id):
     _hm_save_manifest(hivemind_id, manifest)
     _hm_push_sse(hivemind_id, {'type': 'hivemind_status', 'hivemind_id': hivemind_id, 'status': 'active'})
 
-    # If no workstreams exist, trigger goal decomposition
     workstreams = _hm_list_workstreams(hivemind_id)
+    # MC-1179 OS24: pause and stop park workstreams as `paused`; nothing else
+    # turns them back, so resuming left the run idle for good.
+    for ws in workstreams:
+        if ws.get('status') == 'paused':
+            _hm_liveness.resume_paused(ws, agent_sessions)
+            _hm_save_workstream(hivemind_id, ws['id'], ws)
+    # If no workstreams exist, trigger goal decomposition
     if not workstreams:
         _hm_dispatch_orchestrator(hivemind_id, 'decompose')
 
@@ -913,6 +919,9 @@ def hivemind_stop(hivemind_id):
         if ws.get('status') in ('active', 'pending', 'blocked'):
             ws['status'] = 'paused'
             _hm_save_workstream(hivemind_id, ws['id'], ws)
+    # MC-1179 OS24: "hard stop all agents" used to stop none; the workers kept
+    # running and spending.
+    _hm_liveness.stop_worker_sessions(hivemind_id, agent_sessions, get_manager)
     _hm_push_sse(hivemind_id, {'type': 'hivemind_status', 'hivemind_id': hivemind_id, 'status': 'stopped'})
     return jsonify({'ok': True, 'status': 'stopped'})
 

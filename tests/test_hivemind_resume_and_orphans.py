@@ -1,4 +1,5 @@
-"""MC-1179 OS25 (a workstream whose worker is gone stays `active` and blocks the run).
+"""MC-1179 OS24 (a paused or stopped hivemind can never be resumed) and OS25
+(a workstream whose worker is gone stays `active` and blocks the run).
 
 State is built on disk under the fixture's hivemind directory and the real
 routes and loop body are called; no worker, process or orchestrator starts.
@@ -154,3 +155,77 @@ class TestGoneOwner:
         _set(client, hm_id, 'ws_001', status='active', current_agent_session_id='hm_done')
         _tick(client, monkeypatch, [])
         assert _ws(client, hm_id, 'ws_001')['status'] == 'completed'
+
+
+# ── OS24: pause / stop, then resume ───────────────────────────────────────────
+
+class TestResume:
+    def test_pause_then_start_gives_the_workstream_back(self, client):
+        hm_id = _create(client)['hivemind']['id']
+        _set(client, hm_id, 'ws_001', status='active', current_agent_session_id='hm_gone')
+        client.post(f'/api/hivemind/{hm_id}/pause')
+        assert _ws(client, hm_id, 'ws_001')['status'] == 'paused'
+        assert client.post(f'/api/hivemind/{hm_id}/start').status_code == 200
+        ws = _ws(client, hm_id, 'ws_001')
+        assert ws['status'] == 'pending'
+        assert ws['current_agent_session_id'] is None
+        ready = client.hm._hm_resolve_dependencies(client.hm._hm_list_workstreams(hm_id))
+        assert [w['id'] for w in ready] == ['ws_001']
+
+    def test_stop_then_start_leaves_nothing_paused(self, client):
+        hm_id = _create(client)['hivemind']['id']
+        client.post(f'/api/hivemind/{hm_id}/stop')
+        assert {_ws(client, hm_id, w)['status'] for w in ('ws_001', 'ws_002')} == {'paused'}
+        client.post(f'/api/hivemind/{hm_id}/start')
+        assert {_ws(client, hm_id, w)['status'] for w in ('ws_001', 'ws_002')} == {'pending'}
+        assert _manifest(client, hm_id)['status'] == 'active'
+        ready = client.hm._hm_resolve_dependencies(client.hm._hm_list_workstreams(hm_id))
+        assert [w['id'] for w in ready] == ['ws_001']
+
+    def test_paused_workstream_whose_worker_still_runs_stays_owned(self, client):
+        hm_id = _create(client)['hivemind']['id']
+        client.state.agent_sessions['hm_live'] = _live(hm_id, 'ws_001', process_alive=True)
+        _set(client, hm_id, 'ws_001', status='active', current_agent_session_id='hm_live')
+        client.post(f'/api/hivemind/{hm_id}/pause')
+        client.post(f'/api/hivemind/{hm_id}/start')
+        ws = _ws(client, hm_id, 'ws_001')
+        assert ws['status'] == 'active' and ws['current_agent_session_id'] == 'hm_live'
+
+    def test_worker_that_finished_during_pause_is_collected_after_resume(self, client, monkeypatch):
+        hm_id = _create(client)['hivemind']['id']
+        client.state.agent_sessions['hm_done'] = _live(hm_id, 'ws_001')
+        _set(client, hm_id, 'ws_001', status='active', current_agent_session_id='hm_done')
+        client.post(f'/api/hivemind/{hm_id}/pause')
+        client.state.agent_sessions['hm_done']['status'] = 'completed'
+        client.post(f'/api/hivemind/{hm_id}/start')
+        _tick(client, monkeypatch, [])
+        assert _ws(client, hm_id, 'ws_001')['status'] == 'completed'
+
+    def test_stop_stops_the_workers_and_only_the_workers(self, client):
+        hm_id = _create(client)['hivemind']['id']
+        sessions = client.state.agent_sessions
+        sessions['hm_w'] = _live(hm_id, 'ws_001')
+        sessions['hm_orch'] = {'hivemind_id': hm_id, 'status': 'running', 'project_id': 'thm',
+                               'proc': None, 'mode': 'A', 'log_lines': []}
+        sessions['hm_other'] = _live('hm_someone_else', 'ws_001')
+        sessions['hm_done'] = _live(hm_id, 'ws_002', 'completed')
+        _set(client, hm_id, 'ws_001', status='active', current_agent_session_id='hm_w')
+        assert client.post(f'/api/hivemind/{hm_id}/stop').status_code == 200
+        assert sessions['hm_w']['status'] == 'stopped'
+        assert sessions['hm_orch']['status'] == 'running'
+        assert sessions['hm_other']['status'] == 'running'
+        assert sessions['hm_done']['status'] == 'completed'
+
+    def test_stop_kills_the_process_outside_the_lock(self, client, monkeypatch):
+        from mc.blueprints import agent_routes as ar
+        killed = []
+        monkeypatch.setattr(ar, '_kill_proc_background', killed.append)
+        monkeypatch.setattr(ar, '_unregister_process', lambda pid: None)
+
+        class Proc:
+            pid = 4242
+
+        hm_id = _create(client)['hivemind']['id']
+        client.state.agent_sessions['hm_w'] = _live(hm_id, 'ws_001', proc=Proc())
+        client.post(f'/api/hivemind/{hm_id}/stop')
+        assert len(killed) == 1 and killed[0].pid == 4242

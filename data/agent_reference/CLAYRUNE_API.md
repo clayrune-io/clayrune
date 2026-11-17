@@ -295,9 +295,9 @@ questions about scope/priorities/constraints BEFORE creating.
 | GET | `/api/hivemind/list` | List hiveminds. |
 | GET | `/api/hivemind/<hivemind_id>` | Get a hivemind's state. |
 | PUT | `/api/hivemind/<hivemind_id>` | Update fields. |
-| POST | `/api/hivemind/<hivemind_id>/start` | Start the hivemind. |
+| POST | `/api/hivemind/<hivemind_id>/start` | Start or resume the hivemind. Workstreams parked by pause or stop come back: `active` if their worker session still exists, else `pending`. |
 | POST | `/api/hivemind/<hivemind_id>/pause` | Pause workers. |
-| POST | `/api/hivemind/<hivemind_id>/stop` | Stop and finalize. |
+| POST | `/api/hivemind/<hivemind_id>/stop` | Stop the hivemind and its live worker sessions; `start` resumes it. |
 | DELETE | `/api/hivemind/<hivemind_id>` | Delete. |
 | GET | `/api/hivemind/<hivemind_id>/workstreams` | List workstreams. |
 | POST | `/api/hivemind/<hivemind_id>/workstreams/create` | Create a workstream. |
