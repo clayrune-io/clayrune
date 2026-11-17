@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-16] - Editing a character no longer deletes its Claude Code keys (MC-1179 pass 11, SF17)
+
+- `write_character` rebuilt the frontmatter from seven known keys on every save, so renaming, picking a face, moving, a team overwrite or a description typo-fix removed `tools`, `disallowedTools`, `permissionMode`, `mcpServers`, `hooks` and `color` from an imported subagent (an absent `tools:` means all tools). It now carries every key it does not own from the file being updated, verbatim and in original order (raw lines, because the frontmatter parser cannot round-trip nested maps or lists). Keys it owns are written as before; a new file is written as before.
+- Move: `write_character` takes `carry_from`, and `POST .../move` passes the source file, since the destination is a new file with nothing to carry from.
+- Covers the daily model-upgrade job, which writes through the same function (OS45, pass 09).
+
 ## [2026-11-16] - API-credits stop point can no longer be undone without the passcode (MC-1179 pass 11, SF31)
 
 - `reset_day` (starts a new empty cycle) and `prices` (may be all zeros) join `mode`, `secret_name`, `budget_usd` and `stop_pct` as passcode-gated fields on `PUT /api/api-credits/settings`, with the existing rule that the gate applies when the saved mode is `on`. A human with the passcode can still change all of them.
