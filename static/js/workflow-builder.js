@@ -1658,9 +1658,9 @@ function _wfRenderBody(st) {
       ${_wfRenderToolbarTools()}
       <button type="button" class="wfb-toolbar-btn" onclick="_wfCheckWorkflow()" ${st.reviewChecking ? 'disabled' : ''}
         title="Ask the model to review this workflow for problems">${st.reviewChecking ? 'Checking…' : 'Check workflow'}</button>
-      <button class="btn-sched-save" onclick="_wfSave()" ${st.saving ? 'disabled' : ''}>${st.saving ? 'Saving…' : (st.workflowId ? 'Update' : 'Create')}</button>
-      <button class="btn-sched-cancel" style="color:var(--accent);border-color:var(--accent)" onclick="_wfRunNow()"
-        title="${st.workflowId ? 'Validate and run this workflow now' : 'Save the workflow first'}">&#x25B6; Run now</button>
+      <button type="button" class="btn-sched-save wfb-toolbar-btn wfb-toolbar-btn-primary" onclick="_wfSave()" ${st.saving ? 'disabled' : ''}>${st.saving ? 'Saving…' : (st.workflowId ? 'Update' : 'Create')}</button>
+      <button type="button" class="btn-sched-cancel wfb-toolbar-btn wfb-toolbar-btn-accent" onclick="_wfRunNow()" ${st.runStarting ? 'disabled' : ''}
+        title="${st.workflowId ? 'Validate and run this workflow now' : 'Save the workflow first'}">${st.runStarting ? 'Starting…' : '&#x25B6; Run now'}</button>
       <span id="wfb-save-stamp" class="wfb-save-stamp${st.dirty ? ' wfb-save-stamp-dirty' : ''}">${st.dirty ? 'Unsaved changes' : esc(_wfRelativeSavedLabel(st.savedAt))}</span>
     </div>
     ${descOpen ? `<div class="wfb-toolbar-desc-row">
@@ -4369,6 +4369,7 @@ async function _wfRunNow() {
   const entry = _wfEntry(); if (!entry) return;
   _wfSyncDomToModel(entry);
   const st = entry._wf;
+  if (st.runStarting) return;  // MC-1201: a request for this click-set is already in flight
   if (!st.workflowId) { showToast('Save the workflow before running it.', 4000); return; }
   const problems = _wfValidateGraph(st.def);
   if (problems.length) {
@@ -4380,6 +4381,7 @@ async function _wfRunNow() {
   // validate-clean retry must not leave a stale error card on screen while
   // the fetch is in flight.
   if (st.runErrors) { st.runErrors = null; _wfRender(); }
+  _wfSetRunStarting(st, true);
   try {
     const res = await fetch(`${API_BASE}/api/workflows/${encodeURIComponent(st.workflowId)}/run`, { method: 'POST' });
     const data = await res.json().catch(() => ({}));
@@ -4389,6 +4391,10 @@ async function _wfRunNow() {
       // than leaving only a toast -- a run whose completion never arrives
       // otherwise blocks every future run with no visible way out.
       if (data.busy) { await _wfLoadLiveRun(st); _wfStartLivePollIfNeeded(st); _wfRender(); }
+      // MC-1201: a 409 whose live run is the one THIS tab started a moment ago
+      // (a stray second request for the same tap) is not a failure -- the run
+      // is already running on screen, so say nothing.
+      if (data.busy && _wfIsOwnFreshRun(st)) return;
       const names = (st.def.nodes || []).map(n => n.name);
       const hit = names.find(n => msg.includes(`'${n}'`));
       if (hit) _wfApplyRunErrors(st, [{ node: hit, message: msg }]);
@@ -4396,12 +4402,36 @@ async function _wfRunNow() {
       return;
     }
     st.liveRun = (data.run && _WF_LIVE_RUN_STATUSES.includes(data.run.status)) ? data.run : null;
+    if (data.run && data.run.id) st.ownRun = { id: data.run.id, at: Date.now() };
     _wfStartLivePollIfNeeded(st);
     _wfRender();
     showToast('Run started.', 3000);
   } catch (e) {
     showToast('Run failed: ' + e.message, 6000);
+  } finally {
+    _wfSetRunStarting(st, false);
   }
+}
+
+// MC-1201: Run now is disabled for the life of its request. A second tap (or a
+// stray duplicate click) while the first POST is pending used to send a second
+// POST, which the server refuses with 409 "already live" -- a red "Run failed"
+// banner next to the run the first tap had just started. The flag is set
+// synchronously before the fetch, so no second call can slip past it; the
+// button is patched in place (not via _wfRender) so a tap is never swallowed by
+// a rebuild, and _wfRenderBody reads the same flag for any render mid-flight.
+function _wfSetRunStarting(st, on) {
+  st.runStarting = !!on;
+  const btn = document.querySelector('.wfb-toolbar .btn-sched-cancel');
+  if (!btn) return;
+  btn.disabled = !!on;
+  btn.innerHTML = on ? 'Starting…' : '&#x25B6; Run now';
+}
+
+// True when the live run on screen is the one this tab's own Run click started
+// within the last few seconds -- i.e. a 409 that is an echo of our own success.
+function _wfIsOwnFreshRun(st) {
+  return !!(st.ownRun && st.liveRun && st.liveRun.id === st.ownRun.id && Date.now() - st.ownRun.at < 8000);
 }
 
 // ── MC-962: "Describe it" (draft) + "Check workflow" (review) ───────────────
