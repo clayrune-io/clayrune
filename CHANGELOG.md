@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Workflow toolbar: Update and Run now are styled like the rest, and Run now cannot be double-tapped into a false failure (MC-1201)
+
+- Seen on a phone: "Update" rendered as a white browser-default button and "Run now" as a plain square one (they wore only `btn-sched-save` / `btn-sched-cancel`, which `app.css` styles under `.schedule-form` alone). Both now also carry `wfb-toolbar-btn` (+ `-primary` / `-accent` for the accent), so they match Reset / Check workflow at 390px and 1440px.
+- Run now sets an in-flight flag before its POST: the button reads "Starting..." and is disabled until the request settles, so a second tap sends no second request. A 409 "already live" for the run this tab started a moment earlier shows no "Run failed" toast; a 409 for a run started elsewhere still does.
+- `static/js/workflow-builder.js`, `static/css/app.css`. New smoke `tools/smoke/workflow-run-now.mjs` (390 and 1440): 10 checks failed on the old code, all pass now.
+- Not changed (server): `POST /api/workflows/<id>/run` answers only after the first agent step is dispatched, inside `_advance_run` and under `_runs_lock`. On the reported run that was 8.06 s (run created 15:39:48.017, step recorded 15:39:56.079); the 24 most recent runs took 1 to 22 s. A second request during that time blocks on the lock and then gets 409.
+
 ## [2026-11-17] - Followup instructions survive a context rollover in full (MC-1198 / 697d2efe)
 
 - The reported `/agent/send` succeeded with the full message. A subsequent mid-task rollover cut the saved latest request at 2,000 characters in `mc/midturn_rollover.py`, so the replacement child lost the remaining instructions. Removed that slice for both latest and unanswered messages, plus the five-message cap that silently dropped older unanswered instructions.
