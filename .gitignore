@@ -16,6 +16,9 @@ src-tauri/target/
 data/projects/*.json
 data/projects/*_agent_log.json
 data/projects/*_agent_log.lock
+# Backup tools/repair-agent-log-rollover-duplicates.py --apply leaves beside a log;
+# untracked here it would read as a dirty shared data folder to every agent worktree.
+data/projects/*_agent_log.json.pre-rollover-cleanup-*
 # Orphaned atomic-write temp files (mc/atomic_json: .<name>.<rand>.tmp<pid>, left
 # when a writer is killed before the rename). Untracked, one of these made every
 # agent worktree read as dirty and blocked all merge-backs (MC-1179 R59).
