@@ -43,6 +43,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 
 from . import cloudflare, firestore as fs, sessions as _sessions
 from .tunnel_names import is_tunnel_of, new_tunnel_name
+from .username_claim import forget_released_username
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -339,6 +340,9 @@ async def revoke_device(
             snap = uref.get()
             if snap.exists and (snap.to_dict() or {}).get("user_id") == user_id:
                 uref.delete()
+                # The user row and the user's sessions still say `username`; without
+                # this the old owner keeps minting `u` = the name (MB22).
+                forget_released_username(user_id, username)
         except Exception as e:
             log.warning("revoke: failed releasing username %s: %s", username, e)
 

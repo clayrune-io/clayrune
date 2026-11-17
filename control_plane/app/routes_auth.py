@@ -45,6 +45,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from . import auth, entitlement, firestore as fs, jwt_es256, sessions
 from .routes_account import _request_id
+from .username_claim import holds_claim
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -164,7 +165,8 @@ async def session_start(request: Request, body: dict = Body(...)) -> Response:
         })
 
     user_row = fs.user_get(fb["user_id"])
-    if not user_row or not user_row.get("username"):
+    if (not user_row or not user_row.get("username")
+            or not holds_claim(fb["user_id"], user_row["username"])):
         raise HTTPException(status_code=409, detail={
             "code": "not_enrolled",
             "message": "This account has no Clayrune subdomain yet. "
@@ -234,7 +236,8 @@ async def session_refresh(request: Request) -> Response:
 
     # LIVE read. Never mint from the previous token's claims.
     user_row = fs.user_get(row["user_id"])
-    if not user_row or not user_row.get("username"):
+    if (not user_row or not user_row.get("username")
+            or not holds_claim(row["user_id"], user_row["username"])):
         sessions.revoke(row["_id"], user_id=row["user_id"])
         resp = JSONResponse(status_code=401, content={
             "code": "session_invalid",
