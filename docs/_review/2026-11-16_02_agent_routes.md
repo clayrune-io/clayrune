@@ -26,13 +26,81 @@ normal path today; **high** = wrong result or lost data on a reachable path, or
 a cost paid on every turn/dispatch/poll; **medium** = narrower trigger, or a
 latent defect behind a disabled flag; **low** = hygiene.
 
-Written incrementally, one commit per section. The ranked summary and the
-coverage statement are written last; until they exist, this file is a partial
-report and the last section present is where the pass stopped.
+Written incrementally, one commit per section; the ranked summary and the
+coverage statement (section 10) were written last. The pass is complete.
 
 ## Ranked summary
 
-_Written at the end of the pass. Findings are in the sections below._
+57 numbered findings: 0 blocker, 5 high, 26 medium, 26 low, plus 36
+unnumbered low items listed under "Lesser findings" in sections 3 to 7.
+Ranked by consequence, and within one severity by how often the path runs.
+"Latent" means the code is behind a setting that is off, or has no caller on
+the default path today. Ids are in the order found; R8, R11, R18, R21, R33,
+R35 and R36 were folded, cleared or left unconfirmed (section 10).
+
+**Merge-blocking if these were a diff:** ranks 1 to 5. Ranks 1 and 4 are
+measured; 2, 3 and 5 are read from the code. Rank 6 is the one medium that
+should go with them: it is a file read and a file rename outside the project
+folder, driven by a URL.
+
+| Rank | Id | Finding | Lens | Severity |
+|---|---|---|---|---|
+| 1 | R59 | One stray untracked file in the shared data folder makes every agent worktree read as dirty: nothing lands, nothing is cleaned up (measured, live on this install) | L | high |
+| 2 | R48 | `/agent/send` starts a session labelled attended whoever calls it; only `/agent/dispatch` attributes the caller, so an agent can start an unfenced child | L | high |
+| 3 | R38 | The Scribe model call, one per transcript chunk, runs while the project lock is held; every turn end of a non-Claude chat pays it | E/L | high |
+| 4 | R51 | The delivery loop re-validates every completion ever recorded on every 5 s drain: 4 to 6 s of work per cycle (measured) | E | high |
+| 5 | R45 | `runtime_callbacks` is dropped on the Claude streaming branch, so a Hivemind orchestrator exit hook never runs | L | high |
+| 6 | R55 | Four transcript routes put the conversation id from the URL into a file path unchecked; a backslash id reads or renames a file outside the project folder on Windows (measured) | M | medium |
+| 7 | R24 | The TodoWrite backlog key is the Claude session id, which changes on every respawn: one todo becomes several backlog rows and the old ones stay in progress | L | medium |
+| 8 | R1 | A provider-env file that fails to parse is read as empty, and the next save erases every other saved provider key | L/M | medium |
+| 9 | R61 | A repository whose default branch is not `master` strands every agent branch, with no message | L | medium |
+| 10 | R39 | A context-build failure refuses a Claude dispatch but launches a non-Claude one with no rules, persona or memory | L | medium |
+| 11 | R49 | A failed non-Claude follow-up answers `ok: true` | L | medium |
+| 12 | R42 | Resuming a conversation by an earlier id of a rolled chain falls back to the project default engine | L | medium |
+| 13 | R58 | The guardian CPU-idle baseline is per session, never reset and not tied to a process: a respawned busy process can be killed as hung | L | medium |
+| 14 | R43 | The 20-hour quota block lasts about an hour, and a later success does not clear it (measured) | L | medium |
+| 15 | R44 | The rollover handoff lists finished children as still running | L | medium |
+| 16 | R12 | The coverage advisory cannot fire on the first turn of a fresh dispatch: the seed line is not in the shape the lookup scans for (measured) | L | medium |
+| 17 | R60 | The worktree gc cache says an unchanged worktree cannot change verdict; it can, so a refusal sticks after its cause is gone | L | medium |
+| 18 | R3 | An unreadable incognito project record is silently replaced with a blank one | L | medium |
+| 19 | R56 | Chat search and the workflow progress scan skip the folder worktree-isolated agents write to | L | medium |
+| 20 | R47 | Claude Mode A passes the whole prompt in argv through a `.cmd` shim with no length guard | L | medium |
+| 21 | R41 | Eighteen places iterate the live session map without a snapshot | L | medium |
+| 22 | R53 | Three direct `stdin.close()` calls under the project lock, against the rule written after the 2026-09-23 freeze | L | medium |
+| 23 | R37 | Every Mode B turn re-parses every transcript the session has ever had (measured) | E | medium |
+| 24 | R57 | `/agent/status` still ships every session buffer on each poll, and the two rail endpoints rebuild everything per call (measured) | E | medium |
+| 25 | R10 | Every Read, Edit, Write and Grep tool call re-parses the whole project record on the reader thread, before the feature flag is checked (measured) | E | medium |
+| 26 | R50 | Follow-up work done under the project lock that the Claude spawn path moved out of it | E | medium |
+| 27 | R54 | The receipt reconciler re-reads every transcript newer than the oldest parked report, every five minutes | E | medium |
+| 28 | R26 | The chat buffer is capped in one of the two readers only | E/L | medium |
+| 29 | R13 | A Claude auth probe that times out leaves a stale "signed in" in place | L | medium |
+| 30 | R62 | The cold-review attempt cap is spent by failures that made no model call, back to back, and nothing resets it (latent: the setting is off on every project here) | L | medium |
+| 31 | R19 | The operator first name is hardcoded in prompt text sent to every agent on every install | M | medium |
+| 32 | R52 | A report delivered by respawning an evicted Mode B parent is filed as "outcome unknown" | L | low |
+| 33 | R63 | An explicit MCP selection that fails to resolve becomes the full fleet on three engines and a refused launch on four | L | low |
+| 34 | R64 | The review store treats any read error as corruption and reads a corrupt store silently | M | low |
+| 35 | R40 | A failed dispatch-log write leaves a session published as running with no process | L | low |
+| 36 | R28 | A failed opening write in the Mode B fresh retry leaves a process with no reader | L | low |
+| 37 | R27 | The Mode A failed-resume recovery skips the ownership check its Mode B twin has | L | low |
+| 38 | R6 | The worktree isolation gate counts live agents with no lock; two first dispatches both get the shared tree | L | low |
+| 39 | R46 | The Mode A launch logs the full command, prompt included (latent while streaming is the default) | L | low |
+| 40 | R34 | The interim-report reply scan skips a reply that opens with a marker (call-site half of pass 1 A1) | L | low |
+| 41 | R5 | Second copy of the Windows liveness probe pass 1 found wrong (call-site half of pass 1 A6) | L | low |
+| 42 | R17 | The context fingerprint does not cover what the context reads | L | low |
+| 43 | R20 | The skills catalog decides Claude-or-not from the project default, not the session engine | L | low |
+| 44 | R29 | The fence trigger-type lookup iterates the session map unguarded, and a miss parses every project log (measured) | L/E | low |
+| 45 | R22 | The recent-conversations block reads the session map unguarded and parses the agent log to label five rows | L/E | low |
+| 46 | R14 | An expired captured login is killed without its process tree; finished ones are never removed | L | low |
+| 47 | R2 | Clearing a saved key does not let the shell value take over, as the comment says | L | low |
+| 48 | R23 | The per-turn backlog note writer parses the whole project record every turn, writes the wrong text and hides its I/O errors | E/M | low |
+| 49 | R32 | Five hand-synced session dict literals | M | low |
+| 50 | R15 | Request bodies used without a type guard | M | low |
+| 51 | R4 | `_kill_pid` reports success whatever `taskkill` returned | M | low |
+| 52 | R25, R30 | Dead code that still looks live | M | low |
+| 53 | R31 | A revive parses the transcript twice | E | low |
+| 54 | R16 | The provider list reads the same 512 KB log tail once per runtime | E | low |
+| 55 | R7 | `_compute_code_delta` dumps the full history twice to subtract one from the other | E | low |
+| 56 | R9 | `_register_process` parses the whole project record to read its name | E | low |
 
 ---
 
