@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -428,6 +429,9 @@ class ShimClient:
 
 
 # ─────────────────────────────── log tail ────────────────────────────────────
+_EOL = re.compile(rb"[\r\n]")
+
+
 class LogTail:
     """Iterate complete lines of out.log from `offset`, like `for line in
     proc.stdout`. Polls (no inotify on Windows). Holds a trailing partial line
@@ -476,21 +480,20 @@ class LogTail:
         or None. A "\r" that is the last byte is held back, since it may be the
         first half of "\r\n", unless `final`."""
         buf = self._buf
-        for i, b in enumerate(buf):
-            if b == 10:
-                end = i + 1
-            elif b == 13:
-                if i + 1 < len(buf):
-                    end = i + 2 if buf[i + 1] == 10 else i + 1
-                elif final:
-                    end = i + 1
-                else:
-                    return None
-            else:
-                continue
-            self._buf = buf[end:]
-            return buf[:end]
-        return None
+        hit = _EOL.search(buf)                          # C-speed scan, not a byte loop
+        if hit is None:
+            return None
+        i = hit.start()
+        if buf[i] == 10:
+            end = i + 1
+        elif i + 1 < len(buf):
+            end = i + 2 if buf[i + 1] == 10 else i + 1
+        elif final:
+            end = i + 1
+        else:
+            return None
+        self._buf = buf[end:]
+        return buf[:end]
 
     def _line(self, raw: bytes) -> str:
         self.offset += len(raw)

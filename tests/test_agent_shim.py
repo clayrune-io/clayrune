@@ -1538,3 +1538,35 @@ def test_spec_without_a_usable_argv_still_writes_exit_json(tmp_path, argv):
     assert shim.Shim(str(sdir)).run() == 1
     info = json.loads((Path(sdir) / 'exit.json').read_text(encoding='utf-8'))
     assert info['reason'] == 'spawn_failed' and info['rc'] is None
+
+
+def _reference_cut(buf: bytes, final: bool):
+    """The byte-by-byte rule LogTail._cut had before AP22, kept as the oracle."""
+    for i, b in enumerate(buf):
+        if b == 10:
+            end = i + 1
+        elif b == 13:
+            if i + 1 < len(buf):
+                end = i + 2 if buf[i + 1] == 10 else i + 1
+            elif final:
+                end = i + 1
+            else:
+                return None, buf
+        else:
+            continue
+        return buf[:end], buf[end:]
+    return None, buf
+
+
+def test_logtail_cut_matches_the_byte_by_byte_rule(tmp_path):
+    """AP22: _cut now scans with a compiled search; every terminator spelling
+    and the held-back trailing CR must cut exactly where the old loop did."""
+    cases = [b'', b'abc', b'abc\n', b'abc\r\n', b'abc\r', b'abc\rdef', b'\r', b'\n', b'\r\n',
+             b'a\r\r\nb', b'x' * 5000, b'x' * 5000 + b'\r', b'x' * 5000 + b'\r\ny', b'\n\n']
+    for buf in cases:
+        for final in (False, True):
+            tail = C.LogTail(tmp_path / 'out.log')
+            tail._buf = buf
+            got = tail._cut(final)
+            want, rest = _reference_cut(buf, final)
+            assert (got, tail._buf) == (want, rest), (buf[:20], final)
