@@ -28,7 +28,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from backlog_journal_common import is_auto_note, journal_name  # noqa: E402
+from backlog_journal_common import is_auto_note  # noqa: E402
+from backlog_journal_sync import find_journals  # noqa: E402
 
 LIVE = ('open', 'in_progress', 'blocked')
 
@@ -60,16 +61,19 @@ def main():
         if not auto:
             continue
 
-        jf = journal_name(it)
-        if not (jdir / jf).exists():
-            report.append(f'  SKIP {it["id"]}: journal {jf} missing — export first')
+        # By id, so an item whose text (and so slug) changed after its journal
+        # was written is still found (MC-1179 TL15).
+        found = find_journals(jdir, it)
+        if not found:
+            report.append(f'  SKIP {it["id"]}: no journal for this item — export first')
             continue
+        jf = found[0].name
 
         keep.append({
             'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%f') + 'Z',
             'agent_code': 'user',
             'text': (f'{len(auto)} unattended-cycle note(s) moved to '
-                     f'docs/_journal/{jf} on 2026-08-15. Backlog items carry the ask '
+                     f'docs/_journal/{jf} on {datetime.now(timezone.utc).strftime("%Y-%m-%d")}. Backlog items carry the ask '
                      f'and its current state; the running log lives in the journal. '
                      f'Unattended agents append THERE, never here — see AGENT_RULES.md.'),
         })
