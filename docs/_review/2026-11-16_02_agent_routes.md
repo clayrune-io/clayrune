@@ -622,3 +622,362 @@ the completion backstop at `:10200`.
   explicitly picked persona.
 - **Handoff builder** (`:12011-12081`). Says how many turns it omitted and which
   native id the turns came from.
+
+---
+
+## 4. `agent_routes.py` lines 12551-15460, and the delegation delivery modules
+
+`_dispatch_agent_internal`, the dispatch / model / send / stream / followup
+routes, the stdin write helpers; then `mc/delegation_delivery.py`,
+`delegation_settlement.py`, `delegation_transcript_reconcile.py`,
+`delegation_waiting.py`, `delegation_wake.py`, `delegation_wake_absent.py`
+and `delegation_retry.py`, all read in full.
+
+#### R51 · high · E — the delivery loop re-validates every completion ever recorded on every 5-second drain: 4-6 s of work per cycle, measured
+
+`mc/delegation_delivery.py:788` calls `store.recover_sources()` at the top of
+every `drain_once`, and the loop drains every 5 s
+(`agent_routes.py:9820`, `:9879-9885`). `recover_sources`
+(`delegation_delivery.py:569-581`) selects **all** rows of
+`completion_sources`, a table nothing prunes except a revoke, and for each row
+opens a connection (three PRAGMAs, `:94-100`) to run `_revoked` (four or five
+queries and a `json.loads` of the payload, `:191-213`), then calls `enqueue`,
+which opens another connection, takes `BEGIN IMMEDIATE`, re-serializes the
+payload canonically, runs `_revoked` again, selects the outbox row and commits
+(`:315-343`).
+
+**Measured** on a backup copy of this install's database (44.5 MB; 2,198
+completion sources holding 12.3 MB of payload; 2,262 outbox rows):
+`recover_sources()` took 4.7 s, 4.1 s and 5.8 s on three consecutive calls and
+recovered 0 rows each time. `reconcile()` beside it took 1 ms. So the delivery
+thread spends roughly half its life here, takes the SQLite write lock about
+2,200 times per cycle, and a child's report that lands just after a drain
+started waits for it. The cost is linear in the number of completions the
+install has ever recorded.
+
+- **Fix:** the crash window this guards (completion recorded, enqueue not
+  committed) only exists at startup, where `recover_outbox` already runs
+  (`agent_routes.py:9853-9860`). Run `recover_sources` there and after a failed
+  enqueue, not per drain. If it must stay in the loop, make it one anti-join
+  (`completion_sources LEFT JOIN outbox USING(event_id) WHERE outbox.event_id IS NULL`)
+  and delete a source row once its outbox row is terminal.
+- **Tests:** none could catch it; no test seeds more than a handful of rows.
+
+#### R48 · high · L — `/agent/send` starts a session labelled attended whoever calls it; only `/agent/dispatch` attributes the caller
+
+`agent_dispatch` derives `trigger_type` from the caller and then overrides the
+body's hints with OS-level attribution
+(`agent_routes.py:13583-13602`, `_caller_attribution.resolve_dispatch`). The
+comment at `:13586-13596` says why: an agent-spawned session must not be
+"indistinguishable from a human clicking +New chat", because `trigger_type` is
+the one signal the fence, the secrets vault's unattended check and the config
+gate trust.
+
+`agent_send` reaches the same dispatcher twice with no `trigger_type` and no
+`source`: the fresh path (`:14045-14047`) and the native-resume path
+(`:13811-13813`). `_dispatch_agent_internal` defaults `trigger_type='manual'`
+(`:12552`). `_caller_attribution` is referenced exactly once in the file
+(`:13601`). So a managed agent that POSTs `/agent/send` with no `session_id`,
+or with one that resolves to nothing, gets a child session marked `manual`:
+unfenced, counted as attended by `is_unattended_caller`
+(`mc/unattended.py:83`). The same route also drops `character`, so the child
+runs as the project default persona.
+
+- **Fix:** in `agent_send`, run the same `resolve_dispatch` before either
+  `_dispatch_agent_internal` call and pass `trigger_type`/`source` through.
+  Better, move attribution into `_dispatch_agent_internal` for every call that
+  has a request context, so a third route cannot repeat this.
+- **Tests:** `tests/test_caller_attribution.py` and
+  `test_caller_attribution_followup.py` exercise the attribution function and
+  the dispatch route; neither posts to `/agent/send`. Not exercised live (it
+  would mean a POST to the running server).
+
+#### R45 · high · L — `runtime_callbacks` is dropped on the Claude streaming branch, so a Hivemind orchestrator's exit hook never runs
+
+`_dispatch_agent_internal` stores `runtime_callbacks` on the Mode A session
+dict (`agent_routes.py:13491`) and on the throwaway `_pending_session`
+(`:13243`), but not on the Mode B dict built at `:13290-13370`. Mode B's
+finish calls `_run_runtime_callbacks` (`:6562`), which reads
+`session['_runtime_callbacks']` (`:10758`) and finds nothing. The
+`housekeeping` key has the same gap (`:13490`, Mode A only).
+
+Mode B is chosen whenever `use_streaming_agent` is on (default True,
+`server.py:129`; `agent_routes.py:12891-12892`) and the caller did not pass a
+`prepared_context`. The `mode='A'` argument the runtime seam accepts
+(`mc/blueprints/hivemind_routes.py:1060`) is not read by
+`_claude_dispatch_hook` (`server.py:3341-3388`). The caller this hits is the
+Hivemind orchestrator (`hivemind_routes.py:1308-1343`): its `_on_exit` is the
+only thing that removes the id from `_hivemind_orchestrating` on success
+(`:1311`), and `_spawn_orchestrator` returns `None` while the id is still in
+that set (`:1199-1202`). A Mode B process also does not exit at turn end, so
+even a stored callback would not fire until eviction.
+
+- **Fix:** store `_runtime_callbacks` (and `housekeeping`) on the Mode B dict
+  too, and either honour `mode='A'` in the dispatch hook or fire the callback
+  at turn completion for Mode B.
+- **Tests:** `tests/test_claude_dispatch_hook_contract.py:37` checks only that
+  the kwarg is forwarded; `tests/test_hivemind_worktree_dispatch_hook.py:132`
+  forces `use_streaming_agent` False, which is the configuration where the bug
+  cannot occur. Read, not run: Hivemind itself is another pass's scope.
+
+#### R42 · medium · L — resuming a conversation by an earlier id of a rolled chain falls back to the project's default engine
+
+`_prior_conversation_provider` (`agent_routes.py:11906-11924`) matches a log
+row on `claude_session_id` or `provider_session_id` only. Its sibling
+`_prior_character` had to learn the `claude_session_ids` lineage
+(`:11833-11840`) after "Dave's chat came back as Vector". When the resumed id
+is an earlier link of a rolled conversation, or its row has been evicted from
+the 500-row log (pass 1 **S1**), the owner set is empty, `provider_override`
+stays `''` (`:12647`, `:12664`) and `resolve_provider` falls to the character's
+engine, then the project default (`:12707`). On a project or persona whose
+default engine is not Claude, a Claude conversation is dispatched to the other
+runtime with a Claude session id as its `resume_id` (`:12870`).
+
+- **Fix:** match `claude_session_ids` as `_prior_character` does, and when no
+  row matches but `_find_transcript_file` finds a Claude transcript, answer
+  `'claude'`.
+- **Tests:** no test resumes by a lineage id on a non-Claude-default project.
+
+#### R47 · medium · L — Claude Mode A passes the whole prompt in argv through a `.cmd` shim, with no length guard
+
+Six sites build `[claude, …, '-p', <full text>]`: `agent_routes.py:6861`,
+`:8233`, `:10798`, `:13416`/`:13419`, `:15191`, `:15869-15881`.
+**Measured:** `_resolve_claude()` resolves to a `.CMD` shim on this box, so the
+launch goes through `cmd.exe` and its roughly 8,191-character line limit.
+`mc/agent_runtime.py:5439-5449` states that limit and provides
+`_guard_win_argv_length`; it is called for Goose and Kiro only
+(`agent_runtime.py:10783`, `:10853`, `:11429`, `:11455`, `:11487`) and never
+from `agent_routes.py`.
+
+Mode A is what runs for every `prepared_context` dispatch (Hivemind workers,
+`:12891`) and for any project with streaming off. One trigger is certain: a
+Mode A auto-fresh prepends a handoff of up to 8,000 characters of turns plus
+header and footer to the task (`:12924`, `:15178`).
+
+- **Fix:** send the Mode A prompt over stdin (`-p` with no argument, then
+  write and close, which `_bounded_stdin_write(close_after=True)` already
+  supports), or call the guard and fail with a named error.
+- **Tests:** none builds a Mode A command with a long prompt. Not in pass 1.
+
+#### R49 · medium · L — a failed non-Claude follow-up answers `{'ok': True}`
+
+`agent_routes.py:14624-14636`: when `runtime.write_followup` (or the stash
+refresh, or the token rollover before it) raises anything other than
+`VendorFenceError` or `PromptDeliveryError`, the handler appends a chat line,
+sets `status = 'error'`, and then **falls out of the `except`** to
+`_log_agent_activity(… "Agent follow-up …")` and
+`return jsonify({'ok': True, 'session_id': session_id})`. The comment three
+lines up (`:14631-14632`) records that `ok: True` on an undelivered message
+"is what let the emailed-answer relay mark the question answered". An
+`OSError` from the respawn takes exactly that path. The exception is not
+written to the server log either.
+
+- **Fix:** end the `except` with a 502 `{'ok': False, 'delivered': False}` for
+  every exception, and `_log` it.
+- **Tests:** `tests/test_agent_send_non_claude_revive.py` covers the revive
+  path; nothing raises a plain exception out of `write_followup`.
+
+#### R50 · medium · E — follow-up work done under the project lock that the Claude spawn path was careful to move out
+
+The Claude branches build the command under the lock and spawn after it
+(`agent_routes.py:14775`, `:14807`, `:15034`). Three things in the same route
+do not follow that:
+
+- **Non-Claude follow-up, `:14541-14636`, entirely under the lock:**
+  `_native_followup_context.refresh_stash` (a context rebuild, `:14592`),
+  `_mode_a_token_rollover` (`:14617`), `_bridge_images_for_blind_model`
+  (`:14621`, one vision **model call per image** when the session's model
+  cannot see, `mc/vision_bridge.py:213-224`) and `runtime.write_followup`
+  (kill and respawn).
+- **Claude dead-process branch:** `_auto_fresh_handoff` (`:14730`) parses the
+  transcript of a conversation that is, by definition of the trigger, over the
+  size limit; `_fresh_context_for` runs at `:14685`, `:14691`, `:14703`,
+  `:14736` and `:14851`. Mode A does the same roll in its worker thread,
+  outside the lock (`:15154-15180`).
+- **Native-resume branch of `/agent/send`, `:13801-13826`:** a whole-transcript
+  `extract_chat_turns` and the complete `_dispatch_agent_internal` (context
+  build, worktree add, spawn) inside `with get_manager(project_id).lock`.
+
+Read, not measured (measuring needs a provider process). Every route that
+takes the manager lock for that project waits, including `/agent/stop`.
+
+- **Fix:** same shape the Claude branch already uses: decide and mark under the
+  lock, do the build, the bridge and the spawn after it.
+- **Tests:** none times or asserts lock scope.
+
+#### R53 · medium · L — three direct `stdin.close()` calls under the project lock, against the rule written for the 2026-09-23 freeze
+
+`_bounded_stdin_close` exists because an inline close "froze while holding the
+project lock … and every subsequent /agent/send for the project piled up
+behind that lock"; its docstring says never to call `proc.stdin.close()`
+directly from code holding `get_manager(...).lock`
+(`agent_routes.py:15423-15433`). Three sites still do: `:14772` and `:14864`
+(both inside the `with` opened at `:14541`), and `_stop_session` at `:15265`,
+whose own docstring says it must be called with the lock held. The hang is
+bounded today, because the write watchdog kills the child after 20 s
+(`:15293`, `:15381-15399`), or later while the startup grace loop keeps
+extending (`:15388`). For that long, the project's stop and send routes wait.
+
+- **Fix:** replace the three calls with `_bounded_stdin_close(proc, context=…)`.
+- **Tests:** none; the interrupt route's own close was converted (`:15701`).
+
+#### R54 · medium · E — the receipt reconciler re-reads every transcript newer than the oldest parked report, every five minutes
+
+`mc/delegation_transcript_reconcile.py:26`, run from the delivery loop
+(`agent_routes.py:9878`). The full sweep scans each parent's transcript
+directories and skips only files older than the oldest candidate row
+(`:264`, `:272`). Rows parked with no handoff boundary never resolve without a
+person, so that lower bound never moves forward.
+
+**Measured** with the module's own read-only `--dry-run` on this install: 85
+parked rows (63 eligible) across 6 projects, 7,297 transcript files scanned,
+1,773 skipped by mtime, 6.98 s, 0 matched. Every sweep starts each file at
+byte 0.
+
+Two more costs in the same loop, read, not measured: `settle` → `evaluate` →
+`read_snapshot` reads a whole parent transcript, `json.loads` every line and
+hashes it (`mc/delegation_settlement.py:73-98`) **under the project manager
+lock** (`settlement.py:379`, guard wired at `agent_routes.py:9864`), once per
+parked row with no cache across rows sharing a transcript; and the row
+signature includes the transcript's mtime and size
+(`delegation_transcript_reconcile.py:177-189`), so a parked row whose parent
+is still writing is re-read on every 5-second tick.
+
+- **Fix:** leave rows whose check verdict is final for a machine
+  (`no_boundary`, `ambiguous_receipt`) out of the sweep; remember
+  `(path, size, mtime) → scanned-up-to offset`; take the snapshot outside the
+  lock and re-check identity under it.
+- **Tests:** correctness is well covered; nothing bounds the scan.
+
+#### R39 · medium · L — a context-build failure refuses a Claude dispatch but launches a non-Claude one with no rules at all
+
+The Claude path builds context with no `try` (`agent_routes.py:13058`,
+`:13075`, `:13094`): a failure fails the dispatch. `_dispatch_via_runtime`
+catches the same failure, logs it and continues with `system_prompt = ''`
+(`:11450-11470`): no `AGENT_RULES.md`, no shared rules, no persona, no memory,
+and nothing in the chat says so. One reachable trigger: `_build_agent_context`
+reads the two user-edited rules files with `read_text(encoding='utf-8')` and
+no `errors=` (`:5326`, `:5328`), so a single non-UTF-8 byte raises. With that
+byte in a rules file, every Claude dispatch on the project is refused and
+every Codex or Gemini dispatch runs unruled. (`:5437` reads a sibling file
+with `errors='replace'`.)
+
+- **Fix:** read both files with `errors='replace'`, and make the two paths
+  agree: refuse in both, or launch in both with a visible chat line.
+- **Tests:** none feeds a non-UTF-8 rules file to either path.
+
+#### R52 · low · L — a report delivered by respawning an evicted Mode B parent is filed as "outcome unknown"
+
+`_process_inbox_locked` demands a write acknowledgment from any Mode B parent
+(`agent_routes.py:9765`). When the parent's process is gone (idle eviction
+leaves `status='idle'`, `process_alive=False`, `:18888-18889`),
+`agent_followup` takes the respawn branch and answers
+`{'ok': True, 'resumed': True}` with no `stdin_write_ack` (`:15145`); the
+respawn's own write waits for an ack only for the limit-resume caller
+(`:15117`), not for `durable_ack`, which contradicts `:14431-14433`.
+`_finish_handoff` then raises `DeliveryUncertain('parent stdin write
+acknowledgment is unknown')` (`:9801-9804`) while the respawn thread delivers
+the message. The row carries a handoff boundary, so the reconciler confirms it
+from the transcript later (`delegation_settlement.py:207-209`); until then the
+parent's chat shows a delivery it cannot confirm, and if the respawn also
+rolled to a fresh conversation the boundary names the old transcript.
+
+This install has 27 inbox rows parked `uncertain` with exactly that error; the
+data cannot say how many came through the respawn branch.
+
+- **Fix:** pass `wait_for_ack` on the respawn write when `durable_ack` is set
+  and return the ack in the body.
+- **Tests:** `tests/test_delegation_delivery.py:286-325` covers a live parent
+  only (`process_alive: True`).
+
+#### R32 · low · M — five hand-synced session dict literals
+
+Revive B `agent_routes.py:8088-8158`, revive A `:8263-8313`, runtime
+`:11359-11420`, dispatch B `:13290-13370`, dispatch A `:13433-13496`. Each is
+60-80 keys kept in step by hand. R45 is one divergence this produced
+(`_runtime_callbacks`, `housekeeping`); another is that revive B seeds
+`_memory_turn` delivery state (`:8179`) and revive A does not.
+
+- **Fix:** one `_new_session_dict(mode, **overrides)` and five call sites.
+
+#### Lesser findings
+
+- **R6, `:1385`, `:12857`, `:13157`** (L, low). The isolation gate is
+  `_live_agent_count(pid) < 1` (`:1349-1356`), read with no lock, and the new
+  session is published later. Two first dispatches that arrive together both
+  count zero and both get the shared tree.
+- **R40, `:11434-11438`** (L, low). `_dispatch_via_runtime` publishes the
+  session as `running`, `process_alive` before `_log_agent_dispatch_pending`,
+  which raises in strict mode; the caller re-raises with no cleanup
+  (`:12887-12889`). A failed log write leaves a running session with no
+  process.
+- **R46, `:13522`** (L, low). The Mode A launch logs `' '.join(cmd)`, and the
+  command carries `-p <task>`: the full prompt, incognito included, lands in
+  the server log. Latent while streaming is the default.
+- **Mode A `--continue`, `:15184`** (L, low). With no `claude_session_id` the
+  Mode A follow-up runs `claude --continue`, the most recent conversation in
+  that directory, which in a shared tree can be another chat's. Mode B treats
+  the same case as "cannot continue, start fresh" (`:14682-14693`). The roll
+  decision itself is written twice (`:14711-14741`, `:15154-15182`), and Mode A
+  mutates `proc`/`status` with no lock (`:15213-15222`).
+- **Send vs follow-up on a failed revive** (L, low). `agent_send` swallows any
+  revive exception and falls through to a **fresh** dispatch under a new
+  session id (`:13982-13984`, `:14014-14016`), the outcome the MC-1168 comment
+  at `:13977` rules out for delivery errors. `agent_followup` has no generic
+  `except` on the same call and returns 500 (`:14491-14507`).
+- **Unlogged 500s** (M, low). `agent_dispatch` `:13654-13655` and `agent_send`
+  `:14061-14062` return `dispatch failed: {e}` with no `_log`; the status code
+  for a `ValueError` is picked by `'not found' in str(e)` (`:13650`, `:14056`).
+- **Request-body guards** (M, low), adding to R15: `.strip()` on a non-string
+  `task` (`:13543`), `resume_conversation_id` (`:13546`), `message`
+  (`:14393`); an unhashable `session_id` reaches `in agent_sessions`
+  (`:14474`). Each is a 500 instead of a 400.
+- **Agent-log parses per resume dispatch** (E, low; prior-audit E3). Counted by
+  reading: `_prior_conversation_provider` twice (`:12647`, `:12664`),
+  `_prior_character` (`:12681`), `_prior_conversation_settings` three times
+  (`:12761`, via `:12766`, `:13030`), `_dispatch_clock_task` (`:11154`), two
+  under the lock (`:13208`, `:13224`), three in the launch transaction
+  (`mc/launch_transaction.py:86`, `:111`, `:179`). About twelve full parses at
+  5 ms each on a 2 MB log (**measured** earlier), so about 60 ms per resume. A
+  follow-up into a live process still pays the two in `reserve`.
+- **`delegation_waiting.waiting_by_parent`** (E, low). Called on every
+  `/agent/status` poll (`agent_routes.py:16279`) and Floor poll.
+  **Measured** on a database copy: 5.3-5.8 ms median, fetching 86 rows and
+  428 KB of payload to return 3 reports; `no_boundary` rows are discarded
+  (`mc/delegation_waiting.py:139-143`) after their payload has been parsed
+  (`:133`). Filter them in SQL.
+- **`delegation_transcript_reconcile.py:198-200`** (L, low). `json.loads` of a
+  stored boundary is uncaught; one corrupt value fails the whole tick, which
+  is logged once and then reconciles nothing until the row is fixed.
+
+#### Sound in this stretch
+
+- **Send routing** (`agent_routes.py:13849-13892`). One decision under the
+  lock; the prompt is pre-persisted so a status race cannot drop it; the
+  conversation-owner rewrite (`:13836-13842`) stops a second process on one
+  chat.
+- **SSE stream** (`:14187-14374`). Cursor-overshoot reset, per-stream question
+  de-duplication, no turn-complete while a question is pending.
+- **`_bounded_stdin_write`** (`:15296-15420`). Writer and watchdog off the
+  caller's thread, ownership checked before the session is marked failed,
+  three-way ack that distinguishes "failed before write" from "unknown".
+- **Reader vs sender lock order.** Checked as a possible deadlock (a reader
+  waiting on the manager lock while a send holds it across a pipe write) and
+  cleared: every write is on a helper thread, and the durable caller defers
+  its ack (`:9777`, `:14460-14466`).
+- **Launch transaction** (`mc/launch_transaction.py:79-200`). Strict re-read
+  before spawn, compare-and-swap restore on a proven refusal, unknown outcome
+  recorded and never retried.
+- **Turn reservation with no launch** (`:14582`, `:14816`): the
+  reservation only wraps the turn-state side effects; no leak.
+- **Delivery store.** `BEGIN IMMEDIATE` claim and fenced finish; `accept`
+  refuses an event that is not byte-identical to a trusted outbox row
+  (`delegation_delivery.py:357-361`); the status list never returns a payload;
+  one drain thread, so `reconcile` cannot mark a claim that is still running.
+- **Settlement.** Ownership evidence never counts as a receipt; a positive
+  match needs the whole header line in a user record newer than the report;
+  absence needs boundary, completion token, unchanged prefix digest and a
+  terminal record; `authorize_absence` re-evaluates inside the retry
+  transaction and spends a one-shot budget.
+- **Wakers.** Transition-driven; `blocked → pending` is guarded in the
+  statement; `uncertain` is never replayed automatically.
