@@ -25,7 +25,7 @@ Also fixes two things that made the old probe measure the wrong system:
     corpus as far darker than production actually sees it (27 dark vs 15).
     `live_signature()` reads what production reads, from the same config.
   * It hardcoded one operator's absolute project path into a tracked file.
-    `repo_root()` derives it.
+    `repo_root()` derives it; the project id comes from `_checkout.project_id`.
 
 `--corpus-snapshot` support: pass a snapshot directory (as written by
 `tools/memory-snapshot.py`) and both arms of a paired run read one FROZEN corpus,
@@ -85,7 +85,11 @@ def wire(corpus_snapshot=None, project_path=None):
     import mc.memory as m
 
     claude_home = Path.home() / '.claude' / 'projects'
-    project = {'id': 'mission_control', 'project_path': project_path or str(root)}
+    # The id is the record whose project_path is this checkout (or the
+    # canonical one named by project_path), never a literal.
+    import _checkout
+    project = {'id': _checkout.project_id(project_path),
+               'project_path': project_path or str(root)}
 
     def noop(*a, **k):
         return None

@@ -21,7 +21,9 @@ import re
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent / 'memory-eval'))
 
+import _checkout  # noqa: E402  (project id = the record whose path is this checkout)
 from mc.memory import _mem_link_key, _mem_link_targets  # noqa: E402
 
 _INDEX_FILES = {'MEMORY.md', 'MEMORY_ARCHIVE.md'}
@@ -34,7 +36,8 @@ def _default_dir(project_id):
     from mc import memory as _mem
     root = pathlib.Path(os.environ.get('MC_DATA_DIR')
                         or pathlib.Path(__file__).resolve().parents[1])
-    pfile = root / 'data' / 'projects' / f'{project_id or "mission_control"}.json'
+    project_id = project_id or _checkout.project_id()
+    pfile = root / 'data' / 'projects' / f'{project_id}.json'
     if not pfile.exists():
         raise SystemExit(f'no such project record: {pfile}')
     proj = json.loads(pfile.read_text(encoding='utf-8'))

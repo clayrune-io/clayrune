@@ -17,6 +17,7 @@ from collections import Counter
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _checkout  # noqa: E402
 import _harness  # noqa: E402 — only used for repo_root(), never wire()
 
 _rc = getattr(sys.stdout, 'reconfigure', None)
@@ -25,6 +26,11 @@ if _rc:
         _rc(encoding='utf-8', errors='replace')
     except Exception:
         pass
+
+
+def resolve_project(arg):
+    """`--project` when given, else the record whose project_path is this checkout."""
+    return arg or _checkout.project_id()
 
 
 def log_path(project_id: str) -> Path:
@@ -76,13 +82,14 @@ def summarize(rows: list) -> dict:
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--project', default='mission_control')
+    ap.add_argument('--project', default=None,
+                    help='project id (default: the project whose path is this checkout)')
     ap.add_argument('--sample', type=int, default=10,
                      help='how many would_send rows to print verbatim for grading')
     ap.add_argument('--json', action='store_true', help='print the summary as JSON')
     args = ap.parse_args()
 
-    path = log_path(args.project)
+    path = log_path(resolve_project(args.project))
     rows = read_rows(path)
     if not rows:
         print(f'no log at {path} — nothing has fired yet '

@@ -25,7 +25,6 @@ also must never live under `data/projects/` — `load_projects()` treats every
 """
 
 import argparse
-import glob
 import hashlib
 import json
 import os
@@ -33,6 +32,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _checkout  # noqa: E402
 import _harness  # noqa: E402
 
 SUITE_DIR = _harness.repo_root() / 'data' / 'memory-eval'
@@ -79,13 +79,8 @@ def first_user_task(path):
 
 
 def discover():
-    """Every mission_control transcript on disk, sorted for determinism."""
-    dirs = [x for x in os.listdir(CLAUDE_PROJECTS)
-            if 'mission-control' in x and 'scratch' not in x and 'demo' not in x]
-    files = []
-    for x in dirs:
-        files += glob.glob(os.path.join(CLAUDE_PROJECTS, x, '*.jsonl'))
-    return sorted(files)
+    """Every transcript on disk for THIS checkout, sorted for determinism."""
+    return sorted(_checkout.transcript_files(CLAUDE_PROJECTS))
 
 
 def extract(files):

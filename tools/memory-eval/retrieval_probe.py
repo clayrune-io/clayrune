@@ -7,9 +7,12 @@ found and opened, and do memory searches lead anywhere?
 Read-only. Writes nothing.
 """
 import os
-import glob
+import sys
 import json
 import collections
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _checkout  # noqa: E402
 
 ROOT = os.path.join(os.path.expanduser("~"), ".claude", "projects")
 SEP = os.sep
@@ -19,12 +22,26 @@ def norm(p):
     return (p or "").replace("\\", "/").lower()
 
 
+def memory_dir_for(root):
+    """This checkout's own `memory/` dir under `root`, or None. Derived from the
+    checkout's path (never a literal), trying the CLI's flattened variants.
+    Where several exist, the one whose MEMORY.md changed last wins, the same
+    rule `mc.memory._native_memory_path` applies (a stale `_` variant can sit
+    beside the live one)."""
+    best, best_mtime = None, -1.0
+    for enc in _checkout.encoded_variants(_checkout.default_checkout()):
+        d = os.path.join(root, enc, "memory")
+        if not os.path.isdir(d):
+            continue
+        idx = os.path.join(d, "MEMORY.md")
+        mtime = os.path.getmtime(idx) if os.path.isfile(idx) else 0.0
+        if mtime > best_mtime:
+            best, best_mtime = d, mtime
+    return best
+
+
 def main():
-    dirs = [x for x in os.listdir(ROOT)
-            if "mission-control" in x and "scratch" not in x and "demo" not in x]
-    files = []
-    for x in dirs:
-        files += glob.glob(os.path.join(ROOT, x, "*.jsonl"))
+    files = _checkout.transcript_files(ROOT)
 
     topic_reads = collections.Counter()
     searches = []
@@ -91,9 +108,13 @@ def main():
         print("   %4d  %s" % (v, k))
 
     # The number that matters: front-page pointers that NOTHING ever opened.
-    memdir = os.path.join(ROOT, "C--Users-levir-Documents--claude-mission-control",
-                          "memory")
-    if os.path.isdir(memdir):
+    memdir = memory_dir_for(ROOT)
+    if memdir is None:
+        print()
+        print("never-opened block skipped: no memory dir for this checkout "
+              "(looked for %s/memory under %s)"
+              % (_checkout.encoded_variants(_checkout.default_checkout())[0], ROOT))
+    else:
         on_disk = {x.lower() for x in os.listdir(memdir) if x.endswith(".md")}
         never = sorted(on_disk - set(topic_reads))
         print()

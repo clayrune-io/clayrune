@@ -2,14 +2,43 @@
 // Thin adb wrapper + WebView devtools-socket discovery/forwarding.
 // All scenario code drives the emulator through these helpers.
 const { execSync, execFileSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
-const ADB = process.env.MC_ADB || 'E:\\Android\\platform-tools\\adb.exe';
+// adb is found, in order, from MC_ADB (a full path to the binary),
+// ANDROID_HOME/platform-tools, then PATH. Resolved on first use, so a script
+// that never calls adb does not need one installed.
+function resolveAdb() {
+  const names = process.platform === 'win32' ? ['adb.exe', 'adb.cmd', 'adb.bat'] : ['adb'];
+  const isFile = (p) => { try { return fs.statSync(p).isFile(); } catch (_) { return false; } };
+  if (process.env.MC_ADB) return process.env.MC_ADB;   // as given, as before
+  if (process.env.ANDROID_HOME) {
+    for (const n of names) {
+      const p = path.join(process.env.ANDROID_HOME, 'platform-tools', n);
+      if (isFile(p)) return p;
+    }
+  }
+  const dirs = (process.env.PATH || process.env.Path || '').split(path.delimiter).filter(Boolean);
+  for (const d of dirs) {
+    for (const n of names) {
+      const p = path.join(d, n);
+      if (isFile(p)) return p;
+    }
+  }
+  throw new Error(
+    'adb not found. Set MC_ADB to the adb binary, or ANDROID_HOME to an Android SDK ' +
+    '(adb is read from <ANDROID_HOME>/platform-tools), or put adb on PATH.');
+}
+
+let _adb;
+function adbPath() { return (_adb = _adb || resolveAdb()); }
+
 const SERIAL = process.env.MC_SERIAL || 'emulator-5554';
 const APP_ID = process.env.MC_APP_ID || 'io.clayrune.app';
 const CDP_PORT = parseInt(process.env.MC_CDP_PORT || '9222', 10);
 
 function adb(args, opts = {}) {
-  return execFileSync(ADB, ['-s', SERIAL, ...args], {
+  return execFileSync(adbPath(), ['-s', SERIAL, ...args], {
     encoding: 'utf8',
     maxBuffer: 16 * 1024 * 1024,
     ...opts,
@@ -69,7 +98,7 @@ function screencap(outPath) {
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 module.exports = {
-  ADB, SERIAL, APP_ID, CDP_PORT,
+  resolveAdb, get ADB() { return adbPath(); }, SERIAL, APP_ID, CDP_PORT,
   adb, adbShell, findWebviewSocket, forwardDevtools,
   launchApp, forceStop, pressHome, bringToForeground, screencap, sleep,
 };

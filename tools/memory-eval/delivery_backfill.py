@@ -21,13 +21,13 @@ writes nothing at all.
 NEVER import `server` here (the tunnel reaper) — see `_harness.py`.
 """
 import argparse
-import glob
 import json
 import os
 import sys
 from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _checkout  # noqa: E402
 import _harness  # noqa: E402
 
 # Windows consoles default to cp1252 and a box-drawing character is enough
@@ -80,11 +80,7 @@ def first_user_task(path):
 
 
 def collect_tasks():
-    dirs = [x for x in os.listdir(ROOT)
-            if "mission-control" in x and "scratch" not in x and "demo" not in x]
-    files = []
-    for x in dirs:
-        files += glob.glob(os.path.join(ROOT, x, "*.jsonl"))
+    files = _checkout.transcript_files(ROOT)
     tasks, trivial = [], 0
     for f in files:
         t = first_user_task(f)
