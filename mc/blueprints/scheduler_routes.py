@@ -146,8 +146,10 @@ def _load_schedules():
     if SCHEDULES_PATH.exists():
         try:
             return json.loads(SCHEDULES_PATH.read_text(encoding='utf-8'))
-        except Exception:
-            pass
+        except Exception as e:
+            # Still reads as "no schedules" (callers tolerate that); the
+            # enable path fails closed in steward_role_writes._schedules.
+            _log(f"[scheduler] schedules file unreadable, treating as empty: {e}", flush=True)
     return []
 
 def _save_schedules(schedules):
