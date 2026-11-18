@@ -54,6 +54,7 @@ import functools
 from mc import codex_run_error as _codex_run_error  # MC-1147: rollout error as the failure summary
 from mc import test_run_detection as _test_run_detection
 from mc import empty_turn as _empty_turn
+from mc import stdin_ack_owner as _stdin_ack_owner  # MC-1216: a late-landing write clears its own uncertain flag
 from mc import agent_shim_adopt as _agent_shim_adopt  # MC-1150 P4: checkpoint + adoption (flag-gated)
 from mc import agent_shim_completion as _agent_shim_completion  # MC-1150 P4: crash-safe completion record
 from mc import mid_turn_send as _mid_turn_send  # MC-1086: steer / queue / interrupt routing
@@ -14835,6 +14836,18 @@ def agent_followup(project_id):
                 }
                 # Fall through — spawn happens after lock release
             else:
+                # MC-1216: a durable write would be refused below while an
+                # earlier write's outcome is unknown (_write_mode_b_stdin).
+                # Refuse HERE, before the turn starts: refusing after
+                # status='running' left the parent 'running' with nothing
+                # written, so every later report deferred as "parent is busy"
+                # (2026-11-17, 18:37 to the 18:52 restart). Nothing is written,
+                # so the honest ack is 'failed' and the delivery retries.
+                if durable_ack and existing.get('_stdin_write_uncertain'):
+                    return jsonify({'ok': False, 'session_id': session_id,
+                                    'stdin_write_ack': 'failed',
+                                    'error': 'previous stdin write outcome requires review; '
+                                             'nothing was written'}), 503
                 # Process alive — optionally re-classify model before writing to stdin
                 # MC-1088: a write into a RUNNING Mode B turn is absorbed by it.
                 _midturn.note_user_message(
@@ -15365,6 +15378,9 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
         return _mail_pipe.write(proc, data, session, lock, close_after)
     done = threading.Event()
     result = {}
+    # MC-1216: a write that lands after its ack wait ran out clears the
+    # uncertain flag that timeout set (mc/stdin_ack_owner.py).
+    ownership = _stdin_ack_owner.AckOwnership(session, proc)
 
     def _writer():
         write_started = False
@@ -15396,6 +15412,7 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
                     proc.stdin.close()  # pyright: ignore[reportOptionalMemberAccess]
                 except Exception as exc:
                     _log(f'[stdin-write] closing PID {proc.pid} stdin failed: {exc}')
+            ownership.write_finished(bool(result.get('ok')))
             done.set()
             # Release acknowledgment waiters before taking the project lock:
             # a synchronous follow-up caller may still be holding that lock.
@@ -15420,6 +15437,7 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
         _log(f"[stdin-write] PID {proc.pid}{f' ({context})' if context else ''} "
              f"did not drain stdin within {timeout}s — child never read it; "
              f"killing the process so the pipe breaks")
+        ownership.disown()
         if session is not None and session.get('proc', proc) is proc:
             session['_stdin_write_uncertain'] = True
             session.setdefault('log_lines', TimestampedLines()).append(
@@ -15432,9 +15450,7 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
     if wait_for_ack is None:
         return None
     def _acknowledge():
-        if not done.wait(wait_for_ack):
-            if session is not None and session.get('proc', proc) is proc:
-                session['_stdin_write_uncertain'] = True
+        if not done.wait(wait_for_ack) and ownership.ack_timed_out():
             return {'ack': 'unknown', 'error': 'stdin write did not complete before timeout'}
         if result.get('ok'):
             return {'ack': 'written'}

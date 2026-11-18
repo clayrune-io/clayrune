@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Child reports: a slow stdin write no longer leaves the parent stuck "running" (MC-1216)
+
+- A durable handoff waits 10 s for its stdin write to land. When a write landed after that wait (measured: 12 s, Dave's chat, 18:31), `_stdin_write_uncertain` was set and never cleared, although the outcome was by then known. Every later durable follow-up into that chat set the parent `running`, then refused to write. The parent sat `running` with nothing driving it (18:37 to the 18:52 restart), the restart endpoint listed it as active, and three child reports deferred as "parent is busy".
+- The flag is now owned by the write whose wait ran out (`mc/stdin_ack_owner.py`): if that same write then succeeds on the same process, the flag is cleared. A failed write, a watchdog kill, or a flag set by another path is never cleared by it.
+- A durable follow-up into a chat whose earlier write is still unresolved is refused before the turn starts (HTTP 503, `stdin_write_ack: failed`, nothing written), so the parent's status does not change and the report retries as deferred.
+
 ## [2026-11-17] - Memory system: four high findings (MC-1179 ML15, ML24, ML25, ML16)
 
 - Session summaries (ML15): a task whose first 80 characters hold a newline no longer loses its Scribe summary. The entry title kept the newline, so the entry was written as two or more lines and the next write kept only the first: the title cut short, with no summary. The title is now one line (whitespace runs become one space, still capped at 80), and the writer itself stores any entry as one line (new `mc/memory_entry_line.py`), which also covers the startup reconciler's own title. A live checkpoint of such a task now replaces its previous entry instead of adding a new one each time. Not changed: entries already cut in `MEMORY_ARCHIVE.md` stay as they are; the summary text was never stored for them.
