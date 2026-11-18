@@ -143,6 +143,35 @@ forks and its grandchildren would otherwise outlive a timeout
 (`test_timeout_shell_unit_ends_grandchild` pins it). Manifest units follow the
 same rule by their form (`argv` vs `shell`).
 
+**Which `python` a bare `python` runs (Windows, backlog dbbd02c0).** The child
+is started with `Popen(argv, shell=False)`, i.e. `CreateProcess` with no
+application name. For a bare `python` it searches the *calling process's image
+directory first*, then cwd, system dirs and only then `PATH`. A venv's
+`Scripts\python.exe` is a redirector: the process that actually runs is the
+base interpreter, so the "image directory" is the base install's. A launcher
+started as `.venv\Scripts\python.exe` therefore spawns a bare `python` child
+that is the **base** python (measured 2026-11-18: `sys.executable` of the
+launcher = `.venv\Scripts\python.exe`, `GetModuleFileNameW` of the same process
+= `pythoncore-3.14-64\python.exe`, bare-`python` child = the latter, no
+psutil), while a shell's own `PATH` lookup of the same word finds the venv. This
+is stock Windows/`subprocess` behaviour, not launcher code and not the shim
+code; the launcher still runs the argv exactly as given and never swaps
+interpreters. Fix at the call site: pass the project interpreter by absolute
+path (`<project>/.venv/Scripts/python.exe -m pytest ...`).
+
+To make that visible, before an argv unit whose `argv[0]` is a direct
+`python`-named executable (`python`, `python3`, `python3.12`, `.exe`; not `py`,
+`pytest` scripts or shells) the launcher probes that same `argv[0]` with the
+unit's cwd and env (`tools/test_run_interpreter.py`, `find_spec`, no module
+code runs, 10 s cap) and, if `psutil` or `pytest` is missing, writes
+`[test-run] interpreter_missing_<module>: ...` to stderr (naming the child's
+interpreter and, if different, the launcher's) and records a
+`interpreter_missing_<module>` diagnostic (capture `partial`) on the unit.
+Exit codes, argv and output are unchanged; a probe that cannot run is
+`interpreter_probe_failed`; a missing executable is left to the normal
+`child_start_failed` path. The probe only sees `argv[0]`: interpreter flags in
+the real argv (`-I`, `-S`, ...) are not replayed.
+
 Child unit outcomes derive from actual wait results. Missing/unstartable
 executables return 127/126 with diagnostics. Parent results derive from the
 specified aggregation rule. Only the launcher queues `/finalize` after these

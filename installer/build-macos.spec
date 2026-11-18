@@ -96,6 +96,7 @@ datas = [
     (R('tools', 'test_run_procgroup.py'), 'tools'),
     (R('tools', 'test_run_pytest.py'), 'tools'),
     (R('tools', 'test_run_node.py'), 'tools'),
+    (R('tools', 'test_run_interpreter.py'), 'tools'),
     # Built-in agent characters (Claydo) installed into ~/.claude/agents/ at
     # startup (character_routes._install_builtin_characters). Leave it out
     # and a fresh frozen install never gets the base agent.
