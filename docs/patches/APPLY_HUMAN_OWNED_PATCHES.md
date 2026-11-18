@@ -280,6 +280,71 @@ is also fine (they edit different places). Undoing patch 4 alone makes the revie
 found). Undoing patch 2 without patch 1 (or the reverse) leaves a role-bound steward
 fire refused, as it is on `master` today.
 
+---
+
+## Part 2: two more patches, for agent-proposed backlog items (patches 6 and 7)
+
+Since 2026-11-17 an item an agent adds to a backlog is stored as "Agent proposed" and
+waits for you to Accept it. Two small edits for that feature are in human-owned files,
+so they are patches too. They are independent of patches 1 to 5: apply them before,
+after, or without them. All seven were dry-run together on `master` at `238d20ed`
+(`git apply --check`, exit 0).
+
+| # | Patch | What it does |
+|---|-------|--------------|
+| 6 | `backlog-proposal-steward-core.patch` | `steward/core.py`: a steward never takes an unaccepted agent proposal as its charter |
+| 7 | `backlog-proposal-skill-text.patch` | `data/skills/builtin/mc-clayrune-apis/SKILL.md`: one line telling agents their added item waits for a person |
+
+**P1. Dry run (changes nothing).**
+```
+git apply --check docs/patches/backlog-proposal-steward-core.patch docs/patches/backlog-proposal-skill-text.patch
+```
+You should see: nothing.
+
+**P2. Apply both.**
+```
+git apply docs/patches/backlog-proposal-steward-core.patch docs/patches/backlog-proposal-skill-text.patch
+```
+You should see: nothing.
+
+**P3. Check patch 6.**
+```
+git grep -n "!= 'proposed'" -- steward/core.py
+```
+You should see one line, inside `find_charter`.
+
+**P4. Check patch 7.**
+```
+git grep -n -c "Agent proposed" -- data/skills/builtin/mc-clayrune-apis/SKILL.md
+```
+You should see: `data/skills/builtin/mc-clayrune-apis/SKILL.md:1`
+
+**P5. Run the test that was waiting for patch 6.**
+```
+python -m pytest tests/test_backlog_proposals.py -p no:cacheprovider
+```
+Before the patch this ends `27 passed, 1 xfailed`. After it, it should end
+`27 passed, 1 xpassed`. If it still says `xfailed`, the patch did not take effect:
+stop and say so. (The after-patch line is what pytest prints when that waiting test
+passes; it has not been run on a patched tree, because an agent cannot patch that file.)
+
+**P6. Commit the two files, then restart Clayrune** (step 15) so the server loads
+`steward/core.py`.
+```
+git add steward/core.py data/skills/builtin/mc-clayrune-apis/SKILL.md
+git commit -m "Apply human-owned patches 6 and 7: agent-proposed backlog items (steward charter, skill text)"
+```
+If you apply patches 1 to 5 in the same sitting, one commit with all the files is fine.
+
+**Undo (before committing):**
+```
+git apply -R docs/patches/backlog-proposal-skill-text.patch docs/patches/backlog-proposal-steward-core.patch
+```
+
+Until patch 6 is applied, a steward could in principle pick an unaccepted proposal
+whose text starts like a charter as its charter. The other readers (the tile count,
+topics, the Desk, GitHub issues, the steward role picker) already skip proposals.
+
 Other files in this folder (`fence-attend-once-per-call`, `fence-browser-read-digest`,
 `fence-disk-wipes`, `fence-mod-plant`, `fence-unlock-limits`) are separate patches and
 are not covered by this page.
