@@ -48,7 +48,7 @@ def test_finished_callback_drops_the_echo_and_keeps_the_answer_verbatim():
     # Shape the collapse UI parses (static/js/triggered-collapse.js _FINISHED_RE).
     assert re.match(r'^\[dispatched agent finished\]\s+(.+?)\s+\(session\s+[\w-]+\)'
                     r'\s+ended with status=([\w-]+)', first)
-    assert first == '[dispatched agent finished] Tobin (session 0d1915bafb3d) ended with status=idle.'
+    assert first == '[dispatched agent finished] Tobin (session 0d1915bafb3d) ended with status=idle. [event evt]'
     assert LONG_BRIEF not in msg
     assert 'PART A (build)' not in msg.replace(
         'Backlog 627a4961 (MC-975, high): Codex unattended sandbox.', '')

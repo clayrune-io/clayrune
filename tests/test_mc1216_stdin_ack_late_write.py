@@ -203,3 +203,15 @@ def test_an_unresolved_write_defers_the_next_report_without_marking_running(monk
         ar._process_inbox(row)
     assert parent['status'] == 'completed'
     assert stdin.writes == []
+
+
+def test_a_timeout_does_not_take_ownership_of_a_flag_another_path_set():
+    """Launch/steward uncertainty already raised the flag; this write's ack then
+    times out and later lands. Its success settles only its own outcome."""
+    proc = object()
+    session = {'proc': proc, stdin_ack_owner.FLAG: True}
+    own = stdin_ack_owner.AckOwnership(session, proc)
+    assert own.ack_timed_out() is True
+    assert stdin_ack_owner.OWNER not in session
+    own.write_finished(True)
+    assert session[stdin_ack_owner.FLAG] is True

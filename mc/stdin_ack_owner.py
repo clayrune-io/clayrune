@@ -53,8 +53,13 @@ class AckOwnership:
             self._timed_out = True
             if self._same_proc():
                 assert self._session is not None
-                self._session[FLAG] = True
-                self._session[OWNER] = self._token
+                # Take ownership only of a flag this timeout is what set. A
+                # flag already up came from another path (launch uncertainty,
+                # steward delivery) or another write's timeout; this write's
+                # late success settles none of those, so it must not clear it.
+                if not self._session.get(FLAG):
+                    self._session[FLAG] = True
+                    self._session[OWNER] = self._token
             return True
 
     def write_finished(self, ok: bool) -> None:

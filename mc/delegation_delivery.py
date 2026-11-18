@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from mc import delegation_receipt_header as receipt_header
 from mc import empty_turn
 from mc.callback_shape import task_line
 from mc.core import _log
@@ -38,7 +39,10 @@ _UNCERTAIN_CAUSES = (
     (RESTART_UNCERTAIN_ERROR, 'restart_during_handoff', False),
     ('inbox claim expired', 'claim_expired_before_handoff', True),
     ('parent stdin write acknowledgment is unknown', 'parent_stdin_ack_unknown', False),
-    ('parent durable outcome is ambiguous', 'parent_state_ambiguous', False),
+    # Raised by _revive_parent_for_delegation before anything is written, as
+    # DeliveryNotHandedOff since MC-1216; rows filed uncertain before that carry
+    # the same text and are the same case.
+    ('parent durable outcome is ambiguous', 'parent_state_ambiguous', True),
     ('parent revival outcome unknown', 'parent_revival_unknown', False),
     ('guarded parent submission outcome unknown', 'parent_submission_unknown', False),
     ('guarded parent submission returned HTTP', 'parent_submission_http_error', False),
@@ -821,7 +825,7 @@ def callback_payload(child: dict[str, Any], summary: str, event_id: str) -> dict
             'provider': child.get('provider', 'claude'),
             'model': child.get('agent_model') or child.get('model') or '',
             'message': (f"[dispatched agent finished] {who} (session {child.get('session_id', '')[:12]}) "
-                        f"ended with status={status}.\n\n{task_line(child)}\n\n"
+                        f"ended with status={status}. {receipt_header.tag(event_id)}\n\n{task_line(child)}\n\n"
                         f"Its final message:\n{summary or ''}\n\nThis is the callback you asked for at dispatch. Continue "
                         "the work it was part of -- do not re-dispatch it.")}
     if '_delivery_generation' in child:

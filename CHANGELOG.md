@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Child reports: pre-hand-off refusals retry, receipts match on the event id, an inherited flag is not taken over (MC-1216 follow-up)
+
+- A report refused before anything reached the parent ("parent durable outcome is ambiguous", parent status `error`/`stopped`/`running` at revive time) was filed `uncertain`, which is never retried, and then hidden: no handoff boundary, so the chat showed nothing (`ed1eb670258f:turn:3`). It is now a `DeliveryNotHandedOff`: the existing bounded backoff retries it, and when the retries run out the parent's chat shows "report from X was not delivered" with a Retry that cannot duplicate it. A parked row the parent was provably never handed (that cause, or an expired claim) is no longer hidden for lacking a boundary.
+- The delivery header line now ends with `[event <id>]`, and the receipt check matches on it. Before, the line carried no turn number, so one child turn's delivery confirmed its siblings (`8e65fec33d4e:turn:3` read "confirmed" though never written). A stored header without the id (a row queued before this) is shown as "Could not check ... no event id", never as delivered; the transcript reconciler skips such rows. New `mc/delegation_receipt_header.py`.
+- `AckOwnership.ack_timed_out` takes ownership of `_stdin_write_uncertain` only when its own timeout is what set it; a flag already up (launch uncertainty, steward delivery) is no longer cleared by this write's late success.
+
 ## [2026-11-17] - Child reports: a slow stdin write no longer leaves the parent stuck "running" (MC-1216)
 
 - A durable handoff waits 10 s for its stdin write to land. When a write landed after that wait (measured: 12 s, Dave's chat, 18:31), `_stdin_write_uncertain` was set and never cleared, although the outcome was by then known. Every later durable follow-up into that chat set the parent `running`, then refused to write. The parent sat `running` with nothing driving it (18:37 to the 18:52 restart), the restart endpoint listed it as active, and three child reports deferred as "parent is busy".

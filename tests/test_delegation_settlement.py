@@ -12,8 +12,10 @@ from mc.blueprints.delegation_report_routes import register_routes
 from mc.delegation_delivery import DeliveryStore
 from mc.delegation_transcript_reconcile import TranscriptReconciler
 
-HEADER = '[dispatched agent finished] Sol_Tobin (session child) ended with status=completed.'
 EVENT = 'child:turn:1'
+# The header carries its event id (MC-1216); an id-less one is covered by
+# tests/test_mc1216_report_followups.py.
+HEADER = f'[dispatched agent finished] Sol_Tobin (session child) ended with status=completed. [event {EVENT}]'
 
 
 def test_old_database_upgrades_without_inventing_historical_evidence(tmp_path):

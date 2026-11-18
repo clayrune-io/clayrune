@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from mc import delegation_receipt_header as receipt_header
 from mc.agent_runtime import ClaudeRuntime
 from mc.core import _log
 from mc.delegation_delivery import DeliveryStore
@@ -231,6 +232,8 @@ class TranscriptReconciler:
                     continue
             except (TypeError, KeyError, ValueError, AttributeError):
                 continue
+            if not receipt_header.header_carries(header, row['event_id']):
+                continue  # an id-less header matches sibling turns: unverified, never delivered
             row['header'] = header
             counts[row['project_id']]['eligible'] += 1
             groups.setdefault((row['project_id'], row['parent_session_id']), []).append(row)
