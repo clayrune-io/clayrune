@@ -19,6 +19,7 @@ import threading
 import time
 from typing import Any, BinaryIO
 
+from test_run_interpreter import check as check_interpreter
 from test_run_procgroup import start as start_group
 from test_run_transport import LocalClient, Telemetry, TransportError
 from test_run_pytest import PytestProgress
@@ -206,6 +207,11 @@ def _pump(source: BinaryIO, target: BinaryIO, output: threading.Event,
 
 def execute(spec: Unit, client: LocalClient, project: str, cancelled: threading.Event,
             telemetry: Telemetry, key: str) -> dict:
+    # Report-only: a child whose python lacks psutil/pytest goes red for reasons
+    # of environment. Never changes argv, interpreter or the exit code.
+    for code, message in check_interpreter(spec.argv, spec.cwd, spec.env):
+        warn(message)
+        events(telemetry, key, event('diagnostic', code=code, capture='partial'))
     try:
         started = time.monotonic()
         # Own group, so a timeout or cancel ends the unit's descendants too.

@@ -159,6 +159,7 @@ def test_packaged_source_layout_runs_from_unrelated_target(api):
     install = api.tmp / 'installation with spaces'
     wanted = {'tools/test-run.py', 'tools/test_run_launcher.py', 'tools/test_run_transport.py',
               'tools/test_run_procgroup.py', 'tools/test_run_pytest.py', 'tools/test_run_node.py',
+              'tools/test_run_interpreter.py',
               'data/test_reporters/clayrune_pytest_progress.py'}
     assets = [(path, target) for path, target in bundled_assets() if path.as_posix() in wanted]
     assert {path.as_posix() for path, _ in assets} == wanted
