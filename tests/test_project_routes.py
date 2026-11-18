@@ -611,7 +611,7 @@ def test_backlog_get_post_patch_delete_roundtrip(client):
     _seed(client)
     assert client.get('/api/project/tproj/backlog').get_json() == []
 
-    r = client.post('/api/project/tproj/backlog', json={'text': 'task A'})
+    r = client.post('/api/project/tproj/backlog', json={'text': 'task A'}, headers=HUMAN)
     assert r.status_code == 200
     item = r.get_json()['item']
     assert item['status'] == 'open' and item['source'] == 'dashboard'

@@ -40,6 +40,8 @@ def charter(project: dict, role: dict) -> dict:
         raise RoleError('charter text must not be empty')
     if item.get('status') in CLOSED:
         raise RoleError('charter is closed')
+    if item.get('status') == 'proposed':
+        raise RoleError('charter is an unaccepted agent proposal')
     return item
 
 

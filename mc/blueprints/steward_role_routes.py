@@ -153,7 +153,7 @@ def options():
     for item in project.get('backlog', []):
         text = item.get('text')
         if (not isinstance(text, str) or not text.strip() or item.get('status') in model.CLOSED
-                or not isinstance(item.get('id'), str)):
+                or item.get('status') == 'proposed' or not isinstance(item.get('id'), str)):
             continue
         charters.append({'id': item['id'], 'title': _charter_title(text),
                          'status': item.get('status') or '',

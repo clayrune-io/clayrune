@@ -2094,6 +2094,11 @@ from mc.blueprints import hivemind_synthesize_routes as _bp_hivemind_synthesize 
 
 app.register_blueprint(_bp_hivemind_synthesize.bp)
 
+# Agent-proposed backlog items: the human-only Accept / Dismiss routes.
+from mc.blueprints import backlog_proposal_routes as _bp_backlog_proposals  # noqa: E402
+
+app.register_blueprint(_bp_backlog_proposals.bp)
+
 # Inbound shims: the two startup call sites under __main__ keep their bare
 # names. atexit.register(_hivemind_orchestrator_stop.set) stays verbatim
 # further down (LIFO exit-hook ordering — the 1.8 lesson; the Event lives

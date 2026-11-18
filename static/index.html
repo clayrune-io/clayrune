@@ -260,6 +260,7 @@
   }
 </script>
 <link rel="stylesheet" href="/static/css/app.css">
+<link rel="stylesheet" href="/static/css/backlog-proposals.css">
 <link rel="stylesheet" href="/static/css/test-run-floor.css">
 <link rel="stylesheet" href="/static/css/test-run-card.css">
 <link rel="stylesheet" href="/static/css/chat-selection.css">
@@ -1367,9 +1368,11 @@ function _backlogCacheStale(items, loadedSeq, fresh) {
   if (!Array.isArray(items)) return false;
   if ((fresh.backlog_seq || 0) !== (loadedSeq || 0)) return true;
   const closed = items.filter(i => BACKLOG_CLOSED.includes(i.status)).length;
+  const proposed = items.filter(i => i.status === 'proposed').length;   // listed, not counted as open
   return items.length !== (fresh.backlog_total_count || 0)
       || closed !== (fresh.backlog_done_count || 0)
-      || (items.length - closed) !== (fresh.backlog_open_count || 0);
+      || proposed !== (fresh.backlog_proposed_count || 0)
+      || (items.length - closed - proposed) !== (fresh.backlog_open_count || 0);
 }
 function _preserveOpenBacklogs(fresh) {
   const openIds = new Set([...openModals.keys()].filter(id => !id.startsWith('__')));
@@ -4186,6 +4189,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/image-viewer.js"></script>
 <script type="module" src="/static/js/search-chats.js"></script>
 <script type="module" src="/static/js/backlog-actions.js"></script>
+<script type="module" src="/static/js/backlog-proposals.js"></script>
 <script type="module" src="/static/js/social-actions.js"></script>
 <script type="module" src="/static/js/cross-backlog.js"></script>
 <script type="module" src="/static/js/cross-social.js"></script>

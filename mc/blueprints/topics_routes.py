@@ -433,7 +433,8 @@ def _open_backlog(project_id):
     p = _load_project(project_id) or {}
     return [{'id': i.get('id'), 'text': (i.get('text') or '').strip()[:200]}
             for i in (p.get('backlog') or [])
-            if i.get('status') != 'done' and i.get('id') and (i.get('text') or '').strip()]
+            if i.get('status') not in ('done', 'proposed') and i.get('id')
+            and (i.get('text') or '').strip()]
 
 
 def _done_topics(project_id):

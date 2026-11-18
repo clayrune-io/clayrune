@@ -344,6 +344,10 @@ def _push_items(project: dict, repo: str) -> int:
     project_id = project.get('id', '')
 
     for item in backlog:
+        # A proposal waits for a person; a dismissed one was turned down. Neither
+        # is published as an issue.
+        if item.get('status') == 'proposed' or item.get('done_reason') == 'dismissed':
+            continue
         # RUNAWAY-DUP GUARD: never let one malformed item abort the whole
         # push cycle. The 2026-06-05 Keegan blow-up (~9,250 identical issues)
         # was exactly this — a create succeeded on GitHub, then a later item

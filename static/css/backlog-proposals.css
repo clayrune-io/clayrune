@@ -1,0 +1,17 @@
+/* Agent-proposed backlog items: the chip and the Accept / Dismiss buttons
+   (static/js/backlog-proposals.js). The row stays muted until a person decides. */
+.backlog-item.status-proposed { border-left-color: var(--amber); border-left-style: dashed; }
+.backlog-item.status-proposed .backlog-check { visibility: hidden; }
+.proposal-chip {
+  font-size: 9px; padding: 2px 7px; border-radius: 3px;
+  letter-spacing: 0.8px; text-transform: uppercase; font-weight: 600;
+  background: var(--amber-dim); color: var(--amber-text); white-space: nowrap;
+}
+.proposal-chip-name { text-transform: none; letter-spacing: 0.2px; font-weight: 500; }
+.proposal-btn {
+  font-size: 11px; padding: 2px 9px; border-radius: 3px; cursor: pointer;
+  background: transparent; border: 1px solid var(--border2); color: var(--text-dim);
+}
+.proposal-btn.proposal-accept { border-color: var(--green); color: var(--green-text); }
+.proposal-btn.proposal-accept:hover { background: var(--green-dim); }
+.proposal-btn.proposal-dismiss:hover { background: var(--surface3); color: var(--text); }

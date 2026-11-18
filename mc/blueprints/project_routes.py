@@ -54,6 +54,7 @@ from mc import provider_preferences
 from mc import state
 from mc.human_only_gate import human_only
 from mc.inline_safety import send_untrusted_file
+from mc import backlog_proposals as _backlog_proposals
 from mc.ui_field_validation import validate_project_fields, validate_backlog_fields
 from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
@@ -212,6 +213,7 @@ _MERGE_TRACKED_COLLECTIONS = {
 _DERIVED_RUNTIME_KEYS = (
     'social_pending_count',
     'backlog_open_count',
+    'backlog_proposed_count',
     'backlog_done_count',
     'backlog_total_count',
     'backlog_next_text',
@@ -668,8 +670,13 @@ def api_projects():
         # accepts in_progress and blocked (they're in the documented API), so an
         # item moved to either used to vanish from the tile count AND from the
         # backlog tab — the work list silently lost the items being worked on.
-        open_items = [i for i in backlog if i.get('status') not in _BACKLOG_CLOSED]
+        # A proposal (an agent's add awaiting a person) is listed but is not work:
+        # outside the open count and the next-action line.
+        open_items = [i for i in backlog if i.get('status') not in _BACKLOG_CLOSED
+                      and not _backlog_proposals.is_proposed(i)]
         p['backlog_open_count'] = len(open_items)
+        p['backlog_proposed_count'] = sum(1 for i in backlog
+                                          if _backlog_proposals.is_proposed(i))
         p['backlog_done_count'] = sum(1 for i in backlog
                                       if i.get('status') in _BACKLOG_CLOSED)
         p['backlog_total_count'] = len(backlog)
@@ -1371,6 +1378,11 @@ def add_backlog_item(project_id):
         'attachments': [],
         'links': [],
     }
+    # An agent's add is the server's to label, never the body's: it waits, listed
+    # but not work, for a person to Accept it (mc/backlog_proposals.py).
+    proposer = _backlog_proposals.proposer_from_request()
+    if proposer is not None:
+        _backlog_proposals.stamp_proposed(item, proposer)
 
     backlog.insert(0, item)
     p['last_updated'] = now_iso()
@@ -1397,6 +1409,10 @@ def update_backlog_item(project_id, item_id):
     item = next((i for i in backlog if i['id'] == item_id), None)
     if item is None:
         return jsonify({'error': 'item not found'}), 404
+
+    refusal = _backlog_proposals.refuse_proposal_patch(item, data)
+    if refusal is not None:
+        return refusal
 
     if 'text' in data:
         item['text'] = data['text'].strip()

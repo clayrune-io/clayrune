@@ -121,7 +121,8 @@ function backlogViewState(p) {
   const visibleItems = candidates
     .filter(it => backlogItemMatchesQuery(it, query))
     .slice()
-    .sort(numCmp || ((a, b) => rank(a) - rank(b)));
+    .sort(numCmp || ((a, b) => (rank(a) - rank(b))
+      || (window.backlogProposals ? window.backlogProposals.proposedSortKey(a) - window.backlogProposals.proposedSortKey(b) : 0)));
   return { backlog, backlogLoaded, openItems, doneItems, showDone, query, searchActive, sortMode, visibleItems };
 }
 
@@ -460,6 +461,8 @@ function backlogItemsListHTML(p, items, backlog, backlogLoaded) {
       isAgent ? 'agent-source' : '',
       isInProgress ? 'agent-in-progress' : '',
     ].filter(Boolean).join(' ');
+    const isProposed = !!(window.backlogProposals && window.backlogProposals.isProposed(item));
+    const proposalHTML = window.backlogProposals ? window.backlogProposals.proposalControlsHTML(p.id, item) : '';
     const agentBadgeHTML = isAgent
       ? `<span class="agent-badge${isInProgress ? ' in-progress' : ''}" title="Added by agent (${esc(item.source)})">${isInProgress ? 'doing' : 'agent'}</span>`
       : '';
@@ -481,15 +484,16 @@ function backlogItemsListHTML(p, items, backlog, backlogLoaded) {
         ${activityLine}
       </div>
       <div class="backlog-meta">
+        ${proposalHTML}
         ${agentBadgeHTML}
-        ${item.status && item.status !== 'open' && item.status !== 'done'
-          ? `<span class="status-badge status-${esc(item.status)}">${esc(String(item.status).replace('_',' '))}</span>` : ''}
+        ${item.status && item.status !== 'open' && item.status !== 'done' && !isProposed
+          ?`<span class="status-badge status-${esc(item.status)}">${esc(String(item.status).replace('_',' '))}</span>` : ''}
         <span class="priority-badge priority-${esc(item.priority||'normal')}"
           onclick="cyclePriority(event,'${window.jsAttr(p.id)}','${esc(item.id)}','${window.jsAttr(item.priority||'normal')}')"
           title="Click to change priority">${esc(item.priority||'normal')}</span>
         ${item.github_issue_number ? `<a class="gh-issue-link" href="https://github.com/${esc(p.github_repo||'')}/issues/${esc(item.github_issue_number)}" target="_blank" rel="noopener" title="View on GitHub">#${esc(item.github_issue_number)}</a>` : ''}
-        ${item.source && item.source !== 'dashboard' && !isAgent ? `<span class="backlog-source">${esc(item.source)}</span>` : ''}
-        ${p.project_path && !BACKLOG_CLOSED.includes(item.status) ? `<button class="backlog-dispatch" onclick="dispatchBacklogItem(event,'${window.jsAttr(p.id)}','${esc(item.id)}')" title="Send to agent">▶</button>` : ''}
+        ${item.source && item.source !== 'dashboard' && !isAgent && !isProposed ? `<span class="backlog-source">${esc(item.source)}</span>` : ''}
+        ${p.project_path && !BACKLOG_CLOSED.includes(item.status) && !isProposed ? `<button class="backlog-dispatch" onclick="dispatchBacklogItem(event,'${window.jsAttr(p.id)}','${esc(item.id)}')" title="Send to agent">▶</button>` : ''}
         <button class="links-btn ${linksN > 0 ? 'has-links' : ''}"
           onclick="toggleLinksPanel(event,'${window.jsAttr(p.id)}','${esc(item.id)}')"
           title="Links to other items">🔗${linksN > 0 ? ' '+linksN : ''}</button>
