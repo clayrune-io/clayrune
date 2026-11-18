@@ -41,6 +41,11 @@ async function renderStewards() {
       ? `<span class="steward-badge decide" title="Decisions awaiting your approval">${pend} to approve</span>` : '';
     const blkBadge = blk
       ? `<span class="steward-badge blocked" title="Blocked cycles">${blk} blocked</span>` : '';
+    // Added with docs/patches/steward-loop-health-journal.patch: sources the panel could
+    // not read. Absent on older servers, so no badge. The counts above are then a floor.
+    const unk = Array.isArray(s.unknown) ? s.unknown : [];
+    const unkBadge = unk.length
+      ? `<span class="steward-badge blocked" title="${esc('Not readable, so the counts may be low: ' + unk.join('; '))}">⚠ unknown</span>` : '';
     const fenceBadge = `<span class="steward-badge fence" title="Irreversible actions are hard-blocked; the steward must ask first">🛡 fenced</span>`;
     const scopeBadge = s.standalone
       ? `<span class="steward-badge" title="Operator-level — not tied to a codebase">🧭 standalone</span>` : '';
@@ -53,7 +58,7 @@ async function renderStewards() {
           <span>${schedPaused ? `<s>${cadence}</s>` : cadence}</span>
           <span>${last}</span>
           ${schedPaused ? `<span class="steward-badge blocked" title="All scheduled runs are paused — this steward will not fire until you resume them">⏸ paused</span>` : ''}
-          ${fenceBadge}${scopeBadge}${pendBadge}${blkBadge}
+          ${fenceBadge}${scopeBadge}${pendBadge}${blkBadge}${unkBadge}
         </div>
       </div>
       <div class="schedule-card-actions">

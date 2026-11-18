@@ -1,0 +1,34 @@
+diff --git a/steward/core.py b/steward/core.py
+index f969171..4297bce 100644
+--- a/steward/core.py
++++ b/steward/core.py
+@@ -420,9 +420,12 @@ def loop_health() -> dict:
+         out['projects_enabled'] += 1
+         charter = find_charter(p)
+         notes = (charter.get('notes') if charter else []) or []
+-        pend = sum(1 for n in notes if str(n.get('text', '')).startswith('DECISION NEEDED'))
+-        blk = sum(1 for n in notes if str(n.get('text', '')).startswith('BLOCKED'))
+-        last_ts = notes[-1].get('ts') if notes else None
++        # A steward obeying the binding rule writes a journal file, not notes
++        # (P65), so the numbers come from the journal and the role ledger, with
++        # the note counts as the fallback. Never raises.
++        from mc.steward_health_journal import project_health
++        h = project_health(p, charter, notes, CFG.data_root)
++        pend, blk, last_ts = h['decisions_pending'], h['blocked'], h['last_note_ts']
+         out['decisions_pending'] += pend
+         out['blocked'] += blk
+         out['enabled'].append({
+@@ -434,8 +437,13 @@ def loop_health() -> dict:
+             'decisions_pending': pend,
+             'blocked': blk,
+             'last_note_ts': last_ts,
++            'activity_source': h['activity_source'],
++            'unknown': h['unknown'],
+             'standalone': bool(p.get('_is_steward_workspace')),
+         })
++        if h['unknown']:
++            out['alerts'].append(f"{p.get('name') or p.get('id')}: health partly unknown "
++                                 f"({'; '.join(h['unknown'])})")
+         if pend:
+             out['alerts'].append(f"{p.get('name') or p.get('id')}: {pend} decision(s) awaiting you")
+     return out
