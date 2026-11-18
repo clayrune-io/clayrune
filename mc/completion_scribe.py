@@ -8,44 +8,71 @@ one to reduce). Its three callers -- the Mode A reader `finally`, the Mode B
 (dispatch, send, stop, the delegation inbox) waited for the Scribe.
 
 The body now hands the Scribe step to `run_or_defer`. A caller that holds the
-lock calls `begin()` before taking it and `flush()` after releasing it; in
-between, `run_or_defer` only queues. A caller that did not call `begin()` (boot
+lock opens a `window()` around it:
+
+    with _completion_scribe.window(_log), get_manager(pid).lock:
+        ...
+
+`with` releases the lock first and then closes the window, which runs the queued
+steps; `window` flushes in a `finally`, so a caller that raises still gets its
+Scribe step run rather than lost. Windows nest on a thread (a depth counter): an
+inner window neither discards the outer one's queue nor switches deferral off,
+and only the outermost close runs the steps. A caller with no window (boot
 replay, the stop route) gets the old behaviour: the step runs inline.
 
-The queue is thread-local, so two reader threads finishing together each flush
-only their own turn. The lock order is unchanged (manager -> agent-log leaf):
-the step takes no manager lock, and its agent-log write (`mark_scribed`) goes
-through `_update_agent_log`'s own leaf lock, outside any other transaction.
+The state is thread-local, so two reader threads finishing together each run only
+their own turn's steps. Lock order is unchanged (manager -> agent-log leaf): the
+step takes no manager lock, and its agent-log write (`mark_scribed`) goes through
+`_update_agent_log`'s own leaf lock, outside any other transaction.
 """
 import threading
-from typing import Callable, Optional
+from contextlib import contextmanager
+from typing import Callable
 
 _tls = threading.local()
 
 
 def begin() -> None:
-    """Start collecting Scribe steps on this thread. Resets anything left over."""
-    _tls.pending = []
+    """Open a collecting window on this thread. Nests: only the outermost
+    `flush()` runs what was queued."""
+    if getattr(_tls, 'depth', 0) == 0:
+        _tls.pending = []
+    _tls.depth = getattr(_tls, 'depth', 0) + 1
 
 
 def run_or_defer(step: Callable[[], None]) -> bool:
-    """Queue `step` if this thread called `begin()`; otherwise run it now.
+    """Queue `step` if this thread has an open window; otherwise run it now.
     Returns True when it was queued. `step` carries its own exception guard."""
-    pending: Optional[list] = getattr(_tls, 'pending', None)
-    if pending is None:
-        step()
-        return False
-    pending.append(step)
-    return True
+    if getattr(_tls, 'depth', 0) > 0:
+        _tls.pending.append(step)
+        return True
+    step()
+    return False
 
 
 def flush(log: Callable[[str], None] = print) -> None:
-    """Run the queued steps, then stop collecting. Never raises: a Scribe failure
-    is logged and must not skip the caller's teardown."""
-    pending = getattr(_tls, 'pending', None)
-    _tls.pending = None
-    for step in pending or ():
+    """Close one window level. The outermost close runs the queued steps. A flush
+    with no open window is a no-op. Never raises: a Scribe failure is logged and
+    must not skip the caller's teardown."""
+    depth = getattr(_tls, 'depth', 0)
+    if depth <= 0:
+        return
+    _tls.depth = depth - 1
+    if _tls.depth > 0:
+        return
+    pending, _tls.pending = _tls.pending, []
+    for step in pending:
         try:
             step()
         except Exception as e:  # steps carry their own guard; this is the backstop
             log(f"[completion-scribe] deferred scribe step failed: {e}")
+
+
+@contextmanager
+def window(log: Callable[[str], None] = print):
+    """`begin()` on entry, `flush()` on exit, including when the body raises."""
+    begin()
+    try:
+        yield
+    finally:
+        flush(log)

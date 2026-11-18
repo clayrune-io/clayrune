@@ -110,3 +110,56 @@ def test_flush_runs_queued_steps_once_and_survives_a_failing_step():
     assert len(logged) == 1 and 'boom' in logged[0]
     completion_scribe.flush(logged.append)  # second flush: nothing left, no re-run
     assert ran == ['first', 'third']
+
+
+# ── nesting + a skipped flush (Dave's hardening request) ─────────────────────
+
+def test_nested_window_keeps_and_runs_the_outer_step_exactly_once_after_the_outer_flush():
+    ran = []
+    completion_scribe.begin()
+    completion_scribe.run_or_defer(lambda: ran.append('outer'))
+    completion_scribe.begin()                       # inner window on the same thread
+    completion_scribe.run_or_defer(lambda: ran.append('inner'))
+    completion_scribe.flush(print)                  # inner close: nothing runs yet
+    assert ran == []
+    completion_scribe.run_or_defer(lambda: ran.append('outer-2'))  # still deferring
+    assert ran == []
+    completion_scribe.flush(print)                  # outermost close runs all, once
+    assert ran == ['outer', 'inner', 'outer-2']
+    completion_scribe.flush(print)
+    assert ran == ['outer', 'inner', 'outer-2']
+
+
+def test_flush_without_a_matching_begin_is_a_noop_and_does_not_break_the_next_window():
+    ran = []
+    completion_scribe.flush(print)
+    completion_scribe.flush(print)
+    completion_scribe.begin()
+    completion_scribe.run_or_defer(lambda: ran.append('x'))
+    assert ran == []
+    completion_scribe.flush(print)
+    assert ran == ['x']
+
+
+def test_a_caller_that_raises_inside_the_window_still_gets_its_step_run():
+    ran, logged = [], []
+    try:
+        with completion_scribe.window(logged.append):
+            completion_scribe.run_or_defer(lambda: ran.append('scribed'))
+            raise RuntimeError('caller blew up before its own flush')
+    except RuntimeError:
+        pass
+    assert ran == ['scribed'], 'the step queued before the raise was lost'
+    completion_scribe.run_or_defer(lambda: ran.append('inline'))   # window closed: inline again
+    assert ran == ['scribed', 'inline']
+
+
+def test_window_inside_window_does_not_discard_the_outer_turns_step(env):
+    ar = env['ar']
+    scribed = []
+    ar._write_session_memory = lambda p, session, status, summary, ts: scribed.append(summary) or True
+    sid, handle = _dispatch(env)
+    with completion_scribe.window(print):
+        env['runtime'].run_turn(handle, ['outer turn reply'])   # its own window nests inside
+        assert scribed == []                                    # deferred to the outer close
+    assert scribed == ['outer turn reply']

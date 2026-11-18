@@ -6395,8 +6395,7 @@ def _read_agent_stream(proc, session):
         _unregister_process(proc.pid)
         _credits_replayed = _credits_session.replay_after_exit(session, proc, sys.modules[__name__])
         # Acquire per-project lock to prevent race with agent_stop setting 'stopped'
-        _completion_scribe.begin()
-        with get_manager(session['project_id']).lock:
+        with _completion_scribe.window(_log), get_manager(session['project_id']).lock:
             # Single-emit gate: only update session status if we still own it.
             # Covers normal replacement (new proc assigned) AND in-flight interrupt
             # (kill issued, new proc not yet spawned — `_interrupting` flag set).
@@ -6434,7 +6433,6 @@ def _read_agent_stream(proc, session):
                         _auto_dispatch_followup(session, followup_msg)
                     finally:
                         session.pop('_dispatching_followup', None)
-        _completion_scribe.flush(_log)
 
         # Auto-recover failed resume (Mode A)
         if (not _credits_replayed and session.get('_resume_id')
@@ -6529,8 +6527,7 @@ def _read_agent_stream_b(proc, session):
     def finish(rc):
         _credits_replayed = _credits_session.replay_after_exit(session, proc, sys.modules[__name__])
         # Acquire per-project lock to prevent race with agent_stop setting 'stopped'
-        _completion_scribe.begin()
-        with get_manager(session['project_id']).lock:
+        with _completion_scribe.window(_log), get_manager(session['project_id']).lock:
             # Single-emit gate (see _session_owned_by). Skip when interrupt
             # is in flight — the new reader will set process_alive=True/status
             # legitimately and there's no point flipping it False between.
@@ -6571,7 +6568,6 @@ def _read_agent_stream_b(proc, session):
                     pass  # User stopped — don't change status regardless of rc
                 _log_agent_completion(session)
                 _run_runtime_callbacks(session)
-        _completion_scribe.flush(_log)
 
         # Auto-recover failed resume: if we tried to resume a prior session and
         # it died quickly without producing meaningful output, restart fresh.
@@ -10656,8 +10652,7 @@ def _runtime_log_completion(ev, session):
         project_id = session.get('project_id')
         if not project_id:
             return
-        _completion_scribe.begin()
-        with get_manager(project_id).lock:
+        with _completion_scribe.window(_log), get_manager(project_id).lock:
             if session.get('_delivery_attempt_id') != attempt_id:
                 _log(f'[runtime-completion] skipped superseded callback for {session.get("session_id", "")}')
                 return
@@ -10699,9 +10694,7 @@ def _runtime_log_completion(ev, session):
               except Exception as e:
                 _log(f"[runtime-error] diagnostic line failed: {e!r}")
             _log_agent_completion(session)
-        _completion_scribe.flush(_log)
     except Exception as e:
-        _completion_scribe.flush(_log)
         _log(f"[runtime-completion] agent-log write failed: {e}")
         # The lock or anything before _log_agent_completion raised: still
         # attempt the (latched) wake, or a workflow run parks forever.
