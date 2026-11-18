@@ -1,4 +1,5 @@
 import {refreshWorkflowEnginePreview} from './workflow-engine-preview.js';
+import {wfReconcileLabels, wfLiveWhen, wfTypedLabelAt} from './workflow-label-sync.js';
 import {WF_STEP_REF_RE, wfSlotStepRe, wfSlotAnyRe, isValidStepName, stepNameOfRef, STEP_NAME_RULE_TEXT} from './workflow-slot-grammar.js';
 
 // ── Workflow Builder (MC-871, R2-D7 — "the canvas") ──────────────────────────
@@ -1374,7 +1375,7 @@ function _wfSyncDomToModel(entry) {
     const own = document.querySelector('#wfb-inspector .wfb-node-own');
     if (node && own) {
       const oldName = node.name;
-      _wfSyncNodeOwn(node, own);
+      _wfSyncNodeOwn(node, own, edges);
       if (node.name && node.name !== oldName) {
         // Renames aren't guarded against breaking a TEXT slot reference
         // elsewhere (spine behaviour, carried forward — see file header), but
@@ -1405,7 +1406,9 @@ function _wfSyncDomToModel(entry) {
   return renameMap;
 }
 
-function _wfSyncNodeOwn(node, own) {
+function _wfSyncNodeOwn(node, own, edges) {
+  // Edges still carry the name from before this sync's rename (the caller repoints them after).
+  const edgeFrom = node.name;
   const nameEl = own.querySelector('.wfb-name');
   if (nameEl) {
     const typed = nameEl.value.trim();
@@ -1428,9 +1431,9 @@ function _wfSyncNodeOwn(node, own) {
     // Its temporary empty option is not a choice of Project default (WB1).
     if (persEl && persEl.dataset.loading !== '1') node.character = persEl.value;
     if (promptEl) node.prompt = promptEl.value;
-    node.outcomes = [...own.querySelectorAll('.wfb-outcome-input')].map(i => i.value.trim()).filter(Boolean);
+    node.outcomes = wfReconcileLabels(edgeFrom, node.outcomes, [...own.querySelectorAll('.wfb-outcome-input')].map(i => i.value), edges);
   } else if (node.type === 'approval') {
-    node.options = [...own.querySelectorAll('.wfb-option-input')].map(i => i.value.trim()).filter(Boolean);
+    node.options = wfReconcileLabels(edgeFrom, node.options, [...own.querySelectorAll('.wfb-option-input')].map(i => i.value), edges);
   } else if (node.type === 'action') {
     // Two-level What/Do (palette-composition pass): a multi-verb group has a
     // real `.wfb-action-verb-select` to read; a single-verb group shows
@@ -3040,12 +3043,17 @@ function _wfAddOutcome(name) {
 
 function _wfRemoveOutcome(name, idx) {
   const entry = _wfEntry(); if (!entry) return;
+  // `idx` is a row position baked at render; the sync below can rename or drop
+  // that row's label (WB4), so name the label first and re-find it afterwards.
+  const preLabel = (((entry._wf.def.nodes || []).find(n => n.name === name) || {}).outcomes || [])[idx];
+  const typed = wfTypedLabelAt('wfb-outcome-input', idx);
   const renameMap = _wfSyncDomToModel(entry);
   name = renameMap[name] || name;
   const def = entry._wf.def;
   const node = (def.nodes || []).find(n => n.name === name); if (!node) return;
-  const label = (node.outcomes || [])[idx];
-  if (label === undefined) return;
+  const label = typed || preLabel;
+  idx = (node.outcomes || []).indexOf(label);
+  if (idx < 0) { _wfMarkDirty(); _wfRender(); return; } // the sync already dropped the cleared row
   const before = _wfFindBrokenSlotRefs(def.nodes, def.edges || []);
   const savedOutcomes = node.outcomes;
   node.outcomes = node.outcomes.filter((_, i) => i !== idx);
@@ -3075,12 +3083,15 @@ function _wfAddOption(name) {
 
 function _wfRemoveOption(name, idx) {
   const entry = _wfEntry(); if (!entry) return;
+  const preLabel = (((entry._wf.def.nodes || []).find(n => n.name === name) || {}).options || [])[idx];
+  const typed = wfTypedLabelAt('wfb-option-input', idx);
   const renameMap = _wfSyncDomToModel(entry);
   name = renameMap[name] || name;
   const def = entry._wf.def;
   const node = (def.nodes || []).find(n => n.name === name); if (!node) return;
-  const label = (node.options || [])[idx];
-  if (label === undefined) return;
+  const label = typed || preLabel;
+  idx = (node.options || []).indexOf(label);
+  if (idx < 0) { _wfMarkDirty(); _wfRender(); return; } // the sync already dropped the cleared row
   if ((node.options || []).length <= 1) { showToast('An approval gate needs at least one option.', 4000); return; }
   const before = _wfFindBrokenSlotRefs(def.nodes, def.edges || []);
   const savedOptions = node.options;
@@ -3870,7 +3881,7 @@ function _wfPortDown(e) {
   if (_wfConnectDrag || _wfNodeDrag || _wfPan || _wfPlaceDrag) return;
   e.preventDefault(); // Change 8: same text-selection guard as the other drag starts
   const portEl = e.currentTarget;
-  const st = { pointerId: e.pointerId, fromNode: portEl.dataset.node, when: portEl.dataset.when || null, portEl, curX: e.clientX, curY: e.clientY };
+  const st = { pointerId: e.pointerId, fromNode: portEl.dataset.node, when: wfLiveWhen(portEl, portEl.dataset.when) || null, portEl, curX: e.clientX, curY: e.clientY };
   _wfConnectDrag = st;
   try { portEl.setPointerCapture(e.pointerId); } catch (err) { /* best-effort */ }
   window.addEventListener('pointermove', _wfConnectMove);
@@ -4049,6 +4060,7 @@ let _wfPortPopover = null; // { fromNode, when, search, anchorX, anchorY }
 
 function _wfPortPlusClick(e, fromNode, when) {
   e.stopPropagation();
+  when = wfLiveWhen(e.currentTarget, when);
   const entry = _wfEntry(); if (!entry || !entry._wf) return;
   const already = _wfPortPopover
     && _wfPortPopover.fromNode === fromNode
