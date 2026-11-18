@@ -20,10 +20,12 @@ from __future__ import annotations
 
 from flask import Blueprint, Response, jsonify, request
 
+from mc import secrets_caller_attended
 from mc import secrets_exec_stream as stream
 from mc import secrets_exec_stream_wire as wire
 from mc import secrets_store as vault
 from mc.blueprints.secrets_routes import _exec_gate_refusal
+from mc.state import agent_sessions, tracked_processes
 
 bp = Blueprint('secrets_exec_stream_routes', __name__)
 
@@ -62,8 +64,10 @@ def api_secrets_exec_stream():
     if refusal is not None:
         return refusal
     data = request.get_json(silent=True) or {}
+    caller_unattended, _why = secrets_caller_attended.caller_unattended(
+        request, agent_sessions, tracked_processes)
     try:
-        launch = stream.resolve_launch(data)
+        launch = stream.resolve_launch(data, caller_unattended)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except vault.VaultLocked:

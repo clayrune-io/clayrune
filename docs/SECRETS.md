@@ -308,24 +308,53 @@ Per Ron's 2026-08-01 decision, agents may use secrets unattended by default.
 The per-task gate lives in the agent rules; these flags are the backstop for
 credentials that should never be touched by an autonomous cycle.
 
-**`allow_unattended=False` is enforced against detected context, not a
-caller-typed flag (MC-923, fixed 2026-08-31).** `--unattended` used to be the
-*only* signal `with-secret.py` passed — an unattended cycle that simply forgot
-the flag silently dodged the gate. `with-secret.py` now calls
-`mc.secrets_store.detect_effective_unattended()`, which ORs the flag with
-server-side detection: the Claude Code CLI sets `CLAUDE_CODE_SESSION_ID` on
-every tool subprocess it spawns (not something a command line can set), which
-is looked up against the `trigger_type` MC recorded at dispatch time via
-`GET /api/session/trigger-type`. Fails **closed** at every step — no session
-id, server unreachable, or session unknown all mean unattended. `--unattended`
-remains a valid explicit opt-in (steward code still passes it) but can no
-longer be defeated by omission. Detection is NOT wired into
-`get_secret_value()` itself, deliberately: the human-facing Vault panel
-(`PATCH /api/secrets/<name>`, the TOTP-verify probe) calls it directly from
-inside the Flask server process, where there is no `CLAUDE_CODE_SESSION_ID` —
-auto-detecting there would refuse a real human editing a secret in the
-browser. Any *other* future CLI-spawned consumer should call
+**`allow_unattended=False` is enforced against what the server knows about the
+caller, not against anything the caller sends (MC-923, rebuilt by MC-1179 P10,
+2026-11-17).** The first fix (MC-923) looked up the `trigger_type` of a session
+id the caller supplied: `CLAUDE_CODE_SESSION_ID`, or the `claude_session_id`
+field of the exec routes' body. Both are caller-controlled (a command-line
+prefix sets the variable), so an unattended cycle that named a manual chat's id
+was classed attended and was handed the secret. The server now attributes the
+calling process itself, with the same OS-caller attribution `/agent/dispatch`
+and `/agent/send` use (`mc/caller_attribution.py`: loopback peer port, owning
+PID, parent chain, the process Clayrune spawned for a managed session), and
+reads the `trigger_type` it recorded on that session's own record
+(`mc/secrets_caller_attended.py`). Only `manual` is attended. A caller it
+cannot attribute to a managed session (a person's own terminal, a process the
+agent detached from its session, no `psutil`, a session the server no longer
+holds) is **unattended** for such a secret: an inability to prove "attended" is
+"unattended". The `claude_session_id` body field and `CLAUDE_CODE_SESSION_ID`
+are no longer read for this.
+
+`POST /api/secrets/exec` and `POST /api/secrets/exec-stream` decide this
+themselves from the request's connection. `tools/with-secret.py`, which reads
+an unlocked vault in its own process, asks `GET /api/secrets/caller-unattended`
+(loopback only, never through the tunnel) over its own connection; the answer
+is about that connection's process and says nothing about any other session.
+An unreachable server is unattended. `--unattended` remains a valid explicit
+opt-in, can only add strictness, and cannot be defeated by omission.
+
+**Allowing a secret to run unattended is one deliberate act, never a prompt per
+use.** A person flips `allow_unattended` on the secret once in the vault UI
+(that change is the only moment a passcode is asked: `PATCH /api/secrets/<name>`).
+After that an unattended run, a scheduled cycle or a steward uses the secret
+with no passcode and no per-use step. Using a secret never asks for one, so an
+attended chat and an unattended run on a secret that allows it keep working
+exactly as before.
+
+Detection is NOT wired into `get_secret_value()` itself, deliberately: the
+human-facing Vault panel (`PATCH /api/secrets/<name>`, the TOTP-verify probe)
+calls it directly from inside the Flask server process, where there is no
+calling CLI to attribute. Any *other* future CLI-spawned consumer should call
 `detect_effective_unattended()` itself, the same way `with-secret.py` does.
+
+**Residual, stated plainly.** Attribution cannot see through a process the agent
+launches fully detached (its parent chain broken before it reaches the session
+process): that caller is unattended, which fails safe. Code that imports
+`mc.secrets_store` in its own process and passes `unattended=False` is outside
+this check; the key file is readable by every process of the user, so no check
+on this surface stops it. A passphrase-locked vault closes that, since every
+agent read then goes through the server.
 
 ## What this does and does not protect against
 

@@ -175,31 +175,35 @@ def test_unattended_and_allow_unattended_false_is_refused(client):
     assert 'attended-only' in res.get_json()['error']
 
 
-def test_omitted_claude_session_id_fails_closed_even_if_server_env_looks_attended(
-        client, monkeypatch):
-    """MC-979 audit finding (confirmed by PoC 2026-09-26): the route used to
-    resolve a missing `claude_session_id` by falling back to
-    `detect_unattended_context`'s "not given" branch, which reads THIS
-    process's own `CLAUDE_CODE_SESSION_ID` — but THIS process is the SERVER,
-    not the caller, so that env var (if the server itself happens to have
-    inherited one, e.g. started from inside a Claude Code Bash/terminal call)
-    has nothing to do with who is actually calling the route. That let ANY
-    caller who simply omits `claude_session_id` (and doesn't set
-    `unattended=True`) get treated as attended whenever the server process's
-    own environment resolved to trigger_type=manual — bypassing
-    `allow_unattended=False` for a caller that proved nothing. Omitting the
-    field must fail closed regardless of what the server's own env holds.
-    """
+def test_a_session_id_the_caller_names_does_not_make_it_attended(client, monkeypatch):
+    """MC-1179 P10 (rewritten from the MC-979 omitted-claude_session_id test, which
+    pinned that a `claude_session_id` body field was how the server learned a caller
+    was attended). The server no longer reads that field, nor its own environment: it
+    attributes the calling process itself. A caller it cannot attribute to a managed
+    session (this test client has no peer port) is unattended, so naming a manual
+    chat's id, with or without the env var set, still cannot reach an
+    `allow_unattended=false` secret."""
     monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', 'server-boot-session-attended')
     from mc import secrets_store as vault
-    monkeypatch.setattr(vault, '_lookup_trigger_type', lambda _sid: 'manual')
+    assert not hasattr(vault, '_lookup_trigger_type')
 
     _create(client, allow_unattended=False)
     body = {'env': [['X', 'demo.token']], 'command': PRINT_ENV_CMD}
-    # Deliberately omit both `claude_session_id` and `unattended`.
-    res = _exec(client, **body)
-    assert res.status_code == 400, res.get_data(as_text=True)
-    assert 'attended-only' in res.get_json()['error']
+    for extra in ({}, {'claude_session_id': 'a-manual-chat'}):
+        res = _exec(client, **body, **extra)
+        assert res.status_code == 400, res.get_data(as_text=True)
+        assert 'attended-only' in res.get_json()['error']
+
+
+def test_an_attributed_manual_session_may_use_an_attended_only_secret(client, monkeypatch):
+    """The other half of P10: a caller the server DID attribute to a manual
+    (attended) chat gets the secret without any passcode."""
+    from mc import secrets_caller_attended
+    monkeypatch.setattr(secrets_caller_attended, 'caller_unattended',
+                        lambda *_a, **_k: (False, 'attributed to a manual session'))
+    _create(client, allow_unattended=False)
+    res = _exec(client, env=[['X', 'demo.token']], command=PRINT_ENV_CMD)
+    assert res.status_code == 200, res.get_data(as_text=True)
 
 
 def test_output_is_scrubbed_of_the_secret_value(client):

@@ -118,7 +118,6 @@ def _run_via_server_exec(args: argparse.Namespace, cmd: list[str],
         'unattended': unattended,
         'command': cmd,
         'cwd': os.getcwd(),
-        'claude_session_id': os.environ.get('CLAUDE_CODE_SESSION_ID', ''),
     }
     url = f'http://127.0.0.1:{vault.exec_route_port()}/api/secrets/exec'
     req = urllib.request.Request(
@@ -251,13 +250,15 @@ def main(argv: list[str] | None = None) -> int:
         ap.error('no command given (use: --env VAR=name -- your command here)')
 
     project: str | None = args.project
-    # MC-923: the --unattended flag used to be the only signal, so an
-    # unattended cycle that simply forgot to pass it silently got treated as
-    # attended. OR it with server-side detection (trigger_type, keyed off the
-    # CLAUDE_CODE_SESSION_ID the CLI itself sets — not anything this command
-    # line controls) so omitting the flag can no longer defeat
-    # allow_unattended=False. The flag still forces the stricter treatment on
-    # its own; it just can't opt back OUT of what detection found.
+    # MC-923 / MC-1179 P10: the --unattended flag used to be the only signal, so
+    # an unattended cycle that simply forgot to pass it silently got treated as
+    # attended. OR it with the SERVER's decision: it attributes this very
+    # process by its connection (the process tree it descends from) and reads
+    # the trigger_type it recorded for that session, so neither this command
+    # line nor CLAUDE_CODE_SESSION_ID can name a different session. The flag
+    # still forces the stricter treatment on its own; it just can't opt back OUT
+    # of what the server found. A caller the server cannot attribute is
+    # unattended.
     unattended, _reason = vault.detect_effective_unattended(bool(args.unattended))
 
     try:

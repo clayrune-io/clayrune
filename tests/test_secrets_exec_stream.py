@@ -40,7 +40,7 @@ def srv(tmp_path, monkeypatch):
     monkeypatch.setenv('CLAYRUNE_SECRETS_KEY_BACKEND', 'file')
     monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
     from mc import process_ledger, secrets_exec_stream as stream, secrets_store as vault
-    from mc.blueprints import secrets_exec_stream_routes, secrets_routes
+    from mc.blueprints import secrets_caller_routes, secrets_exec_stream_routes, secrets_routes
     vault._dispensed.clear()
     vault._unlocked_key = None
     vault._lock_notified = True
@@ -57,6 +57,7 @@ def srv(tmp_path, monkeypatch):
     app = Flask(__name__)
     app.register_blueprint(secrets_exec_stream_routes.bp)
     app.register_blueprint(secrets_routes.bp)      # the vault-locked push relay a locked CLI calls
+    app.register_blueprint(secrets_caller_routes.bp)   # the CLI asks it which kind of caller it is (P10)
     server = make_server('127.0.0.1', 0, app, threaded=True)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -250,11 +251,23 @@ def test_allow_unattended_false_is_enforced_for_an_unattended_caller(srv, monkey
     body = json.loads(resp.read())
     assert 'unattended' in body['error'].lower()
     assert not srv.stream._sessions
-    monkeypatch.setattr(srv.vault, '_lookup_trigger_type', lambda sid: 'manual')
+    # MC-1179 P10 (rewritten: this used to patch `_lookup_trigger_type` and send a
+    # `claude_session_id` to be classed attended). A session id in the body is not read,
+    # and a caller the server cannot attribute (this test's HTTP client is no managed
+    # session) is unattended even with `unattended: False`.
     conn, resp = _post_json(srv, {'env': [['TOKEN', 'bank.password']], 'unattended': False,
                                   'claude_session_id': 'a-manual-chat',
                                   'command': [sys.executable, '-c', 'print(1)']})
-    assert resp.status == 200                                   # an attended session is allowed
+    assert resp.status == 400
+    assert 'unattended' in json.loads(resp.read())['error'].lower()
+    assert not srv.stream._sessions
+    # A caller the server DID attribute to a manual (attended) session is allowed.
+    from mc import secrets_caller_attended
+    monkeypatch.setattr(secrets_caller_attended, 'caller_unattended',
+                        lambda *_a, **_k: (False, 'attributed to a manual session'))
+    conn, resp = _post_json(srv, {'env': [['TOKEN', 'bank.password']], 'unattended': False,
+                                  'command': [sys.executable, '-c', 'print(1)']})
+    assert resp.status == 200
     resp.close()
 
 

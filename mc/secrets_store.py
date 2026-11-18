@@ -78,7 +78,6 @@ import re
 import subprocess
 import threading
 import time
-import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Iterable
@@ -274,8 +273,8 @@ def exec_route_port() -> int:
     just to find a port number. Deliberately does not also read
     config.json: an operator who changed only the config file's `port`
     without also setting `MC_PORT` is already outside the common case these
-    two callers exist to serve, same tradeoff `_TRIGGER_TYPE_URL` above
-    already makes by hardcoding 5199.
+    two callers exist to serve, same tradeoff the old hardcoded trigger-type
+    URL made by assuming 5199.
     """
     return int(os.environ.get('MC_PORT', 5199))
 
@@ -2362,146 +2361,74 @@ def delete_secret(name: str) -> bool:
     return True
 
 
-# ── Unattended-context auto-detection (MC-923) ──────────────────────────────
+# ── Unattended-context detection (MC-923, rebuilt by MC-1179 P10) ───────────
 #
-# tools/with-secret.py's `--unattended` flag used to be the ONLY signal
-# `get_secret_value` ever saw — the calling AGENT decided whether its own
-# cycle counted as unattended, and simply omitting the flag silently dodged
-# `allow_unattended=False`, indistinguishable from an honestly-attended call.
+# `allow_unattended=False` means "an attended chat only". Whether a caller is
+# one used to be decided from a session id the CALLER supplied (the exec routes'
+# `claude_session_id` body field, or `CLAUDE_CODE_SESSION_ID`, which a
+# command-line prefix sets), so an unattended cycle that named a manual chat's
+# id was classed attended and handed the secret.
 #
-# This section gives CLI-spawned consumers (with-secret.py today) a way to
-# derive that flag from something the calling agent does not control, instead
-# of trusting what it typed. `get_secret_value` itself is deliberately left
-# alone: it keeps trusting whatever `unattended` value a caller passes, the
-# way it always has, because not every caller runs as a Claude Code CLI
-# subprocess — mc.blueprints.secrets_routes calls it directly from inside the
-# Flask server process for the human-facing Secrets panel (metadata edits,
-# TOTP verification), where there is no CLAUDE_CODE_SESSION_ID to find and
-# auto-detecting "no session id -> unattended" would wrongly refuse a human
-# clicking in the browser. Baking detection into `get_secret_value` itself
-# would have fixed with-secret.py's gap by breaking that one instead.
+# The SERVER now decides, from the OS attribution of the calling process
+# (mc.secrets_caller_attended, on mc.caller_attribution) and the trigger type
+# it recorded for the session that process descends from. The exec routes ask
+# it directly. `tools/with-secret.py`'s in-process path (a vault that is not
+# passphrase-locked is read in the CLI's own process) cannot see its own
+# ancestry from the server's side, so it asks `GET /api/secrets/caller-unattended`
+# over its own connection: the answer is about that connection's process.
 #
-# Fix shape (per steward/fence.py's STEWARD_MARKER precedent, reused rather
-# than reinvented): derive unattended-ness from something the calling agent
-# does not control. `CLAUDE_CODE_SESSION_ID` is set by the Claude Code CLI
-# itself in every tool subprocess it spawns (confirmed empirically — distinct
-# from anything a typed command line can set), the same class of "the harness
-# told us, the agent didn't" signal fence.py gets from its hook payload's
-# `transcript_path`. That session id is looked up against `trigger_type`,
-# which MC recorded server-side at dispatch time (mc.blueprints.agent_routes:
-# GET /api/session/trigger-type) — ground truth the agent process cannot
-# rewrite.
+# Fails CLOSED at every step (server unreachable, caller not attributed, session
+# unknown): an inability to prove "attended" is "unattended". The person who
+# wants a secret usable unattended flips `allow_unattended` once in the vault
+# UI (the only moment a passcode is asked); using a secret never asks for one.
+# `detect_effective_unattended` ORs a caller flag with the decision, so the flag
+# can only ADD strictness.
 #
-# Fails CLOSED at every step (no session id, server unreachable, session
-# unknown) — an inability to prove "this is attended" is treated as
-# unattended, never the reverse. `detect_effective_unattended` ORs this with
-# the caller-supplied flag, so the flag can only ADD strictness (an explicit
-# opt-in, which steward code should still pass on purpose) and can never
-# remove strictness that detection found on its own.
-
-_TRIGGER_TYPE_URL = 'http://127.0.0.1:5199/api/session/trigger-type'
-
-# Sentinel distinguishing "caller didn't pass claude_session_id at all" (the
-# with-secret.py in-process shape, where falling back to THIS process's own
-# CLAUDE_CODE_SESSION_ID is correct because this process IS the CLI) from
-# "caller passed None/empty explicitly" (the /api/secrets/exec route, MC-979
-# — where THIS process is the SERVER, and its own os.environ has nothing to
-# do with the actual HTTP caller). `None` cannot serve as that "not given"
-# marker: the route always passes an argument, and it is `None` whenever the
-# JSON body simply omits `claude_session_id` — using `None` for both meanings
-# let an exec-route caller who omits the field fall through to reading the
-# SERVER's own environment instead of failing closed. If the server process
-# happens to have been started from inside a Claude Code session (routine in
-# dev — a Bash tool starting `python server.py` inherits the var), that
-# lookup can resolve to trigger_type=manual and report unattended=False for
-# ANY caller, regardless of what the real caller is — bypassing
-# allow_unattended=False. Confirmed via a PoC 2026-09-26 (MC-979 audit).
-class _NotGiven:
-    pass
+# `get_secret_value` itself still trusts the `unattended` value it is given:
+# mc.blueprints.secrets_routes calls it from inside the server for the
+# human-facing Secrets panel, where there is no calling CLI to attribute.
 
 
-_NOT_GIVEN = _NotGiven()
+def _caller_unattended_url() -> str:
+    return f'http://127.0.0.1:{exec_route_port()}/api/secrets/caller-unattended'
 
 
-def _session_id_from_env() -> str:
-    return (os.environ.get('CLAUDE_CODE_SESSION_ID') or '').strip()
+def _lookup_caller_unattended() -> tuple[bool, str] | None:
+    """The server's decision about THIS process, or None when the running
+    server cannot be reached or answers anything but a clean verdict.
 
-
-def _lookup_trigger_type(claude_session_id: str) -> str | None:
-    """The trigger_type MC recorded for this session, or None if the running
-    server can't be reached or doesn't know the session.
-
-    Split out from `detect_unattended_context` so tests can monkeypatch this
-    one function instead of standing up a live server.
-    """
+    Split out so tests can monkeypatch this one function instead of standing
+    up a live server."""
     try:
-        url = f'{_TRIGGER_TYPE_URL}?claude_session_id={urllib.parse.quote(claude_session_id)}'
-        with urllib.request.urlopen(url, timeout=3) as resp:
+        with urllib.request.urlopen(_caller_unattended_url(), timeout=3) as resp:
             data = json.loads(resp.read().decode('utf-8'))
     except Exception as e:
         _log(f"[secrets] unattended-context lookup failed: {e}")
         return None
-    if not data.get('found'):
+    if not isinstance(data, dict) or not isinstance(data.get('unattended'), bool):
         return None
-    return str(data.get('trigger_type') or 'manual')
+    return data['unattended'], str(data.get('reason') or '')
 
 
-def detect_unattended_context(
-        claude_session_id: str | None | _NotGiven = _NOT_GIVEN) -> tuple[bool, str]:
-    """(is_unattended, reason) purely from server-side signals — no caller
-    input, UNLESS ``claude_session_id`` is passed explicitly.
-
-    Not given at all (default): reads ``CLAUDE_CODE_SESSION_ID`` from THIS
-    process's own environment — the shape ``with-secret.py``'s in-process
-    path uses, since it inherits the CLI's env directly.
-
-    Explicitly passed (even ``None`` or ``''``): for ``POST
-    /api/secrets/exec`` (MC-979, ``mc/blueprints/secrets_routes.py``), which
-    runs inside the SERVER process — the caller's env var lives in a
-    different process entirely, so the server can't read it off its own
-    ``os.environ`` and the caller must send it in the request body instead.
-    An explicitly-passed-but-empty value fails closed directly and NEVER
-    falls back to this process's own environment — that fallback is only
-    correct for the "not given at all" case above, where this process really
-    is the CLI. Collapsing the two (as an earlier version of this function
-    did, using `None` as both "not given" and "given empty") let an exec-route
-    caller who simply omits `claude_session_id` fall through to the SERVER's
-    own os.environ, which may carry an unrelated attended session's id if the
-    server itself was started from inside a Claude Code session — reporting
-    unattended=False for a caller that never proved anything of the kind.
-
-    See module comment above for the fail-closed rationale. Public: meant to
-    be called by CLI-spawned consumers (with-secret.py) and the exec route to
-    compute what they should pass as `unattended=`, not by `get_secret_value`
-    itself."""
-    if isinstance(claude_session_id, _NotGiven):
-        sid = _session_id_from_env()
-    else:
-        sid = (claude_session_id or '').strip()
-    if not sid:
-        return True, 'no CLAUDE_CODE_SESSION_ID (fail-closed)'
-    trigger_type = _lookup_trigger_type(sid)
-    if trigger_type is None:
-        return True, 'session unknown to MC (fail-closed)'
-    if trigger_type == 'manual':
-        return False, 'trigger_type=manual'
-    return True, f'trigger_type={trigger_type}'
+def detect_unattended_context() -> tuple[bool, str]:
+    """(is_unattended, reason) for the calling process, decided by the server
+    from its own attribution of this process; nothing this process sends or
+    sets (an environment variable, a command-line prefix) is consulted. For
+    CLI-spawned consumers (with-secret.py) to compute what they pass as
+    `unattended=`; not for `get_secret_value` itself."""
+    got = _lookup_caller_unattended()
+    if got is None:
+        return True, 'the server could not be asked (fail-closed)'
+    return got
 
 
-def detect_effective_unattended(
-        unattended: bool,
-        claude_session_id: str | None | _NotGiven = _NOT_GIVEN) -> tuple[bool, str]:
-    """OR a caller-supplied flag with auto-detection. The flag can only ADD
-    strictness (a caller opting into unattended treatment on purpose); it can
-    never remove strictness that detection found on its own.
-
-    ``claude_session_id``: see `detect_unattended_context` — pass it (even if
-    it's ``None``/``''``) when the caller (the exec route) can't rely on its
-    own process environment; leave it unset only for the in-process
-    with-secret.py shape."""
+def detect_effective_unattended(unattended: bool) -> tuple[bool, str]:
+    """OR a caller-supplied flag with the server's decision. The flag can only
+    ADD strictness (a caller opting into unattended treatment on purpose); it
+    can never remove strictness that detection found on its own."""
     if unattended:
         return True, 'flag'
-    return detect_unattended_context(claude_session_id)
+    return detect_unattended_context()
 
 
 def get_secret_value(name: str,
