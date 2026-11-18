@@ -57,6 +57,7 @@ from mc import empty_turn as _empty_turn
 from mc import agent_shim_adopt as _agent_shim_adopt  # MC-1150 P4: checkpoint + adoption (flag-gated)
 from mc import agent_shim_completion as _agent_shim_completion  # MC-1150 P4: crash-safe completion record
 from mc import mid_turn_send as _mid_turn_send  # MC-1086: steer / queue / interrupt routing
+from mc import completion_scribe as _completion_scribe  # R38: Scribe model call runs after the project lock is released
 from mc import triggered_turns as _triggered_turns  # seed-line label for non-human turns
 from mc import engine_selection
 from mc import claude_cli_min_version as _claude_cli_min_version  # Claude model -> minimum CLI guard
@@ -6394,6 +6395,7 @@ def _read_agent_stream(proc, session):
         _unregister_process(proc.pid)
         _credits_replayed = _credits_session.replay_after_exit(session, proc, sys.modules[__name__])
         # Acquire per-project lock to prevent race with agent_stop setting 'stopped'
+        _completion_scribe.begin()
         with get_manager(session['project_id']).lock:
             # Single-emit gate: only update session status if we still own it.
             # Covers normal replacement (new proc assigned) AND in-flight interrupt
@@ -6432,6 +6434,7 @@ def _read_agent_stream(proc, session):
                         _auto_dispatch_followup(session, followup_msg)
                     finally:
                         session.pop('_dispatching_followup', None)
+        _completion_scribe.flush(_log)
 
         # Auto-recover failed resume (Mode A)
         if (not _credits_replayed and session.get('_resume_id')
@@ -6526,6 +6529,7 @@ def _read_agent_stream_b(proc, session):
     def finish(rc):
         _credits_replayed = _credits_session.replay_after_exit(session, proc, sys.modules[__name__])
         # Acquire per-project lock to prevent race with agent_stop setting 'stopped'
+        _completion_scribe.begin()
         with get_manager(session['project_id']).lock:
             # Single-emit gate (see _session_owned_by). Skip when interrupt
             # is in flight — the new reader will set process_alive=True/status
@@ -6567,6 +6571,7 @@ def _read_agent_stream_b(proc, session):
                     pass  # User stopped — don't change status regardless of rc
                 _log_agent_completion(session)
                 _run_runtime_callbacks(session)
+        _completion_scribe.flush(_log)
 
         # Auto-recover failed resume: if we tried to resume a prior session and
         # it died quickly without producing meaningful output, restart fresh.
@@ -10595,24 +10600,28 @@ def _log_agent_completion_body(session):
     # scribe-reconciliation pass, not here. SPEC §3 Leg A.
     status = session.get('status')
     if status in ('completed', 'error', 'stopped') and not (_done_row is not None and entry['scribed']):
-        try:
-            p = load_project(project_id)
-            if p and _write_session_memory(p, session, status, summary,
-                                           entry['ts'][:10]):
-                # Persist the Fix B marker so the startup reconciler never
-                # re-scribes a session the completion path already captured.
-                entry['scribed'] = True
-                marker_attempt = _delivery_attempt.DeliveryAttempt(entry.get('delivery_attempt_id') or '')
-                def mark_scribed(rows):
-                    for row in rows:
-                        if (row.get('session_id') == entry['session_id']
-                                and row.get('ts') == entry['ts']
-                                and marker_attempt.owns_row(row)):
-                            row['scribed'] = True
-                            break
-                _update_agent_log(project_id, mark_scribed)
-        except Exception as e:
-            _log(f'[agent-log] memory completion failed for {project_id}: {e}')
+        def _scribe_step():
+            try:
+                p = load_project(project_id)
+                if p and _write_session_memory(p, session, status, summary,
+                                               entry['ts'][:10]):
+                    # Persist the Fix B marker so the startup reconciler never
+                    # re-scribes a session the completion path already captured.
+                    entry['scribed'] = True
+                    marker_attempt = _delivery_attempt.DeliveryAttempt(entry.get('delivery_attempt_id') or '')
+                    def mark_scribed(rows):
+                        for row in rows:
+                            if (row.get('session_id') == entry['session_id']
+                                    and row.get('ts') == entry['ts']
+                                    and marker_attempt.owns_row(row)):
+                                row['scribed'] = True
+                                break
+                    _update_agent_log(project_id, mark_scribed)
+            except Exception as e:
+                _log(f'[agent-log] memory completion failed for {project_id}: {e}')
+        # R38: the model call inside `_write_session_memory` must not run under
+        # the project lock the callers hold; they flush it after releasing it.
+        _completion_scribe.run_or_defer(_scribe_step)
 
 
 def _runtime_log_completion(ev, session):
@@ -10647,6 +10656,7 @@ def _runtime_log_completion(ev, session):
         project_id = session.get('project_id')
         if not project_id:
             return
+        _completion_scribe.begin()
         with get_manager(project_id).lock:
             if session.get('_delivery_attempt_id') != attempt_id:
                 _log(f'[runtime-completion] skipped superseded callback for {session.get("session_id", "")}')
@@ -10689,7 +10699,9 @@ def _runtime_log_completion(ev, session):
               except Exception as e:
                 _log(f"[runtime-error] diagnostic line failed: {e!r}")
             _log_agent_completion(session)
+        _completion_scribe.flush(_log)
     except Exception as e:
+        _completion_scribe.flush(_log)
         _log(f"[runtime-completion] agent-log write failed: {e}")
         # The lock or anything before _log_agent_completion raised: still
         # attempt the (latched) wake, or a workflow run parks forever.
