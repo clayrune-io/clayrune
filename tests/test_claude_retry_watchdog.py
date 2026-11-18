@@ -63,8 +63,10 @@ def test_env_set_for_every_trigger_type_the_fence_calls_unattended(trigger_type,
 
 def test_unattended_set_is_the_fences_own_contents_not_a_second_list():
     assert launch_marker.UNATTENDED_TRIGGER_TYPES == fence._UNATTENDED_TRIGGER_TYPES
+    # A subset, not equality: docs/patches/fence-hivemind-reviewer-armed.patch
+    # adds 'hivemind_reviewer' to the fence's set, and this must hold either side.
     assert {'schedule', 'workflow', 'dispatch', 'hivemind_orchestrator',
-            'hivemind_worker'} == set(fence._UNATTENDED_TRIGGER_TYPES)
+            'hivemind_worker'} <= set(fence._UNATTENDED_TRIGGER_TYPES)
 
 
 @pytest.mark.parametrize('trigger_type', ['manual', '', None, 'some_future_type'])
