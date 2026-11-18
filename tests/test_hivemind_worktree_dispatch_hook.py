@@ -178,12 +178,18 @@ def env(repo, tmp_path, monkeypatch):
 
     snapshot = dict(state.agent_sessions)
     state.agent_sessions.clear()
+    # `_FakeProc` registers pid 909091 with the Process Manager and nothing
+    # unregisters it (the fake stream reader never runs); a later test that
+    # asserts `tracked_processes` is empty would see it. Put the dict back.
+    tracked_snapshot = dict(state.tracked_processes)
     try:
         yield {'project': project, 'repo': repo, 'spawned': spawned,
                'monkeypatch': monkeypatch}
     finally:
         state.agent_sessions.clear()
         state.agent_sessions.update(snapshot)
+        state.tracked_processes.clear()
+        state.tracked_processes.update(tracked_snapshot)
 
 
 def _manifest(hivemind_id='hm1'):
