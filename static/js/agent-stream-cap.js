@@ -6,6 +6,8 @@
 // two connections for ordinary requests (and a second dashboard tab shares the
 // same budget). Over the tunnel (HTTP/2) the cap does not apply; this is for the
 // plain-localhost origin where it shows first.
+// Chats on screen are never dropped, so more than four visible at once (several
+// modals plus split panes) can exceed it; see admitAgentStream.
 export const MAX_LIVE_AGENT_STREAMS = 4;
 
 // A chat that loses its stream is not broken: the 15 s status poll
