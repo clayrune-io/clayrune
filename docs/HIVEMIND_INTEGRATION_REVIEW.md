@@ -71,7 +71,16 @@ Recovery rules:
   deleted generation, stopped/paused run, dirt or HEAD/tip/attempt drift holds
   later merges. Q3 retains the provisional commit on rejection. Holds are
   sticky: this module performs no automatic fix, replacement review or new
-  integration attempt. Dave must arrange scoped reconciliation/fix/re-review.
+  integration attempt. A person releases a hold with
+  `POST /api/hivemind/<id>/integration/release` (human-only;
+  `mc/hivemind_integration_release.py`): checkout, branch and state file are
+  archived, never deleted, and a fresh attempt starts. Ordinary timing is not
+  a hold (MC-1179 OS33): a contributing session still in its turn, or a busy
+  landing lock, leaves the attempt `running` with `waiting_since` for up to
+  15 minutes (`mc/hivemind_integration_wait.py`), and only then holds. A
+  candidate already merged, smoked or under review still holds on a
+  contributor becoming active, as drift. A server restart during a review still
+  holds (the reviewer process is gone); release is its exit.
 - Reviewer deadlines and zero automatic replacements come from HR-4a's
   45-minute lifecycle. A pending hold attempts cancellation through HR-4a's
   owned runtime handle only; cleanup failures remain recorded. Immutable

@@ -359,6 +359,18 @@ def _expire(api: Any, candidate: Candidate) -> None:
         _log(f'[hivemind-reviewer] deadline reconciliation failed for {candidate.key[:12]}: {exc}', flush=True)
 
 
+def _same_launch_inputs(current: dict, caller: dict) -> bool:
+    """The caller's manifest is still the run's manifest, apart from its stamp.
+
+    updated_at is rewritten by routes that change nothing a launch reads (the
+    synthesis notify, a workstream status post); comparing it held a reviewed
+    integration for good whenever one landed during a smoke (MC-1179 OS33 d).
+    Every other key, config included, is still compared.
+    """
+    return ({k: v for k, v in current.items() if k != 'updated_at'}
+            == {k: v for k, v in caller.items() if k != 'updated_at'})
+
+
 def launch_reviewer(api: Any, manifest: dict, project: dict, candidate: Candidate, *,
                     review_cwd: str, verdict_url: str) -> dict:
     """One configured reviewer for an exact candidate; duplicate calls only read.
@@ -369,7 +381,7 @@ def launch_reviewer(api: Any, manifest: dict, project: dict, candidate: Candidat
     from mc.blueprints import agent_routes as ar
 
     current = _validate(api, candidate)
-    if current != manifest or project.get('id') != candidate.project_id:
+    if not _same_launch_inputs(current, manifest) or project.get('id') != candidate.project_id:
         raise ReviewRefused(409, 'stale reviewer launch inputs')
     store = ReviewStore(api._hm_dir(candidate.hivemind_id))
     with _transaction(api, candidate):

@@ -52,11 +52,14 @@ import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 import mc.agent_worktree as _agent_worktree
 import mc.hivemind_integration as _hm_integration
 import mc.hivemind_integration_cycle as _hm_integration_cycle
+import mc.hivemind_escalation_push as _hm_escalation_push
+import mc.hivemind_user_directives as _hm_user_directives
 import mc.hivemind_lineage as _hm_lineage
 import mc.hivemind_ids as _hm_ids
 import mc.hivemind_roster as _hm_roster
 import mc.hivemind_run_roles as _hm_run_roles
 import mc.hivemind_worker as _hm_worker
+import mc.hivemind_ws_liveness as _hm_liveness
 import mc.project_sync as _sync
 from mc import engine_selection, obs, state
 from mc.atomic_json import write_json_atomic
@@ -872,8 +875,14 @@ def hivemind_start(hivemind_id):
     _hm_save_manifest(hivemind_id, manifest)
     _hm_push_sse(hivemind_id, {'type': 'hivemind_status', 'hivemind_id': hivemind_id, 'status': 'active'})
 
-    # If no workstreams exist, trigger goal decomposition
     workstreams = _hm_list_workstreams(hivemind_id)
+    # MC-1179 OS24: pause and stop park workstreams as `paused`; nothing else
+    # turns them back, so resuming left the run idle for good.
+    for ws in workstreams:
+        if ws.get('status') == 'paused':
+            _hm_liveness.resume_paused(ws, agent_sessions)
+            _hm_save_workstream(hivemind_id, ws['id'], ws)
+    # If no workstreams exist, trigger goal decomposition
     if not workstreams:
         _hm_dispatch_orchestrator(hivemind_id, 'decompose')
 
@@ -912,6 +921,9 @@ def hivemind_stop(hivemind_id):
         if ws.get('status') in ('active', 'pending', 'blocked'):
             ws['status'] = 'paused'
             _hm_save_workstream(hivemind_id, ws['id'], ws)
+    # MC-1179 OS24: "hard stop all agents" used to stop none; the workers kept
+    # running and spending.
+    _hm_liveness.stop_worker_sessions(hivemind_id, agent_sessions, get_manager)
     _hm_push_sse(hivemind_id, {'type': 'hivemind_status', 'hivemind_id': hivemind_id, 'status': 'stopped'})
     return jsonify({'ok': True, 'status': 'stopped'})
 
@@ -1367,6 +1379,7 @@ def _hm_dispatch_orchestrator_claimed(hivemind_id, task_type, extra_context=''):
         f"CURRENT WORKSTREAMS:\n{ws_summary}\n\n"
         f"KNOWLEDGE BASE SUMMARY:\n{synthesis[:2000] if synthesis else '(empty)'}\n\n"
         f"RECENT DECISIONS:\n{decisions_text}\n\n"
+        f"{_hm_user_directives.block(sys.modules[__name__], hivemind_id)}"  # OS26 a
         f"{task_prompt}"
     )
 
@@ -1558,6 +1571,11 @@ def hivemind_bus_post(hivemind_id):
         return jsonify({'error': 'type required'}), 400
 
     msg_type = data['type'].strip()
+    # A directive is a person's message and 'user' is not a sender an agent can
+    # be: both come only from the human-only intervene route (OS26).
+    if str(data.get('from', '')).strip().lower() == 'user' or msg_type.lower() == 'directive':
+        return jsonify({'error': "bus/post cannot send as 'user' or post a 'directive'; "
+                                 "a person uses the dashboard's intervene"}), 400
     if (msg_type == 'finding_report' and str(data.get('from', '')).startswith('ws_')
             and not _hm_ids.is_safe_id(data['from'])):
         return jsonify({'error': 'invalid workstream id in from'}), 400
@@ -1772,6 +1790,7 @@ def hivemind_escalate(hivemind_id):
         'message': msg['content'],
         'escalation_id': msg['id'],
     })
+    _hm_escalation_push.notify(sys.modules[__name__], hivemind_id, manifest, msg)  # OS26 e
     return jsonify({'ok': True, 'escalation': msg})
 
 
@@ -1795,6 +1814,7 @@ def hivemind_intervene(hivemind_id):
         'to': target,
         'type': 'directive',
         'content': message,
+        'via': _hm_user_directives.VIA,  # server-written; bus/post never copies it (OS26)
     }
     _hm_append_bus_message(hivemind_id, msg)
     _hm_push_sse(hivemind_id, {
@@ -1883,7 +1903,23 @@ def _hivemind_orchestrator_loop():
                     if ws.get('status') != 'active':
                         continue
                     sid = ws.get('current_agent_session_id')
-                    if not sid or sid not in agent_sessions:
+                    if not sid:
+                        continue
+                    # MC-1179 OS25: an owner that is absent (restart) or stopped
+                    # is never collected below, so the workstream used to stay
+                    # `active` for ever and held a concurrency slot.
+                    _taken = _hm_liveness.reclaim_gone_owner(
+                        ws, agent_sessions, _time.time(), roster=_hm_roster.is_roster_workstream(ws),
+                        max_retries=manifest.get('config', {}).get('max_retries_per_workstream', 2))
+                    if _taken:
+                        _hm_save_workstream(hivemind_id, ws['id'], ws)
+                        if _taken in ('requeued', 'failed', 'held'):
+                            _log(f"[hivemind] {hivemind_id} {ws['id']}: worker {ws.get('last_agent_session_id')} is gone -> {ws['status']}", flush=True)
+                            _hm_push_sse(hivemind_id, {
+                                'type': 'hivemind_workstream', 'hivemind_id': hivemind_id,
+                                'ws_id': ws['id'], 'status': ws['status'],
+                                'reason': ws.get('failure_reason') or 'worker_gone'})
+                    if sid not in agent_sessions:
                         continue
                     s = agent_sessions[sid]
                     if s.get('status') in ('completed', 'error'):
