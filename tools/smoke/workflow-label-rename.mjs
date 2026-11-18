@@ -95,4 +95,38 @@ await h.check('an emptied pill that has an edge keeps its label: no edge is sile
   assert.deepEqual(await edgeLabels(), ['a->b:yes']);
 });
 
+await h.check('an emptied unwired pill: its + is refused with a toast, no popover, no new step', async () => {
+  await h.open('wf-three');
+  await page.evaluate(() => window._wfOpenInspector('a'));
+  await pill(2).fill('');
+  await row(2).locator('.wfb-port-plus').dispatchEvent('click');
+  assert.equal(await page.locator('#wfb-port-popover').count(), 0, 'no popover opens');
+  assert.match(await page.locator('.toast, #toast, [class*="toast"]').allInnerTexts().then(a => a.join(' ')), /Name this outcome first/);
+  assert.equal((await h.def()).nodes.length, 1);
+  assert.deepEqual(await edgeLabels(), []);
+});
+
+await h.check('an emptied option pill on an approval gate: its + is refused the same way', async () => {
+  await h.open('wf-gate');
+  await page.evaluate(() => window._wfOpenInspector('gate'));
+  await pill(2).fill('');
+  await row(2).locator('.wfb-port-plus').dispatchEvent('click');
+  assert.equal(await page.locator('#wfb-port-popover').count(), 0);
+  assert.match(await page.locator('[class*="toast"]').allInnerTexts().then(a => a.join(' ')), /Name this option first/);
+});
+
+await h.check('an emptied unwired pill: a drag from its port dot makes no edge and drops no label', async () => {
+  await h.open('wf-two');
+  await page.evaluate(() => window._wfOpenInspector('a'));
+  await pill(1).fill('');
+  const dot = await page.locator('#wfb-inspector .wfb-vocab-row .wfb-port-out').first().boundingBox();
+  const target = await page.locator('.wfb-node[data-name="b"]').boundingBox();
+  await page.mouse.move(dot.x + dot.width / 2, dot.y + dot.height / 2 - 6);
+  await page.mouse.down();
+  await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 12 });
+  await page.mouse.up();
+  assert.deepEqual(await edgeLabels(), []);
+  assert.match(await page.locator('[class*="toast"]').allInnerTexts().then(a => a.join(' ')), /Name this outcome first/);
+});
+
 await h.finish('workflow-label-rename');

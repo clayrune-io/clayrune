@@ -51,3 +51,13 @@ export function wfTypedLabelAt(inputClass, idx) {
   const pills = document.querySelectorAll(`#wfb-inspector .${inputClass}`);
   return pills[idx] ? String(pills[idx].value || '').trim() : '';
 }
+
+// 'outcome' / 'option' when `el` sits in an editable label row whose pill is
+// empty right now, else null. Such a row has no label to wire from: the sync
+// drops it, so an edge made from it would be stored against a label that no
+// longer exists. The `+` and the port-dot drag refuse it instead.
+export function wfBlankLabelKind(el) {
+  const pill = el && el.closest ? el.closest('.wfb-vocab-row')?.querySelector('input.wfb-vocab-pill') : null;
+  if (!pill || String(pill.value || '').trim()) return null;
+  return pill.classList.contains('wfb-option-input') ? 'option' : 'outcome';
+}

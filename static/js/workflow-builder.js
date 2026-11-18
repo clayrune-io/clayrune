@@ -1,5 +1,5 @@
 import {refreshWorkflowEnginePreview} from './workflow-engine-preview.js';
-import {wfReconcileLabels, wfLiveWhen, wfTypedLabelAt} from './workflow-label-sync.js';
+import {wfReconcileLabels, wfLiveWhen, wfTypedLabelAt, wfBlankLabelKind} from './workflow-label-sync.js';
 import {WF_STEP_REF_RE, wfSlotStepRe, wfSlotAnyRe, isValidStepName, stepNameOfRef, STEP_NAME_RULE_TEXT} from './workflow-slot-grammar.js';
 
 // ── Workflow Builder (MC-871, R2-D7 — "the canvas") ──────────────────────────
@@ -3881,6 +3881,8 @@ function _wfPortDown(e) {
   if (_wfConnectDrag || _wfNodeDrag || _wfPan || _wfPlaceDrag) return;
   e.preventDefault(); // Change 8: same text-selection guard as the other drag starts
   const portEl = e.currentTarget;
+  const blank = wfBlankLabelKind(portEl);
+  if (blank) { showToast(`Name this ${blank} first.`, 4000); return; }
   const st = { pointerId: e.pointerId, fromNode: portEl.dataset.node, when: wfLiveWhen(portEl, portEl.dataset.when) || null, portEl, curX: e.clientX, curY: e.clientY };
   _wfConnectDrag = st;
   try { portEl.setPointerCapture(e.pointerId); } catch (err) { /* best-effort */ }
@@ -4060,6 +4062,8 @@ let _wfPortPopover = null; // { fromNode, when, search, anchorX, anchorY }
 
 function _wfPortPlusClick(e, fromNode, when) {
   e.stopPropagation();
+  const blank = wfBlankLabelKind(e.currentTarget);
+  if (blank) { _wfClosePortPopover(); showToast(`Name this ${blank} first.`, 4000); return; }
   when = wfLiveWhen(e.currentTarget, when);
   const entry = _wfEntry(); if (!entry || !entry._wf) return;
   const already = _wfPortPopover
