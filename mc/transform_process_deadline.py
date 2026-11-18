@@ -52,7 +52,7 @@ def _stop_owned(proc: subprocess.Popen, *, job: windows_process_job.OwnedJob | N
             _log(f'[transform-process] root cleanup failed: {type(exc).__name__}', flush=True)
 
 
-def run(cmd: list[str], *, input: str, timeout: float, deadline: float,
+def run(cmd: list[str], *, input: str, timeout: float, deadline: float | None = None,
         **kwargs: Any) -> subprocess.CompletedProcess:
     """A job/group remains owned even if the wrapper exits before cancellation.
 
@@ -60,7 +60,10 @@ def run(cmd: list[str], *, input: str, timeout: float, deadline: float,
     communicate without a timeout on the calling thread (Windows run's trap).
     The cleanup reserve is part of the entry budget, including process startup.
     """
-    limit = min(deadline, time.monotonic() + timeout)
+    # No `deadline` is the legacy per-call timeout; it still owns the tree.
+    limit = time.monotonic() + timeout
+    if deadline is not None:
+        limit = min(deadline, limit)
     compute_end = limit - CLEANUP_SECONDS
     if sys.platform == 'win32':
         kwargs['creationflags'] = kwargs.get('creationflags', 0) | windows_process_job.CREATE_SUSPENDED

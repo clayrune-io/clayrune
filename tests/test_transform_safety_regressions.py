@@ -196,7 +196,8 @@ def _claude_with_fake_run(monkeypatch, stdout='SUMMARY'):
 
     Done.stdout = stdout
     runs = []
-    monkeypatch.setattr(agent_runtime.subprocess, 'run',
+    # Claude's oneshot runs through the tree-owning runner (MC-1179 A2).
+    monkeypatch.setattr(agent_runtime._transform_process_deadline, 'run',
                         lambda cmd, **kw: runs.append(cmd) or Done())
     monkeypatch.setattr(agent_runtime, 'claude_installed', lambda: True)
     runtime = agent_runtime.ClaudeRuntime()

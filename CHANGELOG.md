@@ -1,5 +1,14 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Runtime core: five high findings (MC-1179 MA1, A1, Q1, G1, A2)
+
+- Stop on a Mode A engine (MA1): pressing Stop on a Qwen, Codex, OpenCode, Goose, Aider or Kiro session is logged as a stop. Before, the reader wrote `[<engine> exited with code N]` and a `[hint]`, set the session to `error` and fired the process-exit hook, because the kill finished before the status was set.
+- Saved summary and workflow step results (A1): a reply line that starts with `[` (a Markdown link line, for instance) is kept as reply text. Only the single-bracket marker and Clayrune's own labelled lines (`[tool: X] path`, `[hint]`, `[<engine> error|warn]`, `[mcp-sync]`) end the reply. Not changed: a bare `[1, 2, 3]` or `[x]` line is still read as a marker.
+- Qwen transforms (Q1): `oneshot` reads the exit code and keeps stderr. A non-zero exit, an `is_error` result or an empty answer is a failure, and only an assistant event counts as the answer; the raw event stream is no longer returned as text to Scribe, condense, the Distiller or the mail reader. The known Windows libuv teardown exit after a complete reply is still accepted.
+- Gemini transforms (G1): `oneshot` reads the exit code. A quota, auth or network failure was returned as an empty answer with no reason recorded; it is now a failed transform with `last_error` set.
+- Claude transform timeouts (A2): `oneshot` and `describe_image` now end the whole CLI process tree when `timeout` passes, so a stalled CLI behind the Windows `.cmd` shim no longer holds the calling thread for as long as it lives (measured with a fake shim: 9.1 s on a 1 s timeout, now returns in about 1 s and the CLI is gone). `stream_text` drains stderr (a CLI that filled the pipe blocked both sides), has a total time bound (`timeout`, default 600 s, raises `TransformTimeout`), and ends the CLI's tree when the stream is closed. New `mc/stream_text_guard.py`; `mc/transform_process_deadline.run` now accepts a call without `deadline`.
+- Tested with fake processes and recorded output only. No Qwen, Gemini, Codex or Claude CLI was launched, so none of the five is confirmed against a live CLI.
+
 ## [2026-11-17] - Control plane public routes and the mail reader (MC-1179 MB25, MB26, MB1)
 
 - Mail reader (MB1): a sender-chosen charset name in a header (`=?<any text>?B?...?=`) no longer aborts `tools/mail-mcp/read_digest.py`. `_dec` decodes an unknown or NUL-bearing charset as UTF-8, and the fetch-failure envelope reports the exception class name, not `repr(e)`, so no sender text reaches the calling session unlaundered and one message can no longer make every digest read exit 1.

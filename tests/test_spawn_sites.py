@@ -24,6 +24,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import mc.agent_runtime as ar
+import mc.transform_process_deadline as _tpd
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -212,7 +213,7 @@ class TestScribeCallEquivalence:
     """
 
     def _capture_run_calls(self, rt, model, instruction, body):
-        """Call oneshot() and capture subprocess.run kwargs.
+        """Call oneshot() and capture the transform runner's kwargs (MC-1179 A2: oneshot runs through mc.transform_process_deadline.run).
 
         Only OUR calls. `subprocess.run` is a process global, so a background
         thread that outlives an earlier test lands its argv in this list too,
@@ -223,7 +224,7 @@ class TestScribeCallEquivalence:
         """
         calls = []
         me = threading.current_thread()
-        real_run = subprocess.run
+        real_run = _tpd.run
 
         def fake_run(cmd, **kwargs):
             if threading.current_thread() is not me:
@@ -234,7 +235,7 @@ class TestScribeCallEquivalence:
             fake.stdout = 'summarized text'
             return fake
 
-        with patch('subprocess.run', side_effect=fake_run):
+        with patch('mc.transform_process_deadline.run', side_effect=fake_run):
             result = rt.oneshot(
                 prompt=instruction,
                 model=model,
@@ -316,7 +317,7 @@ class TestScribeCallEquivalence:
             fake.stderr = ''
             return fake
 
-        with patch('subprocess.run', side_effect=fake_run):
+        with patch('mc.transform_process_deadline.run', side_effect=fake_run):
             assert rt.oneshot(prompt='p', model='haiku', stdin_text='x') is None
         assert 'rc=1' in rt.last_error
         assert 'max turns' in rt.last_error
@@ -403,13 +404,13 @@ class TestScribeCallEquivalence:
             m.returncode = 1
             m.stdout = ''
             return m
-        with patch('subprocess.run', side_effect=fake_run):
+        with patch('mc.transform_process_deadline.run', side_effect=fake_run):
             result = rt.oneshot(prompt='p', model='claude-haiku-4-5-20251001', stdin_text='x')
         assert result is None
 
     def test_returns_none_on_exception(self):
         rt = _fresh_claude()
-        with patch('subprocess.run', side_effect=subprocess.TimeoutExpired(cmd='c', timeout=180)):
+        with patch('mc.transform_process_deadline.run', side_effect=subprocess.TimeoutExpired(cmd='c', timeout=180)):
             result = rt.oneshot(prompt='p', model='claude-haiku-4-5-20251001', stdin_text='x')
         assert result is None
 

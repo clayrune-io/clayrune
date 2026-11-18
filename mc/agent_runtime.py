@@ -67,6 +67,7 @@ from mc import turn_clock as _turn_clock  # elapsed-since-last-reply stamp (mc/t
 from mc import transform_sandbox as _transform_sandbox
 from mc import transform_deadline as _transform_deadline
 from mc import transform_process_deadline as _transform_process_deadline
+from mc import stream_text_guard as _stream_text_guard  # stderr drain + total bound for stream_text (A2)
 from mc import api_credits_offload as _api_credits_offload
 from mc.execution_policy import (
     Blocker, Capability, CapabilityClaim, Certification, ExecutionIdentity,
@@ -3288,8 +3289,9 @@ class ClaudeRuntime(AgentRuntime):
         leg_timeout = (max(1, int(timeout)) if deadline is None else
                       _transform_deadline.remaining(timeout, deadline, fallback=True))
         try:
-            runner = subprocess.run if deadline is None else _transform_process_deadline.run
-            r = runner(
+            # Always the tree-owning runner: subprocess.run stops only the .cmd shim
+            # on a timeout and then waits for the CLI grandchild with no limit (A2).
+            r = _transform_process_deadline.run(
                 cmd,
                 input=stdin_payload,
                 stdout=subprocess.PIPE,
@@ -3351,7 +3353,7 @@ class ClaudeRuntime(AgentRuntime):
             {'type': 'text', 'text': prompt},
         ]}}) + '\n'
         try:
-            r = subprocess.run(
+            r = _transform_process_deadline.run(
                 cmd, input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 cwd=_transform_sandbox.neutral_cwd(), text=True, encoding='utf-8',
                 errors='replace', timeout=max(1, int(timeout)),
@@ -3388,7 +3390,8 @@ class ClaudeRuntime(AgentRuntime):
     def stream_text(self, *, prompt: str, system_prompt: str = '',
                     model: str = '', effort: str = '', max_turns: int = 1,
                     stdin_text: Optional[str] = None,
-                    cwd: Optional[str] = None) -> Iterator[str]:
+                    cwd: Optional[str] = None,
+                    timeout: float = _stream_text_guard.DEFAULT_TOTAL_SECONDS) -> Iterator[str]:
         """Stream a short no-tools response through Claude's JSONL protocol.
 
         Provider command construction, process lifecycle, parsing, incremental
@@ -3403,6 +3406,7 @@ class ClaudeRuntime(AgentRuntime):
             'message': {'role': 'user', 'content': instruction},
         }) + '\n'
         proc = None
+        guard = None
         text_parts: List[str] = []
         result_error = ''
         try:
@@ -3417,6 +3421,7 @@ class ClaudeRuntime(AgentRuntime):
             except FileNotFoundError as e:
                 raise CLINotInstalledError(
                     'Claude CLI not found on this server') from e
+            guard = _stream_text_guard.StreamGuard(proc, _kill_pid, timeout)
             try:
                 assert proc.stdin is not None
                 proc.stdin.write(stdin_payload)
@@ -3457,25 +3462,23 @@ class ClaudeRuntime(AgentRuntime):
                         text_parts.append(text)
                         yield text
 
+            if guard.timed_out:
+                raise TransformTimeout('claude', f'Claude timed out after {timeout:g}s')
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired as e:
                 raise TransformTimeout('claude', 'Claude timed out while exiting') from e
             if proc.returncode != 0 or result_error:
-                stderr = ''
-                try:
-                    stderr = (proc.stderr.read() if proc.stderr else '').strip()[:500]
-                except Exception as e:
-                    print(f'[runtime:claude-stream] reading CLI error output failed: {e}', flush=True)
+                stderr = guard.stderr_tail().strip()[:500]
                 raise TransformFailure('claude', 'failed',
                                        result_error or stderr or ''.join(text_parts).strip()
                                        or f'Claude exit {proc.returncode}')
         finally:
+            if guard is not None:
+                guard.close()
             if proc is not None and proc.poll() is None:
-                try:
-                    proc.kill()
-                except Exception as e:
-                    print(f'[runtime:claude-stream] stopping process failed: {e}', flush=True)
+                # Whole tree: proc.kill() ends only the .cmd shim, not the CLI (A2).
+                _kill_pid(proc.pid)
 
     # ── Health check ──────────────────────────────────────────────────────────
 
