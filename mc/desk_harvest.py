@@ -197,8 +197,8 @@ def harvest_backlog(project_id: str, project: dict) -> list[dict]:
     # with an invented date is worse than no signal.
     candidates = []
     for item in project.get('backlog') or []:
-        if item.get('status') != 'done':
-            continue
+        if item.get('status') != 'done' or item.get('done_reason') == 'dismissed':
+            continue   # a dismissed proposal was turned down, it did not ship
         when = item.get('done_at') or item.get('created_at') or ''
         if not when:
             continue

@@ -133,6 +133,10 @@ function renderAllBacklog() {
     const ap = prioRank[a.item.priority || 'normal'] ?? 1;
     const bp = prioRank[b.item.priority || 'normal'] ?? 1;
     if (ap !== bp) return ap - bp;
+    // A proposal waits below accepted items of the same priority.
+    const pa = window.backlogProposals ? window.backlogProposals.proposedSortKey(a.item) : 0;
+    const pb = window.backlogProposals ? window.backlogProposals.proposedSortKey(b.item) : 0;
+    if (pa !== pb) return pa - pb;
     return (b.item.updated_at || '').localeCompare(a.item.updated_at || '');
   });
   if (countEl) countEl.textContent = `${rows.length} item${rows.length===1?'':'s'}`;
@@ -149,11 +153,14 @@ function renderAllBacklog() {
     const isInProgress = isAgent && item.agent_status === 'in_progress';
     const cls = [
       BACKLOG_CLOSED.includes(item.status) ? 'done' : '',
+      item.status === 'proposed' ? 'status-proposed' : '',
       `priority-${item.priority || 'normal'}`,
       isAgent ? 'agent-source' : '',
       isInProgress ? 'agent-in-progress' : '',
     ].filter(Boolean).join(' ');
     const notesCount = item.notes_count ?? (item.notes || []).length;
+    const isProposed = !!(window.backlogProposals && window.backlogProposals.isProposed(item));
+    const proposalHTML = window.backlogProposals ? window.backlogProposals.proposalControlsHTML(p.id, item) : '';
     return `
       <div class="backlog-item ${esc(cls)}" style="cursor:pointer" onclick="_jumpToBacklogItem('${window.jsAttr(p.id)}','${esc(item.id)}')">
         <button class="backlog-check" onclick="event.stopPropagation();toggleDone(event,'${window.jsAttr(p.id)}','${esc(item.id)}','${window.jsAttr(item.status)}')" title="${BACKLOG_CLOSED.includes(item.status)?'Reopen':'Mark done'}">
@@ -164,9 +171,10 @@ function renderAllBacklog() {
           <div style="font-size:11px;color:var(--accent);font-weight:600;margin-top:3px;letter-spacing:0.2px">${esc(p.name || p.id)}</div>
         </div>
         <div class="backlog-meta">
+          ${proposalHTML}
           ${isAgent ? `<span class="agent-badge${isInProgress?' in-progress':''}">${isInProgress?'doing':'agent'}</span>` : ''}
-          ${item.status && item.status !== 'open' && item.status !== 'done'
-            ? `<span class="status-badge status-${esc(item.status)}">${esc(String(item.status).replace('_',' '))}</span>` : ''}
+          ${item.status && item.status !== 'open' && item.status !== 'done' && !isProposed
+            ?`<span class="status-badge status-${esc(item.status)}">${esc(String(item.status).replace('_',' '))}</span>` : ''}
           <span class="priority-badge priority-${esc(item.priority||'normal')}">${esc(item.priority||'normal')}</span>
           ${notesCount ? `<span class="backlog-source" title="${notesCount} note${notesCount===1?'':'s'}">&#x1F4DD; ${notesCount}</span>` : ''}
         </div>

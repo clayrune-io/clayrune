@@ -126,8 +126,10 @@ the filesystem.
 | Verb | Path | Purpose |
 |---|---|---|
 | GET | `/api/project/<project_id>/backlog` | List items (with statuses, notes, attachments). |
-| POST | `/api/project/<project_id>/backlog` | Add an item (`{"text":"...","priority":"..."}`). |
-| PATCH | `/api/project/<project_id>/backlog/<item_id>` | Update fields (status, text, priority). Status values: `open`, `in_progress`, `blocked`, `done`. |
+| POST | `/api/project/<project_id>/backlog` | Add an item (`{"text":"...","priority":"..."}`). **When an agent or an unattended run adds one, the server stores it `status: "proposed"` with a `proposed_by` (`{kind:"agent", session_id, agent_name, attended}`) it derives itself; a `source`/`status`/`proposed_by` in the body is ignored.** A proposal is listed with an "Agent proposed" chip and waits for a person: the backlog runner never dispatches it, no agent can accept it, and it is outside the open count. |
+| POST | `/api/project/<project_id>/backlog/<item_id>/accept` | Accept a proposal into an ordinary `open` item (`proposed_by` is kept). **Human-only: agent and unattended callers get 403.** |
+| POST | `/api/project/<project_id>/backlog/<item_id>/dismiss` | Dismiss a proposal: `status: done`, `done_reason: dismissed`; nothing is deleted. **Human-only: agent and unattended callers get 403.** |
+| PATCH | `/api/project/<project_id>/backlog/<item_id>` | Update fields (status, text, priority). Status values: `open`, `in_progress`, `blocked`, `done`. `proposed` cannot be set; an agent may PATCH `text`/`status` of its own proposal only, and a change of `proposed_by` is refused. |
 | POST | `/api/project/<project_id>/backlog/<item_id>/note` | Append a note (`{"text":"..."}`). |
 | DELETE | `/api/project/<project_id>/backlog/<item_id>` | Remove an item. |
 | POST | `/api/project/<project_id>/backlog/<item_id>/attachments` | Upload a file to an item (multipart). |

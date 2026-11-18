@@ -1,0 +1,21 @@
+diff --git a/steward/core.py b/steward/core.py
+--- a/steward/core.py
++++ b/steward/core.py
+@@ -41,12 +41,15 @@
+ def find_charter(project: dict):
+     """Return the charter backlog item, or None. Identified by source tag first,
+     text prefix as fallback (survives a source rewrite)."""
+-    for it in (project.get('backlog') or []):
++    # A proposal (an agent's add awaiting a person) is never a charter: a charter
++    # is the field of responsibility a person gave the steward.
++    items = [it for it in (project.get('backlog') or []) if it.get('status') != 'proposed']
++    for it in items:
+         if it.get('source') == 'steward-charter':
+             return it
+-    for it in (project.get('backlog') or []):
++    for it in items:
+         if str(it.get('text', '')).startswith(CHARTER_PREFIX):
+             return it
+     return None
+
+

@@ -5405,6 +5405,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
         f"Update an item: curl -s -X PATCH http://localhost:{port}/api/project/{pid}/backlog/<item_id> "
         f'-H "Content-Type: application/json" -d \'{{"status":"done"}}\' '
         f"(status values: open, in_progress, blocked, done). "
+        f"An item YOU add (POST .../backlog) is labelled 'Agent proposed' and waits for a person to accept it; the runner will not start it. "
         f"Add a note: POST /api/project/{pid}/backlog/<item_id>/note with {{\"text\":\"...\"}}.",
         f"Hivemind: You can launch multi-agent coordinated analysis on this project. "
         f"To create a hivemind, call: curl -s -X POST http://localhost:{port}/api/hivemind/create "

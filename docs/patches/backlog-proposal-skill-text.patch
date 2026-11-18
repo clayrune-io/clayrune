@@ -1,0 +1,9 @@
+diff --git a/data/skills/builtin/mc-clayrune-apis/SKILL.md b/data/skills/builtin/mc-clayrune-apis/SKILL.md
+--- a/data/skills/builtin/mc-clayrune-apis/SKILL.md
++++ b/data/skills/builtin/mc-clayrune-apis/SKILL.md
+@@ -32,4 +32,5 @@
+ - Update: `PATCH /api/project/<pid>/backlog/<item_id>` with `{"status":"done"}` — status values: `open`, `in_progress`, `blocked`, `done`, `wontdo`. The first three are LIVE (visible in the tab, counted on the tile); the last two are closed.
+ - Add note: `POST /api/project/<pid>/backlog/<item_id>/note` with `{"text":"..."}`
+ - Add item: `POST /api/project/<pid>/backlog` with `{"text":"...","priority":"high|normal|low"}` — the field is `text`, not `title`, and a missing/blank one is a 400.
++  **If you are an agent (or an unattended run), your item is stored `proposed`, labelled "Agent proposed" with your session and name, and waits for a person to Accept it.** `POST .../backlog/<item_id>/accept` and `/dismiss` are human-only; you cannot call them. Until then the backlog runner will not pick it up and it is not counted as open work. Do not send `source`, `status` or `proposed_by`; the server sets them. You may still PATCH the `text` or `status` of your own proposal. Items already in the backlog are unaffected.
+
