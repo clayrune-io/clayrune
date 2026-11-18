@@ -35,10 +35,11 @@ You should see: `master`
 **2. Confirm the four patch files are present.**
 
 ```
-ls docs/patches/steward-role-core-adapter.patch docs/patches/steward-role-directive.patch docs/patches/fence-timeout-seconds.patch docs/patches/fence-hivemind-reviewer-armed.patch
+git ls-files docs/patches/steward-role-core-adapter.patch docs/patches/steward-role-directive.patch docs/patches/fence-timeout-seconds.patch docs/patches/fence-hivemind-reviewer-armed.patch
 ```
-You should see all four names echoed back, no "No such file". (If one is missing, the
-branch with the P64 patch is not merged yet: stop.)
+You should see all four names printed, one per line. (If fewer than four are listed,
+the branch with the P64 patch is not merged yet: stop.) This form works the same in
+PowerShell and in Git Bash.
 
 **3. Confirm the files the patches touch have no local edits.**
 
@@ -82,6 +83,10 @@ git apply docs/patches/fence-hivemind-reviewer-armed.patch
 You should see: nothing.
 
 ## Check each one took effect
+
+The line numbers shown in steps 9, 11 and 12 are from `master` at `bba8ad42`. If
+`master` has moved since, the numbers can differ by a few lines; what matters is that
+the same lines of text are listed. A different number alone is not a reason to stop.
 
 **8. See which files changed.**
 
