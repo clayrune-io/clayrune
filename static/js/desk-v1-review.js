@@ -203,6 +203,11 @@
       el, campaignId, versionId, mode: 'review', showChanges: true,
       claims: {},      // claimId -> { status, sourceName, revision, addingSource, checking }
       editValues: {},  // paragraphId -> live-edited text (Edit-text mode)
+      // Live Edit text. The ids on screen (p0, p1, ...) are positions in `paintBody`,
+      // the saved body as it was last painted; edits are keyed to that list, so they
+      // are composed against it, not against whatever `version.body` is by then (a
+      // save drops an emptied paragraph and shifts every position after it).
+      paintBody: null, editSeq: 0, editDirty: false,
       conflictShown: false,
       commentDraft: {}, // paragraphId -> composer open
       result: null,     // live: what Approve did, shown until the person continues
@@ -232,6 +237,21 @@
 
   function _pair() { return _st && _st.versionId ? _findFamilyVersion(_st.versionId) : null; }
 
+  // Live: the version as the screen is painted. Unsaved edits belong to the list of
+  // paragraphs on screen, so while any are pending that list keeps being painted
+  // and composed even if the saved body has moved. With nothing pending, a moved
+  // body is simply adopted and the position-keyed edits (all in it) are dropped.
+  function _paintedVersion(version) {
+    return _st.paintBody == null ? version : Object.assign({}, version, { body: _st.paintBody });
+  }
+  function _syncPaintBody(family, version) {
+    if (!_live()) return;
+    const cur = _liveBody(family, version);
+    if (_st.paintBody === cur || _st.editDirty) return;
+    _st.editValues = {};
+    _st.paintBody = cur;
+  }
+
   // ── render ─────────────────────────────────────────────────────────────
   function _clearCrumbTools() {
     const host = document.getElementById('desk-v1-crumb-tools');
@@ -260,7 +280,8 @@
     }
     const { family, version } = pair;
     const channel = _channel(version.channelId);
-    const detail = _detail(version.id);
+    _syncPaintBody(family, version);
+    const detail = _live() ? _liveDetail(family, _paintedVersion(version)) : _detail(version.id);
     const idx = list.findIndex((x) => x.version.id === version.id);
     const isVideo = family.kind === 'video';
 
@@ -590,7 +611,7 @@
     el.querySelectorAll('[data-claim-asis]').forEach((b) => b.onclick = () => _acceptAsWritten(b.dataset.claimAsis, family, version));
 
     el.querySelectorAll('[data-edit-para]').forEach((span) => {
-      span.oninput = () => { _st.editValues[span.dataset.editPara] = span.textContent; _scheduleAutosave(); };
+      span.oninput = () => { _st.editValues[span.dataset.editPara] = span.textContent; _st.editSeq++; _st.editDirty = true; _scheduleAutosave(); };
     });
 
     window.DeskV1Reapproval.bindLinks(el);
@@ -662,7 +683,7 @@
   // Live: the edited paragraphs back into one body, saved with M18. Headings and
   // claim paragraphs are not editable here, so they go back exactly as they came.
   function _composeBody(family, version) {
-    const d = _liveDetail(family, version);
+    const d = _liveDetail(family, _paintedVersion(version));
     const parts = [];
     (d.paragraphs || []).forEach((p) => {
       if (p.raw == null) return;
@@ -677,16 +698,20 @@
     const pair = _pair();
     if (!pair || !_live()) return;
     const { family, version } = pair;
-    const body = _composeBody(family, version);
+    const st = _st;
+    const seq = st.editSeq;
+    // Nothing typed since the last save (or since "Use theirs"): nothing to compose.
+    const body = st.editDirty ? _composeBody(family, version) : _liveBody(family, version).trim();
     if (body === _liveBody(family, version).trim()) {
+      if (st.editSeq === seq) st.editDirty = false;
       const s = document.getElementById('desk-v1-review-savestatus');
       if (s) s.textContent = 'Saved';
       return;
     }
-    const st = _st;
     try {
       await _S().api('PATCH', _versionUrl(family, version), { body });
       version.body = body;
+      if (st.editSeq === seq) st.editDirty = false;
       if (_st === st) { const s = document.getElementById('desk-v1-review-savestatus'); if (s) s.textContent = 'Saved'; }
     } catch (e) {
       if (_st === st) { const s = document.getElementById('desk-v1-review-savestatus'); if (s) s.textContent = `Not saved: ${e && e.message ? e.message : e}`; }
@@ -713,7 +738,7 @@
       <button type="button" data-conflict-theirs>Use theirs</button>
     </div>`;
     host.querySelector('[data-conflict-keep]').onclick = () => { host.innerHTML = ''; };
-    host.querySelector('[data-conflict-theirs]').onclick = () => { _st.editValues = {}; host.innerHTML = ''; _renderAll(); };
+    host.querySelector('[data-conflict-theirs]').onclick = () => { _st.editValues = {}; _st.editDirty = false; host.innerHTML = ''; _renderAll(); };
     return true;
   };
 
