@@ -1,4 +1,6 @@
 import {refreshWorkflowEnginePreview} from './workflow-engine-preview.js';
+import {wfReconcileLabels, wfLiveWhen, wfTypedLabelAt, wfBlankLabelKind} from './workflow-label-sync.js';
+import {WF_STEP_REF_RE, wfSlotStepRe, wfSlotAnyRe, isValidStepName, stepNameOfRef, STEP_NAME_RULE_TEXT} from './workflow-slot-grammar.js';
 
 // ── Workflow Builder (MC-871, R2-D7 — "the canvas") ──────────────────────────
 //
@@ -750,6 +752,12 @@ function _wfStampSavedSnapshot(st) {
 function _wfApplySnapshot(st, raw) {
   const snap = JSON.parse(raw);
   st.def = snap.def;
+  // A snapshot taken before a Save holds the schedule draft WITHOUT the id the
+  // server gave it at that Save. Restoring it as-is makes the next Save POST a
+  // second schedule for the same workflow, so keep the identity we already
+  // hold (WB2). Callers re-read the snapshot of what is now on screen.
+  const live = st.linkedSchedule;
+  if (snap.linkedSchedule && !snap.linkedSchedule.id && live && live.id) snap.linkedSchedule.id = live.id;
   st.linkedSchedule = snap.linkedSchedule;
 }
 
@@ -784,8 +792,8 @@ function _wfUndo() {
   if (st._redo.length > WFB_UNDO_CAP) st._redo.shift();
   const prev = st._undo.pop();
   _wfApplySnapshot(st, prev);
-  st._lastSnapshot = prev;
-  st.dirty = (prev !== st._savedSnapshot);
+  st._lastSnapshot = _wfSnapshot(st);
+  st.dirty = (st._lastSnapshot !== st._savedSnapshot);
   st.runErrors = null;
   _wfCloseTriggerPopover();
   _wfRender();
@@ -803,8 +811,8 @@ function _wfRedo() {
   if (st._undo.length > WFB_UNDO_CAP) st._undo.shift();
   const next = st._redo.pop();
   _wfApplySnapshot(st, next);
-  st._lastSnapshot = next;
-  st.dirty = (next !== st._savedSnapshot);
+  st._lastSnapshot = _wfSnapshot(st);
+  st.dirty = (st._lastSnapshot !== st._savedSnapshot);
   st.runErrors = null;
   _wfCloseTriggerPopover();
   _wfRender();
@@ -829,7 +837,7 @@ function _wfResetCanvas() {
   if (st._undo.length > WFB_UNDO_CAP) st._undo.shift();
   st._redo = [];
   _wfApplySnapshot(st, baseline);
-  st._lastSnapshot = baseline;
+  st._lastSnapshot = _wfSnapshot(st);
   st.dirty = false;
   st.runErrors = null;
   _wfCloseTriggerPopover();
@@ -1036,7 +1044,8 @@ function _wfHasPath(edges, from, to) {
   return false;
 }
 
-const _WF_SLOT_STEP_RE = /\{\{\s*steps\.([a-zA-Z0-9_]+)\.[a-zA-Z0-9_.]+\s*\}\}/g;
+// One grammar for every slot check (WB3): static/js/workflow-slot-grammar.js.
+const _WF_SLOT_STEP_RE = wfSlotStepRe();
 
 function _wfCollectStepText(node) {
   const parts = [];
@@ -1061,7 +1070,11 @@ function _wfFindBrokenSlotRefs(nodes, edges) {
       _WF_SLOT_STEP_RE.lastIndex = 0;
       let m;
       while ((m = _WF_SLOT_STEP_RE.exec(text))) {
-        const ref = m[1];
+        const ref = stepNameOfRef(m[1]);
+        // Text that looks like a step reference but that the server's slot
+        // grammar will never substitute (a space in the step name, say): the run
+        // would send the literal placeholder to the agent. Always broken (WB3).
+        if (!WF_STEP_REF_RE.test(m[1])) { problems.push({ step: node.name, ref, malformed: true }); continue; }
         if (ref === node.name) continue; // backend flags self-reference separately at save
         if (!names.includes(ref)) { problems.push({ step: node.name, ref }); continue; }
         const domSet = dom[node.name];
@@ -1165,7 +1178,7 @@ function _wfInsertControlHTML(st, nodeName, fieldKey) {
       onclick="_wfInsertMenuToggle(event,'${window.jsAttr(nodeName)}','${window.jsAttr(fieldKey)}')">+ Insert a result</button>`;
 }
 
-const _WF_SLOT_ANY_RE = /\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g;
+const _WF_SLOT_ANY_RE = wfSlotAnyRe();
 
 // Single source of truth for "is this one ref legal here" -- shared by the
 // read-only chip legend below and _wfTextHasBrokenSlotRef (the collapse
@@ -1175,7 +1188,7 @@ const _WF_SLOT_ANY_RE = /\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g;
 function _wfSlotRefBroken(ref, legalSteps, prevLegal) {
   if (ref === 'prev.output') return !prevLegal;
   if (ref === 'trigger.fired_at' || ref === 'run.id') return false;
-  const stepM = /^steps\.([a-zA-Z0-9_]+)\./.exec(ref);
+  const stepM = WF_STEP_REF_RE.exec(ref);
   return !stepM || !legalSteps.has(stepM[1]);
 }
 
@@ -1193,8 +1206,11 @@ function _wfSlotChipsHTML(def, nodeName, text) {
   const legalSteps = new Set(ancestors);
   const chip = (ref) => {
     const broken = _wfSlotRefBroken(ref, legalSteps, prevLegal);
+    const malformed = /^steps\./.test(ref) && !WF_STEP_REF_RE.test(ref);
+    const why = malformed ? `Never filled in: a step name in a reference takes ${STEP_NAME_RULE_TEXT}`
+      : 'Not reachable on every path into this step';
     return `<span class="wfb-slot-chip${broken ? ' wfb-slot-chip-broken' : ''}"
-      title="${broken ? 'Not reachable on every path into this step' : 'Valid here'}">{{${esc(ref)}}}</span>`;
+      title="${broken ? why : 'Valid here'}">{{${esc(ref)}}}</span>`;
   };
   return `<div class="wfb-slot-chips"><span class="wfb-slot-chips-label">In this text:</span>${refs.map(chip).join('')}</div>`;
 }
@@ -1359,7 +1375,7 @@ function _wfSyncDomToModel(entry) {
     const own = document.querySelector('#wfb-inspector .wfb-node-own');
     if (node && own) {
       const oldName = node.name;
-      _wfSyncNodeOwn(node, own);
+      _wfSyncNodeOwn(node, own, edges);
       if (node.name && node.name !== oldName) {
         // Renames aren't guarded against breaking a TEXT slot reference
         // elsewhere (spine behaviour, carried forward — see file header), but
@@ -1390,9 +1406,22 @@ function _wfSyncDomToModel(entry) {
   return renameMap;
 }
 
-function _wfSyncNodeOwn(node, own) {
+function _wfSyncNodeOwn(node, own, edges) {
+  // Edges still carry the name from before this sync's rename (the caller repoints them after).
+  const edgeFrom = node.name;
   const nameEl = own.querySelector('.wfb-name');
-  if (nameEl) node.name = nameEl.value.trim() || node.name;
+  if (nameEl) {
+    const typed = nameEl.value.trim();
+    // A step name has to be writable inside {{steps.<name>.…}} or nothing can
+    // reference it (WB3). Only a CHANGED name is judged: a step loaded with an
+    // older name is left alone until the user edits it.
+    if (typed && typed !== node.name && !isValidStepName(typed)) {
+      showToast(`Step names take ${STEP_NAME_RULE_TEXT} (so other steps can use its result). Kept "${node.name}".`, 5000);
+      nameEl.value = node.name;
+    } else {
+      node.name = typed || node.name;
+    }
+  }
   if (node.type === 'agent') {
     const projEl = own.querySelector('.wfb-project');
     const persEl = own.querySelector('.wfb-persona');
@@ -1402,9 +1431,9 @@ function _wfSyncNodeOwn(node, own) {
     // Its temporary empty option is not a choice of Project default (WB1).
     if (persEl && persEl.dataset.loading !== '1') node.character = persEl.value;
     if (promptEl) node.prompt = promptEl.value;
-    node.outcomes = [...own.querySelectorAll('.wfb-outcome-input')].map(i => i.value.trim()).filter(Boolean);
+    node.outcomes = wfReconcileLabels(edgeFrom, node.outcomes, [...own.querySelectorAll('.wfb-outcome-input')].map(i => i.value), edges);
   } else if (node.type === 'approval') {
-    node.options = [...own.querySelectorAll('.wfb-option-input')].map(i => i.value.trim()).filter(Boolean);
+    node.options = wfReconcileLabels(edgeFrom, node.options, [...own.querySelectorAll('.wfb-option-input')].map(i => i.value), edges);
   } else if (node.type === 'action') {
     // Two-level What/Do (palette-composition pass): a multi-verb group has a
     // real `.wfb-action-verb-select` to read; a single-verb group shows
@@ -3014,12 +3043,17 @@ function _wfAddOutcome(name) {
 
 function _wfRemoveOutcome(name, idx) {
   const entry = _wfEntry(); if (!entry) return;
+  // `idx` is a row position baked at render; the sync below can rename or drop
+  // that row's label (WB4), so name the label first and re-find it afterwards.
+  const preLabel = (((entry._wf.def.nodes || []).find(n => n.name === name) || {}).outcomes || [])[idx];
+  const typed = wfTypedLabelAt('wfb-outcome-input', idx);
   const renameMap = _wfSyncDomToModel(entry);
   name = renameMap[name] || name;
   const def = entry._wf.def;
   const node = (def.nodes || []).find(n => n.name === name); if (!node) return;
-  const label = (node.outcomes || [])[idx];
-  if (label === undefined) return;
+  const label = typed || preLabel;
+  idx = (node.outcomes || []).indexOf(label);
+  if (idx < 0) { _wfMarkDirty(); _wfRender(); return; } // the sync already dropped the cleared row
   const before = _wfFindBrokenSlotRefs(def.nodes, def.edges || []);
   const savedOutcomes = node.outcomes;
   node.outcomes = node.outcomes.filter((_, i) => i !== idx);
@@ -3049,12 +3083,15 @@ function _wfAddOption(name) {
 
 function _wfRemoveOption(name, idx) {
   const entry = _wfEntry(); if (!entry) return;
+  const preLabel = (((entry._wf.def.nodes || []).find(n => n.name === name) || {}).options || [])[idx];
+  const typed = wfTypedLabelAt('wfb-option-input', idx);
   const renameMap = _wfSyncDomToModel(entry);
   name = renameMap[name] || name;
   const def = entry._wf.def;
   const node = (def.nodes || []).find(n => n.name === name); if (!node) return;
-  const label = (node.options || [])[idx];
-  if (label === undefined) return;
+  const label = typed || preLabel;
+  idx = (node.options || []).indexOf(label);
+  if (idx < 0) { _wfMarkDirty(); _wfRender(); return; } // the sync already dropped the cleared row
   if ((node.options || []).length <= 1) { showToast('An approval gate needs at least one option.', 4000); return; }
   const before = _wfFindBrokenSlotRefs(def.nodes, def.edges || []);
   const savedOptions = node.options;
@@ -3844,7 +3881,9 @@ function _wfPortDown(e) {
   if (_wfConnectDrag || _wfNodeDrag || _wfPan || _wfPlaceDrag) return;
   e.preventDefault(); // Change 8: same text-selection guard as the other drag starts
   const portEl = e.currentTarget;
-  const st = { pointerId: e.pointerId, fromNode: portEl.dataset.node, when: portEl.dataset.when || null, portEl, curX: e.clientX, curY: e.clientY };
+  const blank = wfBlankLabelKind(portEl);
+  if (blank) { showToast(`Name this ${blank} first.`, 4000); return; }
+  const st = { pointerId: e.pointerId, fromNode: portEl.dataset.node, when: wfLiveWhen(portEl, portEl.dataset.when) || null, portEl, curX: e.clientX, curY: e.clientY };
   _wfConnectDrag = st;
   try { portEl.setPointerCapture(e.pointerId); } catch (err) { /* best-effort */ }
   window.addEventListener('pointermove', _wfConnectMove);
@@ -4023,6 +4062,9 @@ let _wfPortPopover = null; // { fromNode, when, search, anchorX, anchorY }
 
 function _wfPortPlusClick(e, fromNode, when) {
   e.stopPropagation();
+  const blank = wfBlankLabelKind(e.currentTarget);
+  if (blank) { _wfClosePortPopover(); showToast(`Name this ${blank} first.`, 4000); return; }
+  when = wfLiveWhen(e.currentTarget, when);
   const entry = _wfEntry(); if (!entry || !entry._wf) return;
   const already = _wfPortPopover
     && _wfPortPopover.fromNode === fromNode
@@ -4219,6 +4261,10 @@ async function _wfSave() {
     st.workflowId = data.workflow.id;
     st.def = JSON.parse(JSON.stringify(data.workflow));
     await _wfSaveLinkedSchedule(st);
+    // "Saved" is now THIS state (server def + the schedule id just assigned):
+    // Reset/Undo/Redo compare against it, and the render below sees no change
+    // so the save itself pushes nothing onto the undo stack (WB2).
+    _wfStampSavedSnapshot(st);
     st.saving = false;
     st.dirty = false;
     st.savedAt = Date.now();
@@ -4352,8 +4398,9 @@ function _wfValidateGraph(def) {
     names.filter(n => !order.includes(n)).forEach(n => add(n, "Part of a cycle -- this step can never run."));
   }
 
-  _wfFindBrokenSlotRefs(nodes, edges).forEach(({ step, ref }) => {
-    add(step, `Uses {{steps.${ref}.*}}, but "${ref}" isn't guaranteed to have run first.`);
+  _wfFindBrokenSlotRefs(nodes, edges).forEach(({ step, ref, malformed }) => {
+    if (malformed) add(step, `Uses {{steps.${ref}.*}}, which is never filled in: a step name in a reference takes ${STEP_NAME_RULE_TEXT}. Rename "${ref}".`);
+    else add(step, `Uses {{steps.${ref}.*}}, but "${ref}" isn't guaranteed to have run first.`);
   });
 
   return problems;

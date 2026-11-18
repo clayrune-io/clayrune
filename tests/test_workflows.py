@@ -298,6 +298,38 @@ def test_hyphenated_step_name_slot_renders_and_validates(wf):
     assert any("unknown step 'no-such-step'" in e for e in errors)
 
 
+def test_unsubstitutable_step_placeholder_is_refused(wf):
+    """WB3 (MC-1179): {{steps.Review draft.output}} never matches _SLOT_RE, so the
+    validator's loop never saw it and a draft created through the API (no client)
+    saved fine, then ran with the literal placeholder in the agent's prompt."""
+    doc = _doc('spaced-ref', [
+        _agent('Review draft'),
+        _agent('after', prompt='use {{steps.Review draft.output}}'),
+    ], edges=[_edge('Review draft', 'after')])
+    errors = wf.m.validate_workflow(doc)
+    assert any("'after'" in e and '{{steps.Review draft.*}}' in e and 'never filled in' in e
+               and 'letters, digits, "-" and "_" only' in e for e in errors), errors
+    with pytest.raises(ValueError):
+        wf.m.create_workflow(doc)
+
+
+def test_legacy_spaced_step_name_with_no_reference_still_saves(wf):
+    """The server has no step-name rule (WB3 keeps it that way): a workflow saved
+    earlier with a space in a name must still save while nothing references it."""
+    doc = _doc('legacy-spaced', [_agent('Review draft'), _agent('after', prompt='plain text')],
+               edges=[_edge('Review draft', 'after')])
+    assert wf.m.validate_workflow(doc) == []
+    assert wf.m.create_workflow(doc)['id']
+
+
+def test_hyphenated_step_reference_is_accepted(wf):
+    doc = _doc('hyphen-ok', [
+        _agent('agent-1'),
+        _agent('after', prompt='use {{steps.agent-1.output}} and {{ steps.agent-1.summary }}'),
+    ], edges=[_edge('agent-1', 'after')])
+    assert wf.m.validate_workflow(doc) == []
+
+
 def test_prev_slot_rejected_at_a_join(wf):
     """R2-D5: {{prev.output}} is only valid with exactly one parent."""
     doc = _doc('ambiguous-prev', [

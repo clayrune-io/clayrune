@@ -149,7 +149,22 @@ def engine_field_errors(obj: dict, label: str) -> list:
 
 
 _SLOT_RE = re.compile(r'\{\{\s*([a-zA-Z0-9_.\-]+)\s*\}\}')
+# Any {{ steps.<anything> }}, well formed or not. _SLOT_RE only ever sees the
+# well-formed ones, so a placeholder like {{steps.Review draft.output}} would
+# otherwise pass validation and reach the agent as literal text (WB3).
+_STEPS_ANY_RE = re.compile(r'\{\{\s*(steps\.[^{}]*?)\s*\}\}')
 _WF_RESULT_RE = re.compile(r'```[ \t]*wf:result[ \t\r\n]*(.*?)```', re.DOTALL | re.IGNORECASE)
+
+
+def _unresolvable_step_refs(text: str) -> list:
+    """Step-name part of every {{steps.…}} in `text` that _SLOT_RE cannot
+    substitute (render_template would leave it in the prompt verbatim)."""
+    out = []
+    for m in _STEPS_ANY_RE.finditer(text):
+        if _SLOT_RE.fullmatch(m.group(0)):
+            continue
+        out.append(m.group(1)[len('steps.'):].split('.')[0])
+    return out
 
 
 def wire(*, workflows_path=None, workflow_runs_dir=None,
@@ -540,6 +555,11 @@ def validate_workflow(doc: dict) -> list:
             texts.extend(v for v in (node.get('config') or {}).values() if isinstance(v, str))
         n_parents = len(parents_map.get(name) or [])
         for text in texts:
+            for bad in _unresolvable_step_refs(text):
+                errors.append(
+                    f"'{name}': Uses {{{{steps.{bad}.*}}}}, which is never filled in: "
+                    f"a step name in a reference takes letters, digits, \"-\" and \"_\" only. "
+                    f"Rename \"{bad}\".")
             for m in _SLOT_RE.finditer(text):
                 path = m.group(1)
                 if path.startswith('steps.'):
