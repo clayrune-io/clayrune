@@ -8611,7 +8611,10 @@ def _revive_parent_for_delegation(project_id, session_id, message, p, from_sessi
     # delivery in DeliveryUncertain forever: a reviewed_resolution retry just
     # replayed the same durable status and hit the same branch again.
     if status in ('error', 'stopped', 'running', 'in_progress'):
-        raise DeliveryUncertain(f'parent durable outcome is ambiguous: {status}')
+        # Refused before anything reaches the parent, so a retry cannot
+        # duplicate it: bounded backoff, then recovery_required (MC-1216,
+        # ed1eb670258f was filed uncertain here and then hidden).
+        raise DeliveryNotHandedOff(f'parent durable outcome is ambiguous: {status}')
     if status not in ('completed', 'idle', 'interrupted'):
         raise DeliveryBlocked(f'parent durable status {status or "unknown"} is not revivable')
     if entry.get('incognito'):

@@ -15,7 +15,8 @@ from mc import delegation_waiting as dw
 from mc.blueprints.delegation_report_routes import register_routes
 
 
-HEADER = '[dispatched agent finished] Sol_Tobin (session child) ended with status=completed.'
+# Carries its event id (MC-1216); id-less headers are covered by test_mc1216_report_followups.py.
+HEADER = '[dispatched agent finished] Sol_Tobin (session child) ended with status=completed. [event child:turn:1]'
 
 
 @pytest.fixture

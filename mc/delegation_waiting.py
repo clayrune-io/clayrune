@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from mc.core import _log
+from mc.delegation_delivery import uncertain_cause
 from mc.delegation_settlement import CHECK_ERRORS
 
 # inbox state -> what the reader needs to know. `dispatch_intent` is a claim in
@@ -141,7 +142,15 @@ def waiting_by_parent(project_id: str = '') -> dict[str, list[dict[str, Any]]]:
             # Parked before a handoff was recorded: nothing to check, retry or
             # open, so the reader gets no notice. Skipped after the dedup above
             # so the matching outbox row cannot surface in its place.
-            continue
+            if not (state in ('uncertain', 'recovery_required')
+                    and uncertain_cause(_err)[1]):
+                continue
+            # Except a report the parent was provably never handed (MC-1216:
+            # retries ran out before it could be revived). Hiding it loses it;
+            # a Retry is safe, so say it was not delivered and offer one.
+            stage = 'failed'
+            reason, detail = ('the parent could not take it',
+                              'Nothing was handed to the parent, so Retry cannot duplicate it.')
         elif reason:
             stage = 'check_failed'
         elif not _rank and state in ('blocked', 'uncertain', 'recovery_required'):

@@ -14,6 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from mc import delegation_receipt_header as receipt_header
 from mc.core import _log
 
 PARKED = ('uncertain', 'blocked', 'recovery_required')
@@ -32,6 +33,7 @@ CHECK_ERRORS = {
     'turn_incomplete': 'parent turn did not complete',
     'handoff_unsettled': 'original handoff completion was not recorded',
     'ambiguous_receipt': 'matching report has no newer receipt timestamp',
+    'unverified_header': 'report header carries no event id, so a match cannot be trusted',
 }
 
 
@@ -202,6 +204,12 @@ def evaluate(row: dict, parent: dict | None) -> tuple[str, dict | None]:
     header = str(payload.get('message', '')).split('\n', 1)[0]
     if not header.startswith('[dispatched agent finished] '):
         return 'unowned', None
+    # A header without THIS event's id is shared with the child's other turns
+    # (MC-1216, 8e65fec33d4e:turn:3): a match proves nothing about this event.
+    if (not receipt_header.header_carries(header, row.get('event_id', ''))
+            and any(header in text.splitlines() for r in snapshot.records
+                    for text in _texts(r, provider))):
+        return 'unverified_header', None
     # Positive receipts can never be manufactured by a tool result/assistant
     # quote, nor by a callback predating the child's completion.
     if any(_timestamp(r) > row['created_at'] and header in text.splitlines()
