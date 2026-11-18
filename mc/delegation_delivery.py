@@ -581,8 +581,14 @@ class DeliveryStore(SettlementStore):
 
     def recover_sources(self) -> int:
         recovered = 0
+        # Only a source with NO outbox row can need rebuilding (R51). The old
+        # SELECT * walked every completion ever recorded, two connections and a
+        # write lock each, every drain.
         with self._db() as db:
-            rows = db.execute('SELECT * FROM completion_sources ORDER BY created_at').fetchall()
+            rows = db.execute(
+                'SELECT s.* FROM completion_sources s '
+                'LEFT JOIN outbox o ON o.event_id = s.event_id '
+                'WHERE o.event_id IS NULL ORDER BY s.created_at').fetchall()
         for row in rows:
             with self._db() as db:
                 if self._revoked(db, row['project_id'], row['parent_session_id'],
