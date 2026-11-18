@@ -74,6 +74,15 @@ def test_live_process_on_a_completed_row_also_waits(env):
     assert env.tick()['status'] == 'running'
 
 
+def test_a_running_native_child_waits_then_holds(env):
+    # Was test_merge_smoke_standards_and_native_failures_hold[native]: a running
+    # native child held at once; it is a worker still in its turn, so it waits.
+    state.agent_sessions['child'] = {'_spawned_by': 'hm_worker_a', 'status': 'running'}
+    assert env.tick()['status'] == 'running'
+    _rewind_wait(wait.GRACE_SECONDS // 60 + 5)
+    assert env.tick()['status'] == 'held'
+
+
 @pytest.mark.parametrize('status', ['error', 'blocked', 'stopped'])
 def test_a_session_that_ended_badly_still_holds(env, status):
     _worker_in_turn(status)

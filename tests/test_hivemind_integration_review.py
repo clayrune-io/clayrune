@@ -210,8 +210,8 @@ def test_pass_cannot_survive_current_pin_or_lifecycle_drift(env, monkeypatch, ki
     assert 'merge ws2' not in r.events
 
 
-@pytest.mark.parametrize('kind', ['conflict', 'dirty', 'standards', 'smoke', 'native', 'dependent'])
-def test_merge_smoke_standards_and_native_failures_hold(env, monkeypatch, kind):
+@pytest.mark.parametrize('kind', ['conflict', 'dirty', 'standards', 'smoke', 'dependent'])
+def test_merge_smoke_and_standards_failures_hold(env, monkeypatch, kind):
     r = env
     if kind == 'conflict':
         wt = awt.worktree_path(r.project, 'hm_worker_b')
@@ -228,8 +228,6 @@ def test_merge_smoke_standards_and_native_failures_hold(env, monkeypatch, kind):
         monkeypatch.setattr(dev_harness_landing, 'prepare', held)
     elif kind == 'smoke':
         monkeypatch.setattr(git, '_run_smoke', lambda *args: (False, 'broken test'))
-    elif kind == 'native':
-        state.agent_sessions['child'] = {'_spawned_by': 'hm_worker_a', 'status': 'running'}
     else:
         ws = r.wss[0] | {'dependencies': ['prerequisite']}
         hm._hm_save_workstream('roster1', 'ws1', ws)
