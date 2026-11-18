@@ -342,7 +342,7 @@ async function dispatchAgent(projectId) {
       pendingResumeProvider[projectId] = resumeProvider;
       pendingResumeMcSessionId[projectId] = resumeMcSessionId;
     }
-    input.value = task;  // restore the prompt we cleared above
+    window.mcSendRefusal.restoreComposer(input, task);  // restore the prompt we cleared above (FE14: also re-seeds textareaValues)
     if (typeof window.refreshAuthStatus === 'function') window.refreshAuthStatus();
     const banner = document.getElementById('auth-banner');
     if (banner) banner.classList.remove('hidden');

@@ -36,6 +36,28 @@ async function failDispatch(options) {
   });
 }
 
+// The first-run auth gate: no POST at all, the prompt is put back and a toast
+// tells the user to sign in (resume-preview.js, before the dispatch is built).
+const authGate = () => scenario(browser, {}, async ({ page, seen }) => {
+  await page.evaluate(pid => {
+    window.providerAuthKnownBad = () => true;
+    window.showToast = () => {};
+    agentConvNew[pid] = true; delete activeAgentTab[pid]; refreshModal();
+  }, pid);
+  const box = page.locator(`#agent-task-${pid}`);
+  await box.waitFor();
+  await box.fill(task);
+  await page.evaluate(pid => { dispatchAgent(pid); }, pid);
+  await page.waitForTimeout(300);
+  assert.equal(seen.dispatches || 0, 0, 'the auth gate stops the dispatch before any POST');
+  await page.evaluate(() => refreshModal());
+  await page.waitForTimeout(300);
+  assert.equal(await page.locator(`#agent-task-${pid}`).inputValue(), task,
+    'the task box kept the prompt after the auth gate and a rebuild');
+  assert.equal(await page.evaluate(pid => textareaValues[`agent-task-${pid}`], pid), task,
+    'textareaValues carries the restored prompt');
+});
+
 try {
   await t.step('dispatch refused ({ok:false}): the prompt survives the rebuild', async () => {
     await failDispatch({ dispatchReply: { ok: false, error: 'Could not start' } });
@@ -43,6 +65,7 @@ try {
   await t.step('dispatch request errors: the prompt survives the rebuild', async () => {
     await failDispatch({ dispatchNetworkError: true });
   });
+  await t.step('first-run auth gate: the prompt survives the rebuild', authGate);
 } finally {
   t.done();
   await browser.close();
