@@ -312,6 +312,7 @@ questions about scope/priorities/constraints BEFORE creating.
 | POST | `/api/hivemind/<hivemind_id>/intervene` | Inject a directive mid-run. **Human-only: agent and unattended callers get 403.** |
 | POST | `/api/hivemind/<hivemind_id>/findings/<fid>/review` | Review a finding. **Human-only: agent and unattended callers get 403.** |
 | POST | `/api/hivemind/<hivemind_id>/decisions/<did>/approve` | Approve a proposed decision. **Human-only: agent and unattended callers get 403.** |
+| POST | `/api/hivemind/<hivemind_id>/integration/release` | Release a `held` reviewed (roster) integration: the attempt's checkout, branch and state file are archived (nothing is deleted) and a fresh attempt starts. **Human-only: agent and unattended callers get 403.** 404 no attempt, 409 not held / reviewer not stopped / lock busy. |
 | GET | `/api/hivemind/<hivemind_id>/runs` | Run history for this hivemind. |
 
 Versioned roster runs (`config.roster_version == 1`) use serial reviewed
@@ -321,8 +322,10 @@ detail response's `integration` exposes `review_cycle_version`, `status`,
 `failed`, `unmerged` and hold `reason`. `awaiting_review` is provisional;
 `completed` means every actual merge has smoke and guarded exact-pass evidence.
 `held` stops later merges, preserving checkout and reports for Dave;
-`skipped` explicitly identifies non-git analysis-only runs. No new retry or
-candidate-nomination route was added. See `docs/HIVEMIND_INTEGRATION_REVIEW.md`
+a worker still in its turn or a busy landing lock is not a hold: the attempt
+stays `running` with `waiting_since` and is retried, and only becomes `held`
+after 15 minutes. A person clears a hold with `integration/release` (above).
+`skipped` explicitly identifies non-git analysis-only runs. No candidate-nomination route was added. See `docs/HIVEMIND_INTEGRATION_REVIEW.md`
 for recovery/ownership and `docs/HIVEMIND_REVIEW_ROUTES.md` for verdict HTTP.
 Legacy runs retain their batch integration/status semantics; dedicated review
 UI and native workflow support remain separate work.

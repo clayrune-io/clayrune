@@ -2084,6 +2084,11 @@ _bp_hivemind_review.wire(
 )
 app.register_blueprint(_bp_hivemind_review.bp)
 
+# OS33: the human-only release of a held reviewed integration.
+from mc.blueprints import hivemind_integration_routes as _bp_hivemind_integration  # noqa: E402
+
+app.register_blueprint(_bp_hivemind_integration.bp)
+
 # Inbound shims: the two startup call sites under __main__ keep their bare
 # names. atexit.register(_hivemind_orchestrator_stop.set) stays verbatim
 # further down (LIFO exit-hook ordering — the 1.8 lesson; the Event lives

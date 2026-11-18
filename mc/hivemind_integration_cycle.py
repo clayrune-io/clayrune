@@ -15,6 +15,7 @@ import threading
 from typing import Any, Iterator
 
 from mc import agent_worktree as awt, hivemind_integration as git
+from mc import hivemind_integration_wait as wait
 from mc import hivemind_reviewer as reviewer, hivemind_roster as roster, state
 from mc.atomic_json import write_json_atomic
 from mc.core import _log, now_iso
@@ -163,7 +164,11 @@ def _native_idle(owners: tuple[str, ...]) -> None:
         proc = session.get('proc')
         alive = bool(session.get('process_alive')) or (proc is not None and proc.poll() is None)
         allowed = {'completed', 'idle'} if sid in owners else {'completed'}
-        if alive or session.get('status') not in allowed:
+        if alive or session.get('status') == 'running':
+            # Still in its turn (OS33): a worker marks its workstream complete
+            # before it has finished writing its closing message.
+            raise wait.NotYet(f'worker/native child {sid} still active or unreconciled')
+        if session.get('status') not in allowed:
             raise ReviewRefused(409, f'worker/native child {sid} still active or unreconciled')
 
 
@@ -173,6 +178,7 @@ def _check(api: Any, hid: str, st: dict, wt: Path) -> tuple[dict, dict]:
     if [_snapshot(w) for w in current] != st['queue']:
         raise ReviewRefused(409, 'workstream attempt/brief/checks changed; integration held')
     _native_idle(_contributors(current))
+    wait.resume(st)
     ok, branch = git._git(wt, ['symbolic-ref', '--short', 'HEAD'], 15)
     if not ok or branch != st['branch']:
         raise ReviewRefused(409, 'integration checkout branch drift')
@@ -315,6 +321,7 @@ def advance(api: Any, hid: str) -> dict:
                             raise ReviewRefused(409, 'worker branch pin missing')
                         st['tips'][ws['id']] = _revision(Path(project['project_path']), branch + '^{commit}')
                     _native_idle(_contributors(rows))
+                    wait.resume(st)
                     wt.parent.mkdir(parents=True, exist_ok=True)
                     ok, detail = git._git(project['project_path'], ['worktree', 'add', '-b', st['branch'], str(wt), st['base_commit']], 120)
                     if not ok:
@@ -363,7 +370,8 @@ def advance(api: Any, hid: str) -> dict:
                             if fail:
                                 st['expected_head'] = fail.get('rolled_back_to', '')
                                 return _hold(api, hid, st, 'candidate smoke failed', dict(fail, ws_id=ws['id']))
-                            _check(api, hid, st, wt)
+                            # The fresh manifest: the synthesis can rewrite it while we smoke (OS33 d).
+                            manifest, project = _check(api, hid, st, wt)
                             clear_hold(project, ws['worktree_branch'])
                             ok, scope = git._git(wt, ['diff', '--name-only', candidate.pre_merge_sha, candidate.merged_sha], 15)
                             if not ok:
@@ -422,7 +430,19 @@ def advance(api: Any, hid: str) -> dict:
                 # Never remove a worktree here. Terminal, reconciled attempts
                 # unlink dependencies without traversing the shared target.
                 _unlink_dependencies(st)
-        except (StandardsHold, FreezeError, StoreError, LandingBusy) as exc:
+        except (wait.NotYet, LandingBusy) as exc:
+            # Ordinary timing (OS33): park the attempt and let the driver tick again.
+            if isinstance(exc, LandingBusy) or wait.may_wait(st):
+                first = 'waiting_since' not in st
+                if wait.park(st, str(exc) or 'landing lock busy'):
+                    if not st['expected_head']:
+                        st['tips'] = {}  # pinned again on the tick that gets through
+                    if first:
+                        _save(api, hid, st)
+                    return st
+            _log(f'[hivemind-integration-cycle] {hid} held after waiting: {exc}', flush=True)
+            return _hold(api, hid, st, str(exc) or 'landing lock busy past the wait limit')
+        except (StandardsHold, FreezeError, StoreError) as exc:
             branch = st['queue'][st['cursor']].get('worktree_branch', '') if st['cursor'] < len(st['queue']) else ''
             mark_hold(project, branch, 'awaiting_standards')
             return _hold(api, hid, st, 'native standards held', {'kind': 'standards', **hold_projection(exc)})
