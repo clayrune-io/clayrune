@@ -377,8 +377,10 @@ async def signin_page(
         # inline script or a third-party origin simply does not execute.
         "Content-Security-Policy": "; ".join([
             "default-src 'none'",
-            f"script-src 'nonce-{nonce}' https://www.gstatic.com",
-            "connect-src https://identitytoolkit.googleapis.com "
+            # Firebase popup auth dynamically loads gapi; our completion POST
+            # to /v1/session/start also needs this page's own origin.
+            f"script-src 'nonce-{nonce}' https://www.gstatic.com https://apis.google.com",
+            "connect-src 'self' https://identitytoolkit.googleapis.com "
             "https://securetoken.googleapis.com https://*.googleapis.com",
             "style-src 'self' 'unsafe-inline'",
             "img-src 'self' data:",

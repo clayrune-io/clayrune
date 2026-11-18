@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-18] - Control plane: sign-in CSP permits the requests needed to finish Google sign-in (8cdc4344)
+
+- The `/v1/signin` policy blocked its own `/v1/session/start` fetch and Firebase's dynamically loaded `apis.google.com` popup script. It now allows `'self'` in `connect-src` and `https://apis.google.com` in `script-src`, retaining the per-response script nonce and existing restrictions. The `/v1/connect` policy from `2e47217c` already allows both sources and needs no change. Four new header regression cases cover both served pages; the two sign-in cases fail before this fix. No control-plane deployment is included.
+
 ## [2026-11-17] - Control plane: revoking one device no longer destroys the user's other device on the same name (MC-1210)
 
 - Device revoke ran its orphan sweep with no excludes, so a second device row of the same user on the same hostname lost its tunnel, DNS record and Firestore row (the MB22 fix kept the claim, username and sessions but not the infrastructure). Revoke now reads the user's other devices on the hostname first and skips their tunnel, DNS record, Access app and row, both in the by-id deletes and in `_force_cleanup_for_hostname` (new `survivors` argument; enrollment's collision-recovery call is unchanged). A DNS record or tunnel id that both rows share is kept. Other users' stale rows are still swept. If the read for other devices fails, revoke fails closed: no hostname sweep and the username claim is kept (its own by-id deletes and its own row still go). 5 new tests in `control_plane/tests/test_revoke_survivor_device.py` (3 failed before the fix). Reaches users only when the control plane is next deployed.
