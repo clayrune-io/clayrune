@@ -385,4 +385,130 @@ def test_restart_child_takes_over_an_inherited_log_handle(tmp_path, via_redirect
 def test_boot_installs_rotation_after_the_port_check_and_before_the_exec_token():
     src = (REPO / 'server.py').read_text(encoding='utf-8')
     boot = src[src.index('def boot('):]
-    assert boot.index("_boot_phase('port-conflict wait'")         < boot.index('_server_log_rotation.install(')         < boot.index('ensure_exec_token(PORT)')
+    assert boot.index("_boot_phase('port-conflict wait'")         < boot.index('_server_log_rotation.install_std_logs(')         < boot.index('ensure_exec_token(PORT)')
+
+
+# -- install_std_logs(): whatever file under the log dir stdout/stderr are -----
+
+_STD_CHILD = textwrap.dedent('''
+    import os, sys, time
+    sys.path.insert(0, {repo!r})
+    from mc import server_log_rotation as slr
+    slr.RETRY_SECONDS = 0.1
+    made = slr.install_std_logs({logdir!r}, max_bytes=20000, generations=2)
+    print('installed', len(made), flush=True)
+    while not os.path.exists({go!r}):          # the launcher has let go
+        time.sleep(0.05)
+    time.sleep(0.2)
+    for i in range(400):
+        print('out line %04d ' % i + 'x' * 80)
+        sys.stderr.write('err line %04d ' % i + 'y' * 80 + '\\n')
+        if i == 200:
+            os.write(1, b'RAW-FD1\\n')
+            os.write(2, b'RAW-FD2\\n')
+    print('done', flush=True)
+''')
+
+
+def _run_std_child(tmp_path, out_name, err_name, via_redirector=False,
+                   marker='installed '):
+    """Run the child with stdout/stderr redirected to `out_name`/`err_name`
+    (paths relative to tmp_path), the way tools/clayrune-autostart.ps1's
+    Start-Process -RedirectStandardOutput/-RedirectStandardError does; the
+    launcher's handles stay open until the child reports in. Returns the log
+    dir."""
+    logdir = tmp_path / 'logs'
+    logdir.mkdir(exist_ok=True)
+    go = tmp_path / 'go'
+    script = tmp_path / 'child.py'
+    script.write_text(_STD_CHILD.format(repo=str(REPO), logdir=str(logdir),
+                                        go=str(go)), encoding='utf-8')
+    out_p, err_p = tmp_path / out_name, tmp_path / err_name
+    h_out = open(out_p, 'ab')
+    h_err = h_out if err_p == out_p else open(err_p, 'ab')
+    try:
+        argv = [sys.executable, str(script)]
+        if via_redirector:
+            argv = [sys.executable, '-c', _REDIRECTOR, str(script)]
+        p = subprocess.Popen(argv, stdout=h_out, stderr=h_err)
+        deadline = time.time() + 30
+        while marker not in out_p.read_bytes().decode('utf-8', 'replace'):
+            assert time.time() < deadline and p.poll() is None
+            time.sleep(0.05)
+        h_out.close()
+        h_err.close()                            # the launcher exits
+        go.write_text('1')
+        assert p.wait(timeout=60) == 0
+    finally:
+        h_out.close()
+        h_err.close()
+    return logdir
+
+
+def _names(d):
+    return {q.name: _read(q) for q in Path(d).iterdir()}
+
+
+def test_install_std_logs_is_a_no_op_when_stdout_is_not_under_the_dir(tmp_path):
+    before = (sys.stdout, sys.stderr)
+    assert slr.install_std_logs(tmp_path) == []
+    assert (sys.stdout, sys.stderr) == before
+    assert list(tmp_path.iterdir()) == []         # did not create anything either
+    assert slr.install_std_logs(tmp_path / 'no-such-dir') == []
+
+
+@pytest.mark.parametrize('via_redirector', [False, True],
+                         ids=['direct', 'via-venv-redirector'])
+def test_autostart_style_out_and_err_files_are_each_bounded(tmp_path, via_redirector):
+    """tools/clayrune-autostart.ps1 sends stdout and stderr to two DIFFERENT
+    files under data/logs, truncated only at each launch. Both must be taken
+    over and rotated, each on its own, and nothing may be lost."""
+    (tmp_path / 'logs').mkdir()
+    logdir = _run_std_child(tmp_path,
+                            'logs/clayrune-autostart-server.log',
+                            'logs/clayrune-autostart-server.err.log',
+                            via_redirector=via_redirector)
+    files = _names(logdir)
+    out = {k: v for k, v in files.items() if '.err.' not in k}
+    err = {k: v for k, v in files.items() if '.err.' in k}
+    assert 'clayrune-autostart-server.log.1' in out                   # stdout rotated
+    assert 'clayrune-autostart-server.err.log.1' in err               # stderr rotated
+    assert set(out) <= {'clayrune-autostart-server.log',
+                        'clayrune-autostart-server.log.1',
+                        'clayrune-autostart-server.log.2'}
+    assert set(err) <= {'clayrune-autostart-server.err.log',
+                        'clayrune-autostart-server.err.log.1',
+                        'clayrune-autostart-server.err.log.2'}
+    for k, v in files.items():
+        assert len(v.encode()) < 20000 + 400, k                       # each file bounded
+    out_text, err_text = ''.join(out.values()), ''.join(err.values())
+    for m in ('installed 2', 'RAW-FD1', 'done'):
+        assert m in out_text, m
+    assert 'RAW-FD2' in err_text
+    assert 'err line' not in out_text and 'out line' not in err_text  # not mixed up
+
+
+def test_one_file_behind_both_fds_gets_one_log(tmp_path):
+    (tmp_path / 'logs').mkdir()
+    logdir = _run_std_child(tmp_path, 'logs/clayrune.log', 'logs/clayrune.log',
+                            marker='installed 1')
+    files = _names(logdir)
+    assert 'clayrune.log.1' in files                                  # it rotated
+    combined = ''.join(files.values())
+    # 'installed 1' (the marker _run_std_child waited for) has rotated out by now
+    for m in ('out line 0399', 'err line 0399', 'RAW-FD1', 'RAW-FD2'):
+        assert m in combined, m
+
+
+def test_a_file_outside_the_log_dir_is_left_alone(tmp_path):
+    """Only files directly under the log dir are bounded: stdout on a file
+    elsewhere is never taken over, even when it is far over the bound."""
+    (tmp_path / 'logs').mkdir()
+    (tmp_path / 'elsewhere.log').write_bytes(b'before\n' * 4000)      # 28000 > bound
+    logdir = _run_std_child(tmp_path, 'elsewhere.log', 'elsewhere.log',
+                            marker='installed 0')
+    assert list(logdir.iterdir()) == []
+    assert sorted(q.name for q in tmp_path.iterdir()) == [
+        'child.py', 'elsewhere.log', 'go', 'logs']                    # no .1, no .pre-cap
+    text = _read(tmp_path / 'elsewhere.log')
+    assert text.startswith('before\n' * 4000) and 'done' in text      # grew unbounded

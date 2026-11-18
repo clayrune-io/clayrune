@@ -3675,11 +3675,13 @@ def boot(check_port=True):
     _register_claude_runtime_hooks()
     if check_port:
         _boot_phase('port-conflict wait', _check_port_conflict)
-    # MC-1213: bound data/logs/clayrune.log. After the port check/bind, so a
-    # second instance that is about to exit never takes the file over; a no-op
-    # unless stdout/stderr already ARE that file (restart child, start.bat).
+    # MC-1213: bound whichever file(s) under data/logs stdout/stderr already
+    # are: clayrune.log (restart child, start.bat) or the two
+    # clayrune-autostart-server*.log files (tools/clayrune-autostart.ps1). After
+    # the port check/bind, so a second instance that is about to exit never
+    # takes a file over; a no-op when they are not files in that directory.
     from mc import server_log_rotation as _server_log_rotation
-    _server_log_rotation.install(DATA_DIR.parent / 'logs' / 'clayrune.log')
+    _server_log_rotation.install_std_logs(DATA_DIR.parent / 'logs')
     # MC-979/MC-981: mint the per-boot /api/secrets/exec token NOW, not lazily
     # on first request — a locked-vault CLI's with-secret.py fallback reads
     # this file to build its very first request to that route, so the file

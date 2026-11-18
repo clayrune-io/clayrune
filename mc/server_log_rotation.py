@@ -46,9 +46,19 @@ disk) is announced once, the process keeps appending past the
 bound, and the rotation is retried after `RETRY_SECONDS`. Losing the bound for a
 while is cheaper than losing the log.
 
-`install()` does nothing unless fd 1 or fd 2 already IS the log file, so a
-foreground console run, the test suite and the autostart launcher (which writes
-its own files) are untouched.
+WHICH FILES. `install_std_logs(log_dir)` is what `boot()` calls. It finds the
+file behind fd 1 and the file behind fd 2 by identity (device + inode against
+the regular files directly under `log_dir`, never by name) and bounds each one.
+That covers `clayrune.log` (restart child, start.bat) and the two files
+`tools/clayrune-autostart.ps1` redirects to, `clayrune-autostart-server.log` and
+`clayrune-autostart-server.err.log`, which are cleared only at each launch and
+used to grow for the weeks a server stays up. Two different files get two
+independent `RotatingLog`s; one file behind both fds gets one. Nothing outside
+`log_dir` is looked at, opened or renamed.
+
+`install()` / `install_std_logs()` do nothing unless fd 1 or fd 2 already IS a
+file under the log dir, so a foreground console run and the test suite are
+untouched.
 
 Leaf module: imports nothing from `mc`.
 """
@@ -57,6 +67,7 @@ from __future__ import annotations
 import io as _io
 import os as _os
 import shutil as _shutil
+import stat as _stat
 import sys as _sys
 import threading as _threading
 import time as _time
@@ -72,7 +83,7 @@ GENERATIONS = 4
 # After a failed rotation, do not try again for this long.
 RETRY_SECONDS = 30.0
 
-_installed = None  # the RotatingLog `install()` created, kept alive for the process
+_installed: list = []  # the RotatingLogs `install*()` created, kept alive for the process
 
 
 def _fmt(size: int) -> str:
@@ -371,37 +382,95 @@ def _is_same_file(fd: int, path: _Path) -> bool:
     return a.st_ino != 0 and (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
 
 
+def _file_behind(fd: int, log_dir: _Path):
+    """The regular file directly under `log_dir` that `fd` is open on, or None.
+
+    Matched by identity, not by name: the launcher chose the name, we only know
+    the directory. Only `log_dir` itself is listed."""
+    try:
+        if not _stat.S_ISREG(_os.fstat(fd).st_mode):
+            return None
+        with _os.scandir(log_dir) as it:
+            names = sorted(e.name for e in it)
+    except OSError:
+        return None
+    for name in names:
+        cand = log_dir / name
+        if _is_same_file(fd, cand):
+            return cand
+    return None
+
+
+def _flush_std() -> None:
+    for stream in (_sys.stdout, _sys.stderr):
+        try:
+            stream.flush()
+        except Exception:
+            pass
+
+
+def _take_over(path: _Path, std: list, max_bytes: int, generations: int):
+    """Point `std` (fd numbers that are already `path`) at a RotatingLog for it
+    and swap the matching `sys.stdout`/`sys.stderr`. Returns the RotatingLog, or
+    None on failure (output is left on the file, never on NUL)."""
+    rl = RotatingLog(path, max_bytes, generations)
+    try:
+        rl.open(std_fds=std)
+    except Exception:
+        # Output must not stay on NUL because the takeover failed halfway.
+        try:
+            rl._open_active()
+        except Exception:
+            pass
+        return None
+    if 1 in std:
+        _sys.stdout = LogStream(rl, 1)
+    if 2 in std:
+        _sys.stderr = LogStream(rl, 2)
+    _installed.append(rl)
+    return rl
+
+
+def install_std_logs(log_dir, max_bytes: int = MAX_BYTES,
+                     generations: int = GENERATIONS) -> list:
+    """Bound whichever file(s) under `log_dir` stdout/stderr are redirected to.
+
+    Returns the `RotatingLog`s created (empty when neither fd is a file directly
+    under `log_dir`). Never raises."""
+    try:
+        directory = _Path(log_dir)
+        groups: dict = {}                       # file path -> [fd numbers]
+        for fd in (1, 2):
+            found = _file_behind(fd, directory)
+            if found is not None:
+                groups.setdefault(found, []).append(fd)
+        if not groups:
+            return []
+        _flush_std()
+        made = []
+        for path, std in groups.items():
+            try:
+                rl = _take_over(path, std, max_bytes, generations)
+            except Exception:
+                rl = None
+            if rl is not None:
+                made.append(rl)
+        return made
+    except Exception:
+        return []
+
+
 def install(log_path, max_bytes: int = MAX_BYTES, generations: int = GENERATIONS):
-    """Take over stdout/stderr IF they are the log file; else do nothing.
+    """Take over stdout/stderr IF they are the one file `log_path`; else do nothing.
 
     Returns the `RotatingLog`, or None when nothing was taken over. Never raises.
     """
-    global _installed
     try:
         path = _Path(log_path)
         std = [fd for fd in (1, 2) if _is_same_file(fd, path)]
         if not std:
             return None
-        for stream in (_sys.stdout, _sys.stderr):
-            try:
-                stream.flush()
-            except Exception:
-                pass
-        rl = RotatingLog(path, max_bytes, generations)
-        try:
-            rl.open(std_fds=std)
-        except Exception:
-            # Output must not stay on NUL because the takeover failed halfway.
-            try:
-                rl._open_active()
-            except Exception:
-                pass
-            raise
-        if 1 in std:
-            _sys.stdout = LogStream(rl, 1)
-        if 2 in std:
-            _sys.stderr = LogStream(rl, 2)
-        _installed = rl
-        return rl
+        _flush_std()
+        return _take_over(path, std, max_bytes, generations)
     except Exception:
         return None
