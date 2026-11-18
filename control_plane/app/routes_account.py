@@ -42,7 +42,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Header, HTTPException, Request
 
 from . import cloudflare, firestore as fs, sessions as _sessions
-from .shared_name_devices import other_device_holds_hostname
+from .shared_name_devices import other_devices_holding_hostname
 from .tunnel_names import is_tunnel_of, new_tunnel_name
 from .username_claim import forget_released_username
 
@@ -293,25 +293,39 @@ async def revoke_device(
             "request_id": rid,
         })
 
+    # Other devices of this user on the same hostname. Read before any delete (force
+    # cleanup removes every device row for the hostname). Their tunnel, DNS record
+    # and Access app are not ours to delete (MC-1210).
+    hostname = device_row.get("hostname_claim", "")
+    username = device_row.get("hostname_claim", "").split(".")[0]
+    found = other_devices_holding_hostname(
+        device_row.get("user_id", ""), hostname, exclude_device_id=device_id)
+    # None = the read failed. Fail closed: no hostname sweep, keep the username claim.
+    read_failed = found is None
+    survivors = found or []
+    name_still_in_use = read_failed or bool(survivors)
+    kept = {k: {s.get(k) for s in survivors} - {None, ""}
+            for k in ("cf_access_app_id", "cf_dns_record_id", "cf_tunnel_uuid")}
+
     # Delete CF resources by stored ID (best-effort; force_cleanup is the catch-all)
     cf = _get_cf_client()
     deleted = {"access_app": False, "dns_record": False, "tunnel": False}
 
-    if app_id := device_row.get("cf_access_app_id"):
+    if (app_id := device_row.get("cf_access_app_id")) and app_id not in kept["cf_access_app_id"]:
         try:
             await cf.delete_access_app(app_id)
             deleted["access_app"] = True
         except Exception as e:
             log.warning("revoke: failed deleting access app %s: %s", app_id, e)
 
-    if rec_id := device_row.get("cf_dns_record_id"):
+    if (rec_id := device_row.get("cf_dns_record_id")) and rec_id not in kept["cf_dns_record_id"]:
         try:
             await cf.delete_dns_record(rec_id)
             deleted["dns_record"] = True
         except Exception as e:
             log.warning("revoke: failed deleting dns record %s: %s", rec_id, e)
 
-    if tunnel_id := device_row.get("cf_tunnel_uuid"):
+    if (tunnel_id := device_row.get("cf_tunnel_uuid")) and tunnel_id not in kept["cf_tunnel_uuid"]:
         try:
             await cf.delete_tunnel(tunnel_id)
             deleted["tunnel"] = True
@@ -319,14 +333,13 @@ async def revoke_device(
             log.warning("revoke: failed deleting tunnel %s: %s", tunnel_id, e)
 
     # Belt-and-suspenders: also run force_cleanup for any orphans missed
-    hostname = device_row.get("hostname_claim", "")
-    username = device_row.get("hostname_claim", "").split(".")[0]
-    # Read before force cleanup, which deletes every device row for the hostname.
-    name_still_in_use = other_device_holds_hostname(
-        device_row.get("user_id", ""), hostname, exclude_device_id=device_id)
-    if hostname and username:
+    if read_failed:
+        log.warning("revoke: skipping hostname sweep for %s and keeping username %s "
+                    "(could not read other devices)", hostname, username)
+    elif hostname and username:
         try:
-            await _force_cleanup_for_hostname(hostname=hostname, username=username)
+            await _force_cleanup_for_hostname(
+                hostname=hostname, username=username, survivors=survivors)
         except Exception as e:
             log.warning("revoke: force_cleanup raised: %s", e)
 
@@ -1186,6 +1199,7 @@ async def _force_cleanup_for_hostname(
     exclude_tunnel_id: Optional[str] = None,
     exclude_dns_record_id: Optional[str] = None,
     exclude_access_app_id: Optional[str] = None,
+    survivors: Optional[list[dict]] = None,
 ) -> dict:
     """Delete any pre-existing CF resources + Firestore device rows for `hostname`.
 
@@ -1200,10 +1214,16 @@ async def _force_cleanup_for_hostname(
     `exclude_*` parameters skip the matching resource — used during enrollment
     collision-recovery so we don't delete the resources we just created.
 
+    `survivors` are device rows (carrying `device_id`) that stay enrolled: their
+    tunnel, DNS record, Access app and Firestore row are all skipped. Revoke
+    passes the user's other devices on the same hostname (MC-1210).
+
     Returns a summary dict of what was deleted, for logging.
     """
     cf = _get_cf_client()
     summary = {"access_apps": 0, "dns_records": 0, "tunnels": 0, "devices": 0}
+    kept = {k: {s.get(k) for s in (survivors or [])} - {None, ""}
+            for k in ("cf_access_app_id", "cf_dns_record_id", "cf_tunnel_uuid", "device_id")}
 
     # 1. Access apps gating this hostname
     try:
@@ -1214,6 +1234,8 @@ async def _force_cleanup_for_hostname(
             if app.get("domain", "").lower() != hostname.lower():
                 continue
             if exclude_access_app_id and app["id"] == exclude_access_app_id:
+                continue
+            if app["id"] in kept["cf_access_app_id"]:
                 continue
             try:
                 await cf.delete_access_app(app["id"])
@@ -1231,6 +1253,8 @@ async def _force_cleanup_for_hostname(
                                  params={"name": hostname})
         for r in (records or []):
             if exclude_dns_record_id and r["id"] == exclude_dns_record_id:
+                continue
+            if r["id"] in kept["cf_dns_record_id"]:
                 continue
             try:
                 await cf.delete_dns_record(r["id"])
@@ -1254,6 +1278,8 @@ async def _force_cleanup_for_hostname(
                 continue
             if exclude_tunnel_id and t["id"] == exclude_tunnel_id:
                 continue
+            if t["id"] in kept["cf_tunnel_uuid"]:
+                continue
             try:
                 await cf.delete_tunnel(t["id"])
                 summary["tunnels"] += 1
@@ -1269,6 +1295,8 @@ async def _force_cleanup_for_hostname(
         docs = list(db.collection(fs.COL_DEVICES)
                       .where("hostname_claim", "==", hostname).stream())
         for d in docs:
+            if d.id in kept["device_id"]:
+                continue
             try:
                 db.collection(fs.COL_DEVICES).document(d.id).delete()
                 summary["devices"] += 1

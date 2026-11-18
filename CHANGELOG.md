@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Control plane: revoking one device no longer destroys the user's other device on the same name (MC-1210)
+
+- Device revoke ran its orphan sweep with no excludes, so a second device row of the same user on the same hostname lost its tunnel, DNS record and Firestore row (the MB22 fix kept the claim, username and sessions but not the infrastructure). Revoke now reads the user's other devices on the hostname first and skips their tunnel, DNS record, Access app and row, both in the by-id deletes and in `_force_cleanup_for_hostname` (new `survivors` argument; enrollment's collision-recovery call is unchanged). A DNS record or tunnel id that both rows share is kept. Other users' stale rows are still swept. If the read for other devices fails, revoke fails closed: no hostname sweep and the username claim is kept (its own by-id deletes and its own row still go). 5 new tests in `control_plane/tests/test_revoke_survivor_device.py` (3 failed before the fix). Reaches users only when the control plane is next deployed.
+
 ## [2026-11-17] - Child reports: pre-hand-off refusals retry, receipts match on the event id, an inherited flag is not taken over (MC-1216 follow-up)
 
 - A report refused before anything reached the parent ("parent durable outcome is ambiguous", parent status `error`/`stopped`/`running` at revive time) was filed `uncertain`, which is never retried, and then hidden: no handoff boundary, so the chat showed nothing (`ed1eb670258f:turn:3`). It is now a `DeliveryNotHandedOff`: the existing bounded backoff retries it, and when the retries run out the parent's chat shows "report from X was not delivered" with a Retry that cannot duplicate it. A parked row the parent was provably never handed (that cause, or an expired claim) is no longer hidden for lacking a boundary.
