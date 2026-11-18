@@ -1,8 +1,9 @@
 # Clayrune — Changelog
 
-## [2026-11-17] - Agent routes: Hivemind orchestrator exit hook (MC-1179 R45)
+## [2026-11-17] - Agent routes: Hivemind orchestrator exit hook, delivery drain cost (MC-1179 R45, R51)
 
 - Hivemind orchestrator (R45): the orchestrator is dispatched as a Mode A process again, so its exit hook runs and frees its slot. With `use_streaming_agent` on (the default) it was launched in Mode B, whose session record never stored the callbacks, so `_on_exit` never ran, the id stayed in `_hivemind_orchestrating`, and every later `_spawn_orchestrator` call for that hivemind returned None (decompose, synthesize and replan stalled until a restart). `server._claude_dispatch_hook` now honours the runtime seam's `mode='A'` (new `force_mode_a` argument to `_dispatch_agent_internal`), and the Mode B session record stores `_runtime_callbacks` and `housekeeping` as the Mode A record already did. Chats and workers are unchanged: no other caller passes callbacks to a Claude Mode B session, and Hivemind workers already ran Mode A.
+- Delegation delivery (R51): the 5-second drain no longer re-validates every completion ever recorded. `recover_sources()` opened two SQLite connections and took the write lock for each row of `completion_sources` (a table nothing prunes) to find the few whose outbox row was missing, normally none. It now selects only sources with no outbox row, in one query, and rebuilds those as before. Measured on a store built in a temp dir with 3,000 completions of about 5 KB each: 8.2 to 9.1 s per call before, 11 to 14 ms after, the same one missing row still recovered. A revoked source is still skipped, and an already-delivered row is left alone. Crash recovery of a completion recorded but not enqueued is unchanged (it still runs on every drain).
 
 ## [2026-11-17] - Hivemind: dead workers, resume, held integration, undelivered messages (MC-1179 OS25, OS24, OS33, OS26)
 
