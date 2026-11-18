@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-18] - Workflow canvas: connection drags start at the exact centre of unconnected port dots
+
+- Decorative stop stubs now ignore pointer events, so their dashed line and cap cannot intercept a connection drag. This fixes outcome, otherwise and approval-option ports on the canvas and in the inspector without changing their appearance.
+- `tools/smoke/workflow-port-centre.mjs` covers real mouse drags from the exact centre of five unconnected port types. The label-rename smoke also uses centre presses instead of its former 6px offset workaround (backlog 8a610b84).
+
 ## [2026-11-17] - Control plane: revoking one device no longer destroys the user's other device on the same name (MC-1210)
 
 - Device revoke ran its orphan sweep with no excludes, so a second device row of the same user on the same hostname lost its tunnel, DNS record and Firestore row (the MB22 fix kept the claim, username and sessions but not the infrastructure). Revoke now reads the user's other devices on the hostname first and skips their tunnel, DNS record, Access app and row, both in the by-id deletes and in `_force_cleanup_for_hostname` (new `survivors` argument; enrollment's collision-recovery call is unchanged). A DNS record or tunnel id that both rows share is kept. Other users' stale rows are still swept. If the read for other devices fails, revoke fails closed: no hostname sweep and the username claim is kept (its own by-id deletes and its own row still go). 5 new tests in `control_plane/tests/test_revoke_survivor_device.py` (3 failed before the fix). Reaches users only when the control plane is next deployed.

@@ -61,8 +61,8 @@ await h.check('typing a label then dragging from the row\'s port dot wires the t
   await pill(1).fill('approved');
   const dot = await page.locator('#wfb-inspector .wfb-vocab-row .wfb-port-out').first().boundingBox();
   const target = await page.locator('.wfb-node[data-name="b"]').boundingBox();
-  // Grab 6px above centre: the unconnected-port stub is a 2px line across the dot's middle.
-  await page.mouse.move(dot.x + dot.width / 2, dot.y + dot.height / 2 - 6);
+  // Exact centre: the decorative unconnected-port stub must not capture the press.
+  await page.mouse.move(dot.x + dot.width / 2, dot.y + dot.height / 2);
   await page.mouse.down();
   await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 12 });
   await page.mouse.up();
@@ -121,7 +121,7 @@ await h.check('an emptied unwired pill: a drag from its port dot makes no edge a
   await pill(1).fill('');
   const dot = await page.locator('#wfb-inspector .wfb-vocab-row .wfb-port-out').first().boundingBox();
   const target = await page.locator('.wfb-node[data-name="b"]').boundingBox();
-  await page.mouse.move(dot.x + dot.width / 2, dot.y + dot.height / 2 - 6);
+  await page.mouse.move(dot.x + dot.width / 2, dot.y + dot.height / 2);
   await page.mouse.down();
   await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 12 });
   await page.mouse.up();
