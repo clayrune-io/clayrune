@@ -6,6 +6,7 @@ import { hideSkillAnnouncement } from './skill-announcement.js';
 import { deferChatRefresh } from './chat-selection.js';
 import { agentTimeAttrs, agentTimeTagsHTML, stampAgentNarration } from './agent-time-tag.js';
 import './send-timeout.js';
+import './send-refusal.js';
 
 // Tag agent-bound POST bodies with client="mobile" when the viewport is
 // phone-sized. The backend then decides — based on mobile_brief_replies_enabled
@@ -5877,7 +5878,7 @@ async function sendFollowup(projectId, sessionId, sendMode) {
           el.appendChild(card);
         }
         const inp = document.getElementById(`agent-followup-${sessionId}`);
-        if (inp && !inp.value && !delivered) inp.value = message;
+        if (inp && !inp.value && !delivered) window.mcSendRefusal.restoreComposer(inp, message);
         delete _sendInFlight[sessionId];
         delete _preSendStatus[sessionId];
         return;
@@ -6003,7 +6004,7 @@ async function sendFollowup(projectId, sessionId, sendMode) {
     // (turn_start never arrived). If turn_start DID arrive, the agent received
     // the message and is/was running — restoring would show stale text that the
     // user already sent, which is the "text jumps back" bug.
-    if (inp && !inp.value && !_turnStartAcked[sessionId] && !delivered) inp.value = message;
+    if (inp && !inp.value && !_turnStartAcked[sessionId] && !delivered) window.mcSendRefusal.restoreComposer(inp, message);
     if (!delivered) showToast(aborted
       ? 'Send timed out — network may be paused. Try again.'
       : `Send failed: ${e && e.message ? e.message : 'network error'}`, 4500);

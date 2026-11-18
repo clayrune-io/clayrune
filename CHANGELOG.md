@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Chat: refused sends, restored messages, catch-up (MC-1179 CV2, FE14, FE1)
+
+- Composer (FE14): a message put back after a failed send (network error, timeout, allowance block) is no longer erased by the next modal rebuild. `sendFollowup` removes the composer's `textareaValues` entry before the POST and restored the text with a plain assignment, which writes no entry; the rebuild treats the cache as the source of truth and blanked the box within seconds. The restore now goes through `mcSendRefusal.restoreComposer` (new `static/js/send-refusal.js`), which writes the cache and refreshes the Send/mic slot. Smoke: `tools/smoke/send-restore-survives-rebuild.mjs` (shared fixture `tools/smoke/_send-harness.mjs`).
+
 ## [2026-11-17] - Desk: a failed clip no longer strands its paid siblings (MC-1179 DK6)
 
 - Desk video render: `poll_render` marked the render `failed` as soon as one clip failed, even while another clip was still queued or rendering. A `failed` render is never polled again, so that clip was paid for, never downloaded and kept its cost against the campaign budget. The render now stays `rendering` until every clip it submitted is `ready` or `failed`, so finishing siblings are downloaded by the polls that follow; it then settles `failed` (`clip_failed`) and the message adds how many clips finished and are saved in the Material library (`1 of 2 clips finished ...`). The progress count (`1/2 clips`) already showed the partial result; no new state was added. A render the old code already settled `failed` with a clip in flight is not picked up (see the report). Tests: new `test_a_failed_clip_does_not_strand_a_sibling_still_rendering` in `tests/test_desk_engines.py`.
