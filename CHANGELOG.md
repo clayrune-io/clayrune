@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Control plane: revoking one device no longer destroys the user's other device on the same name (MC-1210)
+
+- Device revoke ran its orphan sweep with no excludes, so a second device row of the same user on the same hostname lost its tunnel, DNS record and Firestore row (the MB22 fix kept the claim, username and sessions but not the infrastructure). Revoke now reads the user's other devices on the hostname first and skips their tunnel, DNS record, Access app and row, both in the by-id deletes and in `_force_cleanup_for_hostname` (new `survivors` argument; enrollment's collision-recovery call is unchanged). A DNS record or tunnel id that both rows share is kept. Other users' stale rows are still swept. 4 new tests in `control_plane/tests/test_revoke_survivor_device.py` (2 failed before the fix). Reaches users only when the control plane is next deployed.
+
 ## [2026-11-17] - Child reports: a slow stdin write no longer leaves the parent stuck "running" (MC-1216)
 
 - A durable handoff waits 10 s for its stdin write to land. When a write landed after that wait (measured: 12 s, Dave's chat, 18:31), `_stdin_write_uncertain` was set and never cleared, although the outcome was by then known. Every later durable follow-up into that chat set the parent `running`, then refused to write. The parent sat `running` with nothing driving it (18:37 to the 18:52 restart), the restart endpoint listed it as active, and three child reports deferred as "parent is busy".
