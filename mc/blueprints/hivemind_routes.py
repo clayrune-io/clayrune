@@ -52,6 +52,8 @@ import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 import mc.agent_worktree as _agent_worktree
 import mc.hivemind_integration as _hm_integration
 import mc.hivemind_integration_cycle as _hm_integration_cycle
+import mc.hivemind_escalation_push as _hm_escalation_push
+import mc.hivemind_user_directives as _hm_user_directives
 import mc.hivemind_lineage as _hm_lineage
 import mc.hivemind_ids as _hm_ids
 import mc.hivemind_roster as _hm_roster
@@ -1377,6 +1379,7 @@ def _hm_dispatch_orchestrator_claimed(hivemind_id, task_type, extra_context=''):
         f"CURRENT WORKSTREAMS:\n{ws_summary}\n\n"
         f"KNOWLEDGE BASE SUMMARY:\n{synthesis[:2000] if synthesis else '(empty)'}\n\n"
         f"RECENT DECISIONS:\n{decisions_text}\n\n"
+        f"{_hm_user_directives.block(sys.modules[__name__], hivemind_id)}"  # OS26 a
         f"{task_prompt}"
     )
 
@@ -1782,6 +1785,7 @@ def hivemind_escalate(hivemind_id):
         'message': msg['content'],
         'escalation_id': msg['id'],
     })
+    _hm_escalation_push.notify(sys.modules[__name__], hivemind_id, manifest, msg)  # OS26 e
     return jsonify({'ok': True, 'escalation': msg})
 
 

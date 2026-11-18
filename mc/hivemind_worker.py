@@ -453,6 +453,8 @@ def build_worker_context(api: Any, hivemind_id: str, ws_id: str, *, universal: b
         f'- Ask a question: curl -s -X POST http://localhost:{port}/api/hivemind/{hivemind_id}/bus/post '
         f'-H "Content-Type: application/json" '
         f"""-d '{{"from":"{ws_id}","type":"question","to":"ws_xxx","content":"..."}}'\n"""
+        f'- Check for messages from the person running this hivemind (do it between steps): '
+        f'curl -s http://localhost:{port}/api/hivemind/{hivemind_id}/bus/poll/{ws_id}\n'
         f'- Report a blocker: curl -s -X POST http://localhost:{port}/api/hivemind/{hivemind_id}/escalate '
         f'-H "Content-Type: application/json" '
         f"""-d '{{"from":"{ws_id}","content":"..."}}'\n"""

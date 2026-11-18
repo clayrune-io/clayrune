@@ -371,7 +371,7 @@ function buildHmOverviewHTML(hivemindId, manifest, workstreams, fullData) {
       <div style="font-size:13px;font-weight:500;margin-top:16px;margin-bottom:8px">Open Questions</div>
       ${openQ.map(q => `<div style="font-size:12px;padding:6px 8px;margin-bottom:4px;border:1px solid var(--border);border-radius:4px;display:flex;align-items:flex-start;gap:8px">
         <span style="flex:1;color:var(--text-faint);line-height:1.4">${esc(q.question || '')}</span>
-        <button onclick="respondToQuestion('${esc(hivemindId)}',this)" data-question="${esc(q.question || '')}" data-question-id="${esc(q.id || '')}"
+        <button onclick="respondToQuestion('${esc(hivemindId)}',this)" data-question="${esc(q.question || '')}" data-question-id="${esc(q.id || '')}" data-workstream="${esc(q.workstream || '')}"
           style="background:var(--accent);border:none;color:#fff;padding:3px 8px;border-radius:3px;cursor:pointer;font-size:11px;white-space:nowrap;flex-shrink:0">Respond</button>
       </div>`).join('')}
     ` : ''}
@@ -599,13 +599,16 @@ async function sendHivemindDirective(hivemindId) {
   const msg = el.value.trim();
   if (!msg) return;
   const pendingQId = el.dataset.pendingQuestionId || '';
+  // An answer goes to the workstream that asked (OS26 b); a plain directive to the orchestrator.
+  const answerTo = (pendingQId && el.dataset.pendingWorkstream) || 'orchestrator';
   el.value = '';
   delete el.dataset.pendingQuestionId;
+  delete el.dataset.pendingWorkstream;
   try {
     await fetch(API_BASE + `/api/hivemind/${hivemindId}/intervene`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg, target: 'orchestrator' }),
+      body: JSON.stringify({ message: msg, target: answerTo }),
     });
     if (pendingQId) {
       await fetch(API_BASE + `/api/hivemind/${hivemindId}/knowledge/questions/${pendingQId}/resolve`, { method: 'POST' });
@@ -624,6 +627,7 @@ function respondToQuestion(hivemindId, btn) {
     directiveEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     // Store question ID so sendHivemindDirective can resolve it
     directiveEl.dataset.pendingQuestionId = questionId;
+    directiveEl.dataset.pendingWorkstream = btn.dataset.workstream || '';
     directiveEl.dataset.pendingHivemindId = hivemindId;
   }
 }
@@ -704,13 +708,9 @@ async function triggerSynthesis(hivemindId) {
     for (const [pid, cache] of Object.entries(hivemindCache)) {
       if (cache.hiveminds?.some(h => h.id === hivemindId)) { projectId = pid; break; }
     }
-    // Just call intervene with a synthesis request — server will dispatch orchestrator
-    await fetch(API_BASE + `/api/hivemind/${hivemindId}/intervene`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content: 'Please synthesize all findings now.', to: 'orchestrator' }),
-    });
-    showToast('Synthesis requested');
+    // The synthesize route dispatches the orchestrator's synthesis task (OS26 d).
+    const r = await fetch(API_BASE + `/api/hivemind/${hivemindId}/synthesize`, { method: 'POST' });
+    showToast(r.ok ? 'Synthesis requested' : 'Synthesis not started: ' + ((await r.json().catch(() => ({}))).error || r.status));
   } catch(e) {}
 }
 

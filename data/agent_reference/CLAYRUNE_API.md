@@ -308,7 +308,8 @@ questions about scope/priorities/constraints BEFORE creating.
 | GET/POST | `/api/hivemind/<hivemind_id>/bus/[post\|poll/<ws>\|history\|stream]` | Inter-worker message bus. |
 | GET/PUT | `/api/hivemind/<hivemind_id>/knowledge/[synthesis\|decisions\|findings]` | Shared knowledge layer. |
 | POST | `/api/hivemind/<hivemind_id>/knowledge/questions/<qid>/resolve` | Resolve a worker question. |
-| POST | `/api/hivemind/<hivemind_id>/escalate` | Escalate to user. |
+| POST | `/api/hivemind/<hivemind_id>/escalate` | Escalate to user. Raises a web push (honours the project's `notify_push_enabled`). |
+| POST | `/api/hivemind/<hivemind_id>/synthesize` | Dispatch the orchestrator's synthesis now. **Human-only: agent and unattended callers get 403.** 409 while the orchestrator is already running. |
 | POST | `/api/hivemind/<hivemind_id>/intervene` | Inject a directive mid-run. **Human-only: agent and unattended callers get 403.** |
 | POST | `/api/hivemind/<hivemind_id>/findings/<fid>/review` | Review a finding. **Human-only: agent and unattended callers get 403.** |
 | POST | `/api/hivemind/<hivemind_id>/decisions/<did>/approve` | Approve a proposed decision. **Human-only: agent and unattended callers get 403.** |
