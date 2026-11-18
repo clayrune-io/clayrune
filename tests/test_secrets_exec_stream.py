@@ -220,11 +220,12 @@ def test_unset_without_raw_also_goes_through_the_streaming_route(srv):
 def test_a_locked_server_vault_is_refused_and_no_child_starts(srv):
     srv.vault._unlocked_key = None                              # a human has not unlocked it
     srv.vault._lock_notified = True                             # no push relay to the live port
+    from mc.state import tracked_processes
+    before = set(tracked_processes)                             # another test's leftovers are not ours
     conn, resp = _post_json(srv, {'env': [['TOKEN', 'demo.token']],
                                   'command': [sys.executable, '-c', 'print(1)']})
     assert resp.status == 423 and json.loads(resp.read())['error'] == 'vault_locked'
-    from mc.state import tracked_processes
-    assert not srv.stream._sessions and not tracked_processes
+    assert not srv.stream._sessions and set(tracked_processes) == before
 
 
 def test_the_cli_reports_the_locked_message_when_the_server_vault_is_locked_too(srv):

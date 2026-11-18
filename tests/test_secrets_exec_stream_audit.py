@@ -234,10 +234,11 @@ def test_a_reader_that_stops_reading_while_the_child_writes_is_cut_off(srv, monk
 def test_a_secret_free_command_is_refused_while_the_server_vault_is_locked(srv):
     srv.vault._unlocked_key = None
     srv.vault._lock_notified = True
+    from mc.state import tracked_processes
+    before = set(tracked_processes)                          # another test's leftovers are not ours
     conn, resp = _post_json(srv, {'command': [sys.executable, '-c', 'print(1)']})
     assert resp.status == 423 and json.loads(resp.read())['error'] == 'vault_locked'
-    from mc.state import tracked_processes
-    assert not srv.stream._sessions and not tracked_processes
+    assert not srv.stream._sessions and set(tracked_processes) == before
 
 
 def test_a_secret_free_command_runs_when_the_vault_was_never_locked_by_a_passphrase(srv):
