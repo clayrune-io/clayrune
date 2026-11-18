@@ -201,6 +201,9 @@ def test_reconciler_session_carries_trigger_type(monkeypatch):
     monkeypatch.setattr(srv, 'load_projects', lambda: [{'id': 'pX', 'project_path': ''}])
     monkeypatch.setattr(srv, '_load_agent_log', lambda pid, **_kw: log)
     monkeypatch.setattr(srv, '_save_agent_log', lambda pid, l: None)
+    # The snapshot reads the log first and only takes the update path for rows
+    # with no attempt id (MC-1179 AP34), so the read is stubbed as well.
+    monkeypatch.setattr(srv._bp_agent, '_load_agent_log', lambda pid, **_kw: log)
     monkeypatch.setattr(srv._bp_agent, '_update_agent_log', lambda pid, mutate: mutate(log))
     monkeypatch.setattr(srv, '_has_running_agent', lambda pid: False)
     monkeypatch.setattr(srv, '_write_session_memory',
@@ -222,6 +225,9 @@ def test_reconciler_session_without_trigger_type_stays_unattended(monkeypatch):
     monkeypatch.setattr(srv, 'load_projects', lambda: [{'id': 'pX', 'project_path': ''}])
     monkeypatch.setattr(srv, '_load_agent_log', lambda pid, **_kw: log)
     monkeypatch.setattr(srv, '_save_agent_log', lambda pid, l: None)
+    # The snapshot reads the log first and only takes the update path for rows
+    # with no attempt id (MC-1179 AP34), so the read is stubbed as well.
+    monkeypatch.setattr(srv._bp_agent, '_load_agent_log', lambda pid, **_kw: log)
     monkeypatch.setattr(srv._bp_agent, '_update_agent_log', lambda pid, mutate: mutate(log))
     monkeypatch.setattr(srv, '_has_running_agent', lambda pid: False)
     monkeypatch.setattr(srv, '_write_session_memory',
