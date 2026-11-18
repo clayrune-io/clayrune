@@ -1,4 +1,5 @@
 import {refreshWorkflowEnginePreview} from './workflow-engine-preview.js';
+import {WF_STEP_REF_RE, wfSlotStepRe, wfSlotAnyRe, isValidStepName, stepNameOfRef, STEP_NAME_RULE_TEXT} from './workflow-slot-grammar.js';
 
 // ── Workflow Builder (MC-871, R2-D7 — "the canvas") ──────────────────────────
 //
@@ -1042,7 +1043,8 @@ function _wfHasPath(edges, from, to) {
   return false;
 }
 
-const _WF_SLOT_STEP_RE = /\{\{\s*steps\.([a-zA-Z0-9_]+)\.[a-zA-Z0-9_.]+\s*\}\}/g;
+// One grammar for every slot check (WB3): static/js/workflow-slot-grammar.js.
+const _WF_SLOT_STEP_RE = wfSlotStepRe();
 
 function _wfCollectStepText(node) {
   const parts = [];
@@ -1067,7 +1069,11 @@ function _wfFindBrokenSlotRefs(nodes, edges) {
       _WF_SLOT_STEP_RE.lastIndex = 0;
       let m;
       while ((m = _WF_SLOT_STEP_RE.exec(text))) {
-        const ref = m[1];
+        const ref = stepNameOfRef(m[1]);
+        // Text that looks like a step reference but that the server's slot
+        // grammar will never substitute (a space in the step name, say): the run
+        // would send the literal placeholder to the agent. Always broken (WB3).
+        if (!WF_STEP_REF_RE.test(m[1])) { problems.push({ step: node.name, ref, malformed: true }); continue; }
         if (ref === node.name) continue; // backend flags self-reference separately at save
         if (!names.includes(ref)) { problems.push({ step: node.name, ref }); continue; }
         const domSet = dom[node.name];
@@ -1171,7 +1177,7 @@ function _wfInsertControlHTML(st, nodeName, fieldKey) {
       onclick="_wfInsertMenuToggle(event,'${window.jsAttr(nodeName)}','${window.jsAttr(fieldKey)}')">+ Insert a result</button>`;
 }
 
-const _WF_SLOT_ANY_RE = /\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g;
+const _WF_SLOT_ANY_RE = wfSlotAnyRe();
 
 // Single source of truth for "is this one ref legal here" -- shared by the
 // read-only chip legend below and _wfTextHasBrokenSlotRef (the collapse
@@ -1181,7 +1187,7 @@ const _WF_SLOT_ANY_RE = /\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g;
 function _wfSlotRefBroken(ref, legalSteps, prevLegal) {
   if (ref === 'prev.output') return !prevLegal;
   if (ref === 'trigger.fired_at' || ref === 'run.id') return false;
-  const stepM = /^steps\.([a-zA-Z0-9_]+)\./.exec(ref);
+  const stepM = WF_STEP_REF_RE.exec(ref);
   return !stepM || !legalSteps.has(stepM[1]);
 }
 
@@ -1199,8 +1205,11 @@ function _wfSlotChipsHTML(def, nodeName, text) {
   const legalSteps = new Set(ancestors);
   const chip = (ref) => {
     const broken = _wfSlotRefBroken(ref, legalSteps, prevLegal);
+    const malformed = /^steps\./.test(ref) && !WF_STEP_REF_RE.test(ref);
+    const why = malformed ? `Never filled in: a step name in a reference takes ${STEP_NAME_RULE_TEXT}`
+      : 'Not reachable on every path into this step';
     return `<span class="wfb-slot-chip${broken ? ' wfb-slot-chip-broken' : ''}"
-      title="${broken ? 'Not reachable on every path into this step' : 'Valid here'}">{{${esc(ref)}}}</span>`;
+      title="${broken ? why : 'Valid here'}">{{${esc(ref)}}}</span>`;
   };
   return `<div class="wfb-slot-chips"><span class="wfb-slot-chips-label">In this text:</span>${refs.map(chip).join('')}</div>`;
 }
@@ -1398,7 +1407,18 @@ function _wfSyncDomToModel(entry) {
 
 function _wfSyncNodeOwn(node, own) {
   const nameEl = own.querySelector('.wfb-name');
-  if (nameEl) node.name = nameEl.value.trim() || node.name;
+  if (nameEl) {
+    const typed = nameEl.value.trim();
+    // A step name has to be writable inside {{steps.<name>.…}} or nothing can
+    // reference it (WB3). Only a CHANGED name is judged: a step loaded with an
+    // older name is left alone until the user edits it.
+    if (typed && typed !== node.name && !isValidStepName(typed)) {
+      showToast(`Step names take ${STEP_NAME_RULE_TEXT} (so other steps can use its result). Kept "${node.name}".`, 5000);
+      nameEl.value = node.name;
+    } else {
+      node.name = typed || node.name;
+    }
+  }
   if (node.type === 'agent') {
     const projEl = own.querySelector('.wfb-project');
     const persEl = own.querySelector('.wfb-persona');
@@ -4362,8 +4382,9 @@ function _wfValidateGraph(def) {
     names.filter(n => !order.includes(n)).forEach(n => add(n, "Part of a cycle -- this step can never run."));
   }
 
-  _wfFindBrokenSlotRefs(nodes, edges).forEach(({ step, ref }) => {
-    add(step, `Uses {{steps.${ref}.*}}, but "${ref}" isn't guaranteed to have run first.`);
+  _wfFindBrokenSlotRefs(nodes, edges).forEach(({ step, ref, malformed }) => {
+    if (malformed) add(step, `Uses {{steps.${ref}.*}}, which is never filled in: a step name in a reference takes ${STEP_NAME_RULE_TEXT}. Rename "${ref}".`);
+    else add(step, `Uses {{steps.${ref}.*}}, but "${ref}" isn't guaranteed to have run first.`);
   });
 
   return problems;
