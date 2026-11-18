@@ -61,7 +61,7 @@ def test_transform_env_keeps_parent_env_and_sets_switches(monkeypatch):
 def test_oneshot_ignores_caller_project_cwd(tmp_path):
     proj = _project_dir(tmp_path)
     calls = []
-    with patch('subprocess.run', side_effect=_fake_run(calls)):
+    with patch('mc.transform_process_deadline.run', side_effect=_fake_run(calls)):
         res = ar.ClaudeRuntime().oneshot(prompt='p', stdin_text='body', cwd=proj)
     assert res is not None and res.text == 'ok'
     assert calls[0]['cwd'] == ts.neutral_cwd() != proj
@@ -73,7 +73,7 @@ def test_oneshot_brief_still_travels_in_the_prompt(tmp_path):
     """The brief is the model's only source of project context -- it must come
     from the prompt, never from the cwd."""
     calls = []
-    with patch('subprocess.run', side_effect=_fake_run(calls)):
+    with patch('mc.transform_process_deadline.run', side_effect=_fake_run(calls)):
         ar.ClaudeRuntime().oneshot(prompt='INSTR', system_prompt='BRIEF',
                                    stdin_text='body', cwd=_project_dir(tmp_path))
     sent = calls[0]['input']
@@ -112,7 +112,7 @@ def test_describe_image_uses_neutral_cwd_and_env(tmp_path):
     calls = []
     rt = ar.ClaudeRuntime()
     with patch.object(ar, '_authorize_text_transform', return_value=None), \
-            patch('subprocess.run', side_effect=_fake_run(calls)):
+            patch('mc.transform_process_deadline.run', side_effect=_fake_run(calls)):
         rt.describe_image(str(img), prompt='what')
     assert calls[0]['cwd'] == ts.neutral_cwd()
     assert calls[0]['env']['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] == '1'
@@ -152,6 +152,6 @@ def test_describe_image_returns_only_text_blocks_when_haiku_thinks(tmp_path):
 
     rt = ar.ClaudeRuntime()
     with patch.object(ar, '_authorize_text_transform', return_value=None), \
-            patch('subprocess.run', side_effect=fake):
+            patch('mc.transform_process_deadline.run', side_effect=fake):
         result = rt.describe_image(str(img), prompt='what')
     assert result.text == 'A red square.'

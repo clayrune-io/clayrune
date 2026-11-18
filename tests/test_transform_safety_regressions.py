@@ -196,7 +196,8 @@ def _claude_with_fake_run(monkeypatch, stdout='SUMMARY'):
 
     Done.stdout = stdout
     runs = []
-    monkeypatch.setattr(agent_runtime.subprocess, 'run',
+    # Claude's oneshot runs through the tree-owning runner (MC-1179 A2).
+    monkeypatch.setattr(agent_runtime._transform_process_deadline, 'run',
                         lambda cmd, **kw: runs.append(cmd) or Done())
     monkeypatch.setattr(agent_runtime, 'claude_installed', lambda: True)
     runtime = agent_runtime.ClaudeRuntime()
@@ -321,7 +322,13 @@ def _fresh_certified_qwen(monkeypatch):
 ])
 def test_gemini_qwen_transform_is_authorized_and_isolated(monkeypatch, name, make_runtime, flag_pairs):
     from mc import agent_runtime
-    runs = _fake_run_capturing(monkeypatch, 'SUMMARY')
+    # Qwen answers in stream-json. This test once fed it plain text and relied
+    # on the raw stdout being returned as the answer (MC-1179 Q1 removed that
+    # fallback), so Qwen gets the event shape the CLI actually emits.
+    stdout = 'SUMMARY' if name != 'qwen' else json.dumps({
+        'type': 'assistant', 'session_id': 's',
+        'message': {'content': [{'type': 'text', 'text': 'SUMMARY'}]}})
+    runs = _fake_run_capturing(monkeypatch, stdout)
     runtime = make_runtime(monkeypatch)
     assert runtime.tool_free_transform_enforced is True
 

@@ -61,10 +61,13 @@ from datetime import timedelta
 from mc import allowance_state as _allowance_state
 from mc import codex_run_error as _codex_run_error
 from mc import empty_turn as _empty_turn
+from mc import oneshot_exit_check as _oneshot_exit_check  # exit-code check for oneshot (G1, Q1)
+from mc import reply_line_kind as _reply_line_kind  # which log lines are MC status, not reply (A1)
 from mc import turn_clock as _turn_clock  # elapsed-since-last-reply stamp (mc/turn_clock.py)
 from mc import transform_sandbox as _transform_sandbox
 from mc import transform_deadline as _transform_deadline
 from mc import transform_process_deadline as _transform_process_deadline
+from mc import stream_text_guard as _stream_text_guard  # stderr drain + total bound for stream_text (A2)
 from mc import api_credits_offload as _api_credits_offload
 from mc.execution_policy import (
     Blocker, Capability, CapabilityClaim, Certification, ExecutionIdentity,
@@ -941,7 +944,7 @@ def _collect_trailing_reply_text(lines: Optional[List[str]]) -> str:
                 break
             continue
         stripped = line.strip()
-        if stripped.startswith('['):
+        if _reply_line_kind.is_status_line(stripped):
             if collected:
                 break
             continue
@@ -3286,8 +3289,9 @@ class ClaudeRuntime(AgentRuntime):
         leg_timeout = (max(1, int(timeout)) if deadline is None else
                       _transform_deadline.remaining(timeout, deadline, fallback=True))
         try:
-            runner = subprocess.run if deadline is None else _transform_process_deadline.run
-            r = runner(
+            # Always the tree-owning runner: subprocess.run stops only the .cmd shim
+            # on a timeout and then waits for the CLI grandchild with no limit (A2).
+            r = _transform_process_deadline.run(
                 cmd,
                 input=stdin_payload,
                 stdout=subprocess.PIPE,
@@ -3349,7 +3353,7 @@ class ClaudeRuntime(AgentRuntime):
             {'type': 'text', 'text': prompt},
         ]}}) + '\n'
         try:
-            r = subprocess.run(
+            r = _transform_process_deadline.run(
                 cmd, input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 cwd=_transform_sandbox.neutral_cwd(), text=True, encoding='utf-8',
                 errors='replace', timeout=max(1, int(timeout)),
@@ -3386,7 +3390,8 @@ class ClaudeRuntime(AgentRuntime):
     def stream_text(self, *, prompt: str, system_prompt: str = '',
                     model: str = '', effort: str = '', max_turns: int = 1,
                     stdin_text: Optional[str] = None,
-                    cwd: Optional[str] = None) -> Iterator[str]:
+                    cwd: Optional[str] = None,
+                    timeout: float = _stream_text_guard.DEFAULT_TOTAL_SECONDS) -> Iterator[str]:
         """Stream a short no-tools response through Claude's JSONL protocol.
 
         Provider command construction, process lifecycle, parsing, incremental
@@ -3401,6 +3406,7 @@ class ClaudeRuntime(AgentRuntime):
             'message': {'role': 'user', 'content': instruction},
         }) + '\n'
         proc = None
+        guard = None
         text_parts: List[str] = []
         result_error = ''
         try:
@@ -3415,6 +3421,7 @@ class ClaudeRuntime(AgentRuntime):
             except FileNotFoundError as e:
                 raise CLINotInstalledError(
                     'Claude CLI not found on this server') from e
+            guard = _stream_text_guard.StreamGuard(proc, _kill_pid, timeout)
             try:
                 assert proc.stdin is not None
                 proc.stdin.write(stdin_payload)
@@ -3455,25 +3462,23 @@ class ClaudeRuntime(AgentRuntime):
                         text_parts.append(text)
                         yield text
 
+            if guard.timed_out:
+                raise TransformTimeout('claude', f'Claude timed out after {timeout:g}s')
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired as e:
                 raise TransformTimeout('claude', 'Claude timed out while exiting') from e
             if proc.returncode != 0 or result_error:
-                stderr = ''
-                try:
-                    stderr = (proc.stderr.read() if proc.stderr else '').strip()[:500]
-                except Exception as e:
-                    print(f'[runtime:claude-stream] reading CLI error output failed: {e}', flush=True)
+                stderr = guard.stderr_tail().strip()[:500]
                 raise TransformFailure('claude', 'failed',
                                        result_error or stderr or ''.join(text_parts).strip()
                                        or f'Claude exit {proc.returncode}')
         finally:
+            if guard is not None:
+                guard.close()
             if proc is not None and proc.poll() is None:
-                try:
-                    proc.kill()
-                except Exception as e:
-                    print(f'[runtime:claude-stream] stopping process failed: {e}', flush=True)
+                # Whole tree: proc.kill() ends only the .cmd shim, not the CLI (A2).
+                _kill_pid(proc.pid)
 
     # ── Health check ──────────────────────────────────────────────────────────
 
@@ -5366,6 +5371,7 @@ class GeminiRuntime(AgentRuntime):
         if stdin_text:
             full = f"{full}\n\n---\n\n{stdin_text}"
         cmd = self._transform_argv(model=model)
+        self.last_error = ''
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
                                input=full,
@@ -5374,9 +5380,20 @@ class GeminiRuntime(AgentRuntime):
                                env=self._transform_env(),
                                creationflags=_POPEN_FLAGS,
                                startupinfo=_STARTUPINFO)
-        except Exception:
+        except subprocess.TimeoutExpired:
+            self.last_error = 'timeout after 180s'
+            return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e!r}'
+            print(f'[runtime:gemini] text transform spawn failed: {e!r}', flush=True)
             return None
         text = (r.stdout or '').strip()
+        # MC-1179 G1: a non-zero exit or an empty answer is a failure, not a
+        # completed transform (same tail as describe_image below).
+        detail = _oneshot_exit_check.failure_detail(r.returncode, r.stderr, text)
+        if detail:
+            self.last_error = detail
+            return None
         return OneshotResult(text=text, raw=None)
 
     VISION_DESCRIBE_MODEL = 'gemini-flash-lite-latest'
@@ -6788,7 +6805,14 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 session.setdefault('log_lines', TimestampedLines()).append(
                     f'[mc-tool scan error: {e}]')
             if session.get('proc') is proc:
-                if session.get('status') == 'running':
+                # `_interrupted_pid` (set by _mode_a_interrupt before the kill)
+                # names the process the user stopped: its non-zero rc is the
+                # kill, not a crash (MC-1179 MA1). Keyed on the pid so it needs
+                # no clearing: the next turn's process has a different pid.
+                _stopped_pid = session.get('_interrupted_pid')
+                if (session.get('status') == 'running'
+                        and (_stopped_pid is None
+                             or _stopped_pid != getattr(proc, 'pid', None))):
                     if session.get('_capture_error'):
                         session['status'] = 'error'
                     elif mc_res['paused']:
@@ -6844,10 +6868,15 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
 def _mode_a_interrupt(handle: SessionHandle) -> None:
     session = handle.session_dict
     proc = session.get('proc')
-    if proc and proc.poll() is None:
-        _kill_pid(proc.pid)
+    # State BEFORE the kill (as GeminiRuntime.interrupt does): _kill_pid is
+    # synchronous and the reader's `finally` runs the instant the process dies,
+    # so a status still 'running' there is logged as a crash (MC-1179 MA1).
+    if proc and getattr(proc, 'pid', None) is not None:
+        session['_interrupted_pid'] = proc.pid
     session['status'] = 'stopped'
     session['last_status_change_time'] = _time.time()
+    if proc and proc.poll() is None:
+        _kill_pid(proc.pid)
     session['process_alive'] = False
     session['log_lines'].append('[interrupted]')
 
@@ -7995,23 +8024,45 @@ class QwenRuntime(AgentRuntime):
         # _settings_auth_env()'s docstring.
         for k, v in self._settings_auth_env().items():
             env[k] = v
+        self.last_error = ''
         try:
             r = subprocess.run(
                 cmd, input=full,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 cwd=_transform_sandbox.neutral_cwd(),
                 text=True, encoding='utf-8', errors='replace',
                 timeout=180, env=env,
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
             )
-        except Exception:
+        except subprocess.TimeoutExpired:
+            self.last_error = 'timeout after 180s'
             return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e!r}'
+            print(f'[runtime:qwen] text transform spawn failed: {e!r}', flush=True)
+            return None
+        # MC-1179 Q1: the answer is a structured assistant event, never the raw
+        # stdout. parse_event turns any non-JSON line into ASSISTANT_TEXT, so
+        # only an event that carries its parsed envelope (`raw` is a dict) counts
+        # (same rule as CodexRuntime.oneshot); an is_error result is a failure
+        # whatever the exit code says; the exit code and stderr are read.
         last_text = ''
+        error_text = ''
         for raw_line in (r.stdout or '').splitlines():
             ev = self.parse_event(raw_line)
-            if ev and ev.type == EventType.ASSISTANT_TEXT:
+            if ev is None:
+                continue
+            if ev.type == EventType.ASSISTANT_TEXT and isinstance(ev.raw, dict):
                 last_text = ev.payload.get('text', last_text)
-        return OneshotResult(text=last_text or (r.stdout or '').strip())
+            elif ev.type in (EventType.ERROR, EventType.ALLOWANCE_EXHAUSTED):
+                error_text = str(ev.payload.get('text') or ev.payload.get('raw_ref') or 'error result')
+        detail = _oneshot_exit_check.failure_detail(
+            r.returncode, r.stderr, last_text, error_text=error_text,
+            benign_exit=_oneshot_exit_check.is_qwen_teardown_crash(r.stderr))
+        if detail:
+            self.last_error = detail
+            return None
+        return OneshotResult(text=last_text.strip())
 
     VISION_DESCRIBE_MODEL = 'qwen3-vl-plus'
 

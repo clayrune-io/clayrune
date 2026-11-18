@@ -174,7 +174,7 @@ def test_claude_stream_runtime_kills_child_when_consumer_disconnects(monkeypatch
                     'content': [{'type': 'text', 'text': 'first'}]}}) + '\n')
             self.stderr = io.StringIO('')
             self.returncode = None
-            self.killed = False
+            self.pid = 4242
 
         def wait(self, timeout=None):
             self.returncode = 0
@@ -183,11 +183,11 @@ def test_claude_stream_runtime_kills_child_when_consumer_disconnects(monkeypatch
         def poll(self):
             return self.returncode
 
-        def kill(self):
-            self.killed = True
-            self.returncode = -9
-
     proc = Proc()
+    # MC-1179 A2: the child is ended as a TREE through _kill_pid, because a bare
+    # proc.kill() stops only the Windows .cmd shim and leaves the CLI running.
+    killed = []
+    monkeypatch.setattr(agent_runtime, '_kill_pid', killed.append)
     monkeypatch.setattr(agent_runtime.subprocess, 'Popen',
                         lambda command, **kwargs: proc)
     runtime = agent_runtime.ClaudeRuntime()
@@ -196,7 +196,7 @@ def test_claude_stream_runtime_kills_child_when_consumer_disconnects(monkeypatch
     stream = runtime.stream_text(prompt='question')
     assert next(stream) == 'first'
     stream.close()
-    assert proc.killed is True
+    assert killed == [4242]
 
 
 def _capture_proc(proc, command, kwargs):

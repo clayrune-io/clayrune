@@ -550,7 +550,7 @@ def fake_run(calls, stdout='cli says hi', rc=0):
 def test_hook_mode_off_runs_the_original_path_untouched():
     rt = ar.ClaudeRuntime()
     calls = []
-    with patch('subprocess.run', side_effect=fake_run(calls)), \
+    with patch('mc.transform_process_deadline.run', side_effect=fake_run(calls)), \
             patch.object(transport, 'send', side_effect=AssertionError('API touched')):
         res = rt.oneshot(prompt='INSTR', system_prompt='SYS', stdin_text='body', model='haiku')
     assert res.text == 'cli says hi' and res.usage is None and res.cost_usd is None
@@ -564,7 +564,7 @@ def test_hook_on_success_skips_the_subprocess_entirely():
     turn_on()
     calls = []
     post = poster(Resp(200, ok_body('from api')))
-    with patch('subprocess.run', side_effect=fake_run(calls)), \
+    with patch('mc.transform_process_deadline.run', side_effect=fake_run(calls)), \
             patch('requests.post', post):
         res = ar.ClaudeRuntime().oneshot(prompt='INSTR', stdin_text='body', model='haiku')
     assert res.text == 'from api' and res.usage['input_tokens'] == 1000
@@ -575,7 +575,7 @@ def test_hook_on_success_skips_the_subprocess_entirely():
 def test_hook_on_failure_runs_subscription_path_for_same_call():
     turn_on()
     calls = []
-    with patch('subprocess.run', side_effect=fake_run(calls)), \
+    with patch('mc.transform_process_deadline.run', side_effect=fake_run(calls)), \
             patch('requests.post', poster(Resp(500, err_body('boom')))):
         res = ar.ClaudeRuntime().oneshot(prompt='INSTR', stdin_text='body', model='haiku')
     assert res.text == 'cli says hi' and len(calls) == 1
@@ -584,7 +584,7 @@ def test_hook_on_failure_runs_subscription_path_for_same_call():
 def test_hook_measure_records_estimate_and_still_uses_subscription():
     turn_on(mode='measure')
     calls = []
-    with patch('subprocess.run', side_effect=fake_run(calls, stdout='y' * 400)), \
+    with patch('mc.transform_process_deadline.run', side_effect=fake_run(calls, stdout='y' * 400)), \
             patch.object(transport, 'send', side_effect=AssertionError('API touched')):
         res = ar.ClaudeRuntime().oneshot(prompt='INSTR', stdin_text='x' * 4000, model='haiku')
     assert res.text == 'y' * 400 and len(calls) == 1
@@ -594,7 +594,7 @@ def test_hook_measure_records_estimate_and_still_uses_subscription():
 
 def test_hook_failed_subscription_call_records_no_estimate():
     turn_on(mode='measure')
-    with patch('subprocess.run', side_effect=fake_run([], rc=1)):
+    with patch('mc.transform_process_deadline.run', side_effect=fake_run([], rc=1)):
         assert ar.ClaudeRuntime().oneshot(prompt='p', stdin_text='b') is None
     assert budget.status()['cycle']['estimated_calls'] == 0
 
