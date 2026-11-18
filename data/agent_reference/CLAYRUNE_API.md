@@ -356,7 +356,7 @@ flow; use these endpoints to inspect / search.
 | GET | `/api/skills` | List skills (global + per-project for the active project). |
 | GET | `/api/skills/<scope>/<name>` | Read one (`scope` = `global` or `project`). |
 | POST | `/api/skills` | Create. |
-| PUT | `/api/skills/<scope>/<name>` | Update. |
+| PUT | `/api/skills/<scope>/<name>` | Update description and body; other frontmatter keys already in the file (`provenance`, `allowed-tools`, ...) are kept. |
 | DELETE | `/api/skills/<scope>/<name>` | Archive (recoverable). |
 | POST | `/api/skills/archive/<name>/restore` | Restore from archive. |
 | GET | `/api/skills/search?q=…` | Keyword search across descriptions. |

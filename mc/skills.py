@@ -326,7 +326,17 @@ def write_skill(
     project_id: str | None = None,
     extra_meta: dict[str, Any] | None = None,
     overwrite: bool = True,
+    keep_frontmatter: bool = False,
 ) -> dict[str, Any]:
+    """Write `<scope>/<name>/SKILL.md` (atomic).
+
+    `keep_frontmatter` (overwrite only): carry over every key the existing file
+    has besides name/description (`provenance`, `allowed-tools`, `license`, ...),
+    which this function otherwise drops because it builds the block from `name`,
+    `description` and `extra_meta` alone. The editor's PUT sets it: it only has
+    description and body to send. Keys are only kept, never added, so the write
+    cannot grant anything the file did not already carry; `extra_meta` still wins.
+    """
     err = validate_name(name)
     if err:
         raise ValueError(err)
@@ -341,6 +351,9 @@ def write_skill(
         raise FileExistsError(f'skill {name} already exists in {scope}')
 
     meta: dict[str, Any] = {'name': name, 'description': description.strip()}
+    if overwrite and keep_frontmatter and skill_md.exists():
+        kept = parse_skill_md(skill_md.read_text(encoding='utf-8'))[0]
+        meta.update({k: v for k, v in kept.items() if k not in ('name', 'description')})
     if extra_meta:
         meta.update({k: v for k, v in extra_meta.items() if k not in ('name', 'description')})
 
