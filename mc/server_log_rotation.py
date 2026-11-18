@@ -5,12 +5,26 @@ THE PROBLEM. The server's stdout/stderr is handed to it as an open file
 restarted child; `installer/start.bat` does the same with `>>`). Nothing ever
 bounded it: 526 MB after 3.7 months, 92 percent of it Werkzeug access lines.
 
-WHY A FILE HANDED IN FROM OUTSIDE CANNOT BE ROTATED. On Windows a file cannot be
+WHY A FILE HANDED IN FROM OUTSIDE CANNOT BE RENAMED. On Windows a file cannot be
 renamed while any handle to it is open without FILE_SHARE_DELETE, and neither the
 inherited handle nor Python's `open()` has it. So the server takes the file over
 at boot: it points fd 1 and fd 2 at NUL (which releases the inherited handle),
-opens the file itself, and points fd 1/2 at that. From then on the process owns
-every handle to the file and can close them, rename, and reopen.
+opens the file itself, and points fd 1/2 at that.
+
+THAT IS NOT ENOUGH ON A VENV (measured 2026-11-18, live server). A Windows venv's
+`.venv/Scripts/python.exe` is a redirector: it starts the base interpreter as a
+child, hands it its own std handles, and waits for it. Every launch path goes
+through it (start.bat's `python` after activate, the relaunch route's
+`sys.executable`), so the redirector, a process this one does not own, holds the
+log open for the server's whole life. psutil on the live box: holders were
+52720 (server, base pythoncore-3.14) and 61808 (its parent, the venv
+redirector); every rename failed with WinError 32 and the file reached 530 MB.
+
+So when the rename fails, the file is COPIED to its target and then truncated
+to zero through this process's own handle (copy-truncate). That needs only
+write access, which the share mode already grants, so a foreign holder cannot
+block it. A foreign holder that WRITES would keep its own file position and
+could leave a hole of zeros after a truncate; the redirector never writes.
 
 WHAT IS CAPTURED. `sys.stdout` / `sys.stderr` are replaced by line-buffered
 streams that write through one lock, and fd 1/2 are left on the same file so a
@@ -27,8 +41,8 @@ file under the bound). It is renamed once to `<stem>.pre-cap<suffix>` (then
 in the new file. Removing it is the operator's call. Same rule as
 `mc/memory_push_log.py`.
 
-Never raises. A rotation that fails (a child still holds an inherited handle, a
-read-only directory) is announced once, the process keeps appending past the
+Never raises. A rotation that fails both ways (a read-only directory, a full
+disk) is announced once, the process keeps appending past the
 bound, and the rotation is retried after `RETRY_SECONDS`. Losing the bound for a
 while is cheaper than losing the log.
 
@@ -42,6 +56,7 @@ from __future__ import annotations
 
 import io as _io
 import os as _os
+import shutil as _shutil
 import sys as _sys
 import threading as _threading
 import time as _time
@@ -134,7 +149,8 @@ class RotatingLog:
                     self._legacy_pending = True
                     self._next_try = self._clock() + RETRY_SECONDS
                     self._announce_failure(size, e)
-            self._open_active()
+            if self._fd < 0:
+                self._open_active()
             self._flush_notes()
 
     def close(self) -> None:
@@ -156,13 +172,14 @@ class RotatingLog:
     def _shift_files(self, size: int, pre_cap: bool) -> str:
         """Move the active file out of the way (no handle of ours is open).
         Returns the announcement. Raises OSError, leaving the active file in
-        place, when a rename fails."""
+        place, when neither a rename nor a copy-truncate works. A copy-truncate
+        leaves the active file open; a rename leaves it closed."""
         if pre_cap:
             target = _pre_cap_target(self.path)
-            _os.rename(self.path, target)
+            how = self._move_active(target)
             return (f"[log-rotate] {self.path.name} was {_fmt(size)}, written "
-                    f"before the size bound; kept as {target.name} (not deleted) "
-                    f"and a new log started")
+                    f"before the size bound; kept as {target.name} (not deleted)"
+                    f"{how} and a new log started")
         oldest = self.path.with_name(f'{self.path.name}.{self.generations}')
         if oldest.exists():
             _os.remove(oldest)
@@ -170,9 +187,55 @@ class RotatingLog:
             src = self.path.with_name(f'{self.path.name}.{n}')
             if src.exists():
                 _os.replace(src, self.path.with_name(f'{self.path.name}.{n + 1}'))
-        _os.replace(self.path, self.path.with_name(f'{self.path.name}.1'))
+        how = self._move_active(self.path.with_name(f'{self.path.name}.1'))
         return (f"[log-rotate] {self.path.name} reached {_fmt(size)}; previous "
-                f"kept as {self.path.name}.1 ({self.generations} generations kept)")
+                f"kept as {self.path.name}.1 ({self.generations} generations "
+                f"kept){how}")
+
+    def _move_active(self, target: _Path) -> str:
+        """Move the active file's contents to `target`, leaving an empty active
+        file open (or none: the caller opens it). Called with the lock held and
+        none of our handles open. Returns '' for a rename, else a note saying
+        it was a copy-truncate. Raises OSError,
+        with the active file in place and `target` absent, when both ways fail.
+        """
+        try:
+            _os.replace(self.path, target)
+            return ''
+        except OSError as e:
+            rename_err = e
+        # A process we do not own holds the file (the venv redirector, see the
+        # module docstring). Copy, then truncate through our own handle.
+        self._open_active()
+        try:
+            self._copy_truncate(target)
+        except OSError as e:
+            self._release_active()
+            raise OSError(f"rename: {rename_err}; copy-truncate: {e}") from e
+        return ('; copied then truncated, because another process holds the '
+                'file open (rename failed)')
+
+    def _copy_truncate(self, target: _Path) -> None:
+        """Copy the active file to `target`, then empty it. `self._fd` is open.
+
+        Reading runs to EOF, so bytes a child or a C-level write appended
+        during the copy are taken too; only a write landing between the last
+        read and the truncate is lost. A partial `target` is removed."""
+        try:
+            with open(self.path, 'rb') as src, open(target, 'xb') as dst:
+                _shutil.copyfileobj(src, dst, 1024 * 1024)
+                dst.flush()
+                _os.fsync(dst.fileno())
+            _os.ftruncate(self._fd, 0)
+            # fd 1/2 are duplicates sharing this file position: reset it, or a
+            # raw write through them lands at the old offset behind a hole.
+            _os.lseek(self._fd, 0, _os.SEEK_SET)
+        except OSError:
+            try:
+                _os.remove(target)
+            except OSError:
+                pass
+            raise
 
     def _announce_failure(self, size: int, err: Exception) -> None:
         # Once per process. Printing on every retry would itself flood the log.
@@ -198,8 +261,10 @@ class RotatingLog:
             self._legacy_pending = False
         except OSError as e:
             err = e
-        # Reopen whether or not the rename worked: the log must keep landing.
-        self._open_active()
+        # Reopen whether or not the move worked: the log must keep landing.
+        # (A copy-truncate already left it open.)
+        if self._fd < 0:
+            self._open_active()
         if err is not None:
             self._next_try = self._clock() + RETRY_SECONDS
             self._announce_failure(size, err)
