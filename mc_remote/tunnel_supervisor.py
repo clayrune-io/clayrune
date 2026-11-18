@@ -84,6 +84,10 @@ class TunnelSupervisor:
         self._lock = threading.RLock()
         self._cancel = threading.Event()
         self._wake_attest = threading.Event()  # forces an out-of-band attest
+        # Serialises "check cancel, then start the connector" (attest loop)
+        # against "set cancel, then stop the connector" (stop()). Separate from
+        # _lock so a slow cloudflared start never stalls status().
+        self._swap_lock = threading.Lock()
         self._attest_thread: Optional[threading.Thread] = None
         self._watchdog_thread: Optional[threading.Thread] = None
         self._session: Optional[requests.Session] = None
@@ -128,9 +132,13 @@ class TunnelSupervisor:
             self._state.stopping = True
         self._cancel.set()
         self._wake_attest.set()
-        # Stop cloudflared OUTSIDE the lock — it may take a couple of seconds
+        # Stop cloudflared OUTSIDE the state lock — it may take a couple of
+        # seconds. Under _swap_lock so an attestation that was in flight when
+        # cancel was set either finishes its swap first (and is stopped here)
+        # or sees the cancel and never starts the connector (P76).
         try:
-            cloudflared.get().stop()
+            with self._swap_lock:
+                cloudflared.get().stop()
         except Exception as e:
             log.warning("cloudflared stop raised during supervisor.stop(): %s", e)
         for t in (self._attest_thread, self._watchdog_thread):
@@ -243,7 +251,10 @@ class TunnelSupervisor:
                 # Hand the issued tunnel token to cloudflared. start() is
                 # idempotent: same token = no-op, different = restart.
                 try:
-                    cloudflared.get().swap_token(result.tunnel_token)
+                    with self._swap_lock:
+                        if self._cancel.is_set():
+                            return
+                        cloudflared.get().swap_token(result.tunnel_token)
                 except cloudflared.CloudflaredError as e:
                     log.error("cloudflared could not start: %s", e)
                     # We have a valid attestation, but cloudflared is unusable.

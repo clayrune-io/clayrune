@@ -68,6 +68,7 @@ from typing import Any, Callable, Optional
 
 from mc.blueprints.project_routes import EXCLUDED_SIDECAR_SUFFIXES
 from mc import backup_path_guard as _path_guard
+from mc import backup_stream as _stream
 from mc import backup_restore_point_guard as _rp_guard
 from mc import secrets_store as _secrets_store
 from mc import state as _state
@@ -371,7 +372,7 @@ class _Entry:
 
 @dataclass
 class _Warning:
-    kind: str               # 'oversize_skipped' | 'junkdir_skipped' | 'unreadable' | 'vanished' | 'refused'
+    kind: str               # 'oversize_skipped' | 'junkdir_skipped' | 'unreadable' | 'vanished' | 'refused' | 'unverified'
     path: str
     detail: str = ''
     bytes: int = 0
@@ -772,6 +773,31 @@ def _read_and_maybe_reserialize(entry: _Entry) -> bytes:
     return text.encode('utf-8')
 
 
+def _archive_entry(zf: zipfile.ZipFile, arcname: str, entry: _Entry,
+                   warnings: list) -> tuple[Optional[str], int, bytes]:
+    """Write one file into the archive; return (sha256, bytes written, held).
+
+    P29: only a project JSON file is held in memory (it is parsed and
+    re-serialised, spec §6). Every other file is streamed, so a file too large
+    to hold is archived rather than dropped as a "parse failed" warning. A JSON
+    file above ``MAX_JSON_HOLD_BYTES`` cannot be re-parsed either; it is
+    streamed as it is and an ``unverified`` warning says so. Raises what the
+    read raises, for the caller's skip-and-log handling. For a held file the
+    sha256 is None and ``held`` is its bytes: the caller hashes them outside
+    its skip-and-log handler, as it did before, so a failure there aborts the
+    backup instead of being logged as a skipped file."""
+    if entry.reserialize_json and entry.dest.stat().st_size <= _stream.MAX_JSON_HOLD_BYTES:
+        data = _read_and_maybe_reserialize(entry)
+        zf.writestr(arcname, data)
+        return None, len(data), data
+    result = _stream.add_file(zf, arcname, entry.dest)
+    if entry.reserialize_json:
+        warnings.append(_Warning(
+            'unverified', str(entry.dest),
+            'too large to re-parse; archived as-is without the half-write check'))
+    return result[0], result[1], b''
+
+
 def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = None,
                   label: Optional[str] = None,
                   progress_cb: Optional[Callable[[dict], None]] = None,
@@ -875,7 +901,7 @@ def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = 
                         f'backup cancelled after {written} of {total_files} files')
                 arcname = f"{e.arc_prefix}/{e.relpath}"
                 try:
-                    data = _read_and_maybe_reserialize(e)
+                    sha, nbytes, held = _archive_entry(zf, arcname, e, warnings)
                 except FileNotFoundError:
                     warnings.append(_Warning('vanished', str(e.dest), 'gone before it could be read'))
                     continue
@@ -887,8 +913,9 @@ def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = 
                 except Exception as exc:  # malformed JSON that never recovered on retry
                     warnings.append(_Warning('unreadable', str(e.dest), f'parse failed: {exc}'))
                     continue
-                zf.writestr(arcname, data)
-                bytes_written += len(data)
+                if sha is None:
+                    sha = _sha256_bytes(held)
+                bytes_written += nbytes
                 if progress_cb is not None:
                     try:
                         progress_cb({'files_written': written + 1, 'total_files': total_files,
@@ -897,7 +924,7 @@ def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = 
                     except Exception:
                         pass
                 files_manifest[arcname] = {
-                    'sha256': _sha256_bytes(data), 'bytes': len(data),
+                    'sha256': sha, 'bytes': nbytes,
                     'dest': str(e.dest), 'category': e.category,
                 }
                 written += 1
@@ -1200,14 +1227,15 @@ def restore_backup(archive_path: Path, categories: Optional[list[str]] = None,
                 raise BackupError(f'refused archive member: {refusal}{hint}')
             planned[arcname] = dest
 
-        staged: list[tuple[str, dict, bytes]] = []
+        # P29: hashed in a streaming pass, written in a second one — nothing
+        # is held in memory, so a restore needs no more RAM than one chunk.
+        staged: list[tuple[str, dict]] = []
         for arcname, meta in manifest.get('files', {}).items():
             if meta.get('category') not in selected:
                 continue
-            data = zf.read(arcname)
-            if _sha256_bytes(data) != meta.get('sha256'):
+            if _stream.sha256_member(zf, arcname) != meta.get('sha256'):
                 raise BackupIntegrityError(f'sha256 mismatch for {arcname} — aborting before any write')
-            staged.append((arcname, meta, data))
+            staged.append((arcname, meta))
 
         report: dict[str, Any] = {
             'archive': str(archive_path),
@@ -1218,7 +1246,7 @@ def restore_backup(archive_path: Path, categories: Optional[list[str]] = None,
             'per_category': {c: {'restored': 0, 'conflicts': 0, 'refused': 0, 'errors': []} for c in selected},
         }
 
-        for arcname, meta, data in staged:
+        for arcname, meta in staged:
             cat = meta['category']
             dest = planned[arcname]
             bucket = report['per_category'][cat]
@@ -1231,16 +1259,15 @@ def restore_backup(archive_path: Path, categories: Optional[list[str]] = None,
 
             try:
                 if cat == 'unprotected' and dest.exists():
-                    existing = dest.read_bytes()
-                    if existing != data:
+                    if not _stream.member_equals_file(zf, arcname, dest):
                         conflict_path = dest.with_name(dest.name + '.crbak-restored')
                         conflict_path.parent.mkdir(parents=True, exist_ok=True)
-                        conflict_path.write_bytes(data)
+                        _stream.copy_member(zf, arcname, conflict_path)
                         bucket['conflicts'] += 1
                         continue  # existing file is kept untouched — see module docstring
                     # byte-identical: nothing to do, but still counts as restored
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
+                _stream.copy_member(zf, arcname, dest)
                 bucket['restored'] += 1
             except OSError as exc:
                 bucket['errors'].append(f'{dest}: {exc}')
@@ -1769,7 +1796,7 @@ def import_project(archive_path: Path, *,
         # P27: every member's name and destination is checked here, before the
         # first read or write, so one hostile member fails the whole import.
         records_manifest = {'projects': [{'id': final_id}]}
-        staged: list[tuple[str, dict, bytes, Optional[Path]]] = []
+        staged: list[tuple[str, dict, Optional[Path]]] = []
         for arcname, meta in manifest.get('files', {}).items():
             if meta.get('category') == 'vault':
                 continue
@@ -1780,25 +1807,24 @@ def import_project(archive_path: Path, *,
                 refusal = _validate_records_write(dest, paths, records_manifest)
                 if refusal:
                     raise BackupError(f"refused archive member '{arcname}': {refusal}")
-            data = zf.read(arcname)
-            if _sha256_bytes(data) != meta.get('sha256'):
+            # P29: streamed hash pass here, streamed copy below — no member is held.
+            if _stream.sha256_member(zf, arcname) != meta.get('sha256'):
                 raise BackupIntegrityError(f'sha256 mismatch for {arcname} — aborting before any write')
-            staged.append((arcname, meta, data, dest))
+            staged.append((arcname, meta, dest))
 
-        for arcname, meta, data, dest in staged:
+        for arcname, meta, dest in staged:
             if dest is None:
                 report['warnings'].append(f'could not map destination for {arcname} — skipped')
                 continue
             try:
                 if meta['category'] == 'unprotected' and dest.exists():
-                    existing = dest.read_bytes()
-                    if existing != data:
+                    if not _stream.member_equals_file(zf, arcname, dest):
                         conflict_path = dest.with_name(dest.name + '.crbak-restored')
                         conflict_path.parent.mkdir(parents=True, exist_ok=True)
-                        conflict_path.write_bytes(data)
+                        _stream.copy_member(zf, arcname, conflict_path)
                         continue
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(data)
+                _stream.copy_member(zf, arcname, dest)
                 report['restored'][meta['category']] += 1
             except OSError as exc:
                 report['warnings'].append(f'{dest}: {exc}')
