@@ -1,6 +1,6 @@
-# Applying the four human-owned patches (MC-1179 P64, P65, P96)
+# Applying the five human-owned patches (MC-1179 P64, P65, P96)
 
-Four patches change files an agent is not allowed to edit (`steward/fence.py`,
+Five patches change files an agent is not allowed to edit (`steward/fence.py`,
 `steward/core.py`, `data/skills/`). Each one is a `git apply` you run yourself.
 Every command below runs **from the repo root**, in an ordinary terminal (not
 inside an agent chat: the fence blocks the same commands there, and that is
@@ -12,14 +12,17 @@ correct).
 | 2 | `steward-role-directive.patch` | steward skill: new `CYCLE_DIRECTIVE.md`, and the skill stops telling a cycle to post backlog notes | P65 (MC-1140), P96 |
 | 3 | `fence-timeout-seconds.patch` | `steward/core.py`: fence hook timeout 10000 s becomes 10 s | (follow-up) |
 | 4 | `fence-hivemind-reviewer-armed.patch` | `steward/fence.py` and `mc/launch_marker.py`: the fence arms for a Hivemind reviewer session | P64 |
+| 5 | `steward-loop-health-journal.patch` | `steward/core.py`: the Steward panel reads the journal and the role ledger instead of backlog notes (the reading code is `mc/steward_health_journal.py`, already on `master`) | P65 |
 
-**Order: 1, 2, 3, 4.** Patches 1 and 2 are a pair (the role dispatcher needs both).
-All four were checked against `master` at `bba8ad42`, individually and together, and
-no two of them touch the same lines (1 and 3 both edit `steward/core.py`, about 110
-lines apart). They also apply in the reverse order.
+**Order: 1, 2, 3, 4, 5.** Patches 1 and 2 are a pair (the role dispatcher needs both).
+All five were checked against `master` at `97dee137`: every one of the 120 possible
+orders applies cleanly and ends in identical files, so no two touch the same lines
+(1, 3 and 5 all edit `steward/core.py`, in three separate places). Patch 5 needs
+`mc/steward_health_journal.py`, which arrives with the merge, not with the patch:
+step 2 checks it is there.
 
 If a step prints anything other than what is shown, **stop and do not continue**.
-Nothing has been changed until step 6.
+Nothing has been changed until step 5.
 
 ---
 
@@ -32,13 +35,14 @@ git rev-parse --abbrev-ref HEAD
 ```
 You should see: `master`
 
-**2. Confirm the four patch files are present.**
+**2. Confirm the five patch files and the panel module are present.**
 
 ```
-git ls-files docs/patches/steward-role-core-adapter.patch docs/patches/steward-role-directive.patch docs/patches/fence-timeout-seconds.patch docs/patches/fence-hivemind-reviewer-armed.patch
+git ls-files docs/patches/steward-role-core-adapter.patch docs/patches/steward-role-directive.patch docs/patches/fence-timeout-seconds.patch docs/patches/fence-hivemind-reviewer-armed.patch docs/patches/steward-loop-health-journal.patch mc/steward_health_journal.py
 ```
-You should see all four names printed, one per line. (If fewer than four are listed,
-the branch with the P64 patch is not merged yet: stop.) This form works the same in
+You should see all six names printed, one per line. (If fewer are listed, the branch
+with patches 4 and 5 is not merged yet: stop. Without `mc/steward_health_journal.py`,
+patch 5 would make the Steward panel's endpoint fail.) This form works the same in
 PowerShell and in Git Bash.
 
 **3. Confirm the files the patches touch have no local edits.**
@@ -51,10 +55,10 @@ otherwise a patch can fail or mix with your edits.
 
 ## Dry run (changes nothing)
 
-**4. Check that all four apply, in order.**
+**4. Check that all five apply, in order.**
 
 ```
-git apply --check docs/patches/steward-role-core-adapter.patch docs/patches/steward-role-directive.patch docs/patches/fence-timeout-seconds.patch docs/patches/fence-hivemind-reviewer-armed.patch
+git apply --check docs/patches/steward-role-core-adapter.patch docs/patches/steward-role-directive.patch docs/patches/fence-timeout-seconds.patch docs/patches/fence-hivemind-reviewer-armed.patch docs/patches/steward-loop-health-journal.patch
 ```
 You should see: nothing, and the prompt comes back. Any `error: patch failed` line means
 stop (master has moved under the patch; ask for it to be regenerated).
@@ -82,9 +86,16 @@ git apply docs/patches/fence-hivemind-reviewer-armed.patch
 ```
 You should see: nothing.
 
+**7a. Apply patch 5 (Steward panel reads the journal).**
+
+```
+git apply docs/patches/steward-loop-health-journal.patch
+```
+You should see: nothing.
+
 ## Check each one took effect
 
-The line numbers shown in steps 9, 11 and 12 are from `master` at `bba8ad42`. If
+The line numbers shown in steps 9, 11, 12 and 12a are from `master` at `97dee137`. If
 `master` has moved since, the numbers can differ by a few lines; what matters is that
 the same lines of text are listed. A different number alone is not a reason to stop.
 
@@ -134,18 +145,27 @@ You should see: `mc/launch_marker.py:44:    'hivemind_reviewer',` and, in
 `steward/fence.py`, the comment at line 5174 and the set entry
 `steward/fence.py:5181:    'hivemind_reviewer',`.
 
+**12a. Patch 5 (Steward panel).**
+
+```
+git grep -n "steward_health_journal\|activity_source\|health partly unknown" -- steward/core.py
+```
+You should see three lines: `steward/core.py:412:` (the import of
+`mc.steward_health_journal`), `steward/core.py:426:` (`'activity_source': ...`) and
+`steward/core.py:431:` (the "health partly unknown" alert).
+
 **13. Run the tests that were waiting for these patches.**
 
 Use the same Python that starts Clayrune (on Windows `.venv\Scripts\python`; the
 commands below call it `python`).
 
 ```
-python -m pytest tests/test_fence_hivemind_reviewer_armed.py tests/test_fence_fail_closed_unattended.py tests/test_launch_marker.py tests/test_claude_retry_watchdog.py -p no:cacheprovider
+python -m pytest tests/test_steward_loop_health_journal.py tests/test_steward_core.py tests/test_fence_hivemind_reviewer_armed.py tests/test_fence_fail_closed_unattended.py tests/test_launch_marker.py tests/test_claude_retry_watchdog.py -p no:cacheprovider
 ```
 You should see a last line with **no `failed` and no `xfailed`**, ending like
-`155 passed, 13 skipped`. (Before the patches the same command reports 5 `xfailed`;
-after them those five turn into passes, and the 13 skips are the "throwaway copy"
-tests that only make sense before a patch is applied.)
+`202 passed, 15 skipped`. (Before the patches the same command reports
+`207 passed, 9 xfailed`; after them the 9 xfails turn into passes, and the skips are
+the "throwaway copy" tests that only make sense before a patch is applied.)
 
 ## Commit it
 
@@ -200,13 +220,21 @@ against the unpatched copy exits 0.
 
 ## Two things to expect
 
-- **The Steward panel will go quiet for a steward that follows the new directive.**
-  The panel (`loop_health()` in `steward/core.py`, shown by `static/js/steward.js`)
-  counts `DECISION NEEDED` / `BLOCKED` notes on the charter item and takes "last
-  activity" from the newest note. After patch 2 a cycle writes a journal file in
-  `docs/_journal/` and no notes, so the panel shows 0 to approve and "no activity
-  yet" for a healthy steward. Re-pointing the panel at the journal is a separate,
-  not yet built change (it is in a human-owned file, so it will arrive as another patch).
+- **Patch 2 alone would make the Steward panel go quiet; patch 5 is the fix, so apply
+  both.** After patch 2 a cycle writes a journal file in `docs/_journal/` and no
+  notes. With patch 5 the panel (`loop_health()` in `steward/core.py`, shown by
+  `static/js/steward.js`) takes "last activity" from the newest `## <time> | <event>`
+  heading in that journal, counts `blocked_*` / `decision_blocked` events as blocked,
+  and counts pending decisions from the role's state ledger (an answered decision
+  stops counting). A steward that still writes notes and has no journal yet keeps its
+  note-based numbers. Anything the panel could not read shows a **⚠ unknown** badge
+  and a "health partly unknown" alert; the numbers beside it are then a floor, not
+  zero-means-fine.
+- **What the panel still cannot show:** pending decisions for a steward that has no
+  role (its decisions go out by email and nothing records them where the panel can
+  read: once it has a journal, the panel shows the "unknown" badge instead of a
+  number), and a decision-raising
+  event from a steward that never wrote a journal or a note.
 - **A role-bound steward schedule can now fire**: before patch 1 every such fire was
   refused with "SR-2 core adapter patch is unapplied".
 
@@ -215,6 +243,11 @@ against the unpatched copy exits 0.
 Each patch reverses on its own with `git apply -R`. Undo in the **reverse** order, and
 only if you have **not committed** yet (if you did, use `git revert <commit>` instead).
 Each command prints nothing on success.
+
+**U0. Undo patch 5** (the panel goes back to counting notes).
+```
+git apply -R docs/patches/steward-loop-health-journal.patch
+```
 
 **U1. Undo patch 4.**
 ```
@@ -242,7 +275,8 @@ git status --short steward mc/launch_marker.py data/skills/builtin/mc-steward
 ```
 You should see: nothing.
 
-Undoing patch 4 alone makes the reviewer unfenced again (the gap the review
+Undoing patch 5 alone is safe at any time; undoing patch 3 or 1 while 5 stays applied
+is also fine (they edit different places). Undoing patch 4 alone makes the reviewer unfenced again (the gap the review
 found). Undoing patch 2 without patch 1 (or the reverse) leaves a role-bound steward
 fire refused, as it is on `master` today.
 
