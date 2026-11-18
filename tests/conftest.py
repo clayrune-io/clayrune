@@ -21,6 +21,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -326,6 +327,33 @@ def _cli_argv0(args) -> str:
     return name.rsplit(".", 1)[0] if "." in name else name
 
 
+# A shell or terminal wrapper whose real target is a model CLI further along the
+# command: `start "" cmd /k "\"...\\gemini.CMD\""` (agent_routes.
+# _launch_terminal_for_binary on win32) has argv0 `start`, so the argv0 check
+# alone let a real sign-in window through (2026-11-18, three gemini windows a day
+# from full suite runs). Only these wrappers are scanned, so an ordinary command
+# that merely mentions a CLI name in an argument is not refused.
+_CLI_WRAPPERS = frozenset({"start", "cmd", "osascript", "powershell", "pwsh",
+                           "sh", "bash", "x-terminal-emulator", "gnome-terminal",
+                           "konsole", "xfce4-terminal", "xterm"})
+_WRAPPED_CLI_RE = re.compile(
+    r"(?:^|[\\/\s\"'])(?:" + "|".join(sorted(_REAL_CLI_NAMES)) +
+    r")(?:\.(?:exe|cmd|bat|ps1))?(?=$|[\s\"'])", re.IGNORECASE)
+
+
+def _wrapped_cli(args) -> bool:
+    if _cli_argv0(args) not in _CLI_WRAPPERS:
+        return False
+    if isinstance(args, (str, bytes, os.PathLike)):
+        text = os.fsdecode(args)
+    else:
+        try:
+            text = " ".join(os.fsdecode(a) for a in args)
+        except TypeError:
+            return False
+    return bool(_WRAPPED_CLI_RE.search(text))
+
+
 def _is_version_probe(args) -> bool:
     """`<cli> --version` is the provider-detection probe (test_providers_endpoint_ok
     runs it against every installed vendor). It starts no model session."""
@@ -346,7 +374,8 @@ def _install_real_cli_guard() -> None:
     real_init = subprocess.Popen.__init__
 
     def guarded_init(self, args, *a, **kw):
-        if (_cli_argv0(args) in _REAL_CLI_NAMES and not _is_version_probe(args)
+        if ((_cli_argv0(args) in _REAL_CLI_NAMES or _wrapped_cli(args))
+                and not _is_version_probe(args)
                 and os.environ.get("MC_LIVE_CLI_TESTS") != "1"):
             import threading
             msg = (f"{os.environ.get('PYTEST_CURRENT_TEST', '-')} | thread "

@@ -288,7 +288,12 @@ def _outcome(eng, tmp_path, on):
     """Dispatch + one follow-up against the fake CLI; return what the session ends up with."""
     rt = ar.get_runtime(eng)
     assert rt is not None
-    saved = (rt.resolve_binary, rt.build_command)
+    # Restore by DELETING the instance attributes, never by assigning the saved
+    # bound methods back: that leaves an instance attribute shadowing the class
+    # for the rest of the run, so a later `patch.object(GeminiRuntime,
+    # 'resolve_binary', ...)` silently does nothing. Measured 2026-11-18: it made
+    # test_agent_auth_login_binary_missing_returns_400 resolve the real
+    # gemini.CMD and open a host terminal window on every full suite run.
     rt.resolve_binary = lambda: PY                                  # type: ignore[assignment]
     rt.build_command = lambda *a, **k: [PY, FAKE, eng]              # type: ignore[assignment]
     try:
@@ -313,7 +318,8 @@ def _outcome(eng, tmp_path, on):
             'procs': [sd['proc']],
         }
     finally:
-        rt.resolve_binary, rt.build_command = saved                 # type: ignore[assignment]
+        for attr in ('resolve_binary', 'build_command'):
+            rt.__dict__.pop(attr, None)
 
 
 def _await_turn(sd, limit=30.0):
