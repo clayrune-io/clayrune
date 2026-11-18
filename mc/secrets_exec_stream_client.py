@@ -107,7 +107,6 @@ def run(args, cmd: list[str], project: str | None, unattended: bool,
         # The child's base environment is the CALLER's, as it would be in-process; the
         # server's own environment (every provider key it hydrated) never reaches a child.
         'environ': dict(os.environ),
-        'claude_session_id': os.environ.get('CLAUDE_CODE_SESSION_ID', ''),
     }).encode('utf-8')
     conn = http.client.HTTPConnection('127.0.0.1', port, timeout=CONNECT_TIMEOUT_S)
     try:

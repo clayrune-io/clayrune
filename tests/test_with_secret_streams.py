@@ -20,6 +20,9 @@ def ws(tmp_path, monkeypatch):
     monkeypatch.setenv('CLAYRUNE_SECRETS_KEY_BACKEND', 'file')
     monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
     from mc import secrets_store
+    # MC-1179 P10: the unattended verdict comes from asking the server about this
+    # process; a test never reaches for a live server (None = could not be asked).
+    monkeypatch.setattr(secrets_store, '_lookup_caller_unattended', lambda: None)
     secrets_store._dispensed.clear()
     secrets_store._unlocked_key = None
     secrets_store._lock_notified = False

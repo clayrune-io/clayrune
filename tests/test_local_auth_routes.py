@@ -15,6 +15,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 LAN = {'REMOTE_ADDR': '192.168.1.50'}
+# The first passcode is set by a person's browser on the host (P19, MC-1179,
+# tests/test_local_auth_first_set_host_only.py): a browser POST carries an Origin,
+# an agent's curl does not. These tests used to bootstrap with no Origin, which
+# is exactly the call P19 closed.
+HOST_BROWSER = {'Origin': 'http://localhost:5199'}
 
 
 @pytest.fixture()
@@ -78,7 +83,8 @@ class TestPasscodeLifecycle:
         assert r.get_json()['error'] == 'passcode_too_short'
 
         # Host sets the first passcode → ok + cookie.
-        r = client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        r = client.post('/api/local-auth/set', json={'passcode': 'hunter22'},
+                        headers=HOST_BROWSER)
         assert r.status_code == 200
         assert r.get_json() == {'ok': True, 'configured': True}
 
@@ -115,7 +121,8 @@ class TestPasscodeLifecycle:
         assert r.get_json()['error'] == 'not_configured'
 
     def test_throttle_429_after_cap(self, client):
-        client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        client.post('/api/local-auth/set', json={'passcode': 'hunter22'},
+                        headers=HOST_BROWSER)
         from mc.blueprints import local_auth as la
         for _ in range(la._LOCAL_AUTH_FAIL_CAP):
             r = client.post('/api/local-auth/login', json={'passcode': 'bad'},
@@ -137,12 +144,14 @@ class TestExemptCallerStillProvesCurrentToChange:
 
     def test_first_bootstrap_from_host_still_works_with_no_current(self, client):
         # Nothing configured yet — host may set it with no `current` field.
-        r = client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        r = client.post('/api/local-auth/set', json={'passcode': 'hunter22'},
+                        headers=HOST_BROWSER)
         assert r.status_code == 200
         assert r.get_json() == {'ok': True, 'configured': True}
 
     def test_loopback_change_without_current_is_refused(self, client):
-        client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        client.post('/api/local-auth/set', json={'passcode': 'hunter22'},
+                        headers=HOST_BROWSER)
         # Same host (loopback-exempt from the gate) tries to overwrite it
         # blind, with no `current` — must be refused, not honored.
         r = client.post('/api/local-auth/set', json={'passcode': 'stolen99'})
@@ -150,14 +159,16 @@ class TestExemptCallerStillProvesCurrentToChange:
         assert r.get_json()['error'] == 'bad_current_passcode'
 
     def test_loopback_change_with_wrong_current_is_refused(self, client):
-        client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        client.post('/api/local-auth/set', json={'passcode': 'hunter22'},
+                        headers=HOST_BROWSER)
         r = client.post('/api/local-auth/set',
                         json={'passcode': 'stolen99', 'current': 'nope-nope'})
         assert r.status_code == 403
         assert r.get_json()['error'] == 'bad_current_passcode'
 
     def test_loopback_change_with_correct_current_is_allowed(self, client):
-        client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        client.post('/api/local-auth/set', json={'passcode': 'hunter22'},
+                        headers=HOST_BROWSER)
         r = client.post('/api/local-auth/set',
                         json={'passcode': 'newpass77', 'current': 'hunter22'})
         assert r.status_code == 200
@@ -178,7 +189,8 @@ class TestSetSharesLoginThrottle:
     keyed by source IP)."""
 
     def test_wrong_current_counts_toward_shared_cap(self, client):
-        client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        client.post('/api/local-auth/set', json={'passcode': 'hunter22'},
+                        headers=HOST_BROWSER)
         from mc.blueprints import local_auth as la
         for _ in range(la._LOCAL_AUTH_FAIL_CAP):
             r = client.post('/api/local-auth/set',
@@ -195,7 +207,8 @@ class TestSetSharesLoginThrottle:
         assert r.get_json()['error'] == 'too_many_attempts'
 
     def test_wrong_login_attempts_also_throttle_set(self, client):
-        client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        client.post('/api/local-auth/set', json={'passcode': 'hunter22'},
+                        headers=HOST_BROWSER)
         from mc.blueprints import local_auth as la
         for _ in range(la._LOCAL_AUTH_FAIL_CAP):
             r = client.post('/api/local-auth/login', json={'passcode': 'bad'},
@@ -210,7 +223,8 @@ class TestSetSharesLoginThrottle:
         assert r.get_json()['error'] == 'too_many_attempts'
 
     def test_successful_change_clears_the_shared_counter(self, client):
-        client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        client.post('/api/local-auth/set', json={'passcode': 'hunter22'},
+                        headers=HOST_BROWSER)
         r = client.post('/api/local-auth/set',
                         json={'passcode': 'nope-nope', 'current': 'wrong'},
                         environ_base=LAN)
