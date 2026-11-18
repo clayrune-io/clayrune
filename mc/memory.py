@@ -46,6 +46,9 @@ import mc.distiller as _distiller          # Phase 4 learning observer (best-eff
 import mc.allowance_state as _allowance_state  # live vendor exhaustion state (MC-964 Step D.1)
 import mc.memory_overlap_df as _overlap_df  # M4 corpus document-frequency stoplist (MC-964 fix A2)
 import mc.memory_gate_tap as _gate_tap  # G1 report-mode observer for mints (MC-964 step 10)
+import mc.memory_entry_line as _entry_line  # ML15: a managed entry is one physical line
+import mc.condense_agent_mode as _condense_agent_mode  # ML16: agent-mode "anything to do" test + prompt
+import mc.condense_mode as _condense_mode  # ML16: which executor a config selects; the one default
 
 from mc import state
 from mc.provider_env_scope import claude_child_env
@@ -4333,8 +4336,9 @@ def _should_condense(project, include_claude_md=False):
     # permanently hot, firing a no-op model call every session-end. This also
     # makes the structured trigger and its target agree in units (closes
     # docs/CONDENSE_STRUCTURED_DESIGN.md Open Question #5). The legacy agent
-    # path keeps its existing combined-byte trigger below, unchanged.
-    if (state.CONFIG.get('condense_mode', 'agent') or 'agent') == 'structured':
+    # path below keeps its combined-byte gate, and since ML16 also needs the
+    # index over its budget.
+    if _condense_mode.is_structured(state.CONFIG):
         mem_path = _get_memory_path(project)
         if not mem_path.exists():
             return False
@@ -4403,7 +4407,15 @@ def _should_condense(project, include_claude_md=False):
                 except OSError:
                     pass
     threshold = state.CONFIG.get('condense_threshold_kb', 30) * 1024
-    return combined > threshold
+    if combined <= threshold:
+        return False
+    # ML16: the sum above cannot clear. The archive is append-only and is
+    # where a run moves what it demotes, so past the threshold this fired one
+    # tool-capable agent per cooldown for the life of the project. A run also
+    # needs something to do: MEMORY.md over the budget the agent is given.
+    return _condense_agent_mode.index_over_budget(
+        mem_path, int(state.CONFIG.get('index_line_budget', 160) or 160),
+        _index_byte_trigger())
 
 
 _MEM_ARCHIVE_HEADER = '## Archived Session Log'
@@ -4647,11 +4659,13 @@ _ENTRY_HEAD_PAT = r'^- \[([^\]]+)\]\s+\*\*(.*?)\*\*'
 
 def _entry_label(task):
     """Compact title for a managed entry. Known harness prompts collapse to
-    their marker; every other task keeps its text verbatim (capped at 80)."""
+    their marker; every other task keeps its text (capped at 80) on ONE line:
+    a newline inside the label splits the entry in two and the next commit
+    drops everything after it, summary included (ML15)."""
     t = (task or '').strip()
     if _STEWARD_TASK_MARKER in t[:60]:
         return _STEWARD_LABEL
-    return t[:80]
+    return ' '.join(t.split())[:80]
 
 
 def _entry_group_key(line):
@@ -4787,6 +4801,9 @@ def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None,
     mem_path = _get_memory_path(p)
     mem_path.parent.mkdir(parents=True, exist_ok=True)
     ring = _session_log_ring()
+    # ML15: one entry = one physical line, enforced here because this is the
+    # one place every writer meets (and before `last_entry_hash` is taken).
+    mem_entry = _entry_line.one_line(mem_entry, log=_log, project_id=project_id)
     with _get_mem_write_lock(project_id):
         existing = (mem_path.read_text(encoding='utf-8')
                     if mem_path.exists() else '')
@@ -6764,7 +6781,7 @@ def _dispatch_condense(project):
     # replaces the free claude -p + Write agent below with one non-agentic JSON
     # call applied server-side. The structured runner owns the
     # _condensing_projects discard in its finally, same as the agent _run.
-    if (state.CONFIG.get('condense_mode', 'agent') or 'agent') == 'structured':
+    if _condense_mode.is_structured(state.CONFIG):
         threading.Thread(target=_run_structured_condense,
                          args=(project,), daemon=True).start()
         return
@@ -6789,77 +6806,22 @@ def _dispatch_condense(project):
         except OSError:
             pass
 
-    budget = int(state.CONFIG.get('index_line_budget', 160) or 160)
-    prompt_parts = [
-        "You are a memory housekeeping agent (SPEC Leg C model tier). Your ONLY "
-        "job is to curate the project context files so they stay concise and "
-        "effective. You decide by VALUE, never by recency.\n",
-        f"## MEMORY.md curation — target: the WHOLE file under {budget} LINES\n"
-        f"(The harness only auto-loads ~200 lines; staying under {budget} keeps "
-        f"headroom. This is a LINE budget, not a KB target.)\n"
-        f"1. Read {mem_path}\n"
-        f"2. Read {archive_path} (if it exists)\n"
-        "3. MEMORY.md has two regions, treat them differently:\n"
-        "   - CURATED region (everything ABOVE the "
-        "`<!-- clayrune:managed:begin -->` sentinel): the hand-curated pointer "
-        "index. You ARE permitted to compact THIS region (you are the only "
-        "agent allowed to): merge overlapping pointers/sections covering the "
-        "same subsystem, drop stale 'as of YYYY-MM-DD' notes clearly superseded "
-        "by a later section, cut narration but keep the fact.\n"
-        "   - MANAGED region (between `<!-- clayrune:managed:begin -->` and "
-        "`<!-- clayrune:managed:end -->`, under `## Session Log`): raw "
-        "machine-written session entries. For EACH entry decide, by value: "
-        "(a) fold its durable insight into the matching curated pointer/topic "
-        "then remove the raw entry; (b) if it has no lasting value, DEMOTE it "
-        "(move it) to the archive; (c) keep it in the managed region only if "
-        "it's recent and not yet foldable. Never keep/drop by recency alone.\n"
-        "4. KEEP THE FORMAT: the rewritten file must still have the "
-        "`<!-- clayrune:managed:begin -->` / `## Session Log` / "
-        "`<!-- clayrune:managed:end -->` structure intact. The managed region "
-        "may legitimately end up EMPTY after folding — that is fine; keep the "
-        "sentinels and header. CRITICAL: any line beginning "
-        "`<!-- clayrune:wm:` is a live-session watermark — PRESERVE IT "
-        "VERBATIM, do not fold/move/delete/reformat it (deleting one loses a "
-        "running session's progress and forces a re-scribe from zero).\n"
-        "5. NEVER hard-delete a fact. The only permitted deletions are exact "
-        "duplicates or an entry STRICTLY superseded by a newer one that wholly "
-        "contains it. 'Not worth a curated slot' means DEMOTE to the archive "
-        "(still searchable cold storage), never erase.\n"
-        "6. DO NOT lose hard-won facts. Preserve verbatim: file paths, line "
-        "numbers, function/class names, config keys, exact numeric thresholds, "
-        "API signatures, command snippets, and any 'gotcha' warnings.\n"
-        f"7. Append demoted/overflow entries to {archive_path} (create it if "
-        f"needed). NEVER delete or truncate the archive — it is permanent "
-        f"searchable cold storage (SPEC D3).\n"
-        f"8. Write the curated result back to {mem_path}. Target under {budget} "
-        f"lines; if after honest folding it is still slightly over, that is "
-        f"acceptable — do NOT delete critical facts just to hit a number.\n",
-    ]
-
-    if claude_md_big:
-        prompt_parts.append(
-            f"\n## CLAUDE.md condensation — target under 15KB\n"
-            f"9. Read {claude_md_path}\n"
-            "10. This file contains project instructions and context that Claude CLI loads natively. "
-            "Condense it while preserving ALL critical information:\n"
-            "   - Keep all instructions, rules, and constraints verbatim.\n"
-            "   - Merge duplicate/overlapping sections.\n"
-            "   - Remove redundant examples, excessive formatting, and verbose explanations.\n"
-            "   - Compress session logs / historical notes into brief summaries.\n"
-            "   - Preserve code snippets, API references, and config patterns exactly.\n"
-            f"11. Write the condensed result back to {claude_md_path}. Target under 15KB; do NOT "
-            f"strip critical rules just to hit a number.\n"
-        )
-
-    prompt_parts.append(
-        "\nBE TURN-EFFICIENT (you have a limited turn budget): read EVERY "
-        "input file you need in your FIRST turn using parallel tool calls, "
-        "do all the folding/demotion reasoning, then write each output file "
-        "EXACTLY ONCE. Do not re-read a file you have already read. The write "
-        "step is what matters — do not spend the whole budget exploring.\n"
-        "\nDo NOT create any other files. Do NOT modify any code. Only touch the files listed above."
-    )
-    prompt = '\n'.join(prompt_parts)
+    # ML16: the prompt describes the layout that is on disk. Since the
+    # SESSION_LOG.md split MEMORY.md carries no managed region; only a
+    # MEMORY.md not migrated yet still has it inline.
+    try:
+        _inline = (mem_path.exists()
+                   and _MEM_BEGIN in mem_path.read_text(encoding='utf-8'))
+    except Exception as e:
+        _log(f"[condense] {pid}: MEMORY.md read for the prompt failed: {e}")
+        _inline = False
+    prompt = _condense_agent_mode.build_prompt(
+        mem_path=mem_path, archive_path=archive_path,
+        session_log_path=_get_session_log_path(project),
+        line_budget=int(state.CONFIG.get('index_line_budget', 160) or 160),
+        byte_budget_kb=_index_byte_trigger() // 1024,
+        inline_managed_region=_inline,
+        claude_md_path=claude_md_path if claude_md_big else None)
 
     model = _model_for_provider('condense_model', 'claude', default='sonnet')
     # --max-turns 14 (was 5): the workload is read MEMORY.md + read archive

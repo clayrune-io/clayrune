@@ -348,11 +348,11 @@ async function _renderSettings() {
   ).join('');
 
   const condenseModeOptions = [
+    ['structured', 'Structured (default; server-applied JSON plan)'],
     ['agent', 'Agent (legacy claude -p + Write)'],
-    ['structured', 'Structured (server-applied JSON plan)'],
   ];
   const condenseModeSel = condenseModeOptions.map(([v, l]) =>
-    `<option value="${v}" ${(cfg.condense_mode || 'agent') === v ? 'selected' : ''}>${l}</option>`
+    `<option value="${v}" ${(cfg.condense_mode || 'structured') === v ? 'selected' : ''}>${l}</option>`
   ).join('');
 
   // Brief-replies scope folds two server bools into one 3-way control.
@@ -458,7 +458,7 @@ async function _renderSettings() {
       <div class="settings-section-title">Tuning</div>
 
       <div class="settings-row">
-        <div><div class="settings-label">Executor</div><div class="settings-hint">Structured = one server-side JSON call (no agent).</div></div>
+        <div><div class="settings-label">Executor</div><div class="settings-hint">Structured (default) = one server-side JSON call (no agent).</div></div>
         <select class="settings-select" onchange="saveSetting('condense_mode',this.value)">${condenseModeSel}</select>
       </div>
     </div>

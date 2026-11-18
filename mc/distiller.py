@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Callable, cast
 
 from mc import skill_stats_file as _stats_file  # ML8: unreadable is never "empty" (stdlib-only leaf)
+from mc import distiller_readback_scan as _readback_scan  # ML25: the read-floor's scoped, stat-cached lister (stdlib-only leaf)
 
 # ── Injected helpers (set by register()) ─────────────────────────────────────
 
@@ -513,21 +514,36 @@ def _increment_counter(project_id: str, key: str, n: int = 1) -> None:
     errors with no way to tell) — the timestamp makes every error counter
     self-dating at the cost of one small dict.
     """
-    if n <= 0:
+    _increment_counters(project_id, {key: n})
+
+
+def _increment_counters(project_id: str, deltas: dict[str, int]) -> None:
+    """`_increment_counter` for several keys in ONE locked read and ONE
+    rewrite of the sidecar. Same contract: best-effort, never raises.
+
+    ML25: a bump is a full parse and a full atomic rewrite of the sidecar
+    (29 ms on a 2.9 MB file), so a caller with several counters to move at
+    once (the exploration read-floor, at every dispatch) must not pay that
+    once per key, let alone once per item it is counting.
+    """
+    deltas = {k: n for k, n in deltas.items() if n > 0}
+    if not deltas:
         return
     try:
         with _get_skill_stats_lock(project_id):
             stats = _read_skill_stats_for_update(project_id)
-            stats['counters'][key] = int(stats['counters'].get(key, 0)) + n
-            if ('error' in key or 'skip' in key or 'refuse' in key):
-                stats.setdefault('counters_last', {})[key] = (
-                    _now_iso() if _now_iso else '')
+            for key, n in deltas.items():
+                stats['counters'][key] = int(stats['counters'].get(key, 0)) + n
+                if ('error' in key or 'skip' in key or 'refuse' in key):
+                    stats.setdefault('counters_last', {})[key] = (
+                        _now_iso() if _now_iso else '')
             _write_skill_stats(project_id, stats)
     except _stats_file.SkillStatsUnreadable:
         pass  # logged once by the reader; a bump is not worth a line per dispatch
     except Exception as e:
         if _log:
-            _log(f"[distiller] counter bump {key!r} failed for {project_id}: {e}")
+            _log(f"[distiller] counter bump {sorted(deltas)!r} failed for "
+                 f"{project_id}: {e}")
 
 
 _VOCAB_MISS_CAP = 100  # per-project ring buffer of dropped-phrase samples
@@ -2433,30 +2449,40 @@ def exploration_read_floor(project_id: str, task: str,
         if not qt:
             return []
         # Loop-health telemetry: count every real readback query (task with
-        # content tokens) and, below, every query that actually injects a hit.
+        # content tokens) and every query that actually injects a hit.
         # hit_rate = readback_hit / readback_query proves the loop-closer earns
-        # its context cost. Best-effort; _increment_counter never raises.
-        _increment_counter(project_id, 'readback_query')
+        # its context cost. Best-effort; _increment_counters never raises.
+        # ML25: the three counters are tallied here and written ONCE below.
+        # Each bump rewrites the whole sidecar, and this runs at every dispatch.
+        tally = {'readback_query': 1}
         scored = []
-        for meta in list_proposed():
-            if meta.get('kind') != 'exploration':
-                continue
-            if meta.get('scope') not in (project_id, 'cross-project'):
-                continue
-            # _UNATTENDED_LOOP_RULE — no autonomous→autonomous circuit.
-            # Artifacts predating the `origin:` stamp have no provenance; treat
-            # them as unattended (fail closed) when the consumer is a steward.
-            if consumer_unattended and meta.get('origin') != 'interactive':
-                _increment_counter(project_id, 'readback_blocked_unattended')
-                continue
-            name = meta.get('name', '') or ''
-            score = len(qt & _expl_tokens(name.replace('-', ' ')))
-            if score <= 0:
-                continue
-            scored.append((score, meta.get('created_at', ''), meta))
+        try:
+            # ML25: only this project's and the global scope directory are
+            # opened, and only artifacts changed since the last dispatch read.
+            for meta in _readback_candidates(project_id):
+                if meta.get('kind') != 'exploration':
+                    continue
+                if meta.get('scope') not in (project_id, 'cross-project'):
+                    continue
+                # _UNATTENDED_LOOP_RULE — no autonomous→autonomous circuit.
+                # Artifacts predating the `origin:` stamp have no provenance;
+                # treat them as unattended (fail closed) when the consumer is
+                # a steward.
+                if consumer_unattended and meta.get('origin') != 'interactive':
+                    tally['readback_blocked_unattended'] = (
+                        tally.get('readback_blocked_unattended', 0) + 1)
+                    continue
+                name = meta.get('name', '') or ''
+                score = len(qt & _expl_tokens(name.replace('-', ' ')))
+                if score <= 0:
+                    continue
+                scored.append((score, meta.get('created_at', ''), meta))
+            if scored:
+                tally['readback_hit'] = 1
+        finally:
+            _increment_counters(project_id, tally)
         if not scored:
             return []
-        _increment_counter(project_id, 'readback_hit')
         # Highest overlap first, recency as tie-breaker.
         scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
         out = []
@@ -2470,6 +2496,14 @@ def exploration_read_floor(project_id: str, task: str,
         return out
     except Exception:
         return []
+
+
+def _readback_candidates(project_id: str) -> list[dict]:
+    """The artifacts the exploration read-floor may consider for `project_id`:
+    its own and the global ones, frontmatter only (ML25)."""
+    return _readback_scan.in_scope_artifacts(
+        cast(Path, _skills_root) / '_proposed', project_id,
+        _is_valid_project_id, _split_frontmatter)
 
 
 def _exploration_snippet(path: str, limit: int = 320) -> str:

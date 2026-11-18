@@ -30,6 +30,15 @@ implemented, matching Condition 15's precedent in `negation_interrupt.py`) —
 a human reviews the log with `tools/memory-eval/push_review.py` to grade
 precision before anything is wired to actually nudge a live agent.
 
+BOUNDS (ML24, MC-1179). "Every decision" is no longer literal. The search
+runs on the thread that reads the agent's stream, so one query-bearing call in
+`memory_push_sample_every` (default 5) per session is observed, the first one
+always; a call logs its would-send fires and at most its two best-ranked
+near-misses; and the log is size-bounded by `mc/memory_push_log.py` (two
+generations of 8 MB a project). Before that the reviewed install's log had
+reached 129.6 MB, 80% of it near-miss rows. A replay or a grading run that
+needs every call sets `memory_push_sample_every` to 1.
+
 WHY A SCORE THRESHOLD INSTEAD OF THE CONJUNCTIVE PHRASE MATCH
 `negation_interrupt.py` uses. That module matches WRITTEN TEXT (a plan, a
 dispatch prompt) against a small, curated set of standing POSITIONS — a
@@ -82,13 +91,13 @@ imports `mc.memory` (also a leaf) but never `mc.blueprints.*` or `server`.
 """
 from __future__ import annotations
 
-import json as _json
 import os as _os
 import re as _re
 from pathlib import Path as _Path
 
 from mc.core import _log, now_iso as _now_iso
 from mc import memory as _mem
+from mc import memory_push_log as _push_log   # ML24: the size-bounded append
 
 # ── extraction (pure string ops, no I/O — the cheap pre-filter) ────────────
 
@@ -99,13 +108,27 @@ from mc import memory as _mem
 _ERROR_LINE_RE = _re.compile(
     r'(?i)(\berror\b|\bexception\b|\btraceback\b|\bfailed\b|\bfailure\b|'
     r'\bnot\s+found\b|\bdenied\b|\brefused\b|\btimed?\s*out\b|\bpanic\b|'
-    r'\b[45]\d{2}\b|'
     # CamelCase exception class names (KeyError, TypeError,
     # ConnectionRefusedError, ValueError, ...): "Error"/"Exception" glued
     # onto a preceding word never has a \b of its own between the two — the
     # bare \berror\b/\bexception\b alternatives above never match "KeyError".
     r'\b[A-Za-z_][A-Za-z0-9_]*(?:Error|Exception)\b)'
 )
+
+# An HTTP status code counts only on a line that says it is one. A bare
+# `\b[45]\d{2}\b` (what this used to be, inside `_ERROR_LINE_RE`) matches any
+# standalone number from 400 to 599: a line number in a Read result, a byte
+# count, a row count. ML24: those lines became queries and log rows.
+_STATUS_CODE_RE = _re.compile(r'\b[45]\d{2}\b')
+_STATUS_CONTEXT_RE = _re.compile(
+    r'(?i)(?<![a-z])(?:https?|status|code)(?![a-z])|status_?code')
+
+
+def _is_failure_line(ln) -> bool:
+    if _ERROR_LINE_RE.search(ln):
+        return True
+    return bool(_STATUS_CODE_RE.search(ln) and _STATUS_CONTEXT_RE.search(ln))
+
 
 # A tool result can be a multi-MB dump (a huge Bash stdout, a giant grep).
 # Real failure signals cluster at the START (a usage/traceback header) or the
@@ -154,7 +177,7 @@ def extract_result_query(result_text) -> str:
     else:
         window = text
     hits = [ln.strip() for ln in window.splitlines()
-            if ln.strip() and _ERROR_LINE_RE.search(ln)]
+            if ln.strip() and _is_failure_line(ln)]
     if not hits:
         return ''
     return ' '.join(hits)[:_MAX_QUERY_CHARS]
@@ -187,6 +210,19 @@ _ARCHIVE_SCORE_MULTIPLIER = 1.5
 _SEARCH_TOPK = 6
 
 _DELIVERED_KEY = '_mem_push_sent'
+
+# ML24: the search below runs on the thread that reads the agent's stream
+# (31 ms warm, 358 ms when it is the call that rebuilds the corpus cache), and
+# it used to run for EVERY query-bearing tool call. Report mode grades
+# precision from a sample, so one call in N per session is observed; the first
+# call of a session always is, so a short session still contributes.
+_SAMPLE_EVERY_DEFAULT = 5
+_SEEN_KEY = '_mem_push_seen'
+
+# ML24: near-miss rows were 219,060 of the 273,371 rows in the reviewed
+# install's log, up to six per call. The two best-ranked candidates are what a
+# reviewer tuning the threshold reads; ranks 3 to 6 are not logged.
+_NEAR_MISS_KEEP = 2
 
 
 def _cfg(key, default):
@@ -225,6 +261,25 @@ def _max_per_turn() -> int:
                            or _MAX_PER_TURN_DEFAULT))
     except (TypeError, ValueError):
         return _MAX_PER_TURN_DEFAULT
+
+
+def _sample_every() -> int:
+    try:
+        return max(1, int(_cfg('memory_push_sample_every', _SAMPLE_EVERY_DEFAULT)
+                           or _SAMPLE_EVERY_DEFAULT))
+    except (TypeError, ValueError):
+        return _SAMPLE_EVERY_DEFAULT
+
+
+def _sampled(session) -> bool:
+    """True for the 1st, (N+1)th, (2N+1)th ... query-bearing call of this
+    session. Counted on the session so two sessions do not share a phase."""
+    try:
+        seen = int(session.get(_SEEN_KEY, 0) or 0)
+    except (TypeError, ValueError):
+        seen = 0
+    session[_SEEN_KEY] = seen + 1
+    return seen % _sample_every() == 0
 
 
 # ── classification (duplicates the filename heuristics `memory_turn.py` /
@@ -273,11 +328,10 @@ def _log_path(project_id) -> _Path:
 
 
 def _write_log(project_id, row: dict) -> None:
+    """Append one row. The file is size-bounded by `mc.memory_push_log` (two
+    generations of `MAX_BYTES`), which never raises."""
     try:
-        p = _log_path(project_id)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, 'a', encoding='utf-8') as f:
-            f.write(_json.dumps(row, ensure_ascii=False) + '\n')
+        _push_log.append_row(_log_path(project_id), row, log=_log)
     except Exception as e:
         _log(f"[memory-push] log write failed for {project_id}: {e}")
 
@@ -336,6 +390,8 @@ def observe(project, session, tool_name, source, query, provider=None) -> list:
     if not (query or '').strip():
         return []
     try:
+        if not _sampled(session):
+            return []
         return _observe(project, session, tool_name, source, query, provider)
     except Exception as e:
         _log(f"[memory-push] observe failed for {(project or {}).get('id')}: {e}")
@@ -363,7 +419,11 @@ def _observe(project, session, tool_name, source, query, provider) -> list:
         if cls == 'managed':
             continue
         score = h.get('score', 0.0)
-        already = fname in turn_delivered
+        # `mc.memory_turn` keeps UNIT ids in this set (`_uid_of`): the file
+        # name for a topic or position note, `<file>#<hash>` for an archive
+        # line. Testing the bare file name was always False for an archive
+        # hit, the one class this column exists to grade (ML24).
+        already = (h.get('uid') or fname) in turn_delivered
         # A whole topic/position file is already one identifiable unit via
         # `note`; only archive lines share a filename with ~2.5k neighbours
         # (RC4) and need their own identity carried alongside it.
@@ -379,7 +439,7 @@ def _observe(project, session, tool_name, source, query, provider) -> list:
             fires.append((fname, _row(pid, sid, prov, tool_name, source, query,
                                        'would_send', fname, cls, score, rank,
                                        min_score, already, line=line)))
-        else:
+        elif rank <= _NEAR_MISS_KEEP:
             _write_log(pid, _row(pid, sid, prov, tool_name, source, query,
                                   'near_miss', fname, cls, score, rank,
                                   min_score, already, line=line))

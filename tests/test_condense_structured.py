@@ -241,18 +241,28 @@ def test_structured_trigger_ignores_huge_claude_md(tmp_data_dir, tmp_path,
     assert s._should_condense(p, include_claude_md=True) is True
 
 
-def test_agent_trigger_unchanged_byte_keyed(tmp_data_dir, tmp_path,
-                                            monkeypatch):
+def test_agent_trigger_needs_the_index_over_budget(tmp_data_dir, tmp_path,
+                                                   monkeypatch):
+    """MC-1179 ML16. Was `test_agent_trigger_unchanged_byte_keyed`, which
+    pinned the defect as intended: a 200 KB CLAUDE.md beside a one-entry
+    MEMORY.md tripped the agent path, every cooldown, with nothing to curate.
+    The combined-byte gate is still there; a run now also needs the index over
+    its budget (tests/test_condense_agent_mode.py has the full contract)."""
     s = _server(tmp_data_dir)
-    _config()["condense_mode"] = "agent"          # legacy path = default
+    _config()["condense_mode"] = "agent"          # legacy path, only when a config says so
     _config()["condense_threshold_kb"] = 30
+    _config()["index_line_budget"] = 10
     p = _proj_with_big_claude_md(s, tmp_path, monkeypatch)
     mp = s._get_memory_path(p)
     mp.parent.mkdir(parents=True, exist_ok=True)
     mp.write_text(s._mem_compose("# I", ["- [d] **a** — x"], []),
                   encoding="utf-8")
-    # Agent path stays combined-byte keyed → the big CLAUDE.md still trips it
-    # (proves we did not alter legacy behavior).
+    # Over the byte gate (the big CLAUDE.md), index inside its budget: no run.
+    assert s._should_condense(p, include_claude_md=True) is False
+
+    # Over the byte gate AND the index over its line budget: fires.
+    big = [f"- [d] **e{i}** — line {i}" for i in range(40)]
+    mp.write_text(s._mem_compose("# I", big, []), encoding="utf-8")
     assert s._should_condense(p, include_claude_md=True) is True
 
 
