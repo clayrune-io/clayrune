@@ -909,11 +909,15 @@
   // module's own state. `token` is null once the storyboard is left or reopened.
   function _storyBridge() {
     const mine = _sb;
+    // Resolved once, here: a story save runs after the person may have opened another
+    // storyboard, and must still write to THIS one (a late `_sbOwner()` read B's id
+    // and B's rev and put A's scenes and story into B).
+    const owner = _sbOwner();
     return {
       token: () => (_sb === mine ? mine : null),
       ctx: () => (_sb === mine ? _sbCtx() : null),
-      owner: () => _sbOwner(),
-      extra: () => (mine.standalone ? { title: _sbCtx().fam.title } : undefined),
+      owner: () => owner,
+      extra: () => { const fam = mine.standalone ? _family(mine.familyId) : null; return fam ? { title: fam.title } : undefined; },
       registerItem: () => { const c = _sbCtx(); if (c) _registerItem(c.fam); },
       projectId: () => { const c = _sbCtx(); return (c && c.camp.projectId) || ''; },
       agentRef: () => { const c = _sbCtx(); const a = c && _sbAgent(c); return a && a.name ? a.ref : null; },

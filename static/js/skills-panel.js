@@ -817,7 +817,7 @@ function openSkillEditor(scope, name, projectId, isNew) {
       <div style="display:flex;gap:8px;align-items:center;justify-content:flex-end">
         <span id="se-status" style="font-size:11px;color:var(--text-faint);margin-right:auto"></span>
         <button class="btn-secondary" onclick="closeModalById('${window.jsAttr(modalId)}')">Cancel</button>
-        <button class="btn-add" onclick="saveSkillFromEditor('${window.jsAttr(modalId)}', ${isNew?'true':'false'}, '${window.jsAttr(scope)}', '${window.jsAttr(name)}', ${projectId?`'${window.jsAttr(projectId)}'`:'null'})">${isNew?'Create':'Save'}</button>
+        <button class="btn-add" id="se-save" ${isNew?'':'disabled title="Loading the skill…"'} onclick="saveSkillFromEditor('${window.jsAttr(modalId)}', ${isNew?'true':'false'}, '${window.jsAttr(scope)}', '${window.jsAttr(name)}', ${projectId?`'${window.jsAttr(projectId)}'`:'null'})">${isNew?'Create':'Save'}</button>
       </div>
     </div>`;
   win.appendChild(content);
@@ -833,18 +833,32 @@ function openSkillEditor(scope, name, projectId, isNew) {
     // Fetch existing skill content
     const params = new URLSearchParams({ include_body: 'true' });
     if (projectId) params.set('project_id', projectId);
+    // Save stays disabled until this succeeds: an editor that shows an existing skill
+    // as blank (the load failed) and saves would replace its playbook with nothing.
+    const loadFailed = (why) => {
+      const st = win.querySelector('#se-status');
+      if (st) { st.textContent = `Could not load this skill (${why}). Close and reopen it; nothing was changed.`; st.style.color = 'var(--red)'; }
+      const sv = win.querySelector('#se-save');
+      if (sv) sv.title = 'The skill did not load, so there is nothing safe to save';
+    };
     fetch(API_BASE + `/api/skills/${encodeURIComponent(scope)}/${encodeURIComponent(name)}?` + params.toString())
-      .then(r => r.json())
-      .then(data => {
-        if (data && !data.error) {
-          const descEl = win.querySelector('#se-description');
-          const bodyEl = win.querySelector('#se-body');
-          if (descEl) descEl.value = data.description || '';
-          if (bodyEl) bodyEl.value = data.body || '';
-          _seLintDescription(modalId);
-        }
+      .then(async r => {
+        let data = null;
+        try { data = await r.json(); } catch (_) { /* not JSON */ }
+        return { ok: r.ok, status: r.status, data };
       })
-      .catch(() => {});
+      .then(({ ok, status, data }) => {
+        if (!ok || !data || data.error) { loadFailed((data && data.error) || ('HTTP ' + status)); return; }
+        const descEl = win.querySelector('#se-description');
+        const bodyEl = win.querySelector('#se-body');
+        if (descEl) descEl.value = data.description || '';
+        if (bodyEl) bodyEl.value = data.body || '';
+        win.dataset.seLoaded = '1';
+        const sv = win.querySelector('#se-save');
+        if (sv) { sv.disabled = false; sv.removeAttribute('title'); }
+        _seLintDescription(modalId);
+      })
+      .catch(e => loadFailed(e && e.message ? e.message : 'network error'));
   }
 }
 
@@ -872,6 +886,7 @@ async function saveSkillFromEditor(modalId, isNew, origScope, origName, origProj
   const win = openModals.get(modalId)?.element;
   if (!win) return;
   const statusEl = win.querySelector('#se-status');
+  if (!isNew && win.dataset.seLoaded !== '1') return;   // never save over a skill that did not load
   const name = isNew ? (win.querySelector('#se-name')?.value || '').trim() : origName;
   const description = (win.querySelector('#se-description')?.value || '').trim();
   const body = win.querySelector('#se-body')?.value || '';

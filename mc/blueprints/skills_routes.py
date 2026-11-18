@@ -184,6 +184,7 @@ def update_skill_route(scope, name):
             project_path=project_path,
             project_id=project_id,
             overwrite=True,
+            keep_frontmatter=True,
         )
         return jsonify(rec)
     except ValueError as e:
