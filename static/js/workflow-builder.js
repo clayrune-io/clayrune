@@ -750,6 +750,12 @@ function _wfStampSavedSnapshot(st) {
 function _wfApplySnapshot(st, raw) {
   const snap = JSON.parse(raw);
   st.def = snap.def;
+  // A snapshot taken before a Save holds the schedule draft WITHOUT the id the
+  // server gave it at that Save. Restoring it as-is makes the next Save POST a
+  // second schedule for the same workflow, so keep the identity we already
+  // hold (WB2). Callers re-read the snapshot of what is now on screen.
+  const live = st.linkedSchedule;
+  if (snap.linkedSchedule && !snap.linkedSchedule.id && live && live.id) snap.linkedSchedule.id = live.id;
   st.linkedSchedule = snap.linkedSchedule;
 }
 
@@ -784,8 +790,8 @@ function _wfUndo() {
   if (st._redo.length > WFB_UNDO_CAP) st._redo.shift();
   const prev = st._undo.pop();
   _wfApplySnapshot(st, prev);
-  st._lastSnapshot = prev;
-  st.dirty = (prev !== st._savedSnapshot);
+  st._lastSnapshot = _wfSnapshot(st);
+  st.dirty = (st._lastSnapshot !== st._savedSnapshot);
   st.runErrors = null;
   _wfCloseTriggerPopover();
   _wfRender();
@@ -803,8 +809,8 @@ function _wfRedo() {
   if (st._undo.length > WFB_UNDO_CAP) st._undo.shift();
   const next = st._redo.pop();
   _wfApplySnapshot(st, next);
-  st._lastSnapshot = next;
-  st.dirty = (next !== st._savedSnapshot);
+  st._lastSnapshot = _wfSnapshot(st);
+  st.dirty = (st._lastSnapshot !== st._savedSnapshot);
   st.runErrors = null;
   _wfCloseTriggerPopover();
   _wfRender();
@@ -829,7 +835,7 @@ function _wfResetCanvas() {
   if (st._undo.length > WFB_UNDO_CAP) st._undo.shift();
   st._redo = [];
   _wfApplySnapshot(st, baseline);
-  st._lastSnapshot = baseline;
+  st._lastSnapshot = _wfSnapshot(st);
   st.dirty = false;
   st.runErrors = null;
   _wfCloseTriggerPopover();
@@ -4219,6 +4225,10 @@ async function _wfSave() {
     st.workflowId = data.workflow.id;
     st.def = JSON.parse(JSON.stringify(data.workflow));
     await _wfSaveLinkedSchedule(st);
+    // "Saved" is now THIS state (server def + the schedule id just assigned):
+    // Reset/Undo/Redo compare against it, and the render below sees no change
+    // so the save itself pushes nothing onto the undo stack (WB2).
+    _wfStampSavedSnapshot(st);
     st.saving = false;
     st.dirty = false;
     st.savedAt = Date.now();
