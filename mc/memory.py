@@ -48,6 +48,7 @@ import mc.memory_overlap_df as _overlap_df  # M4 corpus document-frequency stopl
 import mc.memory_gate_tap as _gate_tap  # G1 report-mode observer for mints (MC-964 step 10)
 import mc.memory_entry_line as _entry_line  # ML15: a managed entry is one physical line
 import mc.condense_agent_mode as _condense_agent_mode  # ML16: agent-mode "anything to do" test + prompt
+import mc.condense_mode as _condense_mode  # ML16: which executor a config selects; the one default
 
 from mc import state
 from mc.provider_env_scope import claude_child_env
@@ -4337,7 +4338,7 @@ def _should_condense(project, include_claude_md=False):
     # docs/CONDENSE_STRUCTURED_DESIGN.md Open Question #5). The legacy agent
     # path below keeps its combined-byte gate, and since ML16 also needs the
     # index over its budget.
-    if (state.CONFIG.get('condense_mode', 'agent') or 'agent') == 'structured':
+    if _condense_mode.is_structured(state.CONFIG):
         mem_path = _get_memory_path(project)
         if not mem_path.exists():
             return False
@@ -6780,7 +6781,7 @@ def _dispatch_condense(project):
     # replaces the free claude -p + Write agent below with one non-agentic JSON
     # call applied server-side. The structured runner owns the
     # _condensing_projects discard in its finally, same as the agent _run.
-    if (state.CONFIG.get('condense_mode', 'agent') or 'agent') == 'structured':
+    if _condense_mode.is_structured(state.CONFIG):
         threading.Thread(target=_run_structured_condense,
                          args=(project,), daemon=True).start()
         return

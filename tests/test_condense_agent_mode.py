@@ -1,4 +1,6 @@
-"""MC-1179 ML16: `condense_mode: 'agent'` (the shipped default).
+"""MC-1179 ML16: `condense_mode: 'agent'` (the shipped default until
+2026-11-17; now what a config that says 'agent' gets, see
+tests/test_condense_mode_default.py).
 
 Two defects, both pinned here:
 

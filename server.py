@@ -79,6 +79,9 @@ CONFIG_PATH = _DATA_ROOT / 'config.json'
 
 def _load_config():
     """Load config.json, creating with defaults if it doesn't exist."""
+    # Imported here, like migrate_desk_v1_default below: this function is
+    # also run on its own, outside this module's namespace.
+    from mc.condense_mode import DEFAULT as _condense_mode_default
     defaults = {
         'port': 5199,
         'shared_rules_path': str(_DATA_ROOT / 'data' / 'SHARED_RULES.md'),
@@ -154,11 +157,12 @@ def _load_config():
         'condense_threshold_kb': 30,
         'condense_model': '',
         'condense_enabled': True,
-        # Leg C executor. 'agent' = legacy free claude -p + Write tool
-        # (default until the structured path is telemetry-validated).
-        # 'structured' = one non-agentic JSON model call applied server-side
-        # through the leaf-locked writer. See docs/CONDENSE_STRUCTURED_DESIGN.md.
-        'condense_mode': 'agent',
+        # Leg C executor. 'structured' (the default since 2026-11-17) = one
+        # non-agentic JSON model call applied server-side through the
+        # leaf-locked writer. 'agent' = legacy free claude -p + Write tool,
+        # kept for a config that says so. The default is spelled once, in
+        # mc/condense_mode.py. See docs/CONDENSE_STRUCTURED_DESIGN.md.
+        'condense_mode': _condense_mode_default,
         'index_line_budget': 160,      # SPEC §3 Leg C model-tier target (lines)
         'index_line_hard_floor': 185,  # SPEC §3 Leg C mechanical floor (lines)
         # What we're willing to spend on the auto-loaded MEMORY.md every single

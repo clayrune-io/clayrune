@@ -247,7 +247,7 @@ Every step is claude-specific.
 ## Category 10 — Condense Path
 
 ### Condense `agent` mode (server.py:5442–5616)
-`_dispatch_condense` with `condense_mode='agent'` (default) spawns:
+`_dispatch_condense` with `condense_mode='agent'` (the default until 2026-11-17; `structured` since) spawns:
 ```python
 [_resolve_claude(), '-p', prompt, '--model', model, '--max-turns', '14',
  '--print', '--verbose', '--output-format', 'stream-json', '--dangerously-skip-permissions']

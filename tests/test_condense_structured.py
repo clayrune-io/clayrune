@@ -249,7 +249,7 @@ def test_agent_trigger_needs_the_index_over_budget(tmp_data_dir, tmp_path,
     The combined-byte gate is still there; a run now also needs the index over
     its budget (tests/test_condense_agent_mode.py has the full contract)."""
     s = _server(tmp_data_dir)
-    _config()["condense_mode"] = "agent"          # legacy path = default
+    _config()["condense_mode"] = "agent"          # legacy path, only when a config says so
     _config()["condense_threshold_kb"] = 30
     _config()["index_line_budget"] = 10
     p = _proj_with_big_claude_md(s, tmp_path, monkeypatch)

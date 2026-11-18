@@ -118,7 +118,8 @@ def deadband(m, project):
     from mc import state
     mem_path = m._get_memory_path(project)
     text = mem_path.read_text(encoding='utf-8', errors='replace')
-    mode = (state.CONFIG.get('condense_mode', 'agent') or 'agent')
+    from mc import condense_mode
+    mode = condense_mode.configured(state.CONFIG)
     byte_trigger = m._index_byte_trigger()
     byte_floor = m._index_byte_floor()
     line_budget = int(state.CONFIG.get('index_line_budget', 160) or 160)

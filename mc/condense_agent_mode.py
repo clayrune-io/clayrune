@@ -2,7 +2,8 @@
 agent is told (MC-1179 ML16).
 
 Agent mode launches a tool-capable `claude -p` agent to curate a project's
-memory files. Two things about it were wrong and are owned here.
+memory files. It is no longer the default (`mc/condense_mode.py`); a config
+that says `'agent'` still gets it. Two things about it were wrong and are owned here.
 
 **The trigger could not clear.** `_should_condense` summed MEMORY.md +
 SESSION_LOG.md + the permanent archive (+ CLAUDE.md) against
