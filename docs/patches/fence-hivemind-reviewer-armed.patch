@@ -1,0 +1,31 @@
+diff --git a/mc/launch_marker.py b/mc/launch_marker.py
+index a702d2b..0b3b697 100644
+--- a/mc/launch_marker.py
++++ b/mc/launch_marker.py
+@@ -41,6 +41,7 @@ RETRY_WATCHDOG_ENV = 'CLAUDE_CODE_RETRY_WATCHDOG'
+ 
+ UNATTENDED_TRIGGER_TYPES = frozenset({
+     'schedule', 'workflow', 'dispatch', 'hivemind_orchestrator', 'hivemind_worker',
++    'hivemind_reviewer',
+ })
+ 
+ 
+diff --git a/steward/fence.py b/steward/fence.py
+index 713b8d9..954eb3c 100644
+--- a/steward/fence.py
++++ b/steward/fence.py
+@@ -5171,8 +5171,14 @@ _MC_API_BASE = 'http://127.0.0.1:5199'
+ # Every trigger_type MC stamps for a launch path with no human reading each
+ # individual tool call. Deliberately excludes 'manual' — a plain UI chat or an
+ # agent-to-agent dispatch a human is actively reading.
++# 'hivemind_reviewer' (mc/hivemind_reviewer.py stamps it on the independent
++# reviewer session, whose task opens "You run unattended") was missing, so that
++# session ran with the fence off (review 2026-11-16 P64). The same list is
++# mirrored in mc/launch_marker.py; tests/test_launch_marker.py pins the two
++# together, so change both.
+ _UNATTENDED_TRIGGER_TYPES = {
+     'schedule', 'workflow', 'dispatch', 'hivemind_orchestrator', 'hivemind_worker',
++    'hivemind_reviewer',
+ }
+ 
+ 
