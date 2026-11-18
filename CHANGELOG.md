@@ -1,5 +1,10 @@
 # Clayrune — Changelog
 
+## [2026-11-18] - Workflow canvas: connection drags start at the exact centre of unconnected port dots
+
+- Decorative stop stubs now ignore pointer events, so their dashed line and cap cannot intercept a connection drag. This fixes outcome, otherwise and approval-option ports on the canvas and in the inspector without changing their appearance.
+- `tools/smoke/workflow-port-centre.mjs` covers real mouse drags from the exact centre of five unconnected port types. The label-rename smoke also uses centre presses instead of its former 6px offset workaround (backlog 8a610b84).
+
 ## [2026-11-18] - Control plane: sign-in CSP permits the requests needed to finish Google sign-in (8cdc4344)
 
 - The `/v1/signin` policy blocked its own `/v1/session/start` fetch and Firebase's dynamically loaded `apis.google.com` popup script. It now allows `'self'` in `connect-src` and `https://apis.google.com` in `script-src`, retaining the per-response script nonce and existing restrictions. The `/v1/connect` policy from `2e47217c` already allows both sources and needs no change. Four new header regression cases cover both served pages; the two sign-in cases fail before this fix. No control-plane deployment is included.

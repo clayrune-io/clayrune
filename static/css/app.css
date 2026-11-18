@@ -9513,7 +9513,7 @@
   /* An unconnected declared port is a deliberate, visible run-end (R2-D6) —
      a dashed stub + a stop cap, not just an empty socket. Extends OUTWARD
      from the dot's visible edge (7px radius), away from the card. */
-  .wfb-port-stub { width: 14px; height: 0; border-top: 2px dashed var(--text-faint); position: relative; }
+  .wfb-port-stub { width: 14px; height: 0; border-top: 2px dashed var(--text-faint); position: relative; pointer-events: none; }
   .wfb-port-stub::after { content: ''; position: absolute; right: -3px; top: -3px; width: 6px; height: 6px; background: var(--text-faint); }
   .wfb-ports-out .wfb-port-stub, .wfb-trigger-port-row .wfb-port-stub {
     position: absolute; left: 7px; top: 0; margin-top: -1px; margin-right: 0;
