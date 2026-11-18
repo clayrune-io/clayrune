@@ -12567,7 +12567,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              max_turns_override=None,
                              agent_cwd_override=None,
                              isolated_override=False, prepared_context=None,
-                             borrowed_worktree_override=False):
+                             borrowed_worktree_override=False, force_mode_a=False):
     """Core dispatch logic shared by HTTP endpoint and scheduler.
 
     Returns session_id on success, raises ValueError on error.
@@ -12893,7 +12893,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             _log(f"[dispatch] runtime '{provider_name}' failed, no fallback: {e}")
             raise
 
-    use_streaming = (False if prepared_context is not None else
+    # force_mode_a (R45): the runtime seam's mode='A' -- a one-task process that
+    # exits, so its on_process_exit hook fires. Mode B never exits at turn end.
+    use_streaming = (False if prepared_context is not None or force_mode_a else
                      p.get('use_streaming_agent', state.CONFIG.get('use_streaming_agent', False)))
 
     # Check session transcript size / context weight — auto-start fresh if
@@ -13371,6 +13373,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # MC-961 item 3: durable swap record ({from,to,reason,
                 # vendor_reset}, or None) — see _log_agent_dispatch_pending.
                 'engine_fallback': _engine_fallback_record,
+                # R45: the Mode A dict and the pending record carry these; the
+                # Mode B dict used to drop them, so _run_runtime_callbacks found
+                # nothing to run.
+                'housekeeping': bool(housekeeping),
+                '_runtime_callbacks': dict(runtime_callbacks or {}),
                 # Spawn context stash — re-appended verbatim on every `-r`
                 # respawn (see _respawn_sysprompt_args). Byte-identical
                 # content keeps the resumed prefix cache-friendly.

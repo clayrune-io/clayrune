@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Agent routes: Hivemind orchestrator exit hook (MC-1179 R45)
+
+- Hivemind orchestrator (R45): the orchestrator is dispatched as a Mode A process again, so its exit hook runs and frees its slot. With `use_streaming_agent` on (the default) it was launched in Mode B, whose session record never stored the callbacks, so `_on_exit` never ran, the id stayed in `_hivemind_orchestrating`, and every later `_spawn_orchestrator` call for that hivemind returned None (decompose, synthesize and replan stalled until a restart). `server._claude_dispatch_hook` now honours the runtime seam's `mode='A'` (new `force_mode_a` argument to `_dispatch_agent_internal`), and the Mode B session record stores `_runtime_callbacks` and `housekeeping` as the Mode A record already did. Chats and workers are unchanged: no other caller passes callbacks to a Claude Mode B session, and Hivemind workers already ran Mode A.
+
 ## [2026-11-17] - Hivemind: dead workers, resume, held integration, undelivered messages (MC-1179 OS25, OS24, OS33, OS26)
 
 - Reviewed integration timing (OS33): a worker still in its turn when the last workstream is marked complete, and a landing lock busy for more than 5 s, no longer hold the run for good. The attempt stays `running` with `waiting_since` and the driver retries every 5 s; after 15 minutes of waiting it holds as before. A busy lock is no longer recorded as a `native standards held` and no longer marks the worker branch `awaiting_standards`. The reviewer launch check ignores `updated_at` (the synthesis notify rewrites it while a candidate is smoked, which refused the launch with `stale reviewer launch inputs`); every other manifest key, `config` included, is still compared. A contributor becoming active while a candidate is merged, smoked or under review still holds. New `mc/hivemind_integration_wait.py`.

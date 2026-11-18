@@ -3419,6 +3419,9 @@ def _claude_dispatch_hook(**kwargs):
         agent_cwd_override=supplied_cwd,
         isolated_override=bool((supplied or {}).get('_worktree_isolated')),
         prepared_context=kwargs.get('prepared_context'),
+        # The seam's mode='A' is a request for a one-task process that exits
+        # (R45); the Hivemind orchestrator's exit hook depends on it.
+        force_mode_a=(kwargs.get('mode') == 'A'),
     )
     session = agent_sessions.get(session_id, {})
     p = load_project(project_id) or {}
