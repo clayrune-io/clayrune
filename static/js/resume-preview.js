@@ -611,8 +611,11 @@ async function _readAgentBuffer(projectId, sessionId) {
     if (serverLines.length === have) return sess;  // buffer in sync — nothing more to recover
     const missing = serverLines.slice(have);
     const missingTs = serverTs.slice(have);
-    for (const text of missing) {
-      const _mi = missing.indexOf(text);
+    for (let _mi = 0; _mi < missing.length; _mi++) {
+      // By index, never missing.indexOf(text): that finds the FIRST copy of a
+      // repeated line, so later copies were skipped as already-delivered and
+      // read the wrong timestamp (MC-1179 FE1).
+      const text = missing[_mi];
       // Race guard: SSE may have delivered the same line between fetch start
       // and now. Re-check our cursor against the index this iteration targets.
       if ((agentServerLines[sessionId] || 0) >= have + _mi + 1) continue;
