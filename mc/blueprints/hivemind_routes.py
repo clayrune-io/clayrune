@@ -1571,6 +1571,11 @@ def hivemind_bus_post(hivemind_id):
         return jsonify({'error': 'type required'}), 400
 
     msg_type = data['type'].strip()
+    # A directive is a person's message and 'user' is not a sender an agent can
+    # be: both come only from the human-only intervene route (OS26).
+    if str(data.get('from', '')).strip().lower() == 'user' or msg_type.lower() == 'directive':
+        return jsonify({'error': "bus/post cannot send as 'user' or post a 'directive'; "
+                                 "a person uses the dashboard's intervene"}), 400
     if (msg_type == 'finding_report' and str(data.get('from', '')).startswith('ws_')
             and not _hm_ids.is_safe_id(data['from'])):
         return jsonify({'error': 'invalid workstream id in from'}), 400
@@ -1809,6 +1814,7 @@ def hivemind_intervene(hivemind_id):
         'to': target,
         'type': 'directive',
         'content': message,
+        'via': _hm_user_directives.VIA,  # server-written; bus/post never copies it (OS26)
     }
     _hm_append_bus_message(hivemind_id, msg)
     _hm_push_sse(hivemind_id, {
