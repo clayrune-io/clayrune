@@ -5600,11 +5600,15 @@ function _dispatchQuestionAnswer(projectId, sessionId, container, answers) {
   if (agentStatusCache[sessionId]) agentStatusCache[sessionId].waitingForQuestion = false;
   const _hAns = agentHistory.find(h => h.sessionId === sessionId);
   if (_hAns) _hAns.waitingForQuestion = false;
+  // Keep what this clears so a refused send can draw the form again.
+  const _answeredPq = ((agentStatusCache[sessionId] || {}).pendingQuestions || [])
+    .find(p => p.question_id === (container.dataset.qid || ''));
   if (agentStatusCache[sessionId]) agentStatusCache[sessionId].pendingQuestions = [];
 
   const input = document.getElementById(`agent-followup-${sessionId}`);
   if (input) {
     input.value = message;
+    window.mcSendRefusal.noteQuestionAnswer(sessionId, container, _answeredPq);
     sendFollowup(projectId, sessionId);
   } else {
     fetch(API_BASE + `/api/project/${projectId}/agent/followup`, {
@@ -5619,6 +5623,7 @@ async function sendFollowup(projectId, sessionId, sendMode) {
   const input = document.getElementById(`agent-followup-${sessionId}`);
   const message = input.value.trim();
   if (!message) { input.focus(); return; }
+  const answeringQuestion = window.mcSendRefusal.takeQuestionAnswer(sessionId);
   const sendLinesBefore = (agentOutputBuffers[sessionId] || []).slice();
   let sendEcho;
 
@@ -5881,6 +5886,16 @@ async function sendFollowup(projectId, sessionId, sendMode) {
         if (inp && !inp.value && !delivered) window.mcSendRefusal.restoreComposer(inp, message);
         delete _sendInFlight[sessionId];
         delete _preSendStatus[sessionId];
+        return;
+      }
+      // Any other refusal (409 revive refused, 502 delivered:false, 500
+      // dispatch failed ...) used to fall into the success path below: no toast,
+      // a sent-looking bubble, an empty composer. Same trace as the catch path.
+      if (!delivered) {
+        window.mcSendRefusal.settleRefusedSend({
+          projectId, sessionId, echo: sendEcho, message, delivered,
+          note: answeringQuestion, error: data.error,
+        });
         return;
       }
     }

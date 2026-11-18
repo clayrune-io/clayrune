@@ -175,7 +175,12 @@ try {
   });
   await scenario('server rejection also reconnects and reconciles', { reply: { ok: false, error: 'revive refused' } }, async args => {
     await recovered(args);
-    assert.equal(await args.input.inputValue(), '', 'preserve ordinary rejection composer behavior');
+    // MC-1179 CV2: an ordinary rejection used to leave an empty composer, a
+    // sent-looking bubble and no toast. It now behaves like the network-error path.
+    await args.page.waitForFunction(({ sid, message }) => document.getElementById(`agent-followup-${sid}`).value === message, { sid, message });
+    assert.equal(await args.output.locator('.agent-echo').count(), 0);
+    assert.equal(await args.output.locator('.agent-echo-failed').count(), 1);
+    assert.match((await args.page.evaluate(() => smokeToasts)).at(-1), /revive refused/);
     const before = args.probes();
     const sessions = await args.page.evaluate(async ({ pid, sid }) => {
       const sessions = await Promise.all([_reconcileAgentBuffer(pid, sid), _reconcileAgentBuffer(pid, sid)]);
