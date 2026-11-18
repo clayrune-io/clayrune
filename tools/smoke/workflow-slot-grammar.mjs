@@ -67,7 +67,12 @@ await h.check('the chip legend flags a reference to a space-named step as broken
 await h.check('typing a step name the slot grammar cannot express is refused at the rename', async () => {
   await h.open('wf-hyphen-ok');
   await page.evaluate(() => window._wfOpenInspector('agent-1'));
-  await page.evaluate(() => { document.querySelector('#wfb-inspector .wfb-name').value = 'Review draft'; });
+  await page.fill('#wfb-inspector .wfb-name', 'Review draft');
+  // The reason is right under the field, inside the inspector, and not a corner toast.
+  const note = page.locator('#wfb-inspector [data-note="name"]');
+  await note.waitFor({ state: 'visible' });
+  assert.match(await note.innerText(), /letters, digits, "-" and "_" only/);
+  assert.equal(await page.locator('#toast-container .toast', { hasText: 'Step names take' }).count(), 0, 'the reason is not in a toast (earlier checks may leave unrelated toasts up)');
   await page.evaluate(() => window._wfCloseInspector());
   const d = await h.def();
   assert.deepEqual(d.nodes.map(n => n.name), ['agent-1', 'agent-2']);

@@ -95,13 +95,14 @@ await h.check('an emptied pill that has an edge keeps its label: no edge is sile
   assert.deepEqual(await edgeLabels(), ['a->b:yes']);
 });
 
-await h.check('an emptied unwired pill: its + is refused with a toast, no popover, no new step', async () => {
+await h.check('an emptied unwired pill: its + is refused on that row (no toast), no popover, no new step', async () => {
   await h.open('wf-three');
   await page.evaluate(() => window._wfOpenInspector('a'));
   await pill(2).fill('');
   await row(2).locator('.wfb-port-plus').dispatchEvent('click');
   assert.equal(await page.locator('#wfb-port-popover').count(), 0, 'no popover opens');
-  assert.match(await page.locator('.toast, #toast, [class*="toast"]').allInnerTexts().then(a => a.join(' ')), /Name this outcome first/);
+  assert.match(await page.locator('#wfb-inspector [data-note="label"]:not([hidden])').innerText(), /Name this outcome first/);
+  assert.equal(await page.locator('#toast-container .toast').count(), 0, 'the reason is on the row, not in a toast');
   assert.equal((await h.def()).nodes.length, 1);
   assert.deepEqual(await edgeLabels(), []);
 });
@@ -112,7 +113,8 @@ await h.check('an emptied option pill on an approval gate: its + is refused the 
   await pill(2).fill('');
   await row(2).locator('.wfb-port-plus').dispatchEvent('click');
   assert.equal(await page.locator('#wfb-port-popover').count(), 0);
-  assert.match(await page.locator('[class*="toast"]').allInnerTexts().then(a => a.join(' ')), /Name this option first/);
+  assert.match(await page.locator('#wfb-inspector [data-note="label"]:not([hidden])').innerText(), /Name this option first/);
+  assert.equal(await page.locator('#toast-container .toast').count(), 0);
 });
 
 await h.check('an emptied unwired pill: a drag from its port dot makes no edge and drops no label', async () => {
@@ -126,7 +128,8 @@ await h.check('an emptied unwired pill: a drag from its port dot makes no edge a
   await page.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 12 });
   await page.mouse.up();
   assert.deepEqual(await edgeLabels(), []);
-  assert.match(await page.locator('[class*="toast"]').allInnerTexts().then(a => a.join(' ')), /Name this outcome first/);
+  assert.match(await page.locator('#wfb-inspector [data-note="label"]:not([hidden])').innerText(), /Name this outcome first/);
+  assert.equal(await page.locator('#toast-container .toast').count(), 0);
 });
 
 await h.finish('workflow-label-rename');

@@ -9679,6 +9679,13 @@
     font-size: 11px; padding: 6px 8px; border-radius: 5px; margin-bottom: 8px;
   }
 
+  /* A refused edit says so next to its own field (static/js/workflow-field-notes.js):
+     the same red box as above, tucked under the input, and the input itself outlined
+     in the existing red while it holds the refused text. */
+  .wfb-node-inline-error.wfb-field-note { margin: 4px 0 8px; }
+  .wfb-node-inline-error.wfb-field-note[hidden] { display: none; }
+  #wfb-inspector input[aria-invalid="true"] { border-color: var(--red); box-shadow: 0 0 0 2px var(--red-dim, rgba(220,53,69,0.25)); }
+
   /* MC-871 follow-up: an unauthenticated provider is a WARNING, not an error
      -- Save/Run-now still work (brief: "the user may have a reason, he just
      should not proceed unaware"). Same shape as wfb-node-error above, amber

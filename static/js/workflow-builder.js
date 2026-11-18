@@ -1,5 +1,6 @@
 import {refreshWorkflowEnginePreview} from './workflow-engine-preview.js';
 import {wfReconcileLabels, wfLiveWhen, wfTypedLabelAt, wfBlankLabelKind} from './workflow-label-sync.js';
+import {wfNameFieldHTML, wfPillValue, wfPillInvalidAttr, wfVocabNoteHTML, wfNameRefused, wfNameAccepted, wfLabelNoteSettled, wfNoteBlankLabel, wfFieldNotesAfterRender, wfFieldNotesInit} from './workflow-field-notes.js';
 import {WF_STEP_REF_RE, wfSlotStepRe, wfSlotAnyRe, isValidStepName, stepNameOfRef, STEP_NAME_RULE_TEXT} from './workflow-slot-grammar.js';
 
 // ── Workflow Builder (MC-871, R2-D7 — "the canvas") ──────────────────────────
@@ -130,6 +131,7 @@ import {WF_STEP_REF_RE, wfSlotStepRe, wfSlotAnyRe, isValidStepName, stepNameOfRe
 // stood in for `openModals.get(WF_MODAL_ID)`.
 let _wfState = null;
 function _wfEntry() { return _wfState; }
+wfFieldNotesInit(() => (_wfState && _wfState._wf) || null);
 let _wfNameSeq = 0;
 const _wfCharCache = new Map();
 
@@ -1375,7 +1377,8 @@ function _wfSyncDomToModel(entry) {
     const own = document.querySelector('#wfb-inspector .wfb-node-own');
     if (node && own) {
       const oldName = node.name;
-      _wfSyncNodeOwn(node, own, edges);
+      _wfSyncNodeOwn(node, own, edges, entry._wf);
+      wfLabelNoteSettled(entry._wf);
       if (node.name && node.name !== oldName) {
         // Renames aren't guarded against breaking a TEXT slot reference
         // elsewhere (spine behaviour, carried forward — see file header), but
@@ -1406,7 +1409,7 @@ function _wfSyncDomToModel(entry) {
   return renameMap;
 }
 
-function _wfSyncNodeOwn(node, own, edges) {
+function _wfSyncNodeOwn(node, own, edges, st) {
   // Edges still carry the name from before this sync's rename (the caller repoints them after).
   const edgeFrom = node.name;
   const nameEl = own.querySelector('.wfb-name');
@@ -1416,9 +1419,11 @@ function _wfSyncNodeOwn(node, own, edges) {
     // reference it (WB3). Only a CHANGED name is judged: a step loaded with an
     // older name is left alone until the user edits it.
     if (typed && typed !== node.name && !isValidStepName(typed)) {
-      showToast(`Step names take ${STEP_NAME_RULE_TEXT} (so other steps can use its result). Kept "${node.name}".`, 5000);
-      nameEl.value = node.name;
+      // Refused next to the field (static/js/workflow-field-notes.js), not in a
+      // corner toast. The model keeps the old name; the field keeps what was typed.
+      wfNameRefused(st, node, typed);
     } else {
+      wfNameAccepted(st, node);
       node.name = typed || node.name;
     }
   }
@@ -1493,6 +1498,7 @@ function _wfRender() {
   }
   _wfApplyViewport(st);
   _wfAttachCanvasGestures();
+  wfFieldNotesAfterRender(st, () => (_wfState && _wfState._wf) || null);
   // The trigger popover (Change 2) lives outside #wfb-body (same reason the
   // port popover does -- an overflow:auto ancestor would clip it), so a full
   // body re-render doesn't touch it. Every mutator it drives (_wfSetTriggerType,
@@ -2142,13 +2148,13 @@ function _wfRenderVocabRows(st, node, kind) {
   const rows = vocab.map((label, oi) => {
     const connected = edges.some(e => e.from === node.name && (e.when || null) === label);
     return `<div class="wfb-vocab-row">
-      <input class="${inputCls} wfb-vocab-pill" value="${esc(label)}">
+      <input class="${inputCls} wfb-vocab-pill" value="${esc(wfPillValue(st, node, kind, oi, label))}"${wfPillInvalidAttr(st, node, kind, oi)}>
       <button class="wfb-branch-del" title="Remove ${kind}" onclick="${removeFn}('${window.jsAttr(node.name)}',${oi})">&#10005;</button>
       <button type="button" class="wfb-port-plus" title="After &ldquo;${esc(label)}&rdquo;, run&hellip;"
         onclick="_wfPortPlusClick(event,'${window.jsAttr(node.name)}','${window.jsAttr(label)}')">&#43;</button>
       <span class="wfb-port wfb-port-out" data-node="${nameAttr}" data-when="${esc(label)}" title="Drag to connect to the next step" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
       ${connected ? '' : '<span class="wfb-port-stub"></span>'}
-    </div>`;
+    </div>${wfVocabNoteHTML(st, node, kind, oi)}`;
   }).join('');
   const otherwiseRow = vocab.length ? (() => {
     const otherConnected = edges.some(e => e.from === node.name && (e.when || null) === 'otherwise');
@@ -2398,7 +2404,7 @@ function _wfRenderAgentOwn(st, node) {
   st._charLoads.push({ seq, want: node.character || '' });
   return `
     <label>Name <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(referenced as <code>{{steps.NAME.output}}</code>)</span></label>
-    <input class="wfb-name" value="${esc(node.name || '')}" placeholder="step-name">
+    ${wfNameFieldHTML(st, node, 'step-name')}
     <div class="wfb-project-row">
       <span class="wfb-project-icon" aria-hidden="true">&#128193;</span>
       <select id="wfb-proj-${seq}" class="wfb-project" onchange="_wfReloadCharacters(${seq})">
@@ -2427,7 +2433,7 @@ function _wfRenderAgentOwn(st, node) {
 function _wfRenderApprovalOwn(st, node) {
   return `
     <label>Name</label>
-    <input class="wfb-name" value="${esc(node.name || '')}" placeholder="approval-name">
+    ${wfNameFieldHTML(st, node, 'approval-name')}
     <div class="wfb-action-desc">Parks the run and waits for a human to pick one of the options below (delivered over the question channel). Whichever is picked routes to that option's own port -- nothing runs while it waits.</div>
     <div class="wfb-branch-labels">
       <label>Options <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(what a human can choose &mdash; each gets its own port)</span></label>
@@ -2529,7 +2535,7 @@ function _wfRenderActionOwn(st, node) {
   const group = meta.group || _WF_ACTION_GROUP_ORDER[0];
   return `
     <label>Name</label>
-    <input class="wfb-name" value="${esc(node.name || '')}" placeholder="action-name">
+    ${wfNameFieldHTML(st, node, 'action-name')}
     <label>What</label>
     ${_wfActionGroupSelectHTML(group)}
     <label>Do</label>
@@ -2551,7 +2557,7 @@ function _wfRenderWaitOwn(st, node) {
   const mode = cfg.mode === 'until' ? 'until' : 'delay';
   return `
     <label>Name</label>
-    <input class="wfb-name" value="${esc(node.name || '')}" placeholder="wait-name">
+    ${wfNameFieldHTML(st, node, 'wait-name')}
     <label>Wait</label>
     <select class="wfb-wait-mode-select" onchange="_wfRerenderWaitFields(this)">
       <option value="delay"${mode === 'delay' ? ' selected' : ''}>For a delay</option>
@@ -3882,7 +3888,7 @@ function _wfPortDown(e) {
   e.preventDefault(); // Change 8: same text-selection guard as the other drag starts
   const portEl = e.currentTarget;
   const blank = wfBlankLabelKind(portEl);
-  if (blank) { showToast(`Name this ${blank} first.`, 4000); return; }
+  if (blank) { const e0 = _wfEntry(); wfNoteBlankLabel(e0 && e0._wf, portEl, blank); return; }
   const st = { pointerId: e.pointerId, fromNode: portEl.dataset.node, when: wfLiveWhen(portEl, portEl.dataset.when) || null, portEl, curX: e.clientX, curY: e.clientY };
   _wfConnectDrag = st;
   try { portEl.setPointerCapture(e.pointerId); } catch (err) { /* best-effort */ }
@@ -4063,7 +4069,7 @@ let _wfPortPopover = null; // { fromNode, when, search, anchorX, anchorY }
 function _wfPortPlusClick(e, fromNode, when) {
   e.stopPropagation();
   const blank = wfBlankLabelKind(e.currentTarget);
-  if (blank) { _wfClosePortPopover(); showToast(`Name this ${blank} first.`, 4000); return; }
+  if (blank) { _wfClosePortPopover(); const e0 = _wfEntry(); wfNoteBlankLabel(e0 && e0._wf, e.currentTarget, blank); return; }
   when = wfLiveWhen(e.currentTarget, when);
   const entry = _wfEntry(); if (!entry || !entry._wf) return;
   const already = _wfPortPopover
@@ -4876,6 +4882,7 @@ function _wfRelativeSavedLabel(ts) {
 //    file follows — every top-level declaration here is module-scoped).
 window.openWorkflowBuilder = openWorkflowBuilder;
 window._wfEntry = _wfEntry; // test/debug introspection of the mounted singleton
+window._wfRender = _wfRender; // smoke hook: re-render with a refusal message showing
 window._wfSetTriggerType = _wfSetTriggerType;
 window._wfPaletteDown = _wfPaletteDown;
 window._wfPaletteSearch = _wfPaletteSearch;
