@@ -901,8 +901,13 @@ function Get-ResyncBlockers {
                 }
             }
         }
+        # Tips go in on stdin, one per line, joined with LF in ONE string: a long
+        # reflog would overflow the Windows command line (a permanent "could not
+        # be checked" refusal), and per-line piping would end each line in CRLF,
+        # which git reads as part of the revision name.
         $tips = @($tips | Select-Object -Unique)
-        $count = (& git -C $InstallDir rev-list --count --ignore-missing HEAD "^refs/remotes/origin/$Branch" @tips 2>$null | Out-String).Trim()
+        $tipText = (@("^refs/remotes/origin/$Branch") + $tips) -join "`n"
+        $count = ($tipText | & git -C $InstallDir rev-list --count --ignore-missing HEAD --stdin 2>$null | Out-String).Trim()
         if ($LASTEXITCODE -ne 0 -or $count -notmatch '^\d+$') {
             $blockers += "commits that could not be checked against origin/$Branch"
         } elseif ([int]$count -gt 0) {
@@ -1027,11 +1032,14 @@ if (Test-Path $installDir) {
             if ($blockers.Count -gt 0) {
                 Write-Host '[STEP 1/5] STOPPED re-syncing would discard your local work, so nothing was changed:' -ForegroundColor Red
                 foreach ($b in $blockers) { Write-Host "            - $b" -ForegroundColor Red }
+                if ($blockers -match 'local commit|commits that could not') {
+                    Write-Host '          If you have never committed anything in this folder, these are commits from an older Clayrune history and the reset command below is safe.' -ForegroundColor Red
+                }
                 Write-Host '          Save it, then re-run this installer. By hand:' -ForegroundColor Red
                 if ($blockers -match 'uncommitted edits') {
                     Write-Host "          git -C '$installDir' stash push -m before-clayrune-resync" -ForegroundColor Cyan
                 }
-                if ($blockers -match 'commit') {
+                if ($blockers -match 'local commit|commits that could not') {
                     Write-Host "          git -C '$installDir' branch my-clayrune-work" -ForegroundColor Cyan
                 }
                 Write-Host "          git -C '$installDir' reset --hard origin/$branch" -ForegroundColor Cyan

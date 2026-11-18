@@ -22,6 +22,7 @@ SCENARIOS = [
     'ff_clean',            # plain fast-forward: pull works, no fallback
     'force_push_clean',    # upstream rewritten, nothing local: fallback must still work
     'untracked_only',      # upstream rewritten, only an untracked file: kept, fallback runs
+    'long_reflog',         # force-push after a very long remote-tracking reflog (Windows command-line limit)
     'edit_overlap',        # tracked edit the incoming commit touches (pull fails)
     'edit_force_push',     # tracked edit + upstream rewritten
     'local_commit',        # unpushed commit + upstream moved on (pull fails)
@@ -71,6 +72,14 @@ def _build(tmp_path, scenario):
         upstream_commit()
     elif scenario == 'force_push_clean':
         upstream_rewrite()
+    elif scenario == 'long_reflog':
+        upstream_rewrite()
+        _git(install, 'fetch', '--prune', 'origin')
+        log = install / '.git' / 'logs' / 'refs' / 'remotes' / 'origin' / 'master'
+        # 1199 fake entries = ~100 KB of tips, past the 32 KB Windows command line.
+        fake = ''.join(f'{i:040x} {i + 1:040x} t <t@example.invalid> 1700000000 +0000\tfetch: fake\n'
+                       for i in range(1, 1200))
+        log.write_text(fake + log.read_text())
     elif scenario == 'untracked_only':
         (install / 'config.json').write_text('{"mine": true}\n')
         upstream_rewrite()
@@ -149,7 +158,12 @@ def _check(scenario, install, before, result):
             assert (install / f).read_text() == 'my local edit\n', out
         # And it says how to save the work, by hand.
         assert 'reset --hard' in out, out
-        assert ('stash' in out) if scenario.startswith('edit') else ('branch' in out), out
+        if scenario.startswith('edit'):
+            assert 'stash push' in out and 'my-clayrune-work' not in out, out
+            assert 'never committed anything' not in out, out
+        else:
+            assert 'my-clayrune-work' in out and 'stash push' not in out, out
+            assert 'never committed anything' in out, out
         assert 'untouched' not in out.lower(), out
     else:
         assert result.returncode == 0, out

@@ -547,11 +547,14 @@ if [ -d "$INSTALL_DIR" ]; then
       if [ -n "$_blockers" ]; then
         printf "%s[STEP 1/5] STOPPED%s re-syncing would discard your local work, so nothing was changed:\n" "$E" "$R"
         printf "%s\n" "$_blockers" | sed 's/^/            - /'
+        case "$_blockers" in *"local commit"*|*"commits that could not"*)
+          printf "          If you have never committed anything in this folder, these are commits from an older Clayrune history and the reset command below is safe.\n" ;;
+        esac
         printf "          Save it, then re-run this installer. By hand:\n"
         case "$_blockers" in *"uncommitted edits"*)
           printf "          %sgit -C '%s' stash push -m before-clayrune-resync%s\n" "$C" "$INSTALL_DIR" "$R" ;;
         esac
-        case "$_blockers" in *"commit"*)
+        case "$_blockers" in *"local commit"*|*"commits that could not"*)
           printf "          %sgit -C '%s' branch my-clayrune-work%s\n" "$C" "$INSTALL_DIR" "$R" ;;
         esac
         printf "          %sgit -C '%s' reset --hard origin/%s%s\n" "$C" "$INSTALL_DIR" "$_branch" "$R"
