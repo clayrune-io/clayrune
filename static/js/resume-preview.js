@@ -442,7 +442,7 @@ async function dispatchAgent(projectId) {
       if (errIdx >= 0) agentHistory.splice(errIdx, 1);
       delete activeAgentTab[projectId];
       agentConvNew[projectId] = true;
-      input.value = task;
+      window.mcSendRefusal.restoreComposer(input, task);  // FE14: also re-seeds textareaValues
       refreshModal();
       alert(data.error || 'Dispatch failed');
       return;
@@ -499,7 +499,7 @@ async function dispatchAgent(projectId) {
     if (errIdx >= 0) agentHistory.splice(errIdx, 1);
     delete activeAgentTab[projectId];
     agentConvNew[projectId] = true;
-    input.value = task;
+    window.mcSendRefusal.restoreComposer(input, task);  // FE14: also re-seeds textareaValues
     refreshModal();
     alert('Failed to dispatch: ' + e.message);
   }

@@ -29,6 +29,7 @@ export async function launch() { return chromium.launch(); }
 // options: { reply, status, networkError, question }
 //   reply         JSON body (+ optional `status`) the /agent/send route answers with
 //   networkError  abort the POST instead of answering
+//   dispatchReply / dispatchNetworkError  the same for the new-conversation /agent/dispatch POST
 //   question      { id, questions } -> the server mirrors it as a pending question
 export async function scenario(browser, options, check) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -62,6 +63,11 @@ export async function scenario(browser, options, check) {
           ...(q ? { waiting_for_question: true,
             pending_questions: [{ question_id: q.id, questions: q.questions }] } : {}),
         }] } });
+      }
+      if (path.endsWith('/agent/dispatch')) {
+        seen.dispatches = (seen.dispatches || 0) + 1;
+        if (options.dispatchNetworkError) return route.abort('failed');
+        return route.fulfill({ json: options.dispatchReply || { ok: false, error: 'refused' } });
       }
       if (path.endsWith('/agent/send')) {
         seen.posts++;
