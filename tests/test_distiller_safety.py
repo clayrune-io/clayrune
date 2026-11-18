@@ -94,17 +94,32 @@ def test_is_unattended_task():
     assert not d.is_unattended_task(None)
 
 
+def _proposed_exploration(root, scope_dir, name, origin, created_at):
+    """A real EXPLORATION.md under _proposed/<scope_dir>/. `origin=''` writes
+    no `origin:` line at all: an artifact from before the stamp existed.
+
+    MC-1179 ML25: the read-floor no longer goes through `list_proposed()`, so
+    these tests feed it files, and so also cover the read of the stamp itself.
+    """
+    art = root / '_proposed' / scope_dir / f'{created_at}-aaaaaaaaaaaa-{name}'
+    art.mkdir(parents=True)
+    (art / 'EXPLORATION.md').write_text(
+        '\n'.join(
+            ['---', 'kind: exploration', f'name: {name}']
+            + ([f'origin: {origin}'] if origin else [])
+            + [f'created_at: {created_at}', '---', '', f'# {name}', '', 'body', '']),
+        encoding='utf-8')
+
+
 def test_unattended_read_floor_blocks_unattended_artifacts(monkeypatch, tmp_path):
     """A steward must not be fed artifacts its own kind authored."""
     monkeypatch.setattr(d, '_skills_root', tmp_path)
-    monkeypatch.setattr(d, '_increment_counter', lambda *a, **k: None)
+    monkeypatch.setattr(d, '_increment_counters', lambda *a, **k: None)
     monkeypatch.setattr(d, '_exploration_snippet', lambda *a, **k: 'gist')
-    monkeypatch.setattr(d, 'list_proposed', lambda: [
-        {'kind': 'exploration', 'scope': 'p1', 'name': 'condense-timeout-cause',
-         'origin': 'unattended', 'path': 'a.md', 'created_at': '2026-07-01'},
-        {'kind': 'exploration', 'scope': 'p1', 'name': 'condense-timeout-fix',
-         'origin': 'interactive', 'path': 'b.md', 'created_at': '2026-07-02'},
-    ])
+    _proposed_exploration(tmp_path, 'p1', 'condense-timeout-cause',
+                          'unattended', '2026-07-01')
+    _proposed_exploration(tmp_path, 'p1', 'condense-timeout-fix',
+                          'interactive', '2026-07-02')
     task = 'investigate condense timeout'
 
     attended = d.exploration_read_floor('p1', task, topk=5,
@@ -122,12 +137,10 @@ def test_unattended_read_floor_fails_closed_on_unstamped_artifacts(
     """Artifacts predating the origin: stamp have no provenance. For an
     unattended consumer, unknown provenance must be treated as unsafe."""
     monkeypatch.setattr(d, '_skills_root', tmp_path)
-    monkeypatch.setattr(d, '_increment_counter', lambda *a, **k: None)
+    monkeypatch.setattr(d, '_increment_counters', lambda *a, **k: None)
     monkeypatch.setattr(d, '_exploration_snippet', lambda *a, **k: 'gist')
-    monkeypatch.setattr(d, 'list_proposed', lambda: [
-        {'kind': 'exploration', 'scope': 'p1', 'name': 'legacy-condense-note',
-         'origin': '', 'path': 'a.md', 'created_at': '2026-06-01'},
-    ])
+    _proposed_exploration(tmp_path, 'p1', 'legacy-condense-note',
+                          '', '2026-06-01')
     assert d.exploration_read_floor('p1', 'condense', topk=5,
                                     consumer_unattended=True) == []
     assert d.exploration_read_floor('p1', 'condense', topk=5,
