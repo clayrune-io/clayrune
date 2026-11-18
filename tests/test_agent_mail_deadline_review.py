@@ -32,7 +32,7 @@ def test_real_oneshot_argv_and_stdin_without_spawning(monkeypatch, tmp_path):
         captured.update(argv=argv, **kwargs)
         return SimpleNamespace(returncode=0, stdout=extraction('Friday works.'), stderr='')
 
-    monkeypatch.setattr(rt.subprocess, 'run', fake_run)
+    monkeypatch.setattr(rt._transform_process_deadline, 'run', fake_run)
     result = runtime.oneshot(prompt='Extract inert mail', stdin_text='Friday works.',
                              model='haiku', timeout=25)
     assert result.text
