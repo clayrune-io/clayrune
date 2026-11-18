@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-17] - Memory system: four high findings (MC-1179 ML15, ML24, ML25, ML16)
+
+- Session summaries (ML15): a task whose first 80 characters hold a newline no longer loses its Scribe summary. The entry title kept the newline, so the entry was written as two or more lines and the next write kept only the first: the title cut short, with no summary. The title is now one line (whitespace runs become one space, still capped at 80), and the writer itself stores any entry as one line (new `mc/memory_entry_line.py`), which also covers the startup reconciler's own title. A live checkpoint of such a task now replaces its previous entry instead of adding a new one each time. Not changed: entries already cut in `MEMORY_ARCHIVE.md` stay as they are; the summary text was never stored for them.
+
 ## [2026-11-17] - Hivemind: dead workers, resume, held integration, undelivered messages (MC-1179 OS25, OS24, OS33, OS26)
 
 - Reviewed integration timing (OS33): a worker still in its turn when the last workstream is marked complete, and a landing lock busy for more than 5 s, no longer hold the run for good. The attempt stays `running` with `waiting_since` and the driver retries every 5 s; after 15 minutes of waiting it holds as before. A busy lock is no longer recorded as a `native standards held` and no longer marks the worker branch `awaiting_standards`. The reviewer launch check ignores `updated_at` (the synthesis notify rewrites it while a candidate is smoked, which refused the launch with `stale reviewer launch inputs`); every other manifest key, `config` included, is still compared. A contributor becoming active while a candidate is merged, smoked or under review still holds. New `mc/hivemind_integration_wait.py`.

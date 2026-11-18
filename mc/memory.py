@@ -46,6 +46,7 @@ import mc.distiller as _distiller          # Phase 4 learning observer (best-eff
 import mc.allowance_state as _allowance_state  # live vendor exhaustion state (MC-964 Step D.1)
 import mc.memory_overlap_df as _overlap_df  # M4 corpus document-frequency stoplist (MC-964 fix A2)
 import mc.memory_gate_tap as _gate_tap  # G1 report-mode observer for mints (MC-964 step 10)
+import mc.memory_entry_line as _entry_line  # ML15: a managed entry is one physical line
 
 from mc import state
 from mc.provider_env_scope import claude_child_env
@@ -4647,11 +4648,13 @@ _ENTRY_HEAD_PAT = r'^- \[([^\]]+)\]\s+\*\*(.*?)\*\*'
 
 def _entry_label(task):
     """Compact title for a managed entry. Known harness prompts collapse to
-    their marker; every other task keeps its text verbatim (capped at 80)."""
+    their marker; every other task keeps its text (capped at 80) on ONE line:
+    a newline inside the label splits the entry in two and the next commit
+    drops everything after it, summary included (ML15)."""
     t = (task or '').strip()
     if _STEWARD_TASK_MARKER in t[:60]:
         return _STEWARD_LABEL
-    return t[:80]
+    return ' '.join(t.split())[:80]
 
 
 def _entry_group_key(line):
@@ -4787,6 +4790,9 @@ def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None,
     mem_path = _get_memory_path(p)
     mem_path.parent.mkdir(parents=True, exist_ok=True)
     ring = _session_log_ring()
+    # ML15: one entry = one physical line, enforced here because this is the
+    # one place every writer meets (and before `last_entry_hash` is taken).
+    mem_entry = _entry_line.one_line(mem_entry, log=_log, project_id=project_id)
     with _get_mem_write_lock(project_id):
         existing = (mem_path.read_text(encoding='utf-8')
                     if mem_path.exists() else '')
