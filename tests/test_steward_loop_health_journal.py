@@ -16,6 +16,7 @@ import importlib.util
 import inspect
 import json
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -34,7 +35,10 @@ _needs_patch = pytest.mark.xfail(
     reason='steward/core.py is human-owned: apply docs/patches/steward-loop-health-journal.patch')
 
 CID = 'ch1'
-T0, T1, T2 = ('2026-11-17T09:00:00+00:00', '2026-11-17T10:00:00+00:00', '2026-11-17T11:00:00+00:00')
+# Relative to now: with no completed cycle in the journal only the last 7 days count
+# as blocked, so fixed dates would age the tests out.
+_NOW = datetime.now(timezone.utc).replace(microsecond=0)
+T0, T1, T2, T3 = ((_NOW - timedelta(hours=h)).isoformat() for h in (3, 2, 1, 0))
 NOTE_TS = '2026-11-16T08:00:00.000000Z'
 
 
@@ -107,12 +111,42 @@ def test_no_journal_and_no_notes_is_nothing_not_unknown(tmp_path):
 def test_journal_only_gives_activity_and_blocked_events(tmp_path):
     p = _project(tmp_path)
     _write_journal(p, _journal((T0, 'started'), (T1, 'blocked_guard'), (T2, 'decision_blocked'),
-                               (T2, 'completed')))
+                               (T3, 'skipped_busy')))
     h = _health(p, tmp_path)
-    assert h['last_note_ts'] == T2 and h['activity_source'] == 'journal'
+    assert h['last_note_ts'] == T3 and h['activity_source'] == 'journal'
     assert h['blocked'] == 2
-    # a legacy steward has no ledger: its decisions are not visible, and the panel says so
-    assert any('no decision ledger' in u for u in h['unknown'])
+    # a steward with no role is a normal configuration, not a read failure
+    assert h['unknown'] == []
+
+
+def test_an_old_block_followed_by_a_completed_cycle_shows_zero(tmp_path):
+    p = _project(tmp_path)
+    old = (_NOW - timedelta(days=40)).isoformat()
+    _write_journal(p, _journal((old, 'started'), (old, 'blocked_guard'),
+                               ((_NOW - timedelta(days=39)).isoformat(), 'completed'),
+                               ((_NOW - timedelta(days=39)).isoformat(), 'started')))
+    assert _health(p, tmp_path)['blocked'] == 0
+
+
+def test_two_blocks_after_the_last_completed_cycle_show_two(tmp_path):
+    p = _project(tmp_path)
+    # the completed cycle is older than the 7-day window and the blocks are newer, so
+    # this also proves 'completed' bounds the count rather than the window
+    long_ago = (_NOW - timedelta(days=30)).isoformat()
+    _write_journal(p, _journal((long_ago, 'blocked_charter'), (long_ago, 'completed'),
+                               (T0, 'blocked_guard'), (T1, 'decision_blocked')))
+    assert _health(p, tmp_path)['blocked'] == 2
+    q = _project(tmp_path)
+    _write_journal(q, _journal((long_ago, 'completed'), (long_ago, 'blocked_guard'),
+                               (T0, 'blocked_channel'), (T1, 'blocked_channel')))
+    assert _health(q, tmp_path)['blocked'] == 3
+
+
+def test_with_no_completed_cycle_only_the_last_seven_days_count(tmp_path):
+    p = _project(tmp_path)
+    old = (_NOW - timedelta(days=8)).isoformat()
+    _write_journal(p, _journal((old, 'blocked_guard'), (T0, 'blocked_guard')))
+    assert _health(p, tmp_path)['blocked'] == 1
 
 
 def test_journal_heading_forged_inside_a_body_is_not_counted(tmp_path):
@@ -125,11 +159,11 @@ def test_journal_heading_forged_inside_a_body_is_not_counted(tmp_path):
 
 
 def test_both_journal_and_notes_take_the_newer_time_and_sum_blocked(tmp_path):
-    p = _project(tmp_path, [_note('DECISION NEEDED: a'),
-                            _note('BLOCKED: b', ts='2026-11-17T12:30:00.000000Z')])
+    newer = (_NOW + timedelta(hours=1)).isoformat()
+    p = _project(tmp_path, [_note('DECISION NEEDED: a'), _note('BLOCKED: b', ts=newer)])
     _write_journal(p, _journal((T1, 'started'), (T2, 'blocked_charter')))
     h = _health(p, tmp_path)
-    assert h['last_note_ts'] == '2026-11-17T12:30:00.000000Z' and h['activity_source'] == 'notes'
+    assert h['last_note_ts'] == newer and h['activity_source'] == 'notes'
     assert (h['decisions_pending'], h['blocked']) == (1, 2)
     p2 = _project(tmp_path, [_note('FYI: old')])
     _write_journal(p2, _journal((T2, 'completed')))
@@ -231,8 +265,8 @@ def test_loop_health_reads_the_journal_for_a_steward_with_no_notes(tmp_path, wir
     h = core.loop_health()
     e = h['enabled'][0]
     assert (e['last_note_ts'], e['blocked'], e['activity_source']) == (T2, 1, 'journal')
-    assert h['blocked'] == 1
-    assert any('health partly unknown' in a for a in h['alerts'])   # legacy: no ledger
+    assert h['blocked'] == 1 and e['unknown'] == []
+    assert not any('health partly unknown' in a for a in h['alerts'])   # no role is not a failure
 
 
 @_needs_patch

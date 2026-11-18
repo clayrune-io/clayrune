@@ -163,8 +163,8 @@ commands below call it `python`).
 python -m pytest tests/test_steward_loop_health_journal.py tests/test_steward_core.py tests/test_fence_hivemind_reviewer_armed.py tests/test_fence_fail_closed_unattended.py tests/test_launch_marker.py tests/test_claude_retry_watchdog.py -p no:cacheprovider
 ```
 You should see a last line with **no `failed` and no `xfailed`**, ending like
-`202 passed, 15 skipped`. (Before the patches the same command reports
-`207 passed, 9 xfailed`; after them the 9 xfails turn into passes, and the skips are
+`205 passed, 15 skipped`. (Before the patches the same command reports
+`210 passed, 9 xfailed`; after them the 9 xfails turn into passes, and the skips are
 the "throwaway copy" tests that only make sense before a patch is applied.)
 
 ## Commit it
@@ -224,17 +224,17 @@ against the unpatched copy exits 0.
   both.** After patch 2 a cycle writes a journal file in `docs/_journal/` and no
   notes. With patch 5 the panel (`loop_health()` in `steward/core.py`, shown by
   `static/js/steward.js`) takes "last activity" from the newest `## <time> | <event>`
-  heading in that journal, counts `blocked_*` / `decision_blocked` events as blocked,
-  and counts pending decisions from the role's state ledger (an answered decision
-  stops counting). A steward that still writes notes and has no journal yet keeps its
-  note-based numbers. Anything the panel could not read shows a **⚠ unknown** badge
-  and a "health partly unknown" alert; the numbers beside it are then a floor, not
-  zero-means-fine.
-- **What the panel still cannot show:** pending decisions for a steward that has no
-  role (its decisions go out by email and nothing records them where the panel can
-  read: once it has a journal, the panel shows the "unknown" badge instead of a
-  number), and a decision-raising
-  event from a steward that never wrote a journal or a note.
+  heading in that journal, counts the `blocked_*` / `decision_blocked` events that
+  came after the newest `completed` heading (a block followed by a cycle that got
+  through stops counting; with no `completed` heading yet, only the last 7 days
+  count), and counts pending decisions from the role's state ledger (an answered
+  decision stops counting). A steward that still writes notes and has no journal yet
+  keeps its note-based numbers. A source that should exist but is missing or
+  unreadable shows a **⚠ unknown** badge and a "health partly unknown" alert; the
+  numbers beside it are then a floor, not zero-means-fine.
+- **What the panel cannot show:** decisions a role-less steward raises by email are
+  not counted (it has no ledger; that is a normal setup, so no badge), beyond the
+  `DECISION NEEDED` notes it may still write.
 - **A role-bound steward schedule can now fire**: before patch 1 every such fire was
   refused with "SR-2 core adapter patch is unapplied".
 

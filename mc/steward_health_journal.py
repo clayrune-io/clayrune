@@ -12,7 +12,12 @@ sources a rule-following steward actually writes:
   for a steward with no role, the name ``mc.steward_role_task`` derives);
 * pending decisions = decisions in ``OPEN_STATUS`` in the role state ledger, so an
   answered decision is retired;
-* blocked = the ``blocked_*`` and ``decision_blocked`` events in the journal.
+* blocked = the ``blocked_*`` and ``decision_blocked`` events that are still
+  current: those after the newest ``completed`` heading. ``completed`` is the
+  lifecycle event the role dispatcher writes when it confirms the previous cycle's
+  session closed (it also sets ``last_completed_at`` in the ledger), so a block
+  followed by a cycle that got through no longer counts. A journal with no
+  ``completed`` heading yet counts only blocks from the last 7 days.
 
 A steward that still writes notes and has no journal yet keeps the note-based
 numbers. A source that is missing where it should exist, or unreadable, is logged
@@ -22,7 +27,7 @@ and reported in ``unknown`` and is never turned into a healthy zero.
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import re
@@ -36,6 +41,8 @@ from mc.steward_role_state import OPEN_STATUS, RoleStateStore, StateError
 # and escapes a body line that starts with '#', so a heading at line start is real.
 _HEADING = re.compile(r'^## (?P<stamp>\S+)(?: \| (?P<event>[a-z_]+))?')
 _BLOCKED_EVENTS = frozenset({'decision_blocked'})
+_CYCLE_DONE_EVENT = 'completed'
+_BLOCKED_WINDOW = timedelta(days=7)   # only used while no cycle has completed yet
 
 
 def _is_blocked(event: str) -> bool:
@@ -62,24 +69,31 @@ def _note_numbers(notes: Iterable[Any]) -> tuple[int, int, str | None]:
 
 
 def _read_journal(path: Path) -> tuple[str | None, int]:
-    """(newest heading stamp, blocked-event count). Raises OSError/UnicodeError."""
+    """(newest heading stamp, current blocked-event count). Raises OSError/UnicodeError."""
     last: str | None = None
     last_dt: datetime | None = None
-    blocked = 0
+    blocked: list[datetime | None] = []   # blocked events since the last completed cycle
+    saw_completed = False
     with open(path, encoding='utf-8', errors='strict') as fh:
         for line in fh:
             m = _HEADING.match(line)
             if not m:
                 continue
-            if _is_blocked(m.group('event') or ''):
-                blocked += 1
+            event = m.group('event') or ''
             dt = _when(m.group('stamp'))
+            if event == _CYCLE_DONE_EVENT:
+                saw_completed, blocked = True, []
+            elif _is_blocked(event):
+                blocked.append(dt)
             if dt is not None and (last_dt is None or dt >= last_dt):
                 last, last_dt = m.group('stamp'), dt
     if last is None:
         # A journal with no parsable heading is still evidence the steward wrote.
         last = datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(timespec='seconds')
-    return last, blocked
+    if saw_completed:
+        return last, len(blocked)
+    cutoff = datetime.now(timezone.utc) - _BLOCKED_WINDOW
+    return last, sum(1 for dt in blocked if dt is None or dt >= cutoff)
 
 
 def _schedule_rows(data_root: Path | None) -> list[dict]:
@@ -145,10 +159,9 @@ def project_health(project: dict, charter: dict | None, notes: Iterable[Any],
             except (StateError, RoleError, KeyError, TypeError) as exc:
                 _log(f'[steward-health] {pid}: role ledger unreadable: {exc}')
                 unknown.append('decision ledger unreadable')
-        elif row is None and j_present and not unknown:
-            # A steward with no role has no ledger: decisions it raises by email
-            # are not recorded anywhere the panel can read.
-            unknown.append('no decision ledger (steward has no role)')
+        # A steward with no role has no ledger: that is a normal configuration, not a
+        # failure, so it adds nothing to `unknown`; its pending count stays the
+        # note-based one set above.
     except Exception as exc:   # never let a panel read break the endpoint
         _log(f'[steward-health] {pid}: health read failed: {exc}')
         unknown.append(f'health read failed ({type(exc).__name__})')
