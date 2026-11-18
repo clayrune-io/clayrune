@@ -12,7 +12,7 @@ import { loadStaticJsCss } from './_static.mjs';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 export const PID = 'smoke_wfb';
 
-export async function startBuilder({ workflows = [] } = {}) {
+export async function startBuilder({ workflows = [], mobile = false, width = 1600 } = {}) {
   const assets = loadStaticJsCss(root);
   const origin = 'http://mc.smoke.test';
   const store = workflows.map(w => JSON.parse(JSON.stringify(w)));
@@ -27,7 +27,12 @@ export async function startBuilder({ workflows = [] } = {}) {
     name, scope: 'global', agent_name: name, display_name: name, avatar: '', engine: { provider: 'claude' },
   }));
   const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 1600, height: 1100 } });
+  // `mobile`: a real phone context (touch + isMobile, 390x844) opened that way from the
+  // start, because the modal and the inspector sheet compute their mobile layout at OPEN
+  // time; resizing a desktop page afterwards does not exercise it.
+  const page = mobile
+    ? await (await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true })).newPage()
+    : await browser.newPage({ viewport: { width, height: 1100 } });
   page.setDefaultTimeout(5000);
   page.on('pageerror', e => errors.push(e.message));
   page.on('dialog', d => d.accept());
@@ -76,12 +81,14 @@ export async function startBuilder({ workflows = [] } = {}) {
     return route.abort();
   });
   await page.goto(origin, { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('#projects-col .card');
+  await page.waitForSelector('#projects-col .card, .mc-chat-row', { state: 'attached' });
   await page.evaluate(pid => {
     window.openProjectModal(pid);
     const win = document.querySelector(`.modal-window[data-modal-id="${pid}"]`);
-    win.querySelector('.modal-content').style.width = '1480px';
-    window.centerModalElement(win);
+    if (window.innerWidth > 960) {
+      win.querySelector('.modal-content').style.width = Math.min(1480, window.innerWidth - 20) + 'px';
+      window.centerModalElement(win);
+    }
     window.switchModalTab(pid, 'workflows');
   }, PID);
   await page.waitForSelector(`#wfb-inline-host-${PID}`);
@@ -109,13 +116,22 @@ export async function startBuilder({ workflows = [] } = {}) {
     try { await fn(); passed++; console.log('PASS ' + label); }
     catch (e) { failed++; console.error('FAIL ' + label + ': ' + e.message); }
   }
-  async function finish(name) {
+  // `settle` runs the page-error check, closes this browser, and returns its counts, so a
+  // smoke that drives a second harness (the mobile one) can fold it into one summary line.
+  async function settle() {
     await check('no uncaught page errors', async () => {
       if (errors.length) throw new Error(errors.join(' | '));
     });
     await browser.close();
-    console.log(`${name}: ${passed} passed, ${failed} failed`);
-    process.exit(failed ? 1 : 0);
+    return { passed, failed };
+  }
+  async function finish(name, others = []) {
+    const mine = await settle();
+    const rest = [];
+    for (const o of others) rest.push(await o.settle());
+    const p = rest.reduce((a, r) => a + r.passed, mine.passed), f = rest.reduce((a, r) => a + r.failed, mine.failed);
+    console.log(`${name}: ${p} passed, ${f} failed`);
+    process.exit(f ? 1 : 0);
   }
   // Put the server-side store (and recorded writes) back to the fixtures, so a
   // check that saves cannot leak its saved state into the next one.
@@ -123,5 +139,5 @@ export async function startBuilder({ workflows = [] } = {}) {
     store.length = 0; store.push(...workflows.map(w => JSON.parse(JSON.stringify(w))));
     for (const k of Object.keys(rec)) rec[k].length = 0;
   };
-  return { page, rec, store, open, def, wf, check, finish, errors, reseed, pid: PID };
+  return { page, rec, store, open, def, wf, check, finish, settle, errors, reseed, pid: PID };
 }
