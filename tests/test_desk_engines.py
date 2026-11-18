@@ -1110,6 +1110,31 @@ def test_a_clip_that_fails_fails_the_render_and_names_the_scene(client, vendor, 
     assert got['status'] == 'failed' and got['failure']['kind'] == 'clip_failed' and 'Scene s2' in got['failure']['message']
 
 
+def test_a_failed_clip_does_not_strand_a_sibling_still_rendering(client, vendor, board):
+    # DK6: the first failed clip used to settle the render `failed` while a
+    # sibling was still queued; later polls returned at the top, so the sibling's
+    # paid output was never downloaded. The render now waits for every clip.
+    board([_sc('s1'), _sc('s2')])
+    _two_clip_vendor(vendor)
+    vendor.on('GET', '/requests/ra/status', vendor.json(200, {'status': 'queued'}),
+              vendor.json(200, {'status': 'completed', 'video': {'url': 'https://cdn.higgs.example/a.mp4'}}))
+    vendor.on('GET', '/requests/rb/status', vendor.json(200, {'status': 'nsfw'}))
+    eng.set_limit('higgsfield', 5)
+    rid = client.post('/api/desk/engines/renders', json=_render_body()).get_json()['render']['render_id']
+    got = client.get(f'/api/desk/engines/renders/{rid}').get_json()['render']
+    for _ in range(4):                              # the sibling is still in flight: never settled early
+        if got['progress']['ready'] == 1:
+            break
+        assert got['status'] == 'rendering' and got['failure'] is None
+        got = client.get(f'/api/desk/engines/renders/{rid}').get_json()['render']
+    got = client.get(f'/api/desk/engines/renders/{rid}').get_json()['render']
+    assert got['progress'] == {'ready': 1, 'total': 2}
+    assert got['status'] == 'failed' and got['failure']['kind'] == 'clip_failed'
+    assert 'Scene s2' in got['failure']['message'] and '1 of 2 clips finished' in got['failure']['message']
+    assert len(vendor.to('cdn.higgs.example/a.mp4')) == 1           # the finished clip was downloaded, once
+    assert [k['status'] for k in got['scenes']] == ['ready', 'failed']
+
+
 def test_scene_pictures_go_as_the_first_frame_and_a_model_with_no_picture_input_refuses_them(client, vendor, board, uploads):
     pic = uploads / 'desk' / 'library' / 'image' / 'Launch'
     pic.mkdir(parents=True)

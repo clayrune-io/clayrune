@@ -2170,15 +2170,24 @@ def poll_render(render_id: str, *, unattended: bool = False) -> dict | None:
         if j is not None:
             jobs[c['job_id']] = j
     bad = [c for c in children if (jobs.get(c['job_id']) or {}).get('status') == 'failed']
-    if bad:
+    # A failed clip settles the render only once no sibling is still in flight
+    # (DK6): a terminal render is never polled again, so a clip still rendering
+    # here would be paid for and never downloaded. Siblings that finish are
+    # downloaded by the polls that follow; the render fails when all are terminal.
+    in_flight = any((jobs.get(c['job_id']) or {}).get('status') not in ('ready', 'failed') for c in children)
+    if bad and not in_flight:
         c = bad[0]
         msg = ((jobs[c['job_id']].get('failure') or {}).get('message')) or 'the engine failed'
+        kept = sum(1 for k in children if (jobs.get(k['job_id']) or {}).get('status') == 'ready')
+        saved = (f". {kept} of {r.get('clip_count', len(children))} clips finished and are saved in your Material library."
+                 if kept else '')
         with _lock:
             s = _read_store()
             rr = s['renders'][render_id]
             if rr['status'] not in ('ready', 'failed'):
                 rr.update(status='failed', updated_at=now_iso(), failure={
-                    'kind': 'clip_failed', 'message': f"scene “{c.get('label') or c['scene_id']}”: {msg}"})
+                    'kind': 'clip_failed',
+                    'message': f"scene “{c.get('label') or c['scene_id']}”: {msg}{saved}"})
                 _write_store(s)
         return _render_view(render_id)
     if len(children) < r.get('clip_count', 0) or any(

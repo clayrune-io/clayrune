@@ -30,6 +30,8 @@ from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
+from mc.usage_breakdown_sweep import TurnIndex, sessions_by_interval
+
 _MAX_INTERVAL_MINUTES = 10
 _MIN_ELIGIBLE_INTERVALS = 5
 _MIN_ELIGIBLE_SESSIONS = 3
@@ -899,7 +901,8 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
         # checkpoint history) overlap exactly like a session does --
         # the last completion is not the session's end.
         turns, unmeasured = _session_evidence(ck, fact)
-        evidence.append((sid, scope_ok, turns, unmeasured))
+        evidence.append((sid, scope_ok, turns, unmeasured, TurnIndex(turns)))
+    pairs = []
     for a, b in zip(ordered, ordered[1:]):
         if not _same_reset(a.get('resets_at'), b.get('resets_at')):
             continue  # a reset happened between these two readings
@@ -913,13 +916,21 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
         delta = b['raw_utilization'] - a['raw_utilization']
         if delta < 0:
             continue  # sub-tolerance dip (<= _RESET_DROP_TOLERANCE_PP): not a measurable rate
+        pairs.append((t_a, t_b, delta))
 
+    # P44/OS48: a pair only needs the sessions whose time bounds reach it, not
+    # all of them (29,000 pairs x 1,400 sessions took ~100 s). The per-session
+    # check below is unchanged; the sweep only drops sessions that could never
+    # have counted.
+    reaching = sessions_by_interval(evidence, [(t_a, t_b) for t_a, t_b, _d in pairs])
+    for (t_a, t_b, delta), pair_evidence in zip(pairs, reaching):
         session_ids: set[str] = set()
         coverage_complete = True
         input_processed_total = 0
         output_tokens = 0
         parts = dict.fromkeys(_COMPOSITION_KEYS, 0)
-        for sid, scope_ok, turns, unmeasured in evidence:
+        for sid, scope_ok, _all_turns, unmeasured, turn_index in pair_evidence:
+            turns = turn_index.reaching(t_a, t_b)
             # `_window_overlaps` (exclusive touch -- a span ending exactly at
             # t_a belongs to the PRIOR interval, not this one), not a
             # `>=`/inclusive check: schema v6 sample_tick segments are, by
@@ -930,7 +941,7 @@ def _eligible_intervals(samples: list[dict], checkpoints: dict[str, dict], facts
             # preceding segment misread as "crossing" it.
             gap = any(_window_overlaps(s, e, t_a, t_b) for s, e in unmeasured)
             contained = [t for t in turns if t['start'] >= t_a and t['end'] <= t_b]
-            crossing = [t for t in turns if t not in contained
+            crossing = [t for t in turns if not (t['start'] >= t_a and t['end'] <= t_b)
                         and _window_overlaps(t['start'], t['end'], t_a, t_b)]
             if not (gap or contained or crossing):
                 continue  # doesn't overlap this interval at all
