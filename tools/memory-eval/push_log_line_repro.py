@@ -42,6 +42,7 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _harness  # noqa: E402
 import codex_miss_repro as _cmr  # noqa: E402 — reuse its as-of-cutoff snapshot
+import push_review as _push_review  # noqa: E402 — the log's generations (ML24)
 
 NEEDLE = 'after adding Codex credits'
 WINDOW_PREFIXES = ('2026-09-18', '2026-09-19')
@@ -51,16 +52,9 @@ def real_window_queries(real_log: Path) -> list:
     """The exact historical (query, note_class) pairs RC4 measured, pulled
     from the OLD log on disk. Read-only."""
     out = []
-    if not real_log.is_file():
-        return out
-    for line in real_log.read_text(encoding='utf-8', errors='replace').splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            r = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    # The log is size-bounded since ML24: the 09-18/19 window is in whichever
+    # generation holds it (a pre-bound log is set aside as `.pre-cap.jsonl`).
+    for r in _push_review.read_rows(real_log):
         ts = r.get('ts', '')
         q = (r.get('query') or '')
         if ts.startswith(WINDOW_PREFIXES) and ('codex' in q.lower() or 'allowance' in q.lower()):
@@ -118,6 +112,9 @@ def main():
     from mc import memory_push as mp
     tmp_pushlog = Path(tempfile.mkdtemp(prefix='mc964-stepb-pushlog-'))
     mp._log_dir = lambda: tmp_pushlog
+    # A replay must observe EVERY query: the live observer samples one call
+    # in N per session (ML24), which would silently skip most of this window.
+    mp._sample_every = lambda: 1
 
     session = {'session_id': 'stepb-replay', 'project_id': project['id']}
     for q in queries:

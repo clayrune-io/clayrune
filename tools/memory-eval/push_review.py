@@ -37,18 +37,29 @@ def log_path(project_id: str) -> Path:
     return _harness.repo_root() / 'data' / 'memory_push_log' / f'{project_id}.jsonl'
 
 
+def log_generations(path: Path) -> list:
+    """Every file one project's log is spread over, oldest first. The log is
+    size-bounded since ML24 (`mc/memory_push_log.py`): `<id>.pre-cap*.jsonl`
+    is a log written before the bound and set aside once, `<id>.jsonl.1` the
+    previous generation, `<id>.jsonl` the one being written."""
+    pre = sorted(path.parent.glob(f'{path.stem}.pre-cap*{path.suffix}'),
+                 key=lambda p: p.stat().st_mtime)
+    return [p for p in (*pre, path.with_name(path.name + '.1'), path)
+            if p.is_file()]
+
+
 def read_rows(path: Path) -> list:
-    if not path.is_file():
-        return []
     rows = []
-    for line in path.read_text(encoding='utf-8', errors='replace').splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
+    for gen in log_generations(path):
+        with open(gen, encoding='utf-8', errors='replace') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
     return rows
 
 
