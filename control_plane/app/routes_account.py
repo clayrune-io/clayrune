@@ -298,9 +298,12 @@ async def revoke_device(
     # and Access app are not ours to delete (MC-1210).
     hostname = device_row.get("hostname_claim", "")
     username = device_row.get("hostname_claim", "").split(".")[0]
-    survivors = other_devices_holding_hostname(
+    found = other_devices_holding_hostname(
         device_row.get("user_id", ""), hostname, exclude_device_id=device_id)
-    name_still_in_use = bool(survivors)
+    # None = the read failed. Fail closed: no hostname sweep, keep the username claim.
+    read_failed = found is None
+    survivors = found or []
+    name_still_in_use = read_failed or bool(survivors)
     kept = {k: {s.get(k) for s in survivors} - {None, ""}
             for k in ("cf_access_app_id", "cf_dns_record_id", "cf_tunnel_uuid")}
 
@@ -330,7 +333,10 @@ async def revoke_device(
             log.warning("revoke: failed deleting tunnel %s: %s", tunnel_id, e)
 
     # Belt-and-suspenders: also run force_cleanup for any orphans missed
-    if hostname and username:
+    if read_failed:
+        log.warning("revoke: skipping hostname sweep for %s and keeping username %s "
+                    "(could not read other devices)", hostname, username)
+    elif hostname and username:
         try:
             await _force_cleanup_for_hostname(
                 hostname=hostname, username=username, survivors=survivors)

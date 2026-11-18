@@ -164,3 +164,52 @@ def test_revoking_the_only_device_still_sweeps_orphans(client, mem_firestore, fa
 
     assert fake_cf.tunnels == {}
     assert fake_cf.dns == {}
+
+
+class _FailingDeviceQuery:
+    """`devices.where(...)` whose stream() yields one row, then raises."""
+
+    def __init__(self, first_row):
+        self._first = first_row
+
+    def stream(self):
+        yield self._first
+        raise RuntimeError("firestore unavailable")
+
+
+class _FlakyDevices:
+    """Delegates to the real in-memory devices collection except for the hostname
+    query revoke uses to find the user's other devices."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def where(self, field, op, value):
+        first = next(iter(self._real.where(field, op, value).stream()))
+        return _FailingDeviceQuery(first)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+def test_a_failed_read_of_other_devices_fails_closed(client, mem_firestore, fake_cf, monkeypatch):
+    """The read that finds the sibling raises part-way. Revoke cannot tell whether a
+    sibling exists, so it must not sweep the hostname and must keep the username;
+    it still deletes its own tunnel, DNS record and row."""
+    _two_device_world(mem_firestore, fake_cf)
+    real_collection = mem_firestore.collection
+    monkeypatch.setattr(
+        mem_firestore, "collection",
+        lambda name: _FlakyDevices(real_collection(name)) if name == "devices"
+        else real_collection(name))
+
+    _revoke(client, "dev_old", "tok_old")
+
+    assert "t_old" not in fake_cf.tunnels, "revoked device's own tunnel must still go"
+    assert "d_old" not in fake_cf.dns, "revoked device's own DNS record must still go"
+    assert "dev_old" not in mem_firestore.dump().get("devices", {})
+    assert "t_new" in fake_cf.tunnels, "sibling's tunnel was swept on a failed read"
+    assert "d_new" in fake_cf.dns, "sibling's DNS record was swept on a failed read"
+    assert "dev_new" in mem_firestore.dump().get("devices", {}), "sibling's row was swept"
+    assert mem_firestore.dump()["usernames"]["sam"]["user_id"] == "u_a", "username was released"
+    assert mem_firestore.dump()["users"]["u_a"]["username"] == "sam"
