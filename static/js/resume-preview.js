@@ -833,6 +833,9 @@ function connectAgentStream(projectId, sessionId) {
   // through would give each popped window N streams and starve the origin's
   // 6-connection cap (docs: memory arch_sse_slot_management).
   if (window.__mcPopout && sessionId !== window.__mcPopout.sid) return;
+  // FE5: at most MAX_LIVE_AGENT_STREAMS (agent-stream-cap.js) streams per tab; a
+  // refused chat is kept current by the 15s status poll until it is viewed.
+  if (window.admitAgentStream?.(sessionId) === false) return;
   if (agentEventSources[sessionId]) {
     agentEventSources[sessionId].close();
   }

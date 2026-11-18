@@ -4239,6 +4239,9 @@ function switchAgentTab(projectId, sessionId) {
   // Drilling into a conversation exits "New" mode.
   delete agentConvNew[projectId];
   const wasOnList = !activeAgentTab[projectId];
+  // FE5: the chat being left and the one entered both count as just viewed.
+  window.noteAgentViewed?.(activeAgentTab[projectId]);
+  window.noteAgentViewed?.(sessionId);
   activeAgentTab[projectId] = sessionId;
   // Mobile always lands on the conversations list now, so entering ANY chat
   // (even the lone one) is a Layer-3 push → hardware-back returns to the list.
