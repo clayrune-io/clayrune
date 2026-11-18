@@ -2572,7 +2572,7 @@ try {
   // a rename still in-flight (typed, not yet synced) — the field-sync must
   // resolve the CURRENT node via the card's own DOM element, not a name
   // string baked at the last render. ──────────────────────────────────────
-  await setValue(page5, '#wfb-inspector .wfb-node-own .wfb-name', 'Send email');
+  await setValue(page5, '#wfb-inspector .wfb-node-own .wfb-name', 'Send-email');
   await page5.click('#wfb-inspector .wfb-insert-btn');
   await page5.waitForTimeout(80);
   const menuAfterOpen = await page5.$$eval('.wfb-insert-menu-item .wfb-insert-menu-item-primary', els => els.map(e => e.textContent));
@@ -2588,10 +2588,10 @@ try {
     : fail('the Insert menu stayed open after picking an item');
   const modelAfterInsert = await page5.evaluate((oldName) => {
     const def = window._wfEntry()._wf.def;
-    const node = def.nodes.find(n => n.name === 'Send email') || def.nodes.find(n => n.name === oldName);
+    const node = def.nodes.find(n => n.name === 'Send-email') || def.nodes.find(n => n.name === oldName);
     return node ? { name: node.name, config: node.config } : null;
   }, actName);
-  (modelAfterInsert && modelAfterInsert.name === 'Send email' && /\{\{run\.id\}\}/.test((modelAfterInsert.config || {}).message || ''))
+  (modelAfterInsert && modelAfterInsert.name === 'Send-email' && /\{\{run\.id\}\}/.test((modelAfterInsert.config || {}).message || ''))
     ? ok(`inserting a result into a just-renamed action node's message field persisted in-memory: ${JSON.stringify(modelAfterInsert)}`)
     : fail(`inserting a result into a just-renamed action node's message field did NOT persist: ${JSON.stringify(modelAfterInsert)}`);
   // MC-963: the message field lives in #wfb-inspector, not on the canvas
@@ -2607,7 +2607,7 @@ try {
   await answerHumanProofModalIfShown(page5);
   await page5.waitForTimeout(150);
   const savedActionNode = workflowPosts5.length
-    ? (workflowPosts5[workflowPosts5.length - 1].nodes || []).find(n => n.name === 'Send email') : null;
+    ? (workflowPosts5[workflowPosts5.length - 1].nodes || []).find(n => n.name === 'Send-email') : null;
   (savedActionNode && /\{\{run\.id\}\}/.test((savedActionNode.config || {}).message || ''))
     ? ok(`the saved definition kept {{run.id}} in the renamed action node's message after Save: ${JSON.stringify(savedActionNode && savedActionNode.config)}`)
     : fail(`the saved action node lost the inserted slot after rename+Save: ${JSON.stringify(savedActionNode)}`);
@@ -2627,7 +2627,7 @@ try {
       project_id: pid, prompt: 'triage', type: 'agent', x: 40, y: 900 });
     def.edges = def.edges || [];
     def.edges.push({ from: 'triage-agent', to: actNodeName });
-  }, { actNodeName: 'Send email', pid: PID });
+  }, { actNodeName: 'Send-email', pid: PID });
   await page5.click('#wfb-inspector .wfb-insert-btn'); // "Send email"'s inspector is still open from above
   await page5.waitForTimeout(80);
   const ancestorItem = await page5.evaluate((stepName) => {
@@ -2656,7 +2656,7 @@ try {
   const apprPt = await emptyCanvasPoint(page5);
   await dragPaletteToolTo(page5, 'Approval gate', apprPt.x, apprPt.y);
   const allNodeNames5b = await page5.$$eval('.wfb-node', els => els.map(e => e.dataset.name));
-  const apprName = allNodeNames5b.find(n => n !== waitName && n !== 'Send email' && n !== 'triage-agent');
+  const apprName = allNodeNames5b.find(n => n !== waitName && n !== 'Send-email' && n !== 'triage-agent');
   await openInspector(page5, apprName);
   const apprDesc = await page5.$eval('#wfb-inspector .wfb-action-desc', el => el.textContent).catch(() => '');
   /Parks the run and waits for a human/.test(apprDesc)
