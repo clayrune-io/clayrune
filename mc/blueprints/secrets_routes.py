@@ -47,10 +47,12 @@ import time
 from flask import Blueprint, jsonify, request
 
 from mc import proc_kill as _proc_kill
+from mc import secrets_caller_attended
 from mc import secrets_store as vault
 from mc import totp as _totp
 from mc.blueprints import local_auth
 from mc.core import _is_loopback_request, _log
+from mc.state import agent_sessions, tracked_processes
 from mc.unattended import is_unattended_caller
 from mc.windows_process_job import create_for as _win_job_object_for
 
@@ -732,9 +734,11 @@ def api_secrets_exec():
                                  'interactive commands must stay in-process'}), 400
 
     project_id = data.get('project_id') or None
-    claude_session_id = data.get('claude_session_id') or None
-    unattended, _reason = vault.detect_effective_unattended(
-        bool(data.get('unattended', False)), claude_session_id)
+    # P10: the server attributes the calling process itself; a session id in
+    # the body is not read.
+    unattended, _reason = secrets_caller_attended.effective_unattended(
+        bool(data.get('unattended', False)), request, agent_sessions,
+        tracked_processes)
 
     try:
         env_pairs = _parse_pairs(data.get('env'), 'env')

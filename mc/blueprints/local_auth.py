@@ -306,10 +306,13 @@ def local_auth_status():
 def local_auth_set():
     """Set or change the LAN passcode.
 
-    The FIRST passcode can be set ONLY from an exempt context — the host
-    (loopback) or a CF-tunneled session — via Settings → Network access. A LAN
-    device can never bootstrap a passcode on an unprotected dashboard (otherwise
-    the first stranger to reach it could claim it). Once a passcode is
+    The FIRST passcode can be set ONLY by a person at the browser on the host
+    itself (mc/local_auth_first_set.py, P19) — via Settings → Network access.
+    A LAN device or a tunnel client can never bootstrap a passcode on an
+    unprotected dashboard (otherwise the first stranger to reach it could claim
+    it), and an agent or unattended caller on the host is refused with the
+    human-only gate's 403 (otherwise a local `curl` claims it and holds the
+    human proof for every gated route). Once a passcode is
     configured, changing it requires proving the current one — from EVERY
     caller, exempt included. Exemption means "skip the gate", not "skip proof
     of the existing secret": a co-resident agent (or anything else reaching
@@ -322,9 +325,12 @@ def local_auth_set():
     if len(new_pass) < _LOCAL_AUTH_MIN_LEN:
         return jsonify({'error': 'passcode_too_short', 'min': _LOCAL_AUTH_MIN_LEN}), 400
     if not _local_auth_is_configured():
-        if not _local_auth_exempt():
-            # No LAN bootstrapping — the owner sets the first passcode on the host.
-            return jsonify({'error': 'setup_requires_host'}), 403
+        # P19: the first passcode is host-only AND human-only. Exemption from
+        # the LAN gate is not proof of a person: every local process is exempt.
+        from mc.local_auth_first_set import refuse_first_set
+        refusal = refuse_first_set()
+        if refusal is not None:
+            return refusal
     else:
         # Share /login's guessing budget: MC-994 re-review finding N3 (Fenn,
         # 2026-09-28) — this branch used to verify `current` with no attempt

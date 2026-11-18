@@ -872,6 +872,51 @@ if (-not (Get-BoolResult (Setup-Git))) {
     Exit-WithContact 2
 }
 
+# Returns one string per thing a hard re-sync of $InstallDir onto origin/$Branch
+# would destroy; an empty array when the checkout holds neither. `reset --hard`
+# keeps untracked and ignored files, so the only losses are uncommitted edits to
+# tracked files and commits that no remote ever had. "No remote ever had" means
+# not reachable from origin/$Branch nor from any earlier tip of it (the
+# remote-tracking reflog): after a force-push every commit of the OLD upstream
+# history is also ahead of the new tip, and those are exactly what the re-sync
+# is for. Fails closed: a count that cannot be read is reported as a blocker.
+function Get-ResyncBlockers {
+    param([string]$InstallDir, [string]$Branch)
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'   # git writes advice to stderr
+    try {
+        $blockers = @()
+        $dirty = (& git -C $InstallDir status --porcelain --untracked-files=no 2>$null | Out-String).Trim()
+        if ($dirty) { $blockers += 'uncommitted edits to tracked files' }
+
+        # Raw log: `git reflog show` prints only each entry's NEW value; the
+        # previous tip survives only as the OLD value of the entry that moved it.
+        $logPath = (& git -C $InstallDir rev-parse --git-path "logs/refs/remotes/origin/$Branch" 2>$null | Out-String).Trim()
+        if ($logPath -and -not [IO.Path]::IsPathRooted($logPath)) { $logPath = Join-Path $InstallDir $logPath }
+        $tips = @()
+        if ($logPath -and (Test-Path -LiteralPath $logPath)) {
+            foreach ($line in Get-Content -LiteralPath $logPath) {
+                foreach ($sha in ($line -split '\s+')[0..1]) {
+                    if ($sha -match '^[0-9a-f]{40,64}$' -and $sha -notmatch '^0+$') { $tips += "^$sha" }
+                }
+            }
+        }
+        # Tips go in on stdin, one per line, joined with LF in ONE string: a long
+        # reflog would overflow the Windows command line (a permanent "could not
+        # be checked" refusal), and per-line piping would end each line in CRLF,
+        # which git reads as part of the revision name.
+        $tips = @($tips | Select-Object -Unique)
+        $tipText = (@("^refs/remotes/origin/$Branch") + $tips) -join "`n"
+        $count = ($tipText | & git -C $InstallDir rev-list --count --ignore-missing HEAD --stdin 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $count -notmatch '^\d+$') {
+            $blockers += "commits that could not be checked against origin/$Branch"
+        } elseif ([int]$count -gt 0) {
+            $blockers += "$count local commit(s) that origin/$Branch does not have"
+        }
+        return $blockers
+    } finally { $ErrorActionPreference = $saved }
+}
+
 function Repair-NonGitInstall {
     param([string]$Destination, [string]$Repository)
     # Clone first: network failure must leave the original folder untouched.
@@ -961,10 +1006,15 @@ if (Test-Path $installDir) {
         & git -C $installDir pull --ff-only
         if ($LASTEXITCODE -ne 0) {
             Write-Host ''
-            Write-Host '  Fast-forward pull failed (upstream history was rewritten).' -ForegroundColor Yellow
-            Write-Host '  Re-syncing this checkout to the remote tip instead.' -ForegroundColor Yellow
-            Write-Host '  Your data is untouched: data\, config.json, .venv\ are not tracked by git.' -ForegroundColor Yellow
+            Write-Host '  Fast-forward pull failed.' -ForegroundColor Yellow
 
+            # LOAD-BEARING: ff-only aborts outright when the release branch is
+            # force-pushed upstream, which bricks every existing install. Fall
+            # back to a hard re-sync -- but ONLY when Get-ResyncBlockers finds
+            # nothing the reset would destroy. The pull ALSO fails for reasons
+            # that are not a rewrite (a tracked edit the incoming commit
+            # touches; a local-only branch), and the old code reset in all of
+            # them. NEVER add `git clean` here.
             & git -C $installDir fetch --prune origin
             if ($LASTEXITCODE -ne 0) {
                 Write-Host '[STEP 1/5] FAIL git fetch failed - check your network connection.' -ForegroundColor Red
@@ -977,6 +1027,26 @@ if (Test-Path $installDir) {
             if (-not $branch -or $branch -eq 'HEAD') { $branch = 'master' }
             & git -C $installDir rev-parse --verify --quiet "refs/remotes/origin/$branch" *> $null
             if ($LASTEXITCODE -ne 0) { $branch = 'master' }
+
+            $blockers = @(Get-ResyncBlockers -InstallDir $installDir -Branch $branch)
+            if ($blockers.Count -gt 0) {
+                Write-Host '[STEP 1/5] STOPPED re-syncing would discard your local work, so nothing was changed:' -ForegroundColor Red
+                foreach ($b in $blockers) { Write-Host "            - $b" -ForegroundColor Red }
+                if ($blockers -match 'local commit|commits that could not') {
+                    Write-Host '          If you have never committed anything in this folder, these are commits from an older Clayrune history and the reset command below is safe.' -ForegroundColor Red
+                }
+                Write-Host '          Save it, then re-run this installer. By hand:' -ForegroundColor Red
+                if ($blockers -match 'uncommitted edits') {
+                    Write-Host "          git -C '$installDir' stash push -m before-clayrune-resync" -ForegroundColor Cyan
+                }
+                if ($blockers -match 'local commit|commits that could not') {
+                    Write-Host "          git -C '$installDir' branch my-clayrune-work" -ForegroundColor Cyan
+                }
+                Write-Host "          git -C '$installDir' reset --hard origin/$branch" -ForegroundColor Cyan
+                Exit-WithContact 2
+            }
+            Write-Host "  No local edits or commits found, so the checkout is re-synced to origin/$branch." -ForegroundColor Yellow
+            Write-Host '  data\, config.json and .venv\ are not tracked by git and are not changed.' -ForegroundColor Yellow
 
             $oldSha = (& git -C $installDir rev-parse --short HEAD 2>$null | Out-String).Trim()
             & git -C $installDir reset --hard "origin/$branch"

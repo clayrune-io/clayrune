@@ -490,6 +490,32 @@ if [ -z "${CLAYRUNE_NO_CONFIRM:-}" ]; then
 fi
 printf "\n"
 
+# Prints one line per thing a hard re-sync of $1 onto origin/$2 would destroy
+# (nothing when the checkout holds neither). `reset --hard` keeps untracked and
+# ignored files, so the only losses are uncommitted edits to tracked files and
+# commits that no remote ever had. "No remote ever had" means: not reachable
+# from origin/$2 nor from any earlier tip of it (the remote-tracking reflog),
+# because after a force-push every commit of the OLD upstream history is also
+# ahead of the new tip, and those are exactly what the re-sync is for. Fails
+# closed: a count that cannot be read is reported as a blocker.
+_clayrune_resync_blockers() {
+  if [ -n "$(git -C "$1" status --porcelain --untracked-files=no 2>/dev/null)" ]; then
+    printf '%s\n' "uncommitted edits to tracked files"
+  fi
+  # Read the raw log: `git reflog show` prints only each entry's NEW value, and
+  # the previous tip survives only as the OLD value of the entry that moved it.
+  _rb_log=$(git -C "$1" rev-parse --git-path "logs/refs/remotes/origin/$2" 2>/dev/null)
+  case "$_rb_log" in /*|?:*) ;; *) _rb_log="$1/$_rb_log" ;; esac
+  _rb_n=$( { [ -f "$_rb_log" ] && awk '{ print $1; print $2 }' "$_rb_log"; true; } \
+    | grep -E '^[0-9a-f]{40,64}$' | grep -v '^0*$' | sed 's/^/^/' \
+    | git -C "$1" rev-list --count --ignore-missing HEAD "^refs/remotes/origin/$2" --stdin 2>/dev/null) || true
+  case "$_rb_n" in
+    0) ;;
+    ''|*[!0-9]*) printf '%s\n' "commits that could not be checked against origin/$2" ;;
+    *) printf '%s\n' "$_rb_n local commit(s) that origin/$2 does not have" ;;
+  esac
+}
+
 # ── [STEP 1/5] Clone or update the repository ─────────────────────────────
 printf "%s[STEP 1/5]%s Cloning repository...\n" "$B" "$R"
 if [ -d "$INSTALL_DIR" ]; then
@@ -498,12 +524,16 @@ if [ -d "$INSTALL_DIR" ]; then
     # LOAD-BEARING: ff-only aborts outright when the release branch is
     # force-pushed upstream ("Not possible to fast-forward"), which bricks
     # every existing install permanently and silently. Fall back to a hard
-    # re-sync. `reset --hard` rewrites TRACKED files only — data/, config.json,
-    # .venv/ are untracked/ignored and survive. NEVER add `git clean` here.
+    # re-sync -- but ONLY when _clayrune_resync_blockers finds nothing the
+    # reset would destroy. `reset --hard` rewrites TRACKED files only (data/,
+    # config.json, .venv/ are untracked/ignored and survive), so it destroys
+    # exactly two things: uncommitted edits to tracked files, and commits no
+    # remote has. The pull ALSO fails for reasons that are not a rewrite (a
+    # tracked edit the incoming commit touches; a local-only branch), and the
+    # old code reset in all of them. NEVER add `git clean` here.
     export GIT_TERMINAL_PROMPT=0
     if ! git -C "$INSTALL_DIR" pull --ff-only; then
-      printf "\n  %sFast-forward pull failed (upstream history was rewritten).%s\n" "$Y" "$R"
-      printf "  %sRe-syncing to the remote tip. Your data (data/, config.json, .venv/) is untouched.%s\n" "$Y" "$R"
+      printf "\n  %sFast-forward pull failed.%s\n" "$Y" "$R"
       if ! git -C "$INSTALL_DIR" fetch --prune origin; then
         printf "%s[STEP 1/5] FAIL%s git fetch failed — check your network connection.\n" "$E" "$R"
         exit 2
@@ -513,6 +543,25 @@ if [ -d "$INSTALL_DIR" ]; then
       if ! git -C "$INSTALL_DIR" rev-parse --verify --quiet "refs/remotes/origin/$_branch" >/dev/null 2>&1; then
         _branch=master
       fi
+      _blockers=$(_clayrune_resync_blockers "$INSTALL_DIR" "$_branch")
+      if [ -n "$_blockers" ]; then
+        printf "%s[STEP 1/5] STOPPED%s re-syncing would discard your local work, so nothing was changed:\n" "$E" "$R"
+        printf "%s\n" "$_blockers" | sed 's/^/            - /'
+        case "$_blockers" in *"local commit"*|*"commits that could not"*)
+          printf "          If you have never committed anything in this folder, these are commits from an older Clayrune history and the reset command below is safe.\n" ;;
+        esac
+        printf "          Save it, then re-run this installer. By hand:\n"
+        case "$_blockers" in *"uncommitted edits"*)
+          printf "          %sgit -C '%s' stash push -m before-clayrune-resync%s\n" "$C" "$INSTALL_DIR" "$R" ;;
+        esac
+        case "$_blockers" in *"local commit"*|*"commits that could not"*)
+          printf "          %sgit -C '%s' branch my-clayrune-work%s\n" "$C" "$INSTALL_DIR" "$R" ;;
+        esac
+        printf "          %sgit -C '%s' reset --hard origin/%s%s\n" "$C" "$INSTALL_DIR" "$_branch" "$R"
+        exit 2
+      fi
+      printf "  %sNo local edits or commits found, so the checkout is re-synced to origin/%s.%s\n" "$Y" "$_branch" "$R"
+      printf "  data/, config.json and .venv/ are not tracked by git and are not changed.\n"
       _old_sha=$(git -C "$INSTALL_DIR" rev-parse --short HEAD 2>/dev/null || echo '')
       if ! git -C "$INSTALL_DIR" reset --hard "origin/$_branch"; then
         printf "%s[STEP 1/5] FAIL%s could not re-sync %s to origin/%s.\n" "$E" "$R" "$INSTALL_DIR" "$_branch"

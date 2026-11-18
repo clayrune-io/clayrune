@@ -29,6 +29,9 @@ def vault(tmp_path, monkeypatch):
     monkeypatch.setenv('CLAYRUNE_SECRETS_KEY_BACKEND', 'file')
     monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
     from mc import secrets_store
+    # MC-1179 P10: the unattended verdict comes from asking the server about this
+    # process; a test never reaches for a live server (None = could not be asked).
+    monkeypatch.setattr(secrets_store, '_lookup_caller_unattended', lambda: None)
     secrets_store._dispensed.clear()
     secrets_store._unlocked_key = None
     secrets_store._lock_notified = False
@@ -219,8 +222,8 @@ def test_unattended_and_allow_unattended_false_never_reaches_the_server(
     resolves the secret (in-process here, since the vault ends up NOT
     locked) — this must refuse before ever touching the fallback path."""
     vault.set_secret('bank.password', 'value-danger', allow_unattended=False)
-    monkeypatch.setattr(vault, '_session_id_from_env', lambda: 'fake-sid')
-    monkeypatch.setattr(vault, '_lookup_trigger_type', lambda _sid: 'schedule')
+    monkeypatch.setattr(vault, '_lookup_caller_unattended',
+                        lambda: (True, 'attributed to a session with trigger_type=schedule'))
 
     rc = with_secret.main([
         '--env', 'X=bank.password', '--',

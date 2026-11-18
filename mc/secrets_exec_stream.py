@@ -116,10 +116,12 @@ class Launch:
     program: str     # argv[0] AS TYPED (placeholders unresolved): the only name that is logged
 
 
-def resolve_launch(data: dict) -> Launch:
+def resolve_launch(data: dict, caller_unattended: bool = True) -> Launch:
     """Resolve a request body into a `Launch`, applying the vault's policy exactly as
-    ``/api/secrets/exec`` does (scope, ``allow_unattended``, unattended detection that
-    fails closed on an omitted session id, the audit trail). Raises ``ValueError`` for a
+    ``/api/secrets/exec`` does (scope, ``allow_unattended``, the audit trail).
+    ``caller_unattended`` is the server's own attribution of the calling process
+    (``mc.secrets_caller_attended``, MC-1179 P10); it defaults to True, so a caller that
+    does not pass it is unattended. Raises ``ValueError`` for a
     malformed body, ``vault.VaultLocked`` for a locked vault, any other
     ``vault.SecretsError`` for a refusal. ``data['environ']`` (required) is the
     CALLER's environment, the child's base; ``data['unset']`` names variables to drop from it
@@ -143,8 +145,9 @@ def resolve_launch(data: dict) -> Launch:
         raise vault.VaultLocked('the vault is locked')
 
     project_id = data.get('project_id') or None
-    unattended, _reason = vault.detect_effective_unattended(
-        bool(data.get('unattended', False)), data.get('claude_session_id') or None)
+    # P10: the route's own attribution of the calling process decides; a
+    # session id in the body is not read. The body flag can only add strictness.
+    unattended = bool(data.get('unattended', False)) or caller_unattended
     env_pairs = _parse_pairs(data.get('env'), 'env')
     user_pairs = _parse_pairs(data.get('user'), 'user')
     totp_pairs = _parse_pairs(data.get('totp'), 'totp')

@@ -2196,6 +2196,9 @@ app.register_blueprint(_bp_browser_accounts.bp)
 from mc.blueprints import secrets_exec_stream_routes as _bp_secrets_stream  # noqa: E402
 
 app.register_blueprint(_bp_secrets_stream.bp)
+# MC-1179 P10: the server tells a CLI which kind of caller it is (attended or not).
+from mc.blueprints import secrets_caller_routes as _bp_secrets_caller  # noqa: E402
+app.register_blueprint(_bp_secrets_caller.bp)
 
 # ── Add-ons (docs/ADDON_INSTALLS_SPEC.md, MC-1022). Agents file requests; every
 # route that installs, adopts or removes is behind _require_human_passcode.

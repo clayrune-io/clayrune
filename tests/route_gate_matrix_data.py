@@ -741,7 +741,7 @@ ROWS = (
      '_local_auth_try_passcode (this route is the passcode check itself)',
      ''),
     ('POST', '/api/local-auth/set', 'passcode',
-     '_local_auth_try_passcode on `current` once a passcode exists; the first passcode may be set from an exempt host/tunnel context (docstring of local_auth_set)',
+     '_local_auth_try_passcode on `current` once a passcode exists; the first passcode is host-only (LAN and tunnel refused) and human-only (mc.local_auth_first_set.refuse_first_set -> refuse_non_human), P19',
      ''),
     ('POST', '/api/mcp', 'passcode',
      'refuse_unattended then require_passcode (after request-shape checks, before any write)',
