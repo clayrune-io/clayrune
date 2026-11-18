@@ -64,6 +64,7 @@ if sys.platform == 'win32':
         os.environ.setdefault('PYTHONNET_CORECLR_RUNTIME_CONFIG', _rc)
 
 import json
+import shutil
 import subprocess
 import threading
 import time
@@ -154,10 +155,20 @@ def _run_silent(cmd, **kwargs):
 # Claude CLI check + auto-install
 # ---------------------------------------------------------------------------
 
+def _resolve_tool(name):
+    """Full path of `name` as the shell would find it, else `name` unchanged.
+
+    On Windows an npm global install provides `claude.cmd` / `npm.cmd`, and
+    CreateProcess does not resolve a bare name to a `.cmd` (P70); the resolved
+    path, which carries the extension, runs. A name `which` cannot find stays
+    bare and fails the same way it always did."""
+    return shutil.which(name) or name
+
+
 def _check_claude_cli():
     """Return True if `claude --version` succeeds."""
     try:
-        r = _run_silent(['claude', '--version'])
+        r = _run_silent([_resolve_tool('claude'), '--version'])
         return r.returncode == 0
     except FileNotFoundError:
         return False
@@ -166,7 +177,7 @@ def _check_claude_cli():
 def _check_npm():
     """Return True if npm is available."""
     try:
-        r = _run_silent(['npm', '--version'])
+        r = _run_silent([_resolve_tool('npm'), '--version'])
         return r.returncode == 0
     except FileNotFoundError:
         return False
@@ -311,7 +322,7 @@ def _install_claude_cli_windows(status_callback=None):
     _status('Installing Claude CLI via npm...')
     try:
         r = _run_silent(
-            ['npm', 'install', '-g', '@anthropic-ai/claude-code'],
+            [_resolve_tool('npm'), 'install', '-g', '@anthropic-ai/claude-code'],
             timeout=120,
         )
         if r.returncode != 0:
