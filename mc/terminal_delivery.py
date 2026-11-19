@@ -5,6 +5,7 @@ or submits the next accepted event drains the queue; callbacks run without the
 queue lock, so they can take the project's lifecycle lock safely.
 """
 from collections import deque
+import logging
 import threading
 from typing import Callable
 
@@ -54,4 +55,7 @@ class TerminalDeliveryGate:
             except Exception as exc:
                 # An accepted write stays accepted even if its terminal handler
                 # fails. Report it and continue, including queued EOF cleanup.
-                self._on_error(exc)
+                try:
+                    self._on_error(exc)
+                except Exception:
+                    logging.getLogger(__name__).exception('terminal delivery error callback failed')
