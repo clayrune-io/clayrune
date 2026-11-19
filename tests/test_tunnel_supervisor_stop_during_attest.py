@@ -88,3 +88,25 @@ def test_stop_during_attestation_leaves_connector_down(monkeypatch):
         "supervisor reports off but the connector was started by the "
         "in-flight attestation and left running"
     )
+
+
+def test_watchdog_wakes_attestation_once_per_outage(monkeypatch):
+    sup = ts.TunnelSupervisor()
+    health = iter([False, False, False, True, False, False])
+    ticks, wakes = [], []
+
+    def poll(timeout):
+        ticks.append(timeout)
+        if len(ticks) == 7:
+            sup._cancel.set()
+
+    monkeypatch.setattr(sup._cancel, 'wait', poll)
+    monkeypatch.setattr(sup._wake_attest, 'set', lambda: wakes.append(len(ticks)))
+    monkeypatch.setattr(sup, '_maybe_alert_down', lambda _since: None)
+    conn = FakeConnector()
+    monkeypatch.setattr(conn, 'is_alive', lambda: next(health))
+    monkeypatch.setattr(ts.cloudflared, 'get', lambda: conn)
+
+    sup._watchdog_loop()
+
+    assert wakes == [1, 5]

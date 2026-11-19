@@ -282,22 +282,9 @@ class TunnelSupervisor:
     def _watchdog_loop(self) -> None:
         """Poll cloudflared health between attestations.
 
-        Whenever cloudflared is NOT alive, wake the attestation thread for an
-        out-of-band retry (which re-issues start() on the next OK).
-
-        DOWN IS A STATE, NOT AN EDGE. This used to fire only on a True→False
-        transition, starting from `was_alive = None`. So a tunnel that was
-        already dead the first time the watchdog looked recorded "dead" and
-        never fired again — it polled a corpse every 5s, forever, while
-        `status()` reported the stale attestation and the user saw nothing.
-        That is exactly how remote access stayed down for an hour on
-        2026-08-14 with no recovery and no signal; a supervisor restart, or a
-        crash during a re-issue, is enough to land in it.
-
-        Re-arming on a level rather than an edge means the retry keeps being
-        requested until it works. `_wake_attest` only shortcuts a sleep, and
-        the attest loop has its own backoff, so a persistently-dead tunnel
-        costs one attestation per backoff interval, not one per poll.
+        Wake the attestation loop on the first down poll, including when
+        a connector is already down at startup. For subsequent down polls,
+        let the attestation loop manage its own backoff.
         """
         down_since: Optional[float] = None
         while not self._cancel.is_set():
@@ -324,7 +311,7 @@ class TunnelSupervisor:
                 log.warning("cloudflared is not alive; asking attest loop to re-issue")
                 with self._lock:
                     self._state.cloudflared_down_since = now
-            self._wake_attest.set()
+                self._wake_attest.set()
             self._maybe_alert_down(down_since)
 
     # ─── Down alert ───────────────────────────────────────────────────────
