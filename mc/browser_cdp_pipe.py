@@ -110,6 +110,8 @@ class PipeTransport:
         self._owner = {}                        # sessionId -> PipeConn (None = internal)
         self._conns = []
         self._pending_attach = {}               # global id -> (targetId, requester)
+        self._internal_attach = {}              # global id -> targetId, including timed-out requests
+        self._held_attach_events = {}           # targetId -> events awaiting a definitive sessionId
         self._auto_holder = None                # conn that set browser-level auto-attach
         self._silent = set()                    # sessions attached internally: their attach event goes nowhere
         self.closed = False
@@ -152,6 +154,8 @@ class PipeTransport:
             conns = list(self._conns)
             waiters = [r[0] for r in self._routes.values() if isinstance(r[0], queue.Queue)]
             self._routes.clear()
+            self._internal_attach.clear()
+            self._held_attach_events.clear()
         for c in conns:
             c._q.put(None)
         for w in waiters:
@@ -196,7 +200,7 @@ class PipeTransport:
                 self._pending_attach.pop(gid, None)
             raise
 
-    def request(self, method, params=None, session_id=None, timeout=5):
+    def request(self, method, params=None, session_id=None, timeout: float = 5):
         """Internal synchronous call (target discovery, attach). Raises
         ``RuntimeError`` on a CDP error, ``TimeoutError`` / ``PipeClosed``."""
         q = queue.Queue()
@@ -204,21 +208,31 @@ class PipeTransport:
             self._next_id += 1
             gid = self._next_id
             self._routes[gid] = (q, 0)
-            if method == 'Target.attachToTarget' and not session_id:
-                self._pending_attach[gid] = ((params or {}).get('targetId'), None)
+            if method == 'Target.attachToTarget' and not session_id and params and params.get('targetId'):
+                self._internal_attach[gid] = params['targetId']
         msg = {'id': gid, 'method': method, 'params': params or {}}
         if session_id:
             msg['sessionId'] = session_id
         try:
             self._write(msg)
-            try:
-                r = q.get(timeout=timeout)
-            except queue.Empty:
-                raise TimeoutError(f'{method}: no response in {timeout}s') from None
-        finally:
+        except PipeClosed:
             with self._lock:
                 self._routes.pop(gid, None)
-                self._pending_attach.pop(gid, None)
+                self._internal_attach.pop(gid, None)
+            raise
+        try:
+            r = q.get(timeout=timeout)
+        except queue.Empty:
+            with self._lock:
+                # The response can win the race between our wait and this lock.
+                try:
+                    r = q.get_nowait()
+                except queue.Empty:
+                    self._routes.pop(gid, None)
+                    if self.closed:
+                        raise PipeClosed('pipe closed while waiting for ' + method) from None
+                    # Keep the attach reservation. Chromium may still attach this target.
+                    raise TimeoutError(f'{method}: no response in {timeout}s') from None
         if r is None:
             raise PipeClosed('pipe closed while waiting for ' + method)
         if 'error' in r:
@@ -239,7 +253,11 @@ class PipeTransport:
             return
         if method == 'Target.detachedFromTarget':
             with self._lock:
-                owner = self._owner.pop(params.get('sessionId'), None)
+                detached_sid = params.get('sessionId')
+                internal = detached_sid in self._owner and self._owner[detached_sid] is None
+                owner = self._owner.pop(detached_sid, None)
+            if internal:
+                return
             if owner is not None and not sid:
                 self._deliver(owner, msg)
                 return
@@ -256,17 +274,33 @@ class PipeTransport:
             self._deliver(c, msg)
 
     def _dispatch_response(self, msg, sid):
+        held = []
+        abandoned_sid = None
         with self._lock:
-            route = self._routes.pop(msg['id'], None)
-            self._pending_attach.pop(msg['id'], None)
-        if route is None:
+            gid = msg['id']
+            route = self._routes.pop(gid, None)
+            self._pending_attach.pop(gid, None)
+            target_id = self._internal_attach.pop(gid, None)
+            who, orig = route if route is not None else (None, None)
+            waiter = isinstance(who, queue.Queue)
+            if target_id is not None or route is not None:
+                attached_sid = self._note_attach_result(msg, None if waiter else who)
+                if route is None:
+                    abandoned_sid = attached_sid
+            if target_id is not None and target_id not in self._internal_attach.values():
+                held = self._held_attach_events.pop(target_id, [])
+            if waiter:
+                who.put(msg)
+        for event in held:
+            self._on_attached(event, None, event['params'])
+        if abandoned_sid:
+            try:
+                self._write({'id': self._take_id(), 'method': 'Target.detachFromTarget',
+                             'params': {'sessionId': abandoned_sid}})
+            except PipeClosed:
+                return
+        if who is None or isinstance(who, queue.Queue):
             return
-        who, orig = route
-        if isinstance(who, queue.Queue):
-            self._note_attach_result(msg, None)
-            who.put(msg)
-            return
-        self._note_attach_result(msg, who)
         out = dict(msg)
         out['id'] = orig
         if sid and sid == who.root_sid:
@@ -274,16 +308,15 @@ class PipeTransport:
         who._q.put(json.dumps(out))
 
     def _note_attach_result(self, msg, requester):
+        """Reserve the session returned by an attach. Caller holds the lock."""
         new_sid = ((msg.get('result') or {}).get('sessionId'))
-        if not new_sid:
-            return
-        with self._lock:
-            if new_sid not in self._owner:
-                self._owner[new_sid] = requester
-                if requester is None:
-                    self._silent.add(new_sid)     # the attach event has not arrived yet
-                if requester is not None:
-                    requester.top_sessions.append(new_sid)
+        if new_sid and new_sid not in self._owner:
+            self._owner[new_sid] = requester
+            if requester is None:
+                self._silent.add(new_sid)
+            else:
+                requester.top_sessions.append(new_sid)
+        return new_sid
 
     def _on_attached(self, msg, carrier_sid, params):
         new_sid = params.get('sessionId')
@@ -297,6 +330,11 @@ class PipeTransport:
             elif carrier_sid:
                 owner = self._owner.get(carrier_sid)  # an auto-attach under a session
                 self._owner[new_sid] = owner
+            elif target_id in self._internal_attach.values():
+                # An auto-attach to this same target can be in flight too. Only
+                # the command response identifies the internal session.
+                self._held_attach_events.setdefault(target_id, []).append(msg)
+                return
             else:
                 owner = None
                 for command_id, (tid, who) in self._pending_attach.items():

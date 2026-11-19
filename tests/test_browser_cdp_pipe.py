@@ -232,6 +232,52 @@ def test_the_transports_own_attach_is_not_shown_to_the_page_connection(event_fir
     assert json.loads(page.recv())['method'] == 'Page.loadEventFired'
 
 
+@pytest.mark.parametrize('order', ['event_first', 'response_first', 'auto_first'])
+def test_timed_out_internal_attach_does_not_reach_other_clients(order):
+    def script(msg, emit):
+        if msg['method'] == 'Target.attachToTarget':
+            return
+        _answer(msg, emit)
+        if msg['method'] == 'Target.detachFromTarget':
+            emit({'method': 'Target.detachedFromTarget', 'params': msg['params']})
+
+    fc = FakeChromium(script)
+    guard = fc.transport.browser_conn(timeout=1)
+    other = fc.transport.browser_conn(timeout=1)
+    try:
+        guard.send(json.dumps({'id': 1, 'method': 'Target.setAutoAttach',
+                               'params': {'autoAttach': True, 'flatten': True}}))
+        assert json.loads(guard.recv())['id'] == 1
+        with pytest.raises(TimeoutError):
+            fc.transport.request('Target.attachToTarget',
+                                 {'targetId': 'T1', 'flatten': True}, timeout=0.05)
+        cmd = fc.wait_for('Target.attachToTarget')
+        late_attach = {'method': 'Target.attachedToTarget',
+                       'params': {'sessionId': 'late', 'targetInfo': {'targetId': 'T1'}}}
+        auto = {'method': 'Target.attachedToTarget',
+                'params': {'sessionId': 'auto', 'targetInfo': {'targetId': 'T1'}}}
+        if order == 'auto_first':
+            fc.emit(auto)
+        if order != 'response_first':
+            fc.emit(late_attach)
+        _answer(cmd, fc.emit, {'sessionId': 'late'})
+        if order == 'response_first':
+            fc.emit(late_attach)
+        if order == 'auto_first':
+            assert json.loads(guard.recv())['params']['sessionId'] == 'auto'
+        for conn in (guard, other):
+            conn.send(json.dumps({'id': 2, 'method': 'Browser.getVersion'}))
+            assert json.loads(conn.recv()).get('id') == 2
+
+        assert fc.wait_for('Target.detachFromTarget')['params'] == {'sessionId': 'late'}
+        if order != 'auto_first':
+            fc.emit(auto)
+            assert json.loads(guard.recv())['params']['sessionId'] == 'auto'
+    finally:
+        fc.transport.close()
+        fc.eof()
+
+
 def test_closing_a_page_connection_detaches_its_session():
     def script(msg, emit):
         if msg['method'] == 'Target.attachToTarget':
