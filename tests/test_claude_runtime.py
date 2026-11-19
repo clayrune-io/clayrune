@@ -1030,6 +1030,36 @@ def test_apply_mc_tool_blocks_malformed_is_safe():
     assert any('malformed' in line for line in session['log_lines'])
 
 
+def test_decoded_question_remains_pending_if_the_mail_hook_fails(monkeypatch, capsys):
+    from mc import agent_mail_outbound_questions, agent_runtime
+
+    def fail(session):
+        raise OSError('mail store unavailable')
+
+    monkeypatch.setattr(agent_mail_outbound_questions, 'parsed', fail)
+    session = {'log_lines': []}
+    result = agent_runtime.apply_mc_tool_blocks(
+        session, '```mc:question\n{"questions":[{"question":"Continue?"}]}\n```')
+    assert result['paused'] and session['pending_questions']
+    assert not any('malformed block' in line for line in session['log_lines'])
+    assert 'question delivery hook failed: mail store unavailable' in capsys.readouterr().out
+
+
+def test_decoded_todo_reports_sync_failure(monkeypatch, capsys):
+    from mc import agent_runtime
+
+    def fail(*args):
+        raise OSError('backlog store unavailable')
+
+    monkeypatch.setitem(agent_runtime._MC_TOOL_HOOKS, 'sync_todos', fail)
+    session = {'log_lines': []}
+    result = agent_runtime.apply_mc_tool_blocks(
+        session, '```mc:todo\n{"todos":[{"content":"Check"}]}\n```')
+    assert result['blocks_found']
+    assert not any('malformed block' in line for line in session['log_lines'])
+    assert 'todo sync hook failed: backlog store unavailable' in capsys.readouterr().out
+
+
 def test_apply_mc_tool_blocks_no_blocks():
     from mc.agent_runtime import GeminiRuntime
     rt = GeminiRuntime()

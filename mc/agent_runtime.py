@@ -776,27 +776,35 @@ def apply_mc_tool_blocks(session: Dict[str, Any],
                 })
                 session['waiting_for_question'] = True
                 paused = True
-                from mc.agent_mail_outbound_questions import parsed as _mail_question_parsed
-                _mail_question_parsed(session)
             except Exception as e:
                 session.setdefault('log_lines', TimestampedLines()).append(
                     f'[mc:question ignored — malformed block: {e}]')
+            else:
+                try:
+                    from mc.agent_mail_outbound_questions import parsed as _mail_question_parsed
+                    _mail_question_parsed(session)
+                except Exception as exc:
+                    _log(f'[mc-tool] question delivery hook failed: {exc}')
         elif tool_type == 'todo':
             try:
                 data = json.loads(body, strict=False)
                 todos = data.get('todos') if isinstance(data, dict) else data
                 if not isinstance(todos, list):
                     raise ValueError('no todos[]')
-                hook = _MC_TOOL_HOOKS.get('sync_todos')
-                if hook and todos:
-                    n = hook(session.get('project_id'),
-                             session.get('session_id'), todos)
-                    if n:
-                        session.setdefault('log_lines', TimestampedLines()).append(
-                            f'[backlog: synced {n} item(s) from mc:todo]')
             except Exception as e:
                 session.setdefault('log_lines', TimestampedLines()).append(
                     f'[mc:todo ignored — malformed block: {e}]')
+                continue
+            hook = _MC_TOOL_HOOKS.get('sync_todos')
+            if hook and todos:
+                try:
+                    n = hook(session.get('project_id'), session.get('session_id'), todos)
+                except Exception as exc:
+                    _log(f'[mc-tool] todo sync hook failed: {exc}')
+                else:
+                    if n:
+                        session.setdefault('log_lines', TimestampedLines()).append(
+                            f'[backlog: synced {n} item(s) from mc:todo]')
         # 'plan' is recognised by the scanner but intentionally not wired:
         # MC runs agents headless, where plan-mode approval hangs — the
         # Claude system prompt itself tells agents not to use plan mode
