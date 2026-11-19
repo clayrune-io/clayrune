@@ -130,6 +130,45 @@ def _bracketed_tool_lines(log_lines):
             and l.strip().startswith('[')]
 
 
+@pytest.mark.parametrize('bad_event', ['parse', 'file', 'question', 'usage', 'carry'])
+def test_malformed_mode_a_event_keeps_reader_draining(bad_event, monkeypatch, tmp_path):
+    ar = agent_runtime_mod
+    runtime = CodexRuntime()
+    proc = _FakeProc(['bad', 'good'])
+    session = {'log_lines': [], 'proc': proc, 'status': 'running'}
+    if bad_event == 'carry':
+        session['_codex_usage_carry'] = {'output_tokens': ['bad']}
+    handle = SessionHandle(
+        mc_session_id='s', provider='codex', mode='A', project_path=str(tmp_path),
+        project_id='p', session_dict=session,
+    )
+
+    def parse(line, session_id):
+        if line == 'good':
+            event_type, payload = ar.EventType.ASSISTANT_TEXT, {'text': 'survived'}
+        elif bad_event == 'parse':
+            raise ValueError('malformed event')
+        elif bad_event == 'file':
+            event_type, payload = ar.EventType.TOOL_USE, {
+                'blocks': [{'name': 'Read', 'input': {'file_path': ['invalid']}}],
+            }
+        elif bad_event == 'question':
+            event_type, payload = ar.EventType.TOOL_USE, {
+                'blocks': [{'name': 'AskUserQuestion', 'input': {'questions': ['invalid']}}],
+            }
+        else:
+            usage = {'input_tokens': ['invalid']} if bad_event == 'usage' else {'output_tokens': 2}
+            event_type, payload = ar.EventType.TURN_END, {'usage': usage}
+        return ar.AgentEvent(event_type, 'codex', None, session_id, 't', payload)
+
+    monkeypatch.setattr(runtime, 'parse_event', parse)
+    monkeypatch.setattr(runtime, 'turn_context_tokens',
+                        lambda _, usage, __: ar.normalize_context_tokens(usage))
+    ar._mode_a_reader(proc, handle, runtime)
+    assert 'survived' in session['log_lines']
+    assert session['status'] == 'completed'
+
+
 class TestModeAToolLineMatchesClaude:
     def test_six_tool_calls_produce_six_tool_lines(self):
         log_lines = _drive_codex_sequence()

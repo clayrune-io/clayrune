@@ -5717,19 +5717,19 @@ def gemini_chat_files(provider_session_id: str,
     if not provider_session_id:
         return []
     root = Path(home or os.environ.get('GEMINI_CLI_HOME') or Path.home()) / '.gemini' / 'tmp'
-    out: List[Path] = []
+    out: List[Tuple[float, Path]] = []
     try:
         for f in root.glob(f'*/chats/session-*-{provider_session_id[:8]}.jsonl'):
             try:
                 with open(f, encoding='utf-8', errors='replace') as fh:
                     first = json.loads(fh.readline() or '{}')
+                if isinstance(first, dict) and first.get('sessionId') == provider_session_id:
+                    out.append((f.stat().st_mtime, f))
             except (OSError, ValueError):
                 continue
-            if isinstance(first, dict) and first.get('sessionId') == provider_session_id:
-                out.append(f)
     except OSError as e:
-        print(f'[runtime:gemini] chat file scan failed: {e}', flush=True)
-    return sorted(out, key=lambda x: x.stat().st_mtime)
+        _log(f'[runtime:gemini] chat file scan failed: {e}')
+    return [path for _, path in sorted(out, key=lambda entry: entry[0])]
 
 
 def gemini_chat_request_tokens(jsonl_text: str) -> List[Dict[str, Any]]:
@@ -6004,14 +6004,17 @@ def normalize_context_tokens(usage: Optional[Dict[str, Any]]) -> Optional[int]:
     """
     if not isinstance(usage, dict) or not usage:
         return None
-    total = (int(usage.get('input_tokens') or 0)
-             + int(usage.get('cache_read_input_tokens') or 0)
-             + int(usage.get('cache_creation_input_tokens') or 0))
+    try:
+        total = (int(usage.get('input_tokens') or 0)
+                 + int(usage.get('cache_read_input_tokens') or 0)
+                 + int(usage.get('cache_creation_input_tokens') or 0))
+    except (TypeError, ValueError, OverflowError):
+        total = 0
     if total > 0:
         return total
     for key in ('total_tokens', 'prompt_tokens'):
         v = usage.get(key)
-        if isinstance(v, (int, float)) and v > 0:
+        if isinstance(v, (int, float)) and 0 < v < float('inf'):
             return int(v)
     return None
 
@@ -6428,7 +6431,7 @@ def _format_tool_activity(name, inp):
         # deliberately Claude-compatible: read_file/glob/run_shell_command all
         # reuse Claude's own field names).
         fp = inp.get('file_path', '')
-        short = Path(fp).name if fp else '?'
+        short = Path(fp).name if isinstance(fp, str) and fp else '?'
         return f'[tool: {name}] {short}'
     if name in ('Bash', 'shell', 'run_shell_command'):
         # 'shell' is Codex's (and other OpenAI-style Mode-A CLIs') name for
@@ -6447,7 +6450,8 @@ def _format_tool_activity(name, inp):
         return f'[tool: WebSearch] {q}'
     if name == 'AskUserQuestion':
         qs = inp.get('questions', [])
-        preview = _tool_preview(qs[0].get('question', ''), 60) if qs else ''
+        question = qs[0] if isinstance(qs, list) and qs else None
+        preview = _tool_preview(question.get('question', ''), 60) if isinstance(question, dict) else ''
         return f'[tool: AskUserQuestion] {preview}'
     if name == 'TodoWrite':
         todos = inp.get('todos', []) or []
@@ -6544,7 +6548,10 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 if isinstance(carry, dict) and carry:
                     stored_usage = dict(_usage)
                     for k, v in carry.items():
-                        stored_usage[k] = int(stored_usage.get(k) or 0) + int(v or 0)
+                        try:
+                            stored_usage[k] = int(stored_usage.get(k) or 0) + int(v or 0)
+                        except (TypeError, ValueError, OverflowError) as exc:
+                            _log(f'[runtime:codex] ignored malformed carried usage for {k}: {exc}')
             session['usage'] = stored_usage
         accumulate_result_cost(session, event.payload, proc_cost)
         accumulate_result_turns(session, event.payload, proc_turns)
@@ -6592,7 +6599,11 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             from mc.qwen_retry_wait import observe_line
             if observe_line(session, line, _time.time()):
                 continue
-            ev = runtime.parse_event(line, handle.mc_session_id)
+            try:
+                ev = runtime.parse_event(line, handle.mc_session_id)
+            except Exception as exc:
+                _log(f'[runtime:{runtime.name}] failed to parse stream event: {exc}')
+                continue
             if ev is None:
                 # None means "this runtime declined to surface it". For a line
                 # that is valid protocol JSON that is a deliberate suppression
