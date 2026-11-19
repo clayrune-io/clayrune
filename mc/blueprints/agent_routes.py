@@ -4492,7 +4492,7 @@ def _observe_memory_push_input(session, tool_name, tool_input) -> None:
     """
     try:
         q = _memory_push.extract_input_query(tool_name, tool_input)
-        if not q:
+        if not q or not _memory_push.enabled():
             return
         proj = load_project(session.get('project_id', ''))
         if not proj:
@@ -4510,7 +4510,7 @@ def _observe_memory_push_result(session, tool_name, result_text) -> None:
     """
     try:
         q = _memory_push.extract_result_query(result_text)
-        if not q:
+        if not q or not _memory_push.enabled():
             return
         proj = load_project(session.get('project_id', ''))
         if not proj:

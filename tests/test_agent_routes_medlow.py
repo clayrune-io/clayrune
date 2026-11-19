@@ -22,3 +22,16 @@ def test_taskkill_refusal_reports_failure(monkeypatch):
     monkeypatch.setattr(routes, 'sys', SimpleNamespace(platform='win32'))
     monkeypatch.setattr(routes.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=1))
     assert routes._kill_pid(123, tree=True) is False
+
+
+def test_disabled_memory_push_does_not_load_project(monkeypatch):
+    from mc.blueprints import agent_routes as routes
+
+    loads = []
+    monkeypatch.setattr(routes, 'load_project', loads.append)
+    monkeypatch.setattr(routes._memory_push, 'enabled', lambda: False)
+    monkeypatch.setattr(routes._memory_push, 'extract_result_query', lambda text: text)
+    session = {'project_id': 'sample'}
+    routes._observe_memory_push_input(session, 'Read', {'file_path': 'sample.py'})
+    routes._observe_memory_push_result(session, 'Read', 'file error')
+    assert loads == []
