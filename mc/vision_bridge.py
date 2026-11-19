@@ -94,8 +94,7 @@ def find_image_markers(text: str) -> List[Tuple[re.Match, str]]:
 def _candidates(agent_provider: str) -> List[Any]:
     """Runtimes that can describe an image, best first: the agent's own vendor
     (its sighted model, if one is configured), then the fixed order, then the
-    rest. Unsigned-in, uninstalled and allowance-exhausted vendors are dropped
-    here so a spent vendor is never called."""
+    rest. Check provider availability only when a fresh description is needed."""
     runtimes = {r.name: r for r in _agent_runtime.available_runtimes()}
     order = [agent_provider] + [n for n in _DESCRIBER_ORDER if n != agent_provider]
     order += [n for n in runtimes if n not in order]
@@ -105,14 +104,6 @@ def _candidates(agent_provider: str) -> List[Any]:
         if rt is None or not getattr(rt, 'VISION_DESCRIBE_MODEL', ''):
             continue
         if type(rt).describe_image is _agent_runtime.AgentRuntime.describe_image:
-            continue
-        if _allowance_state.is_exhausted(name):
-            continue
-        try:
-            h = rt.health_check()
-            if not h.installed or (h.auth_state and h.auth_state.status in _UNUSABLE_AUTH):
-                continue
-        except Exception:
             continue
         picked.append(rt)
     return picked
@@ -138,17 +129,23 @@ def _describe_one(path: str, agent_provider: str) -> Tuple[Optional[str], str, s
     if st.st_size > MAX_IMAGE_BYTES:
         return None, '', f'file is {st.st_size // (1024 * 1024)} MB, over the {MAX_IMAGE_BYTES // (1024 * 1024)} MB limit'
     cands = _candidates(agent_provider)
-    if not cands:
-        return None, '', ('no vision-capable provider is signed in and within its '
-                          'allowance (checked claude, gemini, qwen)')
     key_base = (str(p.resolve()), st.st_size, st.st_mtime_ns)
     tried: List[str] = []
     for rt in cands:
         label = f'{rt.name}/{rt.VISION_DESCRIBE_MODEL}'
+        key = key_base + (label,)
         with _cache_lock:
-            hit = _cache.get(key_base + (rt.name,))
+            hit = _cache.get(key)
         if hit:
             return hit[0], hit[1], ''
+        if _allowance_state.is_exhausted(rt.name):
+            continue
+        try:
+            health = rt.health_check()
+            if not health.installed or (health.auth_state and health.auth_state.status in _UNUSABLE_AUTH):
+                continue
+        except Exception:
+            continue
         try:
             res = rt.describe_image(str(p), prompt=DESCRIBE_PROMPT,
                                     model=rt.VISION_DESCRIBE_MODEL,
@@ -160,9 +157,12 @@ def _describe_one(path: str, agent_provider: str) -> Tuple[Optional[str], str, s
             with _cache_lock:
                 if len(_cache) >= _CACHE_MAX:
                     _cache.pop(next(iter(_cache)))
-                _cache[key_base + (rt.name,)] = (text, label, '')
+                _cache[key] = (text, label, '')
             return text, label, ''
         tried.append(f"{label}: {str(getattr(rt, 'last_error', '') or 'no output')[:160]}")
+    if not tried:
+        return None, '', ('no vision-capable provider is signed in and within its '
+                          'allowance (checked claude, gemini, qwen)')
     return None, '', 'every describer failed (' + '; '.join(tried) + ')'
 
 
