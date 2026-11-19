@@ -1149,6 +1149,19 @@ class TestCodexRuntime:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize('message', [None, {'content': None}, {'content': 'invalid'}])
+def test_qwen_ignores_malformed_assistant_envelopes(message):
+    rt = agent_runtime.QwenRuntime()
+    assert rt.parse_event(json.dumps({'type': 'assistant', 'message': message})) is None
+
+
+def test_qwen_handles_string_result_error():
+    rt = agent_runtime.QwenRuntime()
+    event = rt.parse_event('{"type":"result","is_error":true,"error":"failure"}')
+    assert event.type is EventType.ERROR
+    assert event.payload['text'] == 'failure'
+
+
 class TestQwenRuntime:
     def setup_method(self):
         self.rt = agent_runtime.QwenRuntime()

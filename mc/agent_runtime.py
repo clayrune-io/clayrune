@@ -7368,12 +7368,16 @@ class QwenRuntime(AgentRuntime):
             # — same split CodexRuntime's own 0.133-schema branch makes.
             text_parts: List[str] = []
             tool_blocks: List[Dict[str, Any]] = []
-            for block in msg.get('message', {}).get('content', []):
+            message = msg.get('message')
+            content = message.get('content') if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                return None
+            for block in content:
                 if not isinstance(block, dict):
                     continue
                 bt = block.get('type', '')
-                if bt == 'text':
-                    text_parts.append(block.get('text', ''))
+                if bt == 'text' and isinstance(block.get('text'), str):
+                    text_parts.append(block['text'])
                 elif bt == 'tool_use':
                     tool_blocks.append({
                         'type': 'tool_use',
@@ -7425,10 +7429,14 @@ class QwenRuntime(AgentRuntime):
 
         if msg_type == 'result':
             if msg.get('is_error'):
-                err = msg.get('error') or {}
-                err_text = (err.get('message') or msg.get('result')
+                err = msg.get('error')
+                detail = err.get('message') if isinstance(err, dict) else err
+                err_text = (detail or msg.get('result')
                            or 'Qwen Code reported an error with no message')
-                _exhausted = _allowance_state.detect('qwen', msg)
+                allowance_event = msg if isinstance(err, dict) else {
+                    **msg, 'error': {'message': str(err_text)},
+                }
+                _exhausted = _allowance_state.detect('qwen', allowance_event)
                 if _exhausted:
                     return AgentEvent(
                         type=EventType.ALLOWANCE_EXHAUSTED, provider='qwen',
