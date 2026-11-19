@@ -18758,13 +18758,6 @@ def _guardian_attempt_recovery(session):
                 session['guardian_state'] = None
 
 
-def _session_guardian_loop():
-    """Removed — per-project guardians (ProjectAgentManager.ensure_guardian) now
-    own session checking. This stub is kept only so _start_session_guardian()
-    doesn't break older callers."""
-    return
-
-
 def _should_evict_idle_session(session, now, enabled, idle_minutes,
                                bg_wait_max_minutes=_bg_tasks.DEFAULT_WAIT_MAX_MINUTES):
     """Pure predicate for guardian idle-eviction (kept separate so it's unit-
