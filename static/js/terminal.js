@@ -138,7 +138,11 @@ function initTerminalXterm(sessionId, isPty) {
     // Ink TUI like gemini's account picker to be navigable at all, so stdin
     // is enabled and wired to onData() below instead.
     disableStdin: !isPty,
-    convertEol: false,
+    // Pipe sessions get the child's raw stdout, where a newline is a bare LF.
+    // xterm treats LF as "down one row, same column", so without conversion
+    // every line starts where the last one ended (staircase text, shredded
+    // QR codes). A real PTY already emits CRLF, so leave it alone there.
+    convertEol: !isPty,
     scrollback: 5000,
   });
 
