@@ -41,6 +41,25 @@ def client():
         yield c
 
 
+def test_picker_cdp_call_times_out_despite_unrelated_events(monkeypatch):
+    from types import SimpleNamespace
+
+    clock = iter((0, 1, 4, 6))
+    timeouts = []
+    frames = iter(({'method': 'Other.event'}, {'method': 'Other.event'}, {'id': 1}))
+    connection = pr._PageConn({}, timeout=5)
+    connection._websocket = SimpleNamespace()
+    connection._ws = SimpleNamespace(send=lambda message: None, settimeout=timeouts.append,
+                                     recv=lambda: json.dumps(next(frames)))
+    monkeypatch.setattr(pr, 'monotonic', lambda: next(clock), raising=False)
+
+    with pytest.raises(pr.PickError, match='timed out') as error:
+        connection.call('DOM.getNodeForLocation')
+
+    assert error.value.kind == 'cdp_timeout'
+    assert timeouts == [5, 4, 1]
+
+
 def _png(n):
     return base64.b64encode(b'\x89PNG' + b'0' * n).decode()
 
