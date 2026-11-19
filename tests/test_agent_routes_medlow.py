@@ -1,5 +1,7 @@
 """Regression tests for agent session lifecycle fixes."""
 
+import pytest
+
 
 def test_corrupt_incognito_record_is_preserved(tmp_path, monkeypatch):
     from mc.blueprints import agent_routes as routes
@@ -189,6 +191,52 @@ def test_superseded_mode_a_reader_leaves_resume_recovery_to_owner(monkeypatch):
     }
     routes._read_agent_stream(proc, session)
     assert recoveries == []
+
+
+@pytest.mark.parametrize('change', ['process', 'turn'])
+def test_mode_a_recovery_rechecks_owner_after_context_build(tmp_path, monkeypatch, change):
+    from threading import RLock
+    from types import SimpleNamespace
+    from mc.blueprints import agent_routes as routes
+
+    proc = SimpleNamespace(pid=123, stdout=(), wait=lambda: 1)
+    session = {
+        'session_id': 'child', 'project_id': 'sample', 'status': 'error',
+        'proc': proc, 'incognito': True, 'log_lines': [], 'task': 'test',
+        '_delivery_attempt_id': 'old-turn', '_resume_id': 'prior',
+        '_dispatch_time': routes._time.time(),
+    }
+    manager = SimpleNamespace(lock=RLock())
+    monkeypatch.setattr(routes, 'agent_sessions', {'child': session})
+    monkeypatch.setattr(routes, 'get_manager', lambda _: manager)
+    monkeypatch.setattr(routes, 'load_project', lambda _: {'project_path': str(tmp_path)})
+    monkeypatch.setattr(routes, '_unregister_process', lambda _: None)
+    monkeypatch.setattr(routes._credits_session, 'replay_after_exit', lambda *a: False)
+    monkeypatch.setattr(routes, '_log_agent_completion', lambda _: None)
+    monkeypatch.setattr(routes, '_run_runtime_callbacks', lambda _: None)
+    monkeypatch.setattr(routes, '_log_agent_activity', lambda *a: None)
+    replacement = object() if change == 'process' else proc
+
+    def build(*args):
+        with manager.lock:
+            session['proc'] = replacement
+            if change == 'turn':
+                session['_delivery_attempt_id'] = 'new-turn'
+        return 'context'
+
+    claims = []
+
+    def claim(candidate):
+        assert manager.lock._is_owned()
+        claims.append(candidate)
+        raise RuntimeError('stop test before launch')
+
+    monkeypatch.setattr(routes, '_fresh_context_for', build)
+    monkeypatch.setattr(routes._launch_transaction, 'claim', claim)
+    routes._read_agent_stream(proc, session)
+    assert claims == []
+    assert session['proc'] is replacement
+    assert not session.get('_resume_recovery_attempted')
 
 
 def test_process_registration_logs_project_lookup_failure(monkeypatch):

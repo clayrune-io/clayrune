@@ -6423,11 +6423,13 @@ def _read_agent_stream(proc, session):
         _unregister_process(proc.pid)
         _credits_replayed = _credits_session.replay_after_exit(session, proc, sys.modules[__name__])
         # Acquire per-project lock to prevent race with agent_stop setting 'stopped'
+        recovery_owner = None
         with _completion_scribe.window(_log), get_manager(session['project_id']).lock:
             # Single-emit gate: only update session status if we still own it.
             # Covers normal replacement (new proc assigned) AND in-flight interrupt
             # (kill issued, new proc not yet spawned — `_interrupting` flag set).
             if not _credits_replayed and _completion_owned_by(session, my_proc):
+                recovery_owner = (my_proc, session.get('_delivery_attempt_id'))
                 # Never overwrite 'stopped' — that's a user-initiated terminal state
                 if session['status'] == 'running':
                     if session.get('waiting_for_question'):
@@ -6463,13 +6465,13 @@ def _read_agent_stream(proc, session):
                         session.pop('_dispatching_followup', None)
 
         # Auto-recover failed resume (Mode A)
-        if (not _credits_replayed and _completion_owned_by(session, my_proc)
+        if (recovery_owner is not None and _completion_owned_by(session, my_proc)
                 and session.get('_resume_id')
                 and session.get('status') == 'error'
                 and not session.get('_resume_recovery_attempted')
                 and _time.time() - session.get('_dispatch_time', 0) < 60
                 and not proc_turns.get('num_turns')):
-            _auto_recover_failed_resume(session)
+            _auto_recover_failed_resume(session, expected_owner=recovery_owner)
 
 
 def _read_agent_stream_b(proc, session):
@@ -6556,11 +6558,13 @@ def _read_agent_stream_b(proc, session):
     def finish(rc):
         _credits_replayed = _credits_session.replay_after_exit(session, proc, sys.modules[__name__])
         # Acquire per-project lock to prevent race with agent_stop setting 'stopped'
+        recovery_owner = None
         with _completion_scribe.window(_log), get_manager(session['project_id']).lock:
             # Single-emit gate (see _session_owned_by). Skip when interrupt
             # is in flight — the new reader will set process_alive=True/status
             # legitimately and there's no point flipping it False between.
             if not _credits_replayed and _completion_owned_by(session, my_proc):
+                recovery_owner = (my_proc, session.get('_delivery_attempt_id'))
                 session['process_alive'] = False
                 _gone = _bg_tasks.drain(session)
                 if _gone:
@@ -6600,13 +6604,13 @@ def _read_agent_stream_b(proc, session):
 
         # Auto-recover failed resume: if we tried to resume a prior session and
         # it died quickly without producing meaningful output, restart fresh.
-        if (not _credits_replayed and _completion_owned_by(session, my_proc)
+        if (recovery_owner is not None and _completion_owned_by(session, my_proc)
                 and session.get('_resume_id')
                 and session.get('status') == 'error'
                 and not session.get('_resume_recovery_attempted')
                 and _time.time() - session.get('_dispatch_time', 0) < 60
                 and not proc_turns.get('num_turns')):
-            _auto_recover_failed_resume(session)
+            _auto_recover_failed_resume(session, expected_owner=recovery_owner)
 
     try:
         for raw_line in proc.stdout:
@@ -6823,12 +6827,12 @@ def _read_agent_stream_b(proc, session):
         terminal(lambda: finish(rc))
 
 
-def _auto_recover_failed_resume(session):
+def _auto_recover_failed_resume(session, *, expected_owner=None):
     """When a resumed session dies immediately, silently restart fresh.
 
     Reuses the same session object so the frontend sees seamless recovery.
     """
-    session['_resume_recovery_attempted'] = True
+    old_proc, old_attempt = expected_owner or (session.get('proc'), session.get('_delivery_attempt_id'))
     project_id = session['project_id']
     task = session.get('task', '')
     mode = session.get('mode', 'A')
@@ -6840,11 +6844,6 @@ def _auto_recover_failed_resume(session):
     pp = p.get('project_path', '')
     if not pp or not Path(pp).is_dir():
         return
-
-    session['log_lines'].append(
-        f'[Resume of session {resume_id[:12]} failed — restarting fresh]')
-    _log(f"[dispatch] Resume {resume_id[:12]} failed for {project_id}, retrying fresh")
-    _log_agent_activity(project_id, f"Resume failed, restarting fresh: {task[:80]}")
 
     context = _fresh_context_for(p, session, task or '')
     fresh_task = (f"[Continuing from a previous conversation (session {resume_id}) that could not "
@@ -6860,6 +6859,18 @@ def _auto_recover_failed_resume(session):
     initial_msg = None
     try:
         with _worktree_lifecycle.resuming(get_manager(project_id).lock, session.get('session_id', '')):
+            if (not _completion_owned_by(session, old_proc)
+                    or session.get('_delivery_attempt_id') != old_attempt
+                    or session.get('_resume_id') != resume_id
+                    or session.get('status') != 'error'
+                    or (expected_owner is not None
+                        and agent_sessions.get(session.get('session_id')) is not session)
+                    or session.get('_resume_recovery_attempted')):
+                return
+            session['_resume_recovery_attempted'] = True
+            session['log_lines'].append(
+                f'[Resume of session {resume_id[:12]} failed — restarting fresh]')
+            _log(f"[dispatch] Resume {resume_id[:12]} failed for {project_id}, retrying fresh")
             _cwd = (_launch_cwd(session, p, pp, task) if session.get('_worktree_isolated') else pp)
             _recovery_launch = _launch_transaction.claim(session)
             if mode == 'B':
@@ -6929,6 +6940,8 @@ def _auto_recover_failed_resume(session):
         session['log_lines'].append(f'[Fresh restart also failed: {e}]')
         session['status'] = 'error'
         _log(f"[dispatch] Fresh retry failed for {project_id}: {e}")
+    else:
+        _log_agent_activity(project_id, f"Resume failed, restarting fresh: {task[:80]}")
 
 
 def _agent_log_path(project_id):
