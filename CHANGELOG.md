@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-19] - Desk planners can pick a child's model and effort
+
+- Campaign, storyboard, and article planners see the models and effort levels each hired agent's provider offers. Dispatch cards show the launch settings, and invalid picks leave the attempt budget intact.
+
 ## [2026-11-18] - Desk proposal acceptance starts one writer (MC-1179 DK21)
 
 - Repeated acceptance returns the original dispatch result. Dismissal applies only to proposed items, and a failed dispatch returns the proposal to that state with its error recorded.

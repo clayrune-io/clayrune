@@ -8,10 +8,12 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 SCHEMA = {'name': 'dispatch_agent',
-          'description': 'Start a hired project agent on a task. Returns a visible session; its result comes back to this campaign. Maximum two attempts this turn. Never retry an unknown outcome.',
+          'description': 'Start a hired project agent on a task. Returns a visible session; its result comes back to this chat. Maximum two attempts this turn. Never retry an unknown outcome.',
           'inputSchema': {'type': 'object', 'properties': {
               'agent': {'type': 'string', 'description': 'Exact scope:name from the supplied hired roster'},
-              'task': {'type': 'string', 'minLength': 1, 'maxLength': 12000}},
+              'task': {'type': 'string', 'minLength': 1, 'maxLength': 12000},
+              'model': {'type': 'string', 'description': 'Model ID listed for this hire’s provider. Omit to inherit.'},
+              'effort': {'type': 'string', 'description': 'Effort level listed for this hire’s provider. Omit to inherit.'}},
               'required': ['agent', 'task'], 'additionalProperties': False}}
 
 

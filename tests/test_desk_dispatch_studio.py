@@ -33,6 +33,7 @@ def rig(tmp_path, monkeypatch):
                      store_path=tmp_path / 'desk.json', signals_path=tmp_path / 'signals.jsonl', uploads_root=tmp_path)
     monkeypatch.setattr(state, 'CONFIG', {})
     monkeypatch.setattr(state, 'agent_sessions', {})
+    monkeypatch.setattr(ar, 'agent_sessions', {})
     monkeypatch.setattr('mc.unattended.agent_sessions', {})
     app = Flask(__name__)
     app.config['TESTING'] = True
@@ -53,7 +54,9 @@ def rig(tmp_path, monkeypatch):
 
     def launch(pid, task, resume='', **kw):
         launched.append(dict(kw, project_id=pid, task=task))
-        return 'child-' + str(len(launched))
+        sid = 'child-' + str(len(launched))
+        ar.agent_sessions[sid] = {'agent_model': kw['model_override'], 'requested_effort': kw['effort_override']}
+        return sid
     monkeypatch.setattr(ar, '_dispatch_agent_internal', launch)
     monkeypatch.setattr(desk_story, '_resolve_engine', lambda *a: SimpleNamespace(provider='claude', model='pinned'))
     monkeypatch.setattr(desk_story, '_agent', lambda ref, p: (
@@ -196,12 +199,16 @@ def test_gates_are_kept_for_studio_turns(rig, monkeypatch):
 @pytest.mark.parametrize('owner', [STORYBOARD, ARTICLE], ids=['storyboard', 'article'])
 def test_tool_launches_with_origin_line_and_piece_sink(rig, owner):
     with dispatch.typed_turn(owner, rig.project, 'Posy') as turn, dispatch.tool_session(turn) as token:
-        response = send_tool(rig, token)
+        response = send_tool(rig, token, model='claude-haiku-5-5', effort='high')
         assert response.status_code == 200, response.json
         launch = rig.launched[0]
         assert launch['task'].startswith(f'Origin: Desk {owner.kind} {owner.ref}, agent Posy\n\n')
         assert launch['notify_session'] == owner.sink
         assert launch['source'] == 'agent' and launch['character'] == 'global:dave'
+        thread = board_thread(rig) if owner == STORYBOARD else article_thread(rig)
+        assert thread[0]['dispatch'] == response.json
+        assert response.json['model'] == launch['model_override'] == 'claude-haiku-5-5'
+        assert response.json['effort'] == launch['effort_override'] == 'high'
     assert send_tool(rig, token).status_code == 403   # the turn closed with the scope
 
 
@@ -340,10 +347,14 @@ def test_missing_launch_card_is_recovered_from_the_launch_record(rig, monkeypatc
     monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [{
         'session_id': 'child-9', 'spawned_by_session_id': STORYBOARD.sink,
         'task': 'Origin: Desk storyboard studio:draft1, agent Posy\n\nBuild',
+        'pinned_model': 'claude-sonnet-5-5', 'requested_effort': 'medium',
         'character': {'scope': 'global', 'name': 'dave'}}])
     row = {'parent_session_id': STORYBOARD.sink, 'project_id': 'alpha', 'event_id': 'child-9:turn:1'}
     assert dispatch.deliver(row, {'child_session_id': 'child-9', 'who': 'Dave', 'status': 'completed', 'summary': 'ok'})
-    assert [t['role'] for t in board_thread(rig)] == ['dispatch', 'dispatch_result']
+    thread = board_thread(rig)
+    assert [t['role'] for t in thread] == ['dispatch', 'dispatch_result']
+    assert thread[0]['dispatch']['model'] == 'claude-sonnet-5-5'
+    assert thread[0]['dispatch']['effort'] == 'medium'
     monkeypatch.setattr(ar, '_load_agent_log', lambda pid, **_kw: [])
     with pytest.raises(DeliveryDeferred):
         dispatch.deliver(dict(row, event_id='child-8:turn:1'), {'child_session_id': 'child-8', 'summary': 'x'})

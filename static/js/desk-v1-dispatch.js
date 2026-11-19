@@ -11,8 +11,11 @@
     if (!d) return '';
     const result = t.role === 'dispatch_result';
     const href = `?project=${encodeURIComponent(d.project_id)}&session=${encodeURIComponent(d.session_id)}`;
+    const engine = !result && ('model' in d || 'effort' in d)
+      ? `<small class="desk-v1-dispatch-engine">${esc(d.model || 'Default model')} · ${esc(d.effort ? `${d.effort} effort` : 'default effort')}</small>` : '';
     return `<div class="desk-v1-dispatch-card" data-dispatch-card="${esc(d.session_id)}" role="group" aria-label="Agent dispatch">
       <div>${esc(result ? t.agent : d.agent)} <span>${esc(result ? d.status : 'Dispatched')}</span></div>
+      ${engine}
       <div class="desk-v1-chat-text">${esc(t.text)}</div>
       <a href="${esc(href)}" target="_blank" rel="noopener">Open child session</a>
     </div>`;
