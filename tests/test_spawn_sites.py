@@ -557,6 +557,37 @@ class TestGeminiRuntimeSmoke:
         assert rt is not None
         assert isinstance(rt, ar.GeminiRuntime)
 
+    def test_replaced_reader_cannot_finalize_during_kill(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+
+        rt = ar.GeminiRuntime()
+        old = SimpleNamespace(pid=123, poll=lambda: None, wait=lambda: 1, stdout=iter(()))
+        session = {'proc': old, 'status': 'running', 'log_lines': []}
+        effects = []
+        handle = ar.SessionHandle(
+            mc_session_id='s', provider='gemini', mode='A', project_id='p',
+            project_path=str(tmp_path), session_dict=session,
+            meta={'callbacks': {'on_process_exit': lambda *args: effects.append('exit')}},
+        )
+        monkeypatch.setattr(ar.vendor_fence, 'check_launch', lambda *args: None)
+        def scan(*args):
+            effects.append('tool blocks')
+            return {'blocks_found': False, 'paused': False}
+
+        monkeypatch.setattr(rt, 'apply_mc_tool_blocks', scan)
+
+        def finish_old_reader(pid):
+            assert pid == old.pid
+            rt._read_stream(old, handle)
+            raise RuntimeError('stop before test spawn')
+
+        monkeypatch.setattr(ar, '_kill_pid', finish_old_reader)
+        with pytest.raises(RuntimeError, match='stop before test spawn'):
+            rt.write_followup(handle, 'new turn')
+        assert effects == []
+        assert session['status'] == 'running'
+        assert session['log_lines'] == []
+
     def test_gemini_capabilities(self):
         rt = ar.get_runtime('gemini')
         caps = rt.capabilities()

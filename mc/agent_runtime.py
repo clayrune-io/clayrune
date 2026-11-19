@@ -5149,28 +5149,21 @@ class GeminiRuntime(AgentRuntime):
             # emulated AskUserQuestion) and apply them before deciding status.
             # A question pauses the turn in 'idle' awaiting the user's reply.
             mc_res = {'blocks_found': False, 'paused': False}
-            try:
-                _flush_run()  # a run cut off by EOF / a stream error still lands
-                turn_text = ''.join(turn_text_parts)
-                # Stamp only when THIS reader produced text and still owns the
-                # session: a reader that exits empty (crash, no output) or has
-                # been superseded by a respawn must not reset the clock.
-                if turn_text.strip() and session.get('proc') is proc:
-                    _turn_clock.note_reply(session)
-                mc_res = self.apply_mc_tool_blocks(session, turn_text)
-                if _mc_suppressing and not mc_res['blocks_found']:
-                    # A ```mc: fence appeared but no complete, valid block was
-                    # parsed (turn ended mid-block, or it was malformed) —
-                    # flush the suppressed text so it is not silently lost.
-                    leftover = turn_text.strip()
-                    if leftover:
-                        session['log_lines'].append(leftover)
-                if mc_res['paused']:
-                    session['log_lines'].append(
-                        '[Waiting for your answer — choose above to continue]')
-            except Exception as e:
-                session.setdefault('log_lines', TimestampedLines()).append(
-                    f'[mc-tool scan error: {e}]')
+            if session.get('proc') is proc:
+                try:
+                    _flush_run()
+                    turn_text = ''.join(turn_text_parts)
+                    if turn_text.strip():
+                        _turn_clock.note_reply(session)
+                    mc_res = self.apply_mc_tool_blocks(session, turn_text)
+                    if _mc_suppressing and not mc_res['blocks_found'] and turn_text.strip():
+                        session['log_lines'].append(turn_text.strip())
+                    if mc_res['paused']:
+                        session['log_lines'].append(
+                            '[Waiting for your answer — choose above to continue]')
+                except Exception as e:
+                    session.setdefault('log_lines', TimestampedLines()).append(
+                        f'[mc-tool scan error: {e}]')
             if session.get('proc') is proc:
                 # `_interrupted` → the user killed this turn; the non-zero rc
                 # is the kill, not a crash. Leave the status interrupt() set.
@@ -5218,6 +5211,7 @@ class GeminiRuntime(AgentRuntime):
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
+            session['proc'] = None
             _kill_pid(old_proc.pid)
         session.pop('_interrupted', None)  # new turn — clear the prior kill flag
 
