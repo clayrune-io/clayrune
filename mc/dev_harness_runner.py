@@ -349,7 +349,9 @@ def run_approved(*, store: HarnessStore, project: dict[str, Any], snapshot: dict
         raise StoreError('Active approved native plan required')
     validate_plan(store, project, snapshot['policy'], snapshot['native_plan'])
     payload = snapshot['native_plan']['payload']
-    item = next(v for v in payload['steps'] if v['id'] == check_id)
+    item = next((v for v in payload['steps'] if v['id'] == check_id), None)
+    if item is None:
+        raise StoreError('Requested check is not in the approved native plan')
     _, prepared = compile_step(Path(project['project_path']), {k: item[k] for k in INPUT_FIELDS}, snapshot['policy'])
     step = {k: prepared[k] for k in ('id', 'argv', 'timeout_seconds', 'fail_codes', 'configs', 'native')}
 
