@@ -17,6 +17,7 @@ AGAIN after a False, because an idle expiry can lapse inside the `is_readable` c
 from __future__ import annotations
 
 from mc import secrets_store
+from mc.core import _log
 
 VAULT_LOCKED = 'vault_locked'
 
@@ -35,7 +36,8 @@ def is_locked() -> bool:
     reads as "not locked", so the caller falls through to its old unreadable answer."""
     try:
         return bool(secrets_store.is_locked())
-    except Exception:
+    except Exception as e:
+        _log(f'[desk-vault] lock status read failed: {e}', flush=True)
         return False
 
 

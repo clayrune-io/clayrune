@@ -58,6 +58,21 @@ def test_post_and_list_signals(client):
     assert rows[0]['project_id'] == 'mission_control'
 
 
+@pytest.mark.parametrize('score', ['high', True, {}, 'NaN', 'Infinity', 10**400])
+def test_signal_refuses_invalid_score(client, score):
+    response = client.post('/api/desk/signals', json={
+        'project_id': 'p', 'summary': 'Unscorable signal', 'story_score': score})
+    assert response.status_code == 400
+    assert client.get('/api/desk/signals').get_json() == []
+
+
+def test_signal_normalizes_numeric_score_from_input(client):
+    response = client.post('/api/desk/signals', json={
+        'project_id': 'p', 'summary': 'Scored signal', 'story_score': '0.75'})
+    assert response.status_code == 201
+    assert response.get_json()['story_score'] == 0.75
+
+
 def test_signal_requires_project_and_summary(client):
     assert client.post('/api/desk/signals', json={'summary': 'x'}).status_code == 400
     assert client.post('/api/desk/signals', json={'project_id': 'p'}).status_code == 400
@@ -295,6 +310,14 @@ def test_there_is_no_publish_route(client):
 # is worth pinning here is the REFUSALS, because each one protects something the
 # store cannot: an unknown voice, a corpus too thin to characterise, and the
 # projects dir that computes the incognito exclusion.
+
+@pytest.mark.parametrize('sample', ['many', [50]])
+def test_seeding_rejects_a_malformed_sample_limit(client, monkeypatch, sample):
+    monkeypatch.setattr(desk_routes._seed, 'collect', lambda **kwargs: pytest.fail('no scan expected'))
+    response = client.post('/api/desk/voices/personal/seed', json={'sample': sample})
+    assert response.status_code == 400
+    assert 'sample' in response.get_json()['error']
+
 
 def test_seeding_an_unknown_voice_is_a_404(client):
     assert client.post('/api/desk/voices/nobody/seed', json={}).status_code == 404

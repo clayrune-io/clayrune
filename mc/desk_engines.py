@@ -56,9 +56,6 @@ import json
 import math
 import mimetypes
 import re
-import shutil
-import socket
-import subprocess
 import threading
 import urllib.error
 import urllib.parse
@@ -1615,9 +1612,10 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False, _pre
     idem = f'{campaign_id or "-"}:{key}'
 
     with _lock:
-        existing = _read_store()['idem'].get(idem)
+        store = _read_store()
+        existing = store['idem'].get(idem)
         if existing:
-            return _public_job(_read_store()['jobs'][existing]), True
+            return _public_job(store['jobs'][existing]), True
 
     schema_creds = _schema_creds(req.engine_id, project_id, unattended, req.model_id)
     _eng, model = _resolve(req)
@@ -1726,15 +1724,27 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False, _pre
     return _public_job(settle(accepted)), False
 
 
+_polling: set[str] = set()
+
+
 def poll(job_id: str, *, unattended: bool = False) -> dict | None:
     """Advance one job by asking its engine once; download output on ready.
     Free. A terminal job is returned untouched, with no vendor call."""
     with _lock:
         job = _read_store()['jobs'].get(job_id)
-    if job is None:
-        return None
-    if job['status'] in ('ready', 'failed'):
-        return _public_job(job)
+        if job is None:
+            return None
+        if job['status'] in ('ready', 'failed') or job_id in _polling:
+            return _public_job(job)
+        _polling.add(job_id)
+    try:
+        return _poll_job(job_id, job, unattended=unattended)
+    finally:
+        with _lock:
+            _polling.discard(job_id)
+
+
+def _poll_job(job_id: str, job: dict, *, unattended: bool) -> dict:
     eng = ENGINES[job['engine_id']]
     model = get_model(job['engine_id'], job['model_id'])
     if model is None:      # a model dropped from the registry after submit
@@ -1792,7 +1802,10 @@ def poll(job_id: str, *, unattended: bool = False) -> dict | None:
         if ttl and age_h > ttl:
             return settle(lambda j: _fail(j, 'expired', f'the output was not downloaded within {ttl} h and the engine removed it', free=False))
         return {**seen, 'poll_error': {'kind': e.kind, 'message': str(e)}}
-    saved = _save_outputs(job, GenerationRequest(**{k: v for k, v in job['request'].items()}), blobs)
+    try:
+        saved = _save_outputs(job, GenerationRequest(**job['request']), blobs)
+    except (EngineError, OSError) as e:
+        return settle(lambda j: _fail(j, 'engine', f'rendered, but the output could not be saved: {_safe(e)}', free=False))
 
     def ready(j):
         j['status'] = 'ready'

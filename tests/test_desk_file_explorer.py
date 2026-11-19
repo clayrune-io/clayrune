@@ -76,6 +76,25 @@ def test_default_media_all_files_and_shortcuts(env):
     response.close()
 
 
+def test_search_skips_unreadable_descendants_but_reports_an_unreadable_start(env, monkeypatch):
+    home, _, _, _, client = env
+    put(home, 'blocked/hidden.png')
+    put(home, 'readable/visible.png')
+    scandir = os.scandir
+
+    def list_folder(path):
+        if Path(path) == home / 'blocked':
+            raise PermissionError('simulated unreadable directory')
+        return scandir(path)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(explorer.os, 'scandir', list_folder)
+        response = client.get('/api/desk/explorer?q=png')
+        assert response.status_code == 200
+        assert [item['path'] for item in response.get_json()['items']] == ['readable/visible.png']
+        assert client.get('/api/desk/explorer?path=blocked').status_code == 503
+
+
 def test_opened_handle_must_match_current_authorized_file(env, monkeypatch, tmp_path):
     from mc import desk_explorer_file
     put(env[0], 'photo.png')

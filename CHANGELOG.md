@@ -28,6 +28,13 @@
 - Decorative stop stubs now ignore pointer events, so their dashed line and cap cannot intercept a connection drag. This fixes outcome, otherwise and approval-option ports on the canvas and in the inspector without changing their appearance.
 - `tools/smoke/workflow-port-centre.mjs` covers real mouse drags from the exact centre of five unconnected port types. The label-rename smoke also uses centre presses instead of its former 6px offset workaround (backlog 8a610b84).
 
+## [2026-11-18] - Desk reliability fixes from review pass 06a (MC-1179)
+
+- DK8 and DK23. A local save failure ends the render job with the cost and vendor reference recorded. Concurrent polls share the job's current state while one poll downloads and saves the output.
+- DK11, DK12, DK28 and DK35. Invalid story scores and malformed triage and voice-seed limits return validation errors. Old invalid scores no longer break the feed. Agent briefs use the configured server port and refer to the person reviewing the draft without naming an install's operator.
+- DK16, DK30 and DK34. File search continues past an unreadable subfolder. Signing in after a signed-out activity page allows discovery on the next poll. Research reports when a project folder has moved or is unavailable.
+- DK18, DK24, DK33, DK36 and DK40. Repeated verification refusals skip identical receipt writes. Voice lists and retried render submissions each use one store read. Logs report when a commit harvest hits its cap or the Desk cannot read vault lock status. Removed unused imports, a retired budget hook, and two redundant branches.
+
 ## [2026-11-18] - Control plane: sign-in CSP permits the requests needed to finish Google sign-in (8cdc4344)
 
 - The `/v1/signin` policy blocked its own `/v1/session/start` fetch and Firebase's dynamically loaded `apis.google.com` popup script. It now allows `'self'` in `connect-src` and `https://apis.google.com` in `script-src`, retaining the per-response script nonce and existing restrictions. The `/v1/connect` policy from `2e47217c` already allows both sources and needs no change. Four new header regression cases cover both served pages; the two sign-in cases fail before this fix. No control-plane deployment is included.

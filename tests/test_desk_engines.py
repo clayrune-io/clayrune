@@ -22,9 +22,11 @@ vault is replaced by four patched `secrets_store` functions. Pinned:
     and write their output under data/uploads/desk/generated/.
 """
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import json
 import sys
 from pathlib import Path
+from threading import Event
 
 import pytest
 from flask import Flask
@@ -463,12 +465,22 @@ def test_idempotency_key_is_required(client):
     assert r.status_code == 400 and 'idempotency_key' in r.get_json()['error']
 
 
-def test_idempotent_retry_returns_the_first_job_with_one_vendor_call(client, vendor):
+def test_idempotent_retry_returns_the_first_job_with_one_vendor_call(client, vendor, monkeypatch):
     _campaign(_own(100))
     vendor.on('POST', ':predictLongRunning', vendor.json(200, {'name': 'models/m/operations/one'}))
     body = _veo(desk={'idempotency_key': 'same'})
     a = _submit(client, body)
-    b = _submit(client, body)
+    read = eng._read_store
+    reads = []
+
+    def tracked_read():
+        reads.append(True)
+        return read()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(eng, '_read_store', tracked_read)
+        b = _submit(client, body)
+    assert len(reads) == 1
     assert (a.status_code, b.status_code) == (201, 200)
     assert a.get_json()['job']['job_id'] == b.get_json()['job']['job_id'] and b.get_json()['replay'] is True
     assert len(vendor.to(':predictLongRunning')) == 1
@@ -676,6 +688,59 @@ def test_veo_download_failure_is_retried_then_expires_after_48h(client, vendor, 
     Path(eng.JOBS_PATH).write_text(json.dumps(store))
     j = client.get(f'/api/desk/engines/jobs/{jid}').get_json()['job']
     assert j['status'] == 'failed' and j['failure']['kind'] == 'expired'
+
+
+def test_veo_output_save_failure_is_terminal_and_keeps_the_cost(client, vendor, monkeypatch):
+    _campaign(_own(10))
+    jid = _veo_submit(client, vendor)
+    original_ref = eng._read_store()['jobs'][jid]['engine_ref']
+    assert original_ref
+    vendor.on('GET', '/operations/op1', vendor.json(200, {'done': True, 'response': {'generateVideoResponse': {
+        'generatedSamples': [{'video': {'uri': 'https://generativelanguage.googleapis.com/dl'}}]}}}))
+    vendor.on('GET', 'googleapis.com/dl', (200, {'content-type': 'video/mp4'}, b'VEO'))
+
+    def cannot_save(*args):
+        raise OSError('disk full')
+
+    monkeypatch.setattr(eng, '_save_outputs', cannot_save)
+    path = f'/api/desk/engines/jobs/{jid}'
+    failed = client.get(path).get_json()['job']
+    assert failed['status'] == 'failed' and 'disk full' in failed['failure']['message']
+    assert failed['cost_usd'] == pytest.approx(3.2)
+    assert eng._read_store()['jobs'][jid]['engine_ref'] == original_ref
+    assert client.get(path).get_json()['job'] == failed
+    assert len(vendor.to('googleapis.com/dl', 'GET')) == 1
+
+
+def test_concurrent_polls_download_and_save_an_output_once(client, vendor, monkeypatch):
+    _campaign(_own(10))
+    jid = _veo_submit(client, vendor)
+    vendor.on('GET', '/operations/op1', vendor.json(200, {'done': True, 'response': {'generateVideoResponse': {
+        'generatedSamples': [{'video': {'uri': 'https://generativelanguage.googleapis.com/dl'}}]}}}))
+    vendor.on('GET', 'googleapis.com/dl', (200, {'content-type': 'video/mp4'}, b'VEO'))
+
+    entered, release = Event(), Event()
+    save = eng._save_outputs
+    saves = []
+
+    def slow_first_save(*args):
+        saves.append(True)
+        if len(saves) == 1:
+            entered.set()
+            assert release.wait(timeout=5)
+        return save(*args)
+
+    monkeypatch.setattr(eng, '_save_outputs', slow_first_save)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(eng.poll, jid)
+        try:
+            assert entered.wait(timeout=5)
+            concurrent = eng.poll(jid)
+        finally:
+            release.set()
+        assert first.result(timeout=5)['status'] == 'ready'
+    assert concurrent['status'] == 'rendering'
+    assert len(vendor.to('googleapis.com/dl', 'GET')) == len(saves) == 1
 
 
 def test_veo_references_and_first_frame_use_bytes_base64_not_inline_data(client, vendor, uploads):

@@ -130,7 +130,14 @@ def browse(root_id: str = 'home', relative: str = '', *, query: str = '', all_fi
         except (pieces.PieceError, OSError) as e:
             _log(f'[desk-explorer] folder unavailable: {e}', flush=True)
             continue
-        with os.scandir(folder) as entries:
+        try:
+            entries = os.scandir(folder)
+        except OSError as e:
+            if folder == start:
+                raise
+            _log(f'[desk-explorer] folder unavailable: {e}', flush=True)
+            continue
+        with entries:
             for entry in entries:
                 if visits >= MAX_VISITS or len(rows) >= MAX_FILES or interrupted():
                     capped = True
