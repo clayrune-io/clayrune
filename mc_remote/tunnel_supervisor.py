@@ -282,11 +282,13 @@ class TunnelSupervisor:
     def _watchdog_loop(self) -> None:
         """Poll cloudflared health between attestations.
 
-        Wake the attestation loop on the first down poll, including when
-        a connector is already down at startup. For subsequent down polls,
-        let the attestation loop manage its own backoff.
+        Wake attestation on the first down poll and at most once per
+        _BACKOFF_MAX_S while the connector stays down. The 2026-08-14 outage
+        showed why recovery must be level-triggered: a connector can already
+        be dead at startup or exit again between polls after a re-issue.
         """
         down_since: Optional[float] = None
+        last_watchdog_wake: Optional[float] = None
         while not self._cancel.is_set():
             self._cancel.wait(timeout=_WATCHDOG_INTERVAL_S)
             if self._cancel.is_set():
@@ -300,17 +302,21 @@ class TunnelSupervisor:
                 if down_since is not None:
                     log.info("cloudflared is back after %.0fs down", time.time() - down_since)
                 down_since = None
+                last_watchdog_wake = None
                 with self._lock:
                     self._state.cloudflared_down_since = None
                     self._state.down_alert_sent_at = None
                 continue
 
-            now = time.time()
             if down_since is None:
-                down_since = now
+                down_since = time.time()
                 log.warning("cloudflared is not alive; asking attest loop to re-issue")
                 with self._lock:
-                    self._state.cloudflared_down_since = now
+                    self._state.cloudflared_down_since = down_since
+
+            now = time.monotonic()
+            if last_watchdog_wake is None or now - last_watchdog_wake >= _BACKOFF_MAX_S:
+                last_watchdog_wake = now
                 self._wake_attest.set()
             self._maybe_alert_down(down_since)
 

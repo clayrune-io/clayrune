@@ -84,20 +84,30 @@ def test_already_dead_at_startup_still_triggers_recovery(sup, monkeypatch):
 
 
 def test_stays_armed_while_it_stays_down(sup, monkeypatch):
-    """Recovery must keep being requested, not fire once and give up."""
-    monkeypatch.setattr(ts.cloudflared, "get", lambda: FakeCloudflared(alive=False))
-    _run_watchdog_ticks(sup, 2)
-    first = sup._state.cloudflared_down_since
-    assert first is not None
+    """One uninterrupted outage retries at 60 seconds without waking per poll."""
+    cloudflared = FakeCloudflared(alive=False)
+    monkeypatch.setattr(ts.cloudflared, "get", lambda: cloudflared)
+    monkeypatch.setattr(ts, "_WATCHDOG_INTERVAL_S", 5.0)
+    elapsed = 0.0
+    wakes = []
 
-    # A consumer clears the flag (the attest loop does this when it wakes).
-    sup._wake_attest.clear()
-    sup._cancel.clear()
-    _run_watchdog_ticks(sup, 2)
+    def advance_clock(timeout):
+        nonlocal elapsed
+        # Consume the previous wake as the attest loop would.
+        if sup._wake_attest.is_set():
+            wakes.append(elapsed)
+            sup._wake_attest.clear()
+        elapsed += timeout
+        if elapsed > 75:
+            sup._cancel.set()
 
-    assert sup._wake_attest.is_set(), "watchdog stopped re-arming while still down"
-    assert sup._state.cloudflared_down_since == pytest.approx(first, abs=1.0), \
-        "down_since restarted mid-outage — downtime would read as shorter than it is"
+    monkeypatch.setattr(sup._cancel, "wait", advance_clock)
+    monkeypatch.setattr(ts.time, "monotonic", lambda: elapsed)
+    monkeypatch.setattr(ts.time, "time", lambda: 1000 + elapsed)
+    sup._watchdog_loop()
+
+    assert wakes == [5.0, 65.0]
+    assert sup._state.cloudflared_down_since == 1005.0
 
 
 def test_recovery_clears_the_down_state(sup, monkeypatch):
