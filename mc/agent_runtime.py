@@ -2718,14 +2718,17 @@ class ClaudeRuntime(AgentRuntime):
             files = files[:limit]
 
         results: List[Dict[str, Any]] = []
+        touched: set[str] = set()
         for i, (f, mtime) in enumerate(files):
             if exclude_transforms and i >= n_must and len(results) >= max(limit, n_must):
                 break
             row = self._session_row(f, mtime)
+            touched.add(str(f))
             if (exclude_transforms and row.get('transform')
                     and f.stem not in must_include_csids):
                 continue
             results.append(row)
+        _trim_scan_cache(_SESSION_ROW_CACHE, _SESSION_ROW_CACHE_MAX, touched)
         return results
 
     def _session_row(self, f, mtime) -> Dict[str, Any]:
@@ -2822,13 +2825,6 @@ class ClaudeRuntime(AgentRuntime):
                               'body_tail': lineage_tail(_lin[2])}
         if not scan_complete:
             return row
-        if len(_SESSION_ROW_CACHE) >= _SESSION_ROW_CACHE_MAX:
-            # Crude but adequate: this is a read-through cache of derived
-            # data, so dropping the oldest insertions costs a re-parse, not
-            # correctness. Bounded so a long-lived server with thousands of
-            # transcripts can't grow it without limit.
-            for k in list(_SESSION_ROW_CACHE)[:_SESSION_ROW_CACHE_MAX // 4]:
-                _SESSION_ROW_CACHE.pop(k, None)
         _SESSION_ROW_CACHE[ckey] = (mtime, fsize, row)
         return dict(row)
 
@@ -2986,6 +2982,7 @@ class ClaudeRuntime(AgentRuntime):
         except OSError:
             return out
 
+        touched: set[str] = set()
         for sf in files:
             try:
                 st = sf.stat()
@@ -2993,6 +2990,7 @@ class ClaudeRuntime(AgentRuntime):
             except OSError:
                 continue
             ckey = str(sf)
+            touched.add(ckey)
             cached = _SUBAGENT_SCAN_CACHE.get(ckey)
             if cached and cached[0] == mtime and cached[1] == fsize:
                 out.append(dict(cached[2]))
@@ -3044,10 +3042,8 @@ class ClaudeRuntime(AgentRuntime):
             out.append(dict(row))
             if not scan_complete:
                 continue
-            if len(_SUBAGENT_SCAN_CACHE) >= _SUBAGENT_SCAN_CACHE_MAX:
-                for k in list(_SUBAGENT_SCAN_CACHE)[:_SUBAGENT_SCAN_CACHE_MAX // 4]:
-                    _SUBAGENT_SCAN_CACHE.pop(k, None)
             _SUBAGENT_SCAN_CACHE[ckey] = (mtime, fsize, row)
+        _trim_scan_cache(_SUBAGENT_SCAN_CACHE, _SUBAGENT_SCAN_CACHE_MAX, touched)
         return out
 
     def parse_transcript_file(self, path: Path,

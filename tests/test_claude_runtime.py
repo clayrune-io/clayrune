@@ -1528,6 +1528,42 @@ def test_list_sessions_caches_rows_and_invalidates_on_append(tmp_path, monkeypat
     assert after[0]['last_user'] == 'Two' and after[0]['turns'] == 2
 
 
+@pytest.mark.parametrize('subagents', [False, True])
+def test_transcript_cache_keeps_an_oversized_working_set(tmp_path, monkeypatch, subagents):
+    from mc import agent_runtime as runtime
+
+    rt = runtime.ClaudeRuntime()
+    home = tmp_path / 'claude_projects'
+    project = str(tmp_path / 'project')
+    folder = home / rt._encode_project_path(project)
+    folder.mkdir(parents=True)
+    monkeypatch.setattr(runtime, '_CLAUDE_HOME', home)
+    monkeypatch.setattr(runtime, '_load_incognito_registry', lambda: {})
+
+    if subagents:
+        (folder / 'parent.jsonl').touch()
+        folder = folder / 'parent' / 'subagents'
+        folder.mkdir(parents=True)
+        cache_name = '_SUBAGENT_SCAN_CACHE'
+        scan = lambda: rt.list_running_subagents(project, 'parent')
+    else:
+        cache_name = '_SESSION_ROW_CACHE'
+        scan = lambda: rt.list_sessions(project, limit=10)
+    monkeypatch.setattr(runtime, cache_name, {})
+    monkeypatch.setattr(runtime, cache_name + '_MAX', 4)
+    for index in range(6):
+        (folder / f'agent-{index}.jsonl').write_text(
+            '{"type":"user","message":{"role":"user","content":"Task"}}\n',
+            encoding='utf-8',
+        )
+
+    first = scan()
+    assert len(first) == 6
+    assert len(getattr(runtime, cache_name)) == 6
+    monkeypatch.setattr(rt, 'parse_event', lambda *args: pytest.fail('warm file reopened'))
+    assert scan() == first
+
+
 def test_list_sessions_deduplicates_across_variants(tmp_path, monkeypatch):
     """list_sessions() deduplicates files when both _ and - encoded dirs exist."""
     from mc.agent_runtime import ClaudeRuntime
