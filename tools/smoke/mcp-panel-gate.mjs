@@ -34,7 +34,7 @@ const fail = (m) => { console.error('  ✗ ' + m); bad++; };
 const attempts = [];
 const written = new Set();
 
-const EXISTING = { name: 'plain', scope: 'global', transport: 'stdio', config: { command: 'node', args: ['x.js'], env: {} } };
+const EXISTING = { name: 'plain', scope: 'global', transport: 'stdio', config: { command: 'node', args: ['--flag', '', 'tail'], env: {} } };
 
 async function run(viewport, label) {
   console.log(`\n── ${label} (${viewport.width}px) ──`);
@@ -123,7 +123,7 @@ async function run(viewport, label) {
     };
 
     // The editor save, new + edit: the same flow, driven by the real Create/Save button.
-    const editorCase = async (what, openArgs, fill, route, expectWritten, sel) => {
+    const editorCase = async (what, openArgs, fill, route, expectWritten, sel, expectedArgs) => {
       attempts.length = 0; written.clear();
       await page.evaluate((a) => window.openMCPEditor(...a), openArgs);
       await page.waitForSelector('#me-save', { timeout: 5000 });
@@ -147,16 +147,22 @@ async function run(viewport, label) {
       const last = attempts[attempts.length - 1];
       (last.body.passcode === FIXTURE_PASSCODE && written.has(expectWritten))
         ? ok(`${what}: the right passcode sends the real body and writes`) : fail(`${what}: right-passcode state ${JSON.stringify({ last, written: [...written] })}`);
+      const actualArgs = last.body.config.args;
+      JSON.stringify(actualArgs) === JSON.stringify(expectedArgs)
+        ? ok(`${what}: the save sends the expected arguments`) : fail(`${what}: sent ${JSON.stringify(actualArgs)}, expected ${JSON.stringify(expectedArgs)}`);
       await page.waitForFunction((id) => !document.querySelector(`[data-modal-id="${id}"]`), sel, { timeout: 5000 })
         .then(() => ok(`${what}: the editor closes after the save`)).catch(() => fail(`${what}: the editor stayed open after a good save`));
     };
 
     await editorCase('new server', ['global', '', null, true],
       async () => { await page.fill('#me-name', 'plain'); await page.fill('#me-command', 'node'); await page.fill('#me-args', 'x.js'); },
-      'create', 'plain', '__mcp_new');
-    await editorCase('edit server', ['global', 'plain', null, false],
+      'create', 'plain', '__mcp_new', ['x.js']);
+    await editorCase('edit arguments', ['global', 'plain', null, false],
       async () => { await page.fill('#me-args', 'y.js'); },
-      'update', 'plain:edited', '__mcp_global_plain');
+      'update', 'plain:edited', '__mcp_global_plain', ['y.js']);
+    await editorCase('edit command only', ['global', 'plain', null, false],
+      async () => { await page.fill('#me-command', 'node-custom'); },
+      'update', 'plain:edited', '__mcp_global_plain', EXISTING.config.args);
 
     // URL install: preview first (no passcode: it writes nothing), then Install asks.
     attempts.length = 0; written.clear();

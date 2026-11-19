@@ -360,6 +360,8 @@ async function openMCPEditor(scope, name, projectId, isNew) {
   _mcpEditorRenderTransport();
 }
 
+const _mcpOriginalArgs = new WeakMap();
+
 function _mcpEditorRenderTransport() {
   const sel = document.getElementById('me-transport');
   const target = document.getElementById('me-fields');
@@ -402,6 +404,11 @@ function _mcpEditorRenderTransport() {
             style="width:100%;min-height:60px;padding:6px 10px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono);resize:vertical">${esc(envPairs)}</textarea>
         </div>
       </div>`;
+    if (Array.isArray(initCfg.args)) {
+      const field = target.querySelector('#me-args');
+      _mcpOriginalArgs.set(field, initCfg.args.slice());
+      field.addEventListener('input', () => _mcpOriginalArgs.delete(field), { once: true });
+    }
   } else {
     const headerPairs = Object.entries(initCfg.headers || {}).map(([k,v]) => `${k}: ${v}`).join('\n');
     target.innerHTML = `
@@ -957,10 +964,12 @@ async function saveMCPServer(modalId, isNew) {
   let config = {};
   if (transport === 'stdio') {
     const command = (root.querySelector('#me-command').value || '').trim();
-    const argsText = (root.querySelector('#me-args').value || '').trim();
+    const argsField = root.querySelector('#me-args');
+    const argsText = argsField.value.trim();
+    const args = _mcpOriginalArgs.get(argsField) ?? (argsText ? argsText.split(/\s+/) : []);
     const envText = (root.querySelector('#me-env').value || '').trim();
     if (!command) { _mcpEditorStatus(modalId, 'Command is required for stdio', 'var(--red)'); return; }
-    config = { command, args: argsText ? argsText.split(/\s+/) : [], env: _parseKVLines(envText, '=') };
+    config = { command, args, env: _parseKVLines(envText, '=') };
   } else {
     const url = (root.querySelector('#me-url').value || '').trim();
     const headersText = (root.querySelector('#me-headers').value || '').trim();
