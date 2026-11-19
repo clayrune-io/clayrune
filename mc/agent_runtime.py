@@ -4988,159 +4988,158 @@ class GeminiRuntime(AgentRuntime):
                         del tail_buf[:-40]
                     continue
 
-                _test_run_detection.observe(session, 'gemini', line, proc)
                 try:
+                    _test_run_detection.observe(session, 'gemini', line, proc)
                     ev = self.parse_event(line, handle.mc_session_id)
-                except Exception as exc:
-                    _log(f'[gemini] failed to parse stream event: {exc}')
-                    continue
-                if not (ev and ev.type == EventType.ASSISTANT_TEXT):
-                    # Any other event ends the text run: write it out first
-                    # so it lands before the tool/error/status line.
-                    _flush_run()
-                if ev and ev.type == EventType.ASSISTANT_TEXT:
-                    _txt = ev.payload.get('text', line)
-                    turn_text_parts.append(_txt)
-                    fence_window = mc_fence_tail + _txt
-                    mc_fence_tail = fence_window[-5:]
-                    if not _mc_suppressing and '```mc:' in fence_window:
-                        # An MC Tool Protocol block has started: suppress the
-                        # raw block (and anything after it) from the chat. It
-                        # is parsed and acted on at turn end. Keep the part of
-                        # this run before the fence (the fence can straddle
-                        # deltas, so cut the joined run, not just _txt).
-                        _mc_suppressing = True
-                        run_text = ''.join(pending_run) + _txt
-                        cut = run_text.find('```mc:')
-                        pending_run[:] = [run_text[:cut] if cut >= 0 else ''.join(pending_run)]
+                    if not (ev and ev.type == EventType.ASSISTANT_TEXT):
+                        # Any other event ends the text run: write it out first
+                        # so it lands before the tool/error/status line.
                         _flush_run()
-                    if not _mc_suppressing:
-                        pending_run.append(_txt)
+                    if ev and ev.type == EventType.ASSISTANT_TEXT:
+                        _txt = ev.payload.get('text', line)
+                        fence_window = mc_fence_tail + _txt
+                        turn_text_parts.append(_txt)
+                        mc_fence_tail = fence_window[-5:]
+                        if not _mc_suppressing and '```mc:' in fence_window:
+                            # An MC Tool Protocol block has started: suppress the
+                            # raw block (and anything after it) from the chat. It
+                            # is parsed and acted on at turn end. Keep the part of
+                            # this run before the fence (the fence can straddle
+                            # deltas, so cut the joined run, not just _txt).
+                            _mc_suppressing = True
+                            run_text = ''.join(pending_run) + _txt
+                            cut = run_text.find('```mc:')
+                            pending_run[:] = [run_text[:cut] if cut >= 0 else ''.join(pending_run)]
+                            _flush_run()
+                        if not _mc_suppressing:
+                            pending_run.append(_txt)
+                            session['last_output_time'] = _time.time()
+                            _cb('on_assistant_text', ev)
+                    elif ev and ev.type == EventType.WARN:
+                        turn_error_seen = True  # the CLI's own stated reason is on screen
+                        # `{"type":"error","severity":...}` stream events: safety
+                        # blocks, loop detection, "Agent execution blocked" (a
+                        # hook denial), max turns. parse_event returned None for
+                        # them, so the CLI's own reason vanished from the chat.
+                        session['log_lines'].append(
+                            f"[gemini {ev.payload.get('severity') or 'warning'}] "
+                            f"{ev.payload.get('text', '')}")
                         session['last_output_time'] = _time.time()
-                        _cb('on_assistant_text', ev)
-                elif ev and ev.type == EventType.WARN:
-                    turn_error_seen = True  # the CLI's own stated reason is on screen
-                    # `{"type":"error","severity":...}` stream events: safety
-                    # blocks, loop detection, "Agent execution blocked" (a
-                    # hook denial), max turns. parse_event returned None for
-                    # them, so the CLI's own reason vanished from the chat.
-                    session['log_lines'].append(
-                        f"[gemini {ev.payload.get('severity') or 'warning'}] "
-                        f"{ev.payload.get('text', '')}")
-                    session['last_output_time'] = _time.time()
-                elif ev and ev.type == EventType.TOOL_USE:
-                    tool_calls += 1
-                    blocks = ev.payload.get('blocks', [])
-                    name = blocks[0].get('name', '') if blocks else ''
-                    tid = blocks[0].get('tool_use_id') if blocks else None
-                    # Per-session tool_id → tool_name map. tool_result events
-                    # carry only tool_id, so we cache the name here for the
-                    # reader's TOOL_RESULT branch to look up. Bounded to the
-                    # last 64 tool calls so a marathon session can't grow it
-                    # unboundedly.
-                    if tid and name:
-                        tmap = session.setdefault('_gemini_tool_names', {})
-                        tmap[tid] = name
-                        if len(tmap) > 64:
-                            for k in list(tmap.keys())[:-64]:
-                                tmap.pop(k, None)
-                    # Canonical `[tool: ...]` prefix — the frontend keys
-                    # tool-line styling, the show/hide "Tool call lines"
-                    # toggle and the activity ticker off that exact prefix.
-                    # A provider-specific prefix bypasses all three (e.g. the
-                    # toggle could not hide Gemini's tool lines).
-                    session['log_lines'].append(
-                        f"[tool: {name}]" if name else "[tool: call]")
-                    session['last_output_time'] = _time.time()
-                elif ev and ev.type == EventType.TOOL_RESULT:
-                    tid = ev.payload.get('tool_id') or ''
-                    tmap = session.get('_gemini_tool_names') or {}
-                    nm = tmap.get(tid) or ev.payload.get('name') or 'tool'
-                    st = ev.payload.get('status') or ''
-                    session['log_lines'].append(
-                        f"[tool: {nm} result{(' — ' + st) if st else ''}]")
-                    session['last_output_time'] = _time.time()
-                elif ev and ev.type == EventType.TURN_END:
-                    # W4/MC-947 (2026-09-18): the payload always carried real
-                    # token counts (parse_event's TURN_END branch reads
-                    # `msg.get('stats')`, live-confirmed shape
-                    # `{"total_tokens":N,"input_tokens":N,"output_tokens":N,
-                    # ...}`) but nothing stored it — `emits_usage=False` was
-                    # an honest description of THIS bug, not of the CLI.
-                    # Mirrors `_mode_a_reader`'s own TURN_END branch (same
-                    # straight-overwrite-per-turn convention every other
-                    # Mode-A provider uses; Gemini respawns a process per
-                    # turn same as they do). `cost_usd`/`num_turns` stay
-                    # unset — parse_event hard-codes them None because the
-                    # CLI genuinely never emits either (emits_cost/
-                    # emits_num_turns are correctly False, unaffected).
-                    _usage = ev.payload.get('usage')
-                    if isinstance(_usage, dict):
-                        session['usage'] = _usage
-                        # NOT normalize_context_tokens(_usage): the CLI's
-                        # `stats` SUM every API request this process made
-                        # (gemini-cli 0.59 uiTelemetry.processApiResponse:
-                        # `tokens.prompt += usage.input_token_count`), so a
-                        # turn with one tool call re-sends the prompt twice
-                        # and reports ~2x the context actually held. Live
-                        # 2026-09-19: the guardrail turn read 80,253 against
-                        # a no-tool turn's 18,666. Context is the LAST
-                        # request's prompt, from the CLI's per-request record.
-                        _ctx = gemini_turn_context_tokens(
-                            session.get('provider_session_id') or ev.session_id or '',
-                            _usage)
-                        if _ctx is not None:
-                            session['context_tokens'] = _ctx
-                    _allowance_state.clear_exhaustion('gemini')
-                    session.pop('_limit_resume_exhaustion', None)
-                    _cb('on_turn_end', ev)
-                elif ev and ev.type == EventType.ALLOWANCE_EXHAUSTED:
-                    # Mirrors _mode_a_reader's own branch — a terminal
-                    # failure is never content (Fenn #4).
-                    _allowance_state.record_exhaustion('gemini', **ev.payload)
-                    from mc.limit_resume import observe as _observe_reset_wait
-                    _observe_reset_wait(session, ev.payload)
-                    session['log_lines'].append(
-                        f"[gemini] {_allowance_state.refusal_message('gemini')}")
-                    session['last_output_time'] = _time.time()
-                    session['_allowance_exhausted'] = True
-                    turn_error_seen = True
-                elif ev and ev.type == EventType.ERROR:
-                    turn_error_seen = True
-                    # The CLI's own reason (quota, auth, network — see
-                    # parse_event's 'result'+status=='error' branch) surfaced
-                    # into the visible transcript AND the tail explain_exit_error
-                    # scans below, instead of being dropped on the floor the way
-                    # a bare TURN_END would (usage/cost only, no error field).
-                    session['log_lines'].append(
-                        f"[gemini error] {ev.payload.get('text', '')}")
-                    session['last_output_time'] = _time.time()
-                elif ev and ev.type == EventType.INIT:
-                    # Capture Gemini's own session id so followups resume THIS
-                    # exact session by id (--resume <id>) — never `latest`,
-                    # which grabs whatever gemini session is newest in the
-                    # project dir and, after prior runs, is a stale unrelated
-                    # conversation that gets continued by mistake.
-                    #
-                    # Stashed under the GENERIC `provider_session_id` key (W4,
-                    # MC-947) — not a gemini-private `_gemini_session_id` —
-                    # because that is the field `_runtime_note_init`
-                    # (agent_routes.py) backfills onto the durable agent_log
-                    # row, and the one `_revive_non_claude_from_agent_log`
-                    # reads back on a cold dispatch after a server restart.
-                    # The private key never reached either: a finished Gemini
-                    # chat's own session id lived ONLY in the volatile
-                    # in-memory session dict, so `_COLD_RESUMABLE_PROVIDERS`
-                    # had to exclude gemini outright (see its own comment,
-                    # now updated) — there was nothing durable to resume BY.
-                    if ev.session_id:
-                        session['provider_session_id'] = ev.session_id
-                    native_model = ev.payload.get('model')
-                    if isinstance(native_model, str) and native_model:
-                        session['observed_model'] = native_model
-                    _cb('on_init', ev)
-                # USER_MESSAGE (the prompt echo) and unrecognized envelopes
-                # (ev is None) are consumed silently — no agent output.
+                    elif ev and ev.type == EventType.TOOL_USE:
+                        blocks = ev.payload.get('blocks', [])
+                        name = blocks[0].get('name', '') if blocks else ''
+                        tid = blocks[0].get('tool_use_id') if blocks else None
+                        # Per-session tool_id → tool_name map. tool_result events
+                        # carry only tool_id, so we cache the name here for the
+                        # reader's TOOL_RESULT branch to look up. Bounded to the
+                        # last 64 tool calls so a marathon session can't grow it
+                        # unboundedly.
+                        if tid and name:
+                            tmap = session.setdefault('_gemini_tool_names', {})
+                            tmap[tid] = name
+                            if len(tmap) > 64:
+                                for k in list(tmap.keys())[:-64]:
+                                    tmap.pop(k, None)
+                        # Canonical `[tool: ...]` prefix — the frontend keys
+                        # tool-line styling, the show/hide "Tool call lines"
+                        # toggle and the activity ticker off that exact prefix.
+                        # A provider-specific prefix bypasses all three (e.g. the
+                        # toggle could not hide Gemini's tool lines).
+                        session['log_lines'].append(
+                            f"[tool: {name}]" if name else "[tool: call]")
+                        tool_calls += 1
+                        session['last_output_time'] = _time.time()
+                    elif ev and ev.type == EventType.TOOL_RESULT:
+                        tid = ev.payload.get('tool_id') or ''
+                        tmap = session.get('_gemini_tool_names') or {}
+                        nm = tmap.get(tid) or ev.payload.get('name') or 'tool'
+                        st = ev.payload.get('status') or ''
+                        session['log_lines'].append(
+                            f"[tool: {nm} result{(' — ' + st) if st else ''}]")
+                        session['last_output_time'] = _time.time()
+                    elif ev and ev.type == EventType.TURN_END:
+                        # W4/MC-947 (2026-09-18): the payload always carried real
+                        # token counts (parse_event's TURN_END branch reads
+                        # `msg.get('stats')`, live-confirmed shape
+                        # `{"total_tokens":N,"input_tokens":N,"output_tokens":N,
+                        # ...}`) but nothing stored it — `emits_usage=False` was
+                        # an honest description of THIS bug, not of the CLI.
+                        # Mirrors `_mode_a_reader`'s own TURN_END branch (same
+                        # straight-overwrite-per-turn convention every other
+                        # Mode-A provider uses; Gemini respawns a process per
+                        # turn same as they do). `cost_usd`/`num_turns` stay
+                        # unset — parse_event hard-codes them None because the
+                        # CLI genuinely never emits either (emits_cost/
+                        # emits_num_turns are correctly False, unaffected).
+                        _usage = ev.payload.get('usage')
+                        if isinstance(_usage, dict):
+                            session['usage'] = _usage
+                            # NOT normalize_context_tokens(_usage): the CLI's
+                            # `stats` SUM every API request this process made
+                            # (gemini-cli 0.59 uiTelemetry.processApiResponse:
+                            # `tokens.prompt += usage.input_token_count`), so a
+                            # turn with one tool call re-sends the prompt twice
+                            # and reports ~2x the context actually held. Live
+                            # 2026-09-19: the guardrail turn read 80,253 against
+                            # a no-tool turn's 18,666. Context is the LAST
+                            # request's prompt, from the CLI's per-request record.
+                            _ctx = gemini_turn_context_tokens(
+                                session.get('provider_session_id') or ev.session_id or '',
+                                _usage)
+                            if _ctx is not None:
+                                session['context_tokens'] = _ctx
+                        _allowance_state.clear_exhaustion('gemini')
+                        session.pop('_limit_resume_exhaustion', None)
+                        _cb('on_turn_end', ev)
+                    elif ev and ev.type == EventType.ALLOWANCE_EXHAUSTED:
+                        # Mirrors _mode_a_reader's own branch — a terminal
+                        # failure is never content (Fenn #4).
+                        _allowance_state.record_exhaustion('gemini', **ev.payload)
+                        from mc.limit_resume import observe as _observe_reset_wait
+                        _observe_reset_wait(session, ev.payload)
+                        session['log_lines'].append(
+                            f"[gemini] {_allowance_state.refusal_message('gemini')}")
+                        session['last_output_time'] = _time.time()
+                        session['_allowance_exhausted'] = True
+                        turn_error_seen = True
+                    elif ev and ev.type == EventType.ERROR:
+                        turn_error_seen = True
+                        # The CLI's own reason (quota, auth, network — see
+                        # parse_event's 'result'+status=='error' branch) surfaced
+                        # into the visible transcript AND the tail explain_exit_error
+                        # scans below, instead of being dropped on the floor the way
+                        # a bare TURN_END would (usage/cost only, no error field).
+                        session['log_lines'].append(
+                            f"[gemini error] {ev.payload.get('text', '')}")
+                        session['last_output_time'] = _time.time()
+                    elif ev and ev.type == EventType.INIT:
+                        # Capture Gemini's own session id so followups resume THIS
+                        # exact session by id (--resume <id>) — never `latest`,
+                        # which grabs whatever gemini session is newest in the
+                        # project dir and, after prior runs, is a stale unrelated
+                        # conversation that gets continued by mistake.
+                        #
+                        # Stashed under the GENERIC `provider_session_id` key (W4,
+                        # MC-947) — not a gemini-private `_gemini_session_id` —
+                        # because that is the field `_runtime_note_init`
+                        # (agent_routes.py) backfills onto the durable agent_log
+                        # row, and the one `_revive_non_claude_from_agent_log`
+                        # reads back on a cold dispatch after a server restart.
+                        # The private key never reached either: a finished Gemini
+                        # chat's own session id lived ONLY in the volatile
+                        # in-memory session dict, so `_COLD_RESUMABLE_PROVIDERS`
+                        # had to exclude gemini outright (see its own comment,
+                        # now updated) — there was nothing durable to resume BY.
+                        if ev.session_id:
+                            session['provider_session_id'] = ev.session_id
+                        native_model = ev.payload.get('model')
+                        if isinstance(native_model, str) and native_model:
+                            session['observed_model'] = native_model
+                        _cb('on_init', ev)
+                    # USER_MESSAGE (the prompt echo) and unrecognized envelopes
+                    # (ev is None) are consumed silently — no agent output.
+                except Exception as exc:
+                    _log(f'[gemini] failed to handle stream event: {exc}')
         except Exception as e:
             if session.get('proc') is proc:
                 session['log_lines'].append(f"[stream error: {e}]")

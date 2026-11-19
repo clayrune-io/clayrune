@@ -373,6 +373,24 @@ class TestGeminiProbeLiveQuota:
         self.rt._read_stream(proc, handle)
         assert session['log_lines'] == ['[gemini error] failed', 'later output']
 
+    @pytest.mark.parametrize('event', ['tool_use', 'tool_result'])
+    def test_malformed_gemini_tool_id_does_not_end_stream(self, event):
+        from types import SimpleNamespace
+        from typing import Any
+
+        proc: Any = SimpleNamespace(wait=lambda: 0, stdout=iter((
+            json.dumps({'type': event, 'tool_name': 'read_file', 'tool_id': ['invalid']}),
+            '{"type":"message","role":"assistant","content":"later output"}',
+        )))
+        session = {'proc': proc, 'status': 'running', 'log_lines': []}
+        handle = agent_runtime.SessionHandle(
+            mc_session_id='s', provider='gemini', mode='A', project_path='.',
+            project_id='p', session_dict=session,
+        )
+        self.rt._read_stream(proc, handle)
+        assert session['log_lines'] == ['later output']
+        assert session['status'] == 'completed'
+
     def test_network_failure_is_unreachable_not_invalid(self):
         """A DNS/timeout failure must not be reported as an invalid key — that
         would tell the user to redo something that was never the problem."""
