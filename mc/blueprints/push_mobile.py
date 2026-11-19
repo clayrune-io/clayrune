@@ -112,7 +112,15 @@ def _is_being_watched(project_id: str, session_id: str) -> bool:
     return (_time.time() - ts) < PRESENCE_FRESH_SEC
 
 
+_vapid_lock = threading.Lock()
+
+
 def _load_vapid_keys() -> dict:
+    with _vapid_lock:
+        return _load_or_create_vapid_keys()
+
+
+def _load_or_create_vapid_keys() -> dict:
     """Return the VAPID keypair, generating + persisting one if missing.
 
     Private key is stored as the raw 32-byte EC scalar, base64url-encoded.
@@ -432,13 +440,6 @@ def _notify_push(title: str, body: str, *, url: str = '',
     if log_inbox:
         _append_notification(title=title, body=body, url=url, kind=kind,
                              project_id=project_id, session_id=session_id)
-    try:
-        from pywebpush import webpush, WebPushException
-    except Exception as e:
-        return {'ok': False, 'error': f'pywebpush_missing: {e}'}
-    keys = _load_vapid_keys()
-    if not keys.get('private'):
-        return {'ok': False, 'error': 'no_vapid_key'}
     subs = _load_push_subscriptions()
     if not subs:
         return {'ok': False, 'error': 'no_subscribers'}
@@ -456,6 +457,11 @@ def _notify_push(title: str, body: str, *, url: str = '',
     delivered: dict[str, int] = {}
     stale: set[str] = set()
     last_error = None
+    attempted_fcm = False
+    webpush = None
+    webpush_exception = None
+    web_setup_error = ''
+    keys = {}
     for nonce, sub in list(subs.items()):
         if not isinstance(sub, dict):
             continue
@@ -473,6 +479,7 @@ def _notify_push(title: str, body: str, *, url: str = '',
         sub_type = sub.get('type', '') or ''
 
         if sub_type == 'fcm':
+            attempted_fcm = True
             ok, err, drop = _push_send_fcm(sub, payload_dict)
             if ok:
                 delivered[nonce] = int(_time.time())
@@ -493,6 +500,20 @@ def _notify_push(title: str, body: str, *, url: str = '',
         }
         if not sub_info['endpoint']:
             continue
+        if webpush is None and not web_setup_error:
+            try:
+                from pywebpush import webpush, WebPushException
+                webpush_exception = WebPushException
+            except Exception as e:
+                web_setup_error = f'pywebpush_missing: {e}'
+            else:
+                keys = _load_vapid_keys()
+                if not keys.get('private'):
+                    web_setup_error = 'no_vapid_key'
+        if web_setup_error or webpush is None or webpush_exception is None:
+            failed += 1
+            last_error = web_setup_error
+            continue
         # Never let a failure line carry a key: the subscriber's, or ours.
         _sub_keys = sub_info['keys'] if isinstance(sub_info['keys'], dict) else {}
         _secrets = [*_sub_keys.values(), keys['private']]
@@ -507,7 +528,7 @@ def _notify_push(title: str, body: str, *, url: str = '',
             )
             delivered[nonce] = int(_time.time())
             sent += 1
-        except WebPushException as e:
+        except webpush_exception as e:
             resp = getattr(e, 'response', None)
             code = resp.status_code if resp is not None else 0
             if code in (404, 410):
@@ -552,6 +573,8 @@ def _notify_push(title: str, body: str, *, url: str = '',
                 _save_push_subscriptions(current)
     if removed:
         _log(f"[push] removed {removed} stale subscription(s)", flush=True)
+    if web_setup_error and not attempted_fcm:
+        return {'ok': False, 'error': web_setup_error}
     return {
         'ok': True, 'sent': sent, 'failed': failed, 'removed': removed,
         'last_error': last_error,

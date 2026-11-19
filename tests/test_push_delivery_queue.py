@@ -10,6 +10,8 @@ ONE background worker through a bounded queue (mc/push_delivery_queue.py), and
 No test here makes a network call: `pywebpush` is replaced in sys.modules by a
 stub for every test, and the subscription/key/inbox stores are patched.
 """
+from concurrent.futures import ThreadPoolExecutor
+import json
 import sys
 import threading
 import time
@@ -201,6 +203,75 @@ def test_bad_vapid_file_keeps_the_original_bytes(monkeypatch, tmp_path, content)
 
     assert pm._load_vapid_keys() == {}
     assert path.read_bytes() == content
+
+
+def test_corrupt_vapid_keys_do_not_block_fcm(monkeypatch, tmp_path):
+    path = tmp_path / 'vapid.json'
+    path.write_bytes(b'{')
+    monkeypatch.setattr(pm, 'PUSH_VAPID_PATH', path)
+    monkeypatch.setattr(pm, '_load_push_subscriptions', lambda: {
+        'web': {'endpoint': ENDPOINT, 'keys': KEYS},
+        'android': {'type': 'fcm', 'token': 'test-token'},
+    })
+    monkeypatch.setattr(pm, '_save_push_subscriptions', lambda subs: None)
+    delivered = []
+
+    def fcm(sub, payload):
+        delivered.append((sub['token'], payload['body']))
+        return True, '', False
+
+    monkeypatch.setattr(pm, '_push_send_fcm', fcm)
+    result = pm._notify_push('title', 'body', log_inbox=False)
+    assert delivered == [('test-token', 'body')]
+    assert result['sent'] == 1
+    assert result['failed'] == 1
+    assert path.read_bytes() == b'{'
+
+
+def test_simultaneous_first_public_key_requests_publish_one_pair(monkeypatch, tmp_path):
+    from flask import Flask
+    from py_vapid import Vapid01
+
+    path = tmp_path / 'vapid.json'
+    monkeypatch.setattr(pm, 'PUSH_VAPID_PATH', path)
+    first_generating = threading.Event()
+    second_requested = threading.Event()
+    second_generating = threading.Event()
+    release_first = threading.Event()
+    generate = Vapid01.generate_keys
+    app = Flask(__name__)
+    app.register_blueprint(pm.bp)
+
+    def generate_keys(vapid):
+        if first_generating.is_set():
+            second_generating.set()
+        else:
+            first_generating.set()
+            assert release_first.wait(5)
+        generate(vapid)
+
+    monkeypatch.setattr(Vapid01, 'generate_keys', generate_keys)
+
+    def public_key(requested=None):
+        if requested is not None:
+            requested.set()
+        with app.test_client() as client:
+            return client.get('/api/push/vapid-public-key').get_json()['public_key']
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(public_key)
+        try:
+            assert first_generating.wait(5)
+            second = pool.submit(public_key, second_requested)
+            assert second_requested.wait(5)
+            second_generating.wait(0.5)
+        finally:
+            release_first.set()
+        first_key = first.result(timeout=5)
+        second_key = second.result(timeout=5)
+
+    assert not second_generating.is_set()
+    assert first_key == second_key == json.loads(path.read_text(encoding='utf-8'))['public']
 
 
 def test_turn_end_uses_one_project_read_for_the_inbox(monkeypatch, tmp_path):
