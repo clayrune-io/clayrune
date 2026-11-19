@@ -147,6 +147,15 @@ try {
       const stopped = await page.locator('[data-preview-seek]').inputValue();
       await page.waitForTimeout(180);
       assert.equal(await page.locator('[data-preview-seek]').inputValue(), stopped, 'pause holds position');
+      // Resume from the start of the first clip. Where the pause landed depends on
+      // how long the clock/screenshot steps above took in wall time (it was already
+      // 1.1-1.6s in, inside the second scene, once the Desk's background load made
+      // them slower), so the 1s-trim check below must not inherit that position.
+      await page.locator('[data-preview-seek]').evaluate(el => {
+        el.value = '0'; el.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      assert.equal(await current(), 'clip', 'rewound to the first clip');
+      visits.length = 0;
       await page.click('[data-preview-play]');
       await page.waitForFunction(() => document.querySelector('[data-sb-preview]').dataset.previewScene === 'picture');
       assert(Number(await page.locator('[data-preview-seek]').inputValue()) < 1.25, 'clip uses its 1s trim, not the native 2.4s');
