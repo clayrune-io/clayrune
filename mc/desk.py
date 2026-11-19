@@ -807,8 +807,7 @@ def _seed_voices(store: dict) -> bool:
     return True
 
 
-def voice_names(project_id: str | None = None) -> list[str]:
-    """Voices usable here: the global ones, plus any scoped to this project."""
+def _voices_in_scope(project_id: str | None) -> dict[str, dict]:
     with _store_lock:
         store = _read_store()
         # _seed_voices sets `voices_seeded` even when it writes no voices,
@@ -817,12 +816,13 @@ def voice_names(project_id: str | None = None) -> list[str]:
         _seed_voices(store)
         if not had_flag:
             _write_store(store)
-        out = []
-        for name, v in store['voices'].items():
-            scope = v.get('scope') or VOICE_SCOPE_GLOBAL
-            if scope == VOICE_SCOPE_GLOBAL or scope == project_id:
-                out.append(name)
-    return sorted(out)
+        return {name: v for name, v in sorted(store['voices'].items())
+                if (v.get('scope') or VOICE_SCOPE_GLOBAL) in (VOICE_SCOPE_GLOBAL, project_id)}
+
+
+def voice_names(project_id: str | None = None) -> list[str]:
+    """Voices usable here: the global ones, plus any scoped to this project."""
+    return list(_voices_in_scope(project_id))
 
 
 def is_voice(name: str, project_id: str | None = None) -> bool:
@@ -837,15 +837,14 @@ def default_voice(project_id: str | None = None) -> str | None:
 
 
 def get_voice(name: str) -> dict:
-    if not is_voice(name):
-        raise ValueError(f'unknown voice {name!r}; expected one of {voice_names()}')
-    with _store_lock:
-        store = _read_store()
-        return store['voices'].get(name) or _empty_voice(name)
+    voices = _voices_in_scope(None)
+    if name not in voices:
+        raise ValueError(f'unknown voice {name!r}; expected one of {list(voices)}')
+    return voices[name] or _empty_voice(name)
 
 
 def list_voices(project_id: str | None = None) -> list[dict]:
-    return [get_voice(v) for v in voice_names(project_id)]
+    return [voice or _empty_voice(name) for name, voice in _voices_in_scope(project_id).items()]
 
 
 def create_voice(name: str, *, platform: str = 'x', destination: str = '',

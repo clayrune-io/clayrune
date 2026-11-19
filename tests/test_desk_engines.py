@@ -465,12 +465,22 @@ def test_idempotency_key_is_required(client):
     assert r.status_code == 400 and 'idempotency_key' in r.get_json()['error']
 
 
-def test_idempotent_retry_returns_the_first_job_with_one_vendor_call(client, vendor):
+def test_idempotent_retry_returns_the_first_job_with_one_vendor_call(client, vendor, monkeypatch):
     _campaign(_own(100))
     vendor.on('POST', ':predictLongRunning', vendor.json(200, {'name': 'models/m/operations/one'}))
     body = _veo(desk={'idempotency_key': 'same'})
     a = _submit(client, body)
-    b = _submit(client, body)
+    read = eng._read_store
+    reads = []
+
+    def tracked_read():
+        reads.append(True)
+        return read()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(eng, '_read_store', tracked_read)
+        b = _submit(client, body)
+    assert len(reads) == 1
     assert (a.status_code, b.status_code) == (201, 200)
     assert a.get_json()['job']['job_id'] == b.get_json()['job']['job_id'] and b.get_json()['replay'] is True
     assert len(vendor.to(':predictLongRunning')) == 1

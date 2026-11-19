@@ -1615,9 +1615,10 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False, _pre
     idem = f'{campaign_id or "-"}:{key}'
 
     with _lock:
-        existing = _read_store()['idem'].get(idem)
+        store = _read_store()
+        existing = store['idem'].get(idem)
         if existing:
-            return _public_job(_read_store()['jobs'][existing]), True
+            return _public_job(store['jobs'][existing]), True
 
     schema_creds = _schema_creds(req.engine_id, project_id, unattended, req.model_id)
     _eng, model = _resolve(req)

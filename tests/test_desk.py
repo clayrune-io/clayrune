@@ -217,6 +217,22 @@ def test_a_voice_can_be_scoped_to_one_project(store):
     assert 'personal' in store.voice_names('other_project'), 'globals stay available'
 
 
+def test_list_voices_uses_one_snapshot_and_keeps_project_scope(store, monkeypatch):
+    store.create_voice('sidegig', platform='x', scope='project-a')
+    read = store._read_store
+    reads = []
+
+    def tracked_read():
+        reads.append(True)
+        return read()
+
+    monkeypatch.setattr(store, '_read_store', tracked_read)
+    assert [row['name'] for row in store.list_voices()] == ['personal', 'product']
+    assert len(reads) == 1
+    assert [row['name'] for row in store.list_voices('project-a')] == ['personal', 'product', 'sidegig']
+    assert len(reads) == 2
+
+
 def test_there_is_no_hardcoded_default_voice(store):
     assert store.default_voice() in ('personal', 'product')
     store.delete_voice('personal')
