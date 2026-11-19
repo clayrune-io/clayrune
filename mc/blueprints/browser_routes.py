@@ -271,7 +271,9 @@ def _own_remote_access_hostname() -> str | None:
     try:
         from mc_remote import device_keys
         identity = device_keys.load_identity()
-    except Exception:
+    except Exception as exc:
+        if not isinstance(exc, ModuleNotFoundError) or exc.name != 'mc_remote':
+            print(f'[browser] remote access hostname lookup failed: {exc}', flush=True)
         return None
     host = (getattr(identity, 'hostname', '') or '').strip().lower()
     return host or None
@@ -2227,7 +2229,7 @@ def _run_cdp(session):
         # reader (that is exactly the silent black-pane failure).
         if session.get('status') == 'running':
             session['status'] = 'error'
-            session.setdefault('error', 'CDP reader exited unexpectedly')
+            session['error'] = session.get('error') or 'CDP reader exited unexpectedly'
         try:
             if session.get('ws'):
                 session['ws'].close()
@@ -2763,6 +2765,8 @@ def browser_launch():
         err = err or 'browser failed to start'
         # A bad profile name is the caller's mistake, not a missing dependency —
         # 501 would send them installing Chromium over a typo.
+        if 'is in use by another browser process' in err:
+            return jsonify({'error': err}), 409
         return jsonify({'error': err}), (400 if 'profile name' in err else 501)
     reused = (bool(reuse_result['reused']) if 'reused' in reuse_result
               else bool(session.pop('reused', False)))

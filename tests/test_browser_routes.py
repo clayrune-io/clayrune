@@ -43,6 +43,19 @@ def test_launch_gate_no_websocket(monkeypatch):
     assert session is None and "websocket-client" in err
 
 
+def test_launch_reports_profile_held_by_another_browser(monkeypatch):
+    from flask import Flask
+
+    app = Flask(__name__)
+    monkeypatch.setattr(br, '_is_clayrune_own_origin', lambda _url: False)
+    monkeypatch.setattr(br, '_launch_browser', lambda *_args, **_kwargs: (
+        None, "profile 'main' is in use by another browser process"))
+    with app.test_request_context(json={'profile': 'main'}):
+        response, status = br.browser_launch()
+    assert status == 409
+    assert 'in use' in response.get_json()['error']
+
+
 def test_view_dims_are_the_render_viewport():
     assert (br.VIEW_W, br.VIEW_H) == (1280, 800)
 
