@@ -112,7 +112,7 @@ def normalize_config(transport: str, cfg: dict[str, Any]) -> dict[str, Any]:
             args = [a for a in args.split() if a]
         if not isinstance(args, list):
             raise ValueError('args must be a list of strings')
-        args = [str(a) for a in args if str(a).strip()]
+        args = [str(a) for a in args]
         if args:
             out['args'] = args
         env = cfg.get('env') or {}
