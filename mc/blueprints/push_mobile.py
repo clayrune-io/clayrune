@@ -127,8 +127,15 @@ def _load_vapid_keys() -> dict:
     try:
         with open(PUSH_VAPID_PATH, 'r', encoding='utf-8') as f:
             d = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+        if not isinstance(d, dict) or not all(
+            isinstance(d.get(key), str) and d[key] for key in ('public', 'private')
+        ):
+            raise ValueError('invalid VAPID key file')
+    except FileNotFoundError:
         d = None
+    except (OSError, ValueError) as exc:
+        _log(f"[push] VAPID key file unreadable: {type(exc).__name__}", flush=True)
+        return {}
 
     # Migration: an earlier build stored the private key as full PEM, which
     # py_vapid can't parse via from_string. Detect and convert to raw on load
@@ -149,8 +156,8 @@ def _load_vapid_keys() -> dict:
                 needs_persist = True
                 _log('[push] migrated VAPID private key from PEM to raw format', flush=True)
             except Exception as e:
-                _log(f"[push] VAPID PEM migration failed: {e}; regenerating", flush=True)
-                d = None  # fall through to regen
+                _log(f"[push] VAPID PEM migration failed: {type(e).__name__}", flush=True)
+                return {}
         if d is not None:
             if not needs_persist:
                 return d

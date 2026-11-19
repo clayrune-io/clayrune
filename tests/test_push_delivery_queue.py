@@ -193,6 +193,16 @@ def test_delivery_keeps_concurrent_subscription_changes(stub, monkeypatch, updat
         assert outcome['removed'] == 0
 
 
+@pytest.mark.parametrize('content', [b'{', b'null', b'{"public": "test", "private": "-----BEGIN malformed"}'])
+def test_bad_vapid_file_keeps_the_original_bytes(monkeypatch, tmp_path, content):
+    path = tmp_path / 'vapid.json'
+    path.write_bytes(content)
+    monkeypatch.setattr(pm, 'PUSH_VAPID_PATH', path)
+
+    assert pm._load_vapid_keys() == {}
+    assert path.read_bytes() == content
+
+
 def test_webpush_gets_a_ten_second_timeout(stub, fresh_queue):
     fresh_queue()
     pm._handle_push_signal('p', 's', _result('done'))
