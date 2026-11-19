@@ -17,7 +17,8 @@ this view exists. The bench is the whole roster, marked with where each type
 is already working — never filtered by it, or a busy type would have nowhere
 to be placed or edited from.
 
-Read-only. It starts nothing, stops nothing, and touches no state.
+The Floor snapshot reads session state and can repair persisted labels.
+The figure naming route updates those labels.
 """
 import json
 import threading
