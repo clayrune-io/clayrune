@@ -314,7 +314,8 @@ def _read_record_raw(project_id):
         return None
     try:
         raw = json.loads(filepath.read_text(encoding='utf-8'))
-    except Exception:
+    except Exception as exc:
+        _log(f"[projects] reading record {filepath.name} failed: {exc}", flush=True)
         return None
     return raw if isinstance(raw, dict) else None
 
@@ -761,7 +762,9 @@ def update_project(project_id):
     routing_data = data.copy()  # retain request-only proof for the concurrent-create recheck
     data.pop('passcode', None)  # request proof must never become project data
 
-    existing = json.loads(filepath.read_text(encoding='utf-8')) if not is_new else {'id': project_id}
+    existing = {'id': project_id} if is_new else _read_record_raw(project_id)
+    if existing is None:
+        return jsonify({'error': 'project record is unreadable'}), 409
     existing.setdefault('backlog', [])
     if 'provider_overrides' in data:
         try:
@@ -774,19 +777,19 @@ def update_project(project_id):
             key in data for key in ('agent_model', 'agent_effort')):
         return jsonify({'error': 'Use provider_overrides for project engine preferences'}), 409
 
-    # ── Auto-create a dedicated workspace folder when creating a project with no path.
+    # ── Pick an automatic workspace path, then create it after validation.
+    auto_workspace = None
     if is_new:
         provided_path = (data.get('project_path') or '').strip()
         if not provided_path:
             base = Path(state.CONFIG.get('auto_workspace_base') or str(Path.home() / 'MissionControl'))
             try:
-                base.mkdir(parents=True, exist_ok=True)
                 candidate = base / project_id
                 n = 1
                 while candidate.exists():
                     candidate = base / f'{project_id}_{n}'
                     n += 1
-                candidate.mkdir(parents=True, exist_ok=True)
+                auto_workspace = candidate
                 data['project_path'] = str(candidate)
             except Exception as e:
                 return jsonify({'error': f'could not create workspace folder: {e}'}), 500
@@ -806,7 +809,7 @@ def update_project(project_id):
             _log(f"[project] resolving workspace path failed: {e}")
             resolved = candidate_path
         for pf in DATA_DIR.glob('*.json'):
-            if pf.stem == project_id or pf.stem.endswith('_agent_log'):
+            if pf.stem == project_id or pf.name.endswith(EXCLUDED_SIDECAR_SUFFIXES):
                 continue
             try:
                 with open(pf, encoding='utf-8') as f:
@@ -902,12 +905,21 @@ def update_project(project_id):
                 if refusal is not None:
                     return refusal
                 is_new = False
-                existing = json.loads(filepath.read_text(encoding='utf-8'))
+                existing = _read_record_raw(project_id)
+                if existing is None:
+                    return jsonify({'error': 'project record is unreadable'}), 409
+                if auto_workspace is not None:
+                    data.pop('project_path', None)
                 existing.setdefault('backlog', [])
                 for k, v in data.items():
                     if k not in ('log_msg', 'backlog'):
                         existing[k] = v
                 existing['last_updated'] = now_iso()
+            elif auto_workspace is not None:
+                try:
+                    auto_workspace.mkdir(parents=True, exist_ok=False)
+                except OSError as exc:
+                    return jsonify({'error': f'could not create workspace folder: {exc}'}), 500
             save_project(project_id, existing)
             if is_new:
                 DeliveryStore(Path(DATA_DIR).parent / 'delegation_delivery.sqlite3').recreate_project(project_id)

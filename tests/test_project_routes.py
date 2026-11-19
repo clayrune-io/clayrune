@@ -638,6 +638,26 @@ def test_backlog_malformed_and_404(client):
     assert client.get('/api/project/nope/backlog').status_code == 404
 
 
+def test_update_project_refuses_corrupt_record_without_replacing_it(client):
+    from mc.blueprints import project_routes as pr
+
+    record = pr.DATA_DIR / 'tproj.json'
+    record.write_text('{', encoding='utf-8')
+    response = client.post('/api/project/tproj', json={'name': 'new'}, headers=HUMAN)
+    assert response.status_code == 409
+    assert record.read_text(encoding='utf-8') == '{'
+
+
+def test_invalid_new_project_does_not_create_workspace(client):
+    from mc import state
+
+    workspace = Path(state.CONFIG['auto_workspace_base']) / 'tproj'
+    response = _human_project_post(
+        client, '/api/project/tproj', json={'default_character': 'invalid'})
+    assert response.status_code == 400
+    assert not workspace.exists()
+
+
 def test_backlog_patch_rejects_non_text_and_logs_trimmed_notes(client, capsys):
     _seed(client, backlog=[{'id': 'item', 'text': 'before', 'status': 'open'}])
     endpoint = '/api/project/tproj/backlog/item'
