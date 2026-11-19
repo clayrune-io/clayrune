@@ -66,6 +66,7 @@ from mc import desk as _desk
 from mc import desk_accounts as _accounts
 from mc import desk_campaign_hold as _hold
 from mc import desk_pieces as _pieces
+from mc import desk_post_ledger as _post_ledger
 from mc import desk_publish as _publish
 from mc import desk_spend_guard as _spend
 from mc.core import _log, now_iso
@@ -109,10 +110,6 @@ def _parse(s) -> datetime | None:
         return _aware(_desk._parse_dt(str(s)))
     except (ValueError, TypeError):
         return None
-
-
-def _post_cost(platform: str, body: str) -> float:
-    return _spend.post_cost(platform, body)
 
 
 def _failure(reason: str, now: datetime | None = None, code: str | None = None) -> dict:
@@ -199,7 +196,7 @@ def _refusal(store: dict, piece: dict, ver: dict, camp: dict | None, acc: dict |
     problems = _desk.approval_problems(camp)
     if problems:
         return "the campaign's limits are not covered by your approval: " + '; '.join(problems)
-    refused = _cadence_refusal(camp, store.get('ledger') or [], now)
+    refused = _cadence_refusal(camp, _post_ledger.accounted_posts(store.get('ledger') or []), now)
     if refused:
         return refused
     if acc is None:
@@ -230,39 +227,18 @@ def manual_task(acc: dict, piece: dict, body: str, now: datetime | None = None) 
 
 # -- sending one version ---------------------------------------------------------------
 
-def _ledger_has(url: str) -> bool:
-    return any(r.get('url') == url for r in _desk.list_ledger(limit=100000))
-
-
-def _record_ledger(piece: dict, ver: dict, camp: dict, acc: dict, body: str, receipt: dict) -> None:
-    """One story-ledger row per post, keyed so a recovery pass cannot add a second
-    for a post already recorded."""
-    if receipt.get('permalink') and _ledger_has(receipt['permalink']):
-        return
-    term = camp.get('term') if isinstance(camp.get('term'), dict) else {}
-    _desk.record_published(
-        platform=acc.get('platform'), voice=acc.get('voice') or '', body=body,
-        campaign_id=camp.get('id'), project_id=camp.get('project_id'),
-        url=receipt.get('permalink'), published_at=receipt.get('posted_at'),
-        piece_id=piece['id'], format=ver.get('format') or piece.get('kind'),
-        account=acc['id'], term=str(term.get('index') or 1),
-        cost=_post_cost(acc.get('platform') or '', body))
-
-
-def _complete_from_receipt(piece, ver, camp, acc, body, receipt, *, attended: bool, now: datetime) -> str:
+def _complete_from_receipt(piece, ver, camp, acc, receipt, *, attended: bool, now: datetime) -> str:
     """`sending` -> `submitted` with a receipt in hand, the ledger row, then one
     verification attempt. Returns the version's resulting state."""
+    if 'ledger_pending' not in receipt:
+        _post_ledger.stage_legacy(receipt, _post_ledger.fields(piece, ver, camp, acc))
+    public_receipt = {k: v for k, v in receipt.items() if k != 'ledger_pending'}
     sub = _pieces.transition_version(piece['id'], ver['id'], to='submitted', expect='sending',
-                                     receipt=dict(receipt), failure=None)
+                                     receipt=public_receipt, failure=None)
     if sub is None:
         return ver.get('state') or ''
-    try:
-        _record_ledger(piece, ver, camp, acc, body, receipt)
-    except Exception as e:
-        # The post is live and the version says so; a ledger failure must not
-        # undo that. Loud, because the retro will miss this post.
-        _log(f"[desk_tick] CRITICAL: post {receipt.get('post_id')} for version {ver['id']} is live but its "
-             f"ledger row failed: {e}", level='error')
+    if receipt.get('ledger_pending'):
+        _post_ledger.repair(receipt)
     return _verify(piece, ver, camp, acc, attended=attended, now=now)
 
 
@@ -358,7 +334,8 @@ def _process(piece_id: str, version_id: str, *, attended: bool, now: datetime) -
             'organization_id': acc.get('organization_id') or '', 'account_id': acc.get('id')}
     try:
         receipt = _publish.publish(item, consumer='desk_tick' if not attended else 'desk_approve',
-                                   project_id=camp.get('project_id'), unattended=not attended)
+                                   project_id=camp.get('project_id'), unattended=not attended,
+                                   ledger_context=_post_ledger.fields(piece, ver, camp, acc))
     except _publish.PublishError as e:
         if getattr(e, 'maybe_posted', False):
             _pieces.transition_version(piece_id, version_id, to='unknown_outcome', expect='sending',
@@ -376,7 +353,7 @@ def _process(piece_id: str, version_id: str, *, attended: bool, now: datetime) -
                                    failure=_failure(f'unexpected error while sending: {e}', now))
         _log(f'[desk_tick] version {version_id} errored while sending: {e}', level='error')
         return 'unknown_outcome'
-    return _complete_from_receipt(piece, ver, camp, acc, body, receipt, attended=attended, now=now)
+    return _complete_from_receipt(piece, ver, camp, acc, receipt, attended=attended, now=now)
 
 
 def _recover_sending(piece_id: str, version_id: str, *, now: datetime) -> str:
@@ -388,8 +365,7 @@ def _recover_sending(piece_id: str, version_id: str, *, now: datetime) -> str:
     _, piece, ver, camp, acc = snap
     receipt = _publish.get_receipt(version_id)
     if receipt and camp is not None and acc is not None:
-        body = _pieces._effective_body(piece, ver)
-        return _complete_from_receipt(piece, ver, camp, acc, body, receipt, attended=False, now=now)
+        return _complete_from_receipt(piece, ver, camp, acc, receipt, attended=False, now=now)
     _pieces.transition_version(piece_id, version_id, to='unknown_outcome', expect='sending',
                                failure=_failure('the server stopped while this was sending and no receipt '
                                                 'was saved: the post MAY have gone out. Check the account '
@@ -488,6 +464,8 @@ def run_once(now: datetime | None = None) -> dict:
     result: dict = {'sent': [], 'held': [], 'failed': [], 'unknown': [], 'recovered': [],
                     'verified': [], 'manual': [], 'errors': []}
     try:
+        with _send_lock:
+            _post_ledger.repair_pending()
         with _desk._store_lock:
             store = _desk._read_store()
         send, stale, verify = _due_candidates(store, now)

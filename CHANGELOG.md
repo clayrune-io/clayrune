@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-18] - Desk keeps sent posts in budget and cadence during ledger repair (MC-1179 DK9)
+
+- A successful campaign API post keeps its spend and cadence slot if the story ledger write fails. The existing publish tick retries the saved receipt and records the post once.
+
 ## [2026-11-18] - API reference checker finds Flask route shortcuts and routes throughout `mc/`
 
 - The check-only scan now includes Flask's `get`, `post`, `put`, `patch` and `delete` decorators and discovers routes in `mc/` modules outside `mc/blueprints/` (backlog a4518a34).

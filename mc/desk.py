@@ -2322,7 +2322,7 @@ def record_published(*, platform: str, voice: str, body: str,
                      format: str | None = None,
                      account: str | None = None,
                      term: str | None = None,
-                     cost: float = 0) -> dict:
+                     cost: float = 0, publish_id: str | None = None) -> dict:
     """Record that a human released something. NOT a publish path.
 
     `piece_id/format/account/term/cost` (§8 R1-L, §10.7): without these a
@@ -2348,6 +2348,12 @@ def record_published(*, platform: str, voice: str, body: str,
     }
     with _store_lock:
         store = _read_store()
+        if publish_id is not None:
+            from mc.desk_post_ledger import matching_post
+            prior = matching_post(store['ledger'], publish_id, url)
+            if prior is not None:
+                return prior
+            entry['publish_id'] = publish_id
         store['ledger'].append(entry)
         _write_store(store)
     return entry

@@ -113,6 +113,7 @@ from mc.core import _atomic_write_text, _log, now_iso
 from mc import desk as _desk
 from mc import desk_account_refs as _refs
 from mc import desk_oauth as _oauth
+from mc import desk_post_ledger as _post_ledger
 from mc import desk_spend_guard as _spend
 from mc import secrets_store
 
@@ -422,7 +423,8 @@ def verify_post(platform: str, post_id: str, *, consumer: str = 'desk_publish',
 # -- publish --------------------------------------------------------------------
 
 def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
-            project_id: str | None = None, unattended: bool = False) -> dict[str, Any]:
+            project_id: str | None = None, unattended: bool = False,
+            ledger_context: dict | None = None) -> dict[str, Any]:
     """POST one queue item to X and return its receipt.
 
     `item` is a `social_queue` row (`mc.blueprints.project_routes`): only
@@ -495,10 +497,8 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
             raise PublishError(str(e), code='post_permission') from e
         x_account = _refs.oauth_arg_for(item.get('account_id')) if platform == 'x' else None
 
-        # A paid post must fit what is left of its campaign's budget (an item
-        # with no campaign has nothing to charge; LinkedIn is free). The hold
-        # covers the send; `desk_tick` writes the ledger row, with the same
-        # cost, before it lets another send start.
+        # Reserve before sending. A confirmed campaign post transfers the
+        # reservation to its receipt until the tick settles it in the ledger.
         try:
             held = _spend.reserve(campaign_id, _spend.post_cost(platform, body), what=f'posting to {platform}')
         except _spend.SpendRefused as e:
@@ -521,8 +521,9 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
                 permalink = f'https://www.linkedin.com/feed/update/{post_id}/'
             else:
                 post_id, permalink = _send_x(token, body, item.get('in_reply_to'), x_account or '')
-        finally:
+        except BaseException:
             _spend.release(held)
+            raise
 
         receipt = {
             'item_id': item_id,
@@ -533,18 +534,5 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
             'body': body,
         }
 
-        try:
-            store = _read_store(strict=True)
-            store['receipts'][item_id] = receipt
-            _write_store(store)
-        except Exception as e:
-            # Never overwrite a store we could not read: that would erase every
-            # other item's receipt and re-arm them all for a duplicate post.
-            # See module docstring: the post already happened, so this is
-            # reported loudly, never as a PublishError -- doing so would tell
-            # the caller a real post failed.
-            _log(f'[desk_publish] CRITICAL: post {post_id} for item {item_id} '
-                 f'succeeded but the receipt failed to persist -- a retry of '
-                 f'this item risks a duplicate post. Receipt: '
-                 f'{json.dumps(receipt)}. Write error: {e}', level='error')
+        _post_ledger.persist_receipt(receipt, ledger_context, held)
         return receipt
