@@ -189,7 +189,7 @@ a supervisor/factory is not enrollment, consent, key creation or activation.
 | --- | --- |
 | `mc/agent_mail_service_client.py` | Bounded fixed-origin service calls; exact paths, signatures, typed constant errors, manual redirects/timeouts; no credential/URL input from agents. |
 | `mc/agent_mail_delivery_proof.py` | Pending-flow proof receipts, freshness/epoch validation and cached trusted prerequisite projection; no ordinary mail or consent mutation. |
-| `mc/agent_mail_factory.py` | One shared checked store outside the repository, seal, enrollment, ingress, outbound, laundering and wake composition. Separate read-only ownership access from enabled send paths. |
+| `mc/agent_mail_factory.py` | One shared checked store outside the repository, seal, enrollment, ingress, outbound, reply extraction and wake composition. Separate read-only ownership access from enabled send paths. |
 | `mc/agent_mail_recovery.py` | Bounded durable recovery steps, ownership-lease renewal within existing consent, flow cancellation/revocation and Worker replay reconciliation. |
 | `mc/agent_mail_supervisor.py` | One server-owned start/stop loop, bounded fair work per tick, backoff, last success/attempt and closed health reasons; no browser dependency. |
 | `mc/agent_mail_deletion.py` | Project/session/native-alias revocation helpers before destructive route side effects; no module bodies in route monoliths. |
@@ -229,11 +229,11 @@ JSON under `data/projects/`. A legacy inbox migration needs its own reviewed pla
    interval. Network/signing/model work holds neither manager/global question
    locks nor SQLite transactions; prerequisites read already validated bounded
    proof state, since current `enable` invokes the probe inside a transaction.
-5. Run store lease recovery, `MailLaunder.process_next`, `MailWake.process_next(app)`
+5. Run store lease recovery, `MailReplyExtraction.process_next`, `MailWake.process_next(app)`
    and `MailWake.reconcile` in bounded passes. Preserve manager -> store ordering,
    exact native conversation/form, claim fencing and per-conversation receipt
    order. Holds and uncertainty block later work for that conversation, not all
-   projects. Stale laundering can retry; submitting/uncertain cannot auto-resend.
+   projects. Expired extraction leases can retry. Submitting or uncertain events require manual review when their outcome cannot be reconciled.
 6. Run outbound cleanup, inbound terminal retention and receipt retirement even
    when sending is off. Existing `Outbound.reconcile` is enable-gated: separate
    safe cleanup from send permission instead of temporarily enabling it. Existing

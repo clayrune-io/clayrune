@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-18] - Agent mail: name reply quote extraction accurately (MC-1179 MB5)
+
+- Renamed the internal reply extraction adapter and corrected the specs to describe deterministic quote trimming followed by delivery as an owner chat message. The Gmail/IMAP decision digest still uses a toolless transform.
+
 ## [2026-11-18] - Workflow canvas: connection drags start at the exact centre of unconnected port dots
 
 - Decorative stop stubs now ignore pointer events, so their dashed line and cap cannot intercept a connection drag. This fixes outcome, otherwise and approval-option ports on the canvas and in the inspector without changing their appearance.

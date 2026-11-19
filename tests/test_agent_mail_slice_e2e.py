@@ -2,7 +2,7 @@
 
 Under test, unmodified: workers/agent-mail/worker.js and PullSocketMailbox under Miniflare with a
 real D1 (schema.sql plus every migration plus the SQL U2's provisioning tool wrote), and the Python
-PullClient / Outbound / PullReceiver / MailLaunder / MailWake over the same shared store.
+PullClient / Outbound / PullReceiver / MailReplyExtraction / MailWake over the same shared store.
 
 What this file supplies (test plumbing only, no production file is touched):
 * a Node harness started with ``node --input-type=module -e`` (the pattern the other
@@ -37,7 +37,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from test_agent_mail_wake import setup, env  # noqa: F401  (session + route patching fixtures)
 from mc import agent_mail_factory as fac
 from mc import agent_mail_pull_client as pull_client
-from mc.agent_mail_launder import MailLaunder
+from mc.agent_mail_reply_extraction import MailReplyExtraction
 from mc.agent_mail_service_client import HttpsTransport
 from mc.agent_mail_service_manifest import ServiceKeyCandidate
 from mc.agent_mail_store import LOCAL_RECEIVED, SUBMITTED
@@ -393,14 +393,14 @@ def test_custody_ack_is_committed_and_the_worker_copy_retired(world):
     assert world.harness.sql('SELECT COUNT(*) AS n FROM pull_events WHERE terminal_ms IS NULL') == [dict(n=10)]
 
 
-def test_worker_delivered_reply_is_laundered_and_wakes_the_exact_session(world, monkeypatch):
+def test_worker_delivered_reply_is_extracted_and_wakes_the_exact_session(world, monkeypatch):
     setup = world.setup
     owner_reply(world)
     got = custodied_event(world)
     local = world.store.get_event(got['event_id'], include_content=True)
     assert local['state'] == LOCAL_RECEIVED and local['session_id'] == setup.session['session_id']
     # The Worker pushed the body to the install; the install holds it, so D1 kept no text (not the ack path).
-    assert MailLaunder(world.store, enabled=True).process_next()['state'] == 'ready'
+    assert MailReplyExtraction(world.store, enabled=True).process_next()['state'] == 'ready'
     laundered = world.store.get_event(got['event_id'], include_content=True)
     assert laundered['laundered']['reply_text'] == REPLY
 

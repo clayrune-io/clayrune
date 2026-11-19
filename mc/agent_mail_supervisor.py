@@ -497,14 +497,14 @@ def _interval() -> float:
 
 
 def _default_recovery(factory: Any, app: Any) -> Recovery:
-    """Inbound laundering/wake run only while the ingress flag is on; each call
+    """Inbound quote extraction and wake run only while the ingress flag is on; each call
     builds against the shared checked store and never creates one."""
     def _on() -> bool:
         return state.CONFIG.get('agent_mail_ingress_enabled') is True
 
-    def launder() -> dict[str, str]:
-        from mc.agent_mail_launder import MailLaunder
-        return MailLaunder(factory.require_store(), enabled=_on()).process_next()
+    def extract() -> dict[str, str]:
+        from mc.agent_mail_reply_extraction import MailReplyExtraction
+        return MailReplyExtraction(factory.require_store(), enabled=_on()).process_next()
 
     def wake() -> dict[str, str]:
         from mc.agent_mail_wake import MailWake
@@ -515,4 +515,4 @@ def _default_recovery(factory: Any, app: Any) -> Recovery:
         if _on():
             MailWake(factory.require_store(), enabled=True).reconcile()
 
-    return Recovery(factory, launder=launder, wake=wake, wake_reconcile=wake_reconcile)
+    return Recovery(factory, launder=extract, wake=wake, wake_reconcile=wake_reconcile)

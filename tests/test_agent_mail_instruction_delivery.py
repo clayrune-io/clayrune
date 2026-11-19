@@ -9,7 +9,7 @@ import pytest
 
 from test_agent_mail_pull_receiver import Harness, TOKEN, compact, digest, encoded, event
 from test_agent_mail_wake import setup, env  # noqa: F401
-from mc.agent_mail_launder import MailLaunder
+from mc.agent_mail_reply_extraction import MailReplyExtraction
 from mc.agent_mail_signing import IngressRefused
 from mc.agent_mail_wake import MailWake
 
@@ -36,12 +36,14 @@ def delivery(setup):
 def test_signed_bound_instruction_reply_reaches_same_chat_without_unlocking_plan(delivery):
     setup, h, wake = delivery
     setup.session['waiting_for_plan_approval'] = True
-    e = event(text=TEXT)
+    quoted = 'Quoted original message'
+    e = event(text=f'{TEXT}\n\nOn Tuesday, someone wrote:\n> {quoted}')
     assert h.receiver.receive(h.wire(e))['type'] == 'custody_ack'
-    assert MailLaunder(h.store, enabled=True).process_next()['state'] == 'ready'
+    assert MailReplyExtraction(h.store, enabled=True).process_next()['state'] == 'ready'
     assert wake.process_next(setup.app)['state'] == 'submitted'
     payload = json.loads(setup.session['proc'].stdin.getvalue())
     assert TEXT in payload['message']['content']
+    assert quoted not in payload['message']['content']
     row = h.store.get_event(e['event_id'])
     assert (row['project_id'], row['session_id']) == ('proj1', setup.session['session_id'])
     assert row['turn_id'] == setup.session['_delivery_attempt_id']
@@ -71,6 +73,6 @@ def test_instruction_wording_cannot_bypass_signature_auth_or_local_binding(deliv
     with pytest.raises(IngressRefused, match=reason):
         h.receiver.receive(wire)
     assert all(not rows for rows in h.custody().values())
-    assert MailLaunder(h.store, enabled=True).process_next()['state'] == 'idle'
+    assert MailReplyExtraction(h.store, enabled=True).process_next()['state'] == 'idle'
     assert wake.process_next(setup.app)['state'] == 'idle'
     assert setup.session['proc'].stdin.getvalue() == ''

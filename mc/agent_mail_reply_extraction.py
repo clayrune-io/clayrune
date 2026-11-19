@@ -13,7 +13,7 @@ from mc.agent_mail_extract import Extraction, extract_reply
 from mc.agent_mail_store import BLOCKED, LAUNDERING, READY, MailStore
 
 
-class MailLaunder:
+class MailReplyExtraction:
     def __init__(self, store: MailStore, *, enabled: bool = False):
         self.store = store
         self.enabled = enabled

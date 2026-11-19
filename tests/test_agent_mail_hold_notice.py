@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from test_agent_mail_wake import setup, env, TOKEN  # noqa: F401
 from mc import agent_mail_factory
 from mc.agent_mail_hold_notice import by_session, HELD
-from mc.agent_mail_launder import MailLaunder
+from mc.agent_mail_reply_extraction import MailReplyExtraction
 
 BODY = '> PRIVATE-BODY-NEVER-IN-CHAT'
 
@@ -13,7 +13,7 @@ BODY = '> PRIVATE-BODY-NEVER-IN-CHAT'
 def hold(setup, event='held-one', token=TOKEN):
     setup.store.insert_event(event_id=event, registration_id='installation', thread_token=token,
                              message_id=f'<{event}@example.invalid>', body=BODY)
-    assert MailLaunder(setup.store, enabled=True).process_next()['reason'] == 'empty_reply'
+    assert MailReplyExtraction(setup.store, enabled=True).process_next()['reason'] == 'empty_reply'
 
 
 def test_held_event_emits_metadata_notice_without_body_or_turn(setup, monkeypatch):
