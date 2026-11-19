@@ -551,11 +551,11 @@ class PaneDigestReader(_eng.Reader):
             if rec.get('status') == 'pages_needed':
                 raise PagesNeeded(f"pages needed: {rec.get('reason')}")
             raise _eng.ReadError(f'{why}; discovery already ran in the last day')
-        _store.update(self._project_id, self.platform, last_discovery_at=_iso(now))
-
         if start_read is None:
             start_read = self._page(self._start_url(_policy.get_policy(self._profile)['domains']))
-        text, final, domains = start_read                   # NotSignedIn here stops it: not a "no pages" case
+        # A sign-in wall stops the page read before discovery starts.
+        _store.update(self._project_id, self.platform, last_discovery_at=_iso(now))
+        text, final, domains = start_read
         offered = self._offer_links(self._pages.links(), final, domains)
         if not offered:
             self._need(f'{_policy.url_host(final)} start page offered no usable links')

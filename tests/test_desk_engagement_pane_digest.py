@@ -507,12 +507,18 @@ def test_a_chosen_page_that_does_not_hold_up_is_not_saved(env):
 
 
 def test_signed_out_start_page_is_not_a_pages_needed_flag(env):
-    _allow(['youtube.com'])
-    pages = FakePages({YT: _body('Sign in', 'https://www.youtube.com/signin?x=1', 'Sign in')})
-    rd = _reader(pages, FakeRuntime({}), platform='youtube')
+    rd, pages, rt = _yt({'activity': YT_INBOX})
+    signed_in_page = pages.pages[YT]
+    pages.pages[YT] = _body('Sign in', 'https://www.youtube.com/signin?x=1', 'Sign in')
     with pytest.raises(eng.NotSignedIn):
         rd.fetch_mentions(since_id=None, known_posts={})
-    assert store_mod.get(PID, 'youtube').get('status') != 'pages_needed'
+    record = store_mod.get(PID, 'youtube')
+    assert record.get('status') != 'pages_needed'
+    assert not record.get('last_discovery_at')
+    assert rt.calls == []
+    pages.pages[YT] = signed_in_page
+    result = rd.fetch_mentions(since_id=None, known_posts={})
+    assert [item['excerpt'] for item in result['items']] == ['great video']
 
 
 def test_saved_page_gone_stale_rediscovers_once_per_day(env):
