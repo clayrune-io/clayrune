@@ -191,6 +191,15 @@ def test_a_pasted_key_credential_state_says_vault_locked_and_verification_labels
     assert verification.LABELS['vault_locked'] == 'Vault locked'
 
 
+def test_lock_status_failure_logs_without_changing_fallback(monkeypatch, capsys):
+    def failed():
+        raise OSError('simulated lock status read failure')
+
+    monkeypatch.setattr(secrets_store, 'is_locked', failed)
+    assert vault_lock.is_locked() is False
+    assert 'simulated lock status read failure' in capsys.readouterr().out
+
+
 def test_user_facing_lock_copy_has_no_em_dash():
     for text in (vault_lock.SIGNIN_REASON, vault_lock.KEY_REASON, vault_lock.TOKEN_REASON):
         assert '—' not in text and '–' not in text
