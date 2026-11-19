@@ -2778,10 +2778,11 @@ def _check_port_conflict():
                 ['netstat', '-ano'], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
             pids = set()
             for line in result.stdout.splitlines():
-                if f':{PORT}' in line and 'LISTENING' in line:
-                    parts = line.split()
-                    if parts:
-                        pids.add(parts[-1])
+                fields = line.split()
+                if (len(fields) == 5 and fields[0] == 'TCP'
+                        and fields[1].rpartition(':')[2] == str(PORT)
+                        and fields[3] == 'LISTENING' and fields[4].isdigit()):
+                    pids.add(fields[4])
             my_pid = str(os.getpid())
             other_pids = sorted(pids - {my_pid})
             # Identify each holder by image name + parent PID. Helps tell
@@ -2797,10 +2798,10 @@ def _check_port_conflict():
                         # CSV: "image","pid","sessionname","session#","memusage"
                         image = line.split(',')[0].strip().strip('"')
                         pid_details[pid] = image
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as exc:
+                    _log(f'[port-conflict] tasklist lookup for PID {pid} failed: {exc}')
+        except Exception as exc:
+            _log(f'[port-conflict] netstat lookup failed: {exc}')
 
     msg_lines = [
         "",
