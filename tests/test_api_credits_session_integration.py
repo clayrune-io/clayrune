@@ -60,7 +60,8 @@ def test_subscription_replay_uses_real_followup_without_new_delegation_turn(mode
     human = MagicMock()
     monkeypatch.setattr(routes, '_mark_human_joined', human)
     for name in ('_observe_habit_cue', '_log_agent_activity', '_register_process',
-                 '_unregister_process', '_sysprompt_cleanup', '_kill_proc_background'):
+                 '_unregister_process', '_sysprompt_cleanup', '_kill_proc_background',
+                 '_bounded_stdin_close'):
         monkeypatch.setattr(routes, name, MagicMock())
     monkeypatch.setattr(routes, '_allowance_refusal', lambda *a, **k: None)
     monkeypatch.setattr(routes, '_auto_fresh_trigger', lambda *a, **k: ('', 0))

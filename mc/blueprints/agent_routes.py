@@ -14812,10 +14812,7 @@ def agent_followup(project_id):
                 old_proc = existing.get('proc')
                 if old_proc:
                     _unregister_process(old_proc.pid)
-                    try:
-                        old_proc.stdin.close()
-                    except Exception as e:
-                        _log(f'[followup] old stdin close failed: {e}')
+                    _bounded_stdin_close(old_proc, context='followup-dead-proc')
                 # Build command while under lock, spawn outside to avoid blocking.
                 # Honor a per-chat model pin across the death/respawn so the
                 # conversation keeps its chosen model (else it silently reverts
@@ -14916,10 +14913,7 @@ def agent_followup(project_id):
                     _sticky_old = existing.get('proc')
                     if _sticky_old:
                         _unregister_process(_sticky_old.pid)
-                        try:
-                            _sticky_old.stdin.close()
-                        except Exception as e:
-                            _log(f'[followup] old stdin close failed: {e}')
+                        _bounded_stdin_close(_sticky_old, context='followup-sticky-respawn')
                     _respawn_b = {
                         'cmd': _sticky_cmd, 'pp': pp, 'message': message,
                         'existing': existing, 'session_id': session_id,
@@ -15317,10 +15311,7 @@ def _stop_session(session, session_id):
         session['process_alive'] = False
         if proc is None:  # reset wait restored after a server restart
             return None
-        try:
-            proc.stdin.close()
-        except Exception as e:
-            _log(f'[agent-stop] stdin close failed: {e}')
+        _bounded_stdin_close(proc, context='agent-stop')
     if proc is None:
         return None
     _unregister_process(proc.pid)
@@ -15500,8 +15491,8 @@ def _bounded_stdin_close(proc, timeout=_STDIN_WRITE_KILL_TIMEOUT, context=''):
     def _closer():
         try:
             proc.stdin.close()  # pyright: ignore[reportOptionalMemberAccess]
-        except Exception:
-            pass
+        except Exception as e:
+            _log(f"[stdin-close] {context} failed for pid {proc.pid}: {e}")
         finally:
             done.set()
 

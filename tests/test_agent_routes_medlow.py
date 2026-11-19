@@ -146,3 +146,18 @@ def test_claude_context_uses_native_skill_discovery_on_codex_project(tmp_path, m
     monkeypatch.setattr(routes._skills, 'list_skills', lambda *a: catalog_reads.append(a) or [])
     routes._build_agent_context({'id': 'sample', 'provider': 'codex'}, provider='claude')
     assert catalog_reads == []
+
+
+
+def test_stop_session_hands_off_stdin_close(monkeypatch):
+    from types import SimpleNamespace
+    from mc.blueprints import agent_routes as routes
+
+    monkeypatch.setattr(routes, '_unregister_process', lambda pid: None)
+    calls = []
+    monkeypatch.setattr(routes, '_bounded_stdin_close', lambda proc, **kwargs: calls.append(proc))
+    proc = SimpleNamespace(pid=123)
+    session = {'proc': proc, 'mode': 'B', 'log_lines': [], 'process_alive': True}
+    routes._stop_session(session, 'example')
+    assert calls == [proc]
+    assert session['status'] == 'stopped'
