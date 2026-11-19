@@ -60,9 +60,8 @@ def wire(*, load_project_fn, save_project_fn, data_dir, mcp_server_catalog_fn):
 # transports supported: stdio (local subprocess), http (streamable HTTP),
 # sse (legacy HTTP+SSE). See mcp.py for the schema details.
 
-# Servers force-kept in any custom per-project loadout — dropping them would
-# silently break a load-bearing capability. `engram` = cross-session memory;
-# losing it kills the whole memory system for that project (see CLAUDE.md).
+# Preserve access to the Engram MCP integration when it is in the catalogue
+# and a project opts into a custom loadout.
 _MCP_ALWAYS_KEEP = ('engram',)
 
 
