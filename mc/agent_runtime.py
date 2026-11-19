@@ -1765,8 +1765,8 @@ def claude_oneshot_available() -> bool:
     Checked so callers can skip with a log line instead of spawning a doomed
     `claude -p` subprocess on every cycle (Scribe/condense run per session,
     Distiller runs on a schedule) for an install that will never have Claude.
-    Both checks below are cheap: resolve_binary() is a cached path lookup and
-    ClaudeRuntime.auth_status() reads a cached dict — neither spawns anything.
+    The availability check resolves the CLI path and reads cached auth status.
+    It does not launch the CLI.
     """
     if not claude_installed():
         return False
