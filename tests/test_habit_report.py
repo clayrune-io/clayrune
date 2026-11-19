@@ -169,6 +169,36 @@ def test_agent_caller_message_is_skipped(env):
     assert _rows(tmp) == []
 
 
+@pytest.mark.parametrize('log_row', [
+    None,
+    {'session_id': 'old-id', 'claude_session_ids': ['followup-id'], 'incognito': True},
+])
+def test_habit_observer_requires_a_known_public_session(env, monkeypatch, log_row):
+    from mc.blueprints import agent_routes
+
+    hr, _, tmp = env
+    monkeypatch.setattr(agent_routes, '_load_agent_log',
+                        lambda pid: [log_row] if log_row else [])
+    logs = []
+    monkeypatch.setattr(hr, '_log', logs.append)
+
+    assert hr.observe_user_message('p1', 'followup-id', REAL_HABIT) is None
+    assert _rows(tmp) == []
+    assert logs == []
+
+
+def test_habit_observer_accepts_a_known_public_log_alias(env, monkeypatch):
+    from mc.blueprints import agent_routes
+
+    hr, _, tmp = env
+    row = {'session_id': 'old-id', 'claude_session_ids': ['followup-id'],
+           'trigger_type': 'manual'}
+    monkeypatch.setattr(agent_routes, '_load_agent_log', lambda pid: [row])
+
+    assert hr.observe_user_message('p1', 'followup-id', REAL_HABIT)
+    assert len(_rows(tmp)) == 1
+
+
 def test_flag_off_disables_observer(env, monkeypatch):
     hr, mem, tmp = env
     monkeypatch.setitem(mem.state.CONFIG, 'habit_report_enabled', False)
