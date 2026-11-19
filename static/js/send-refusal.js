@@ -75,4 +75,4 @@ function settleRefusedSend({ projectId, sessionId, echo, message, note, delivere
   window.showToast(`Send failed: ${error || 'the server refused the message'}`, 4500);
 }
 
-window.mcSendRefusal = { restoreComposer, noteQuestionAnswer, takeQuestionAnswer, settleRefusedSend };
+window.mcSendRefusal = { restoreComposer, noteQuestionAnswer, takeQuestionAnswer, settleRefusedSend, reArmQuestion };
