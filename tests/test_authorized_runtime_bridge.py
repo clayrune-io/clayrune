@@ -88,11 +88,13 @@ def test_route_store_bridge_spawn_failure_is_uncertain_and_not_retried(env):
         raise RuntimeError('spawn failed')
 
     runtime.dispatch = fail_dispatch
-    with pytest.raises(LaunchUncertain):
+    with pytest.raises(LaunchUncertain) as caught:
         ar._dispatch_via_runtime(
             {'id': 'p', 'project_path': str(tmp)}, 'task', provider_name='codex',
             lifecycle_bridge_factory=factory)
     assert calls == 1
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert str(caught.value.__cause__) == 'spawn failed'
     state = ConversationStore(store_path).lifecycle_state('p', bridges[0].facts.mc_session_id)
     assert state.attempts[0].status is AttemptStatus.UNCERTAIN
 
