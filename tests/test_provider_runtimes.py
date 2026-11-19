@@ -2310,6 +2310,76 @@ class TestKiroRuntime:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize('provider', ['opencode', 'goose', 'aider', 'kiro'])
+def test_exited_mode_a_reader_is_detached_before_followup(provider, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from typing import Any
+
+    ar = agent_runtime
+    rt = ar.get_runtime(provider)
+    old: Any = SimpleNamespace(pid=123, wait=lambda: 1, stdout=iter(()))
+    session = {'proc': old, 'status': 'running', 'process_alive': True, 'log_lines': []}
+    exits = []
+    handle = ar.SessionHandle(
+        mc_session_id='s', provider=provider, mode='A', project_id='p',
+        project_path=str(tmp_path), session_dict=session,
+        meta={'callbacks': {'on_process_exit': lambda *args: exits.append(args)}},
+    )
+
+    def poll():
+        ar._mode_a_reader(old, handle, rt)
+        return 1
+
+    def stop_before_spawn(*args, **kwargs):
+        raise RuntimeError('stop before test spawn')
+
+    old.poll = poll
+    monkeypatch.setattr(ar.vendor_fence, 'check_launch', lambda *args: None)
+    monkeypatch.setattr(rt, 'build_command', stop_before_spawn)
+    with pytest.raises(RuntimeError, match='stop before test spawn'):
+        rt.write_followup(handle, 'new turn')
+    assert exits == []
+    assert session['status'] == 'running'
+    assert session['process_alive']
+    assert session['log_lines'] == []
+
+
+def test_mode_a_question_and_exit_share_turn_ownership(tmp_path, monkeypatch):
+    from threading import RLock
+    from types import SimpleNamespace
+    from typing import Any
+
+    ar = agent_runtime
+    rt = ar.OpenCodeRuntime()
+    control = '```mc:question\n{"questions":[{"question":"Continue?"}]}\n```'
+    proc: Any = SimpleNamespace(wait=lambda: 0, stdout=iter((json.dumps({
+        'type': 'text', 'part': {'text': control},
+    }),)))
+    session = {'proc': proc, 'status': 'running', 'log_lines': []}
+    lock = RLock()
+    owns_lock = getattr(lock, '_is_owned')
+    observed = []
+    apply = ar.apply_mc_tool_blocks
+
+    def scan(*args):
+        observed.append(('question', owns_lock()))
+        return apply(*args)
+
+    handle = ar.SessionHandle(
+        mc_session_id='s', provider='opencode', mode='A', project_id='p',
+        project_path=str(tmp_path), session_dict=session,
+        meta={'callbacks': {
+            'turn_lock': lambda project_id: lock,
+            'on_process_exit': lambda *args: observed.append(('exit', owns_lock())),
+        }},
+    )
+    monkeypatch.setattr(ar, 'apply_mc_tool_blocks', scan)
+    ar._mode_a_reader(proc, handle, rt)
+    assert observed == [('question', True), ('exit', True)]
+    assert session['waiting_for_question']
+    assert session['status'] == 'idle'
+
+
 @pytest.mark.parametrize('provider_name', [
     'gemini', 'codex', 'opencode', 'goose', 'aider', 'kiro',
 ])

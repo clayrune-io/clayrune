@@ -6839,10 +6839,14 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 )
                 _cb('on_process_exit', exit_ev)
 
+        def _finish_owned_terminal():
+            with _runtime_turn_ownership.finalizing(handle):
+                _finish_terminal()
+
         if terminal_gate is None:
-            _finish_terminal()
+            _finish_owned_terminal()
         else:
-            terminal_gate.submit(_finish_terminal)
+            terminal_gate.submit(_finish_owned_terminal)
 
 
 def _mode_a_interrupt(handle: SessionHandle) -> None:
@@ -10447,10 +10451,7 @@ class OpenCodeRuntime(AgentRuntime):
                        attachments: Optional[List[str]] = None) -> None:
         vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
-        old_proc = session.get('proc')
-        if old_proc and old_proc.poll() is None:
-            session['proc'] = None
-            _kill_pid(old_proc.pid)
+        _runtime_turn_ownership.retire(handle, _kill_pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
         # Mode A respawns the CLI per turn — --model must be re-stated
@@ -10811,10 +10812,7 @@ class GooseRuntime(AgentRuntime):
                        attachments: Optional[List[str]] = None) -> None:
         vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
-        old_proc = session.get('proc')
-        if old_proc and old_proc.poll() is None:
-            session['proc'] = None
-            _kill_pid(old_proc.pid)
+        _runtime_turn_ownership.retire(handle, _kill_pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
         # Restate model and the selected MCP set on every respawn. The composed
@@ -11102,10 +11100,7 @@ class AiderRuntime(AgentRuntime):
                        attachments: Optional[List[str]] = None) -> None:
         vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
-        old_proc = session.get('proc')
-        if old_proc and old_proc.poll() is None:
-            session['proc'] = None
-            _kill_pid(old_proc.pid)
+        _runtime_turn_ownership.retire(handle, _kill_pid)
         # Re-state --model: aider is respawned per turn and the flag is not
         # sticky, so without this the chat drops to aider's default model.
         cmd = self.build_command(model=self.session_model(handle))
@@ -11427,10 +11422,7 @@ class KiroRuntime(AgentRuntime):
                        attachments: Optional[List[str]] = None) -> None:
         vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
-        old_proc = session.get('proc')
-        if old_proc and old_proc.poll() is None:
-            session['proc'] = None
-            _kill_pid(old_proc.pid)
+        _runtime_turn_ownership.retire(handle, _kill_pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
         cmd = self.build_command()
