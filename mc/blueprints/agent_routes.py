@@ -13693,6 +13693,7 @@ def agent_dispatch(project_id):
     except (FileNotFoundError, _agent_runtime.CLINotInstalledError):
         return jsonify({'error': _cli_missing_message(provider_override)}), 500
     except Exception as e:
+        _log(f"[agent-dispatch] {project_id} failed: {type(e).__name__}")
         return jsonify({'error': f'dispatch failed: {e}'}), 500
     return jsonify({'ok': True, 'session_id': session_id, **pace_record})
 
@@ -14108,6 +14109,7 @@ def agent_send(project_id):
             return jsonify({'error': _cli_missing_message(
                 (data.get('provider') or '').strip().lower())}), 500
         except Exception as e:
+            _log(f"[agent-send] {project_id} dispatch failed: {type(e).__name__}")
             return jsonify({'error': f'dispatch failed: {e}'}), 500
         return jsonify({'ok': True, 'session_id': new_session_id,
                         'route': 'resume' if resume_from else 'dispatch'})

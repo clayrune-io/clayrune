@@ -209,3 +209,20 @@ def test_mode_a_dispatch_keeps_prompt_out_of_server_log(env, monkeypatch):
     assert dispatch_lines
     assert all(prompt not in line for line in dispatch_lines)
     assert env['sessions'][sid]['mode'] == 'A'
+
+
+@pytest.mark.parametrize('route', ['dispatch', 'send'])
+def test_unexpected_dispatch_errors_emit_prompt_free_log(env, monkeypatch, route):
+    ar = env['ar']
+    logs = []
+    monkeypatch.setattr(ar, '_log', lambda line, **kwargs: logs.append(line))
+
+    def fail(*a, **kwargs):
+        raise OSError('fixture dispatch failure')
+
+    monkeypatch.setattr(ar, '_dispatch_agent_internal', fail)
+    response = env['client'].post(f'/api/project/p1/agent/{route}',
+                                  json={'task': 'example', 'message': 'example'})
+    assert response.status_code == 500
+    assert any(line.startswith(f'[agent-{route}] p1') and 'OSError' in line for line in logs)
+    assert all('fixture dispatch failure' not in line for line in logs)
