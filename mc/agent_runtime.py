@@ -3672,14 +3672,17 @@ def _npm_global_bin_dirs() -> List[Path]:
 
 
 def _pid_is_alive(pid: int) -> bool:
+    """Probe liveness even when another owner retains an exited child's handle."""
     if sys.platform == 'win32':
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(0x1000, False, pid)
-        if handle:
-            kernel32.CloseHandle(handle)
-            return True
-        return False
+        import _winapi
+        try:
+            handle = _winapi.OpenProcess(_winapi.SYNCHRONIZE, False, pid)
+            try:
+                return _winapi.WaitForSingleObject(handle, 0) == _winapi.WAIT_TIMEOUT
+            finally:
+                _winapi.CloseHandle(handle)
+        except OSError:
+            return False
     try:
         os.kill(pid, 0)
         return True

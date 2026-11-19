@@ -18,6 +18,8 @@ _should_reap_entry truth table (a pure predicate — no wiring required).
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -35,6 +37,18 @@ def test_import_smoke():
     for name in ('_proc_identity', '_persist_pid_ledger', '_should_reap_entry',
                  '_reap_prior_instance_strays', 'wire'):
         assert hasattr(pl, name), f'missing {name}'
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows process handle semantics')
+def test_pid_probe_distinguishes_an_exited_process_with_an_open_handle():
+    from mc import agent_runtime
+    from mc.blueprints import agent_routes
+
+    probes = (agent_runtime._pid_is_alive, agent_routes._pid_is_alive)
+    assert all(probe(os.getpid()) for probe in probes)
+    with subprocess.Popen([sys.executable, '-c', 'pass']) as proc:
+        assert proc.wait(timeout=10) == 0
+        assert [probe(proc.pid) for probe in probes] == [False, False]
 
 
 # ── no-import-cycle invariant (LOAD-BEARING) ─────────────────────────────────
