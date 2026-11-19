@@ -14641,10 +14641,10 @@ def agent_followup(project_id):
             existing.pop('_dispatching_followup', None)
             # Keep setup stable across task-dependent context renders, as on
             # Claude resumes; actual project/persona edits invalidate it.
-            _native_followup_context.refresh_stash(
-                p, existing, message, fingerprint=_context_fingerprint,
-                rebuild=_fresh_context_for, log=_log)
             try:
+                _native_followup_context.refresh_stash(
+                    p, existing, message, fingerprint=_context_fingerprint,
+                    rebuild=_fresh_context_for, log=_log)
                 # Same tree the dispatch turn ran in (vendor-parity gap 1):
                 # `existing['_agent_cwd']` is the worktree `_dispatch_via_runtime`
                 # recorded, when this conversation was isolated. Respawning into
@@ -14679,11 +14679,9 @@ def agent_followup(project_id):
                 existing['last_status_change_time'] = _time.time()
                 if isinstance(e, _agent_runtime.vendor_fence.VendorFenceError):
                     return jsonify({'ok': False, 'error': str(e), 'session_id': session_id}), 409
-                if isinstance(e, _agent_runtime.PromptDeliveryError):
-                    # MC-1168: the engine never got the message. ok:True here is
-                    # what let the emailed-answer relay mark the question answered.
-                    return jsonify({'ok': False, 'delivered': False, 'error': str(e),
-                                    'session_id': session_id}), 502
+                _log(f"[{session_provider}] follow-up failed for {session_id}: {e}")
+                return jsonify({'ok': False, 'delivered': False, 'error': str(e),
+                                'session_id': session_id}), 502
             _log_agent_activity(project_id, f"Agent follow-up (provider={session_provider}): {message[:100]}")
             return jsonify({'ok': True, 'session_id': session_id})
 
@@ -15665,10 +15663,10 @@ def agent_interrupt(project_id, *, _internal=None):
                 session['log_lines'].append(f"\n> {user_label}: {message}\n")
             _start_new_turn(session)
             session.pop('pending_followups', None)
-            _native_followup_context.refresh_stash(
-                p, session, message, fingerprint=_context_fingerprint,
-                rebuild=_fresh_context_for, log=_log)
             try:
+                _native_followup_context.refresh_stash(
+                    p, session, message, fingerprint=_context_fingerprint,
+                    rebuild=_fresh_context_for, log=_log)
                 # Same tree the dispatch turn ran in — see the followup path's
                 # identical `_followup_cwd` for why `pp` alone is wrong here.
                 _followup_cwd = _followup_cwd_for(session, p, pp, message)
@@ -15700,9 +15698,9 @@ def agent_interrupt(project_id, *, _internal=None):
                 session['last_status_change_time'] = _time.time()
                 if isinstance(e, _agent_runtime.vendor_fence.VendorFenceError):
                     return _ret({'ok': False, 'error': str(e), 'session_id': session_id}, 409)
-                if isinstance(e, _agent_runtime.PromptDeliveryError):
-                    return _ret({'ok': False, 'delivered': False, 'error': str(e),
-                                 'session_id': session_id}, 502)
+                _log(f"[{session_provider}] interrupt failed for {session_id}: {e}")
+                return _ret({'ok': False, 'delivered': False, 'error': str(e),
+                             'session_id': session_id}, 502)
             _log_agent_activity(project_id, f"Agent interrupt (provider={session_provider}): {message[:80]}")
             return _ret({'ok': True, 'session_id': session_id})
 

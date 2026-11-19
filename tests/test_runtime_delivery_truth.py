@@ -441,3 +441,35 @@ def test_delegation_parent_revive_fails_closed_on_a_failed_delivery(app_env, mon
     monkeypatch.setattr(ar, '_revive_from_agent_log', _boom)
     with pytest.raises(DeliveryUncertain):
         ar._revive_parent_for_delegation('p1', 'parent000001', 'child report', app_env['project'])
+
+
+@pytest.mark.parametrize('endpoint', ['followup', 'interrupt'])
+def test_plain_runtime_error_reports_failed_delivery(app_env, monkeypatch, endpoint):
+    ar = app_env['ar']
+    sid = 'native-failure'
+    app_env['sessions'][sid] = {
+        'session_id': sid, 'project_id': 'p1', 'provider': 'codex', 'mode': 'A',
+        'status': 'running' if endpoint == 'interrupt' else 'idle',
+        'log_lines': [], 'task': 'chat', 'proc': None,
+        'started_at': '2026-11-09T00:00:00Z', 'last_status_change_time': 0.0,
+        'last_output_time': 0.0, 'agent_model': '',
+    }
+
+    class FailingRuntime:
+        def write_followup(self, handle, message):
+            raise OSError('simulated pipe failure')
+
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: FailingRuntime())
+    monkeypatch.setattr(ar, '_allowance_refusal', lambda *a, **k: None)
+    monkeypatch.setattr(ar._native_followup_context, 'refresh_stash', lambda *a, **k: None)
+    monkeypatch.setattr(ar._native_followup_context, 'message_for_turn', lambda p, s, m: m)
+    monkeypatch.setattr(ar, '_mode_a_token_rollover', lambda *a, **k: a[-1])
+    monkeypatch.setattr(ar, '_clock_wrap', lambda p, s, m, orig: m)
+    monkeypatch.setattr(ar, '_bridge_images_for_blind_model', lambda m, *a, **k: m)
+    monkeypatch.setattr(ar, '_followup_cwd_for', lambda *a, **k: '.')
+    response = app_env['client'].post(f'/api/project/p1/agent/{endpoint}',
+                                      json={'session_id': sid, 'message': 'answer'})
+    body = response.get_json()
+    assert response.status_code == 502, body
+    assert body['ok'] is False and body['delivered'] is False
+    assert 'simulated pipe failure' in body['error']
