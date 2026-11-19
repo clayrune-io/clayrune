@@ -430,18 +430,18 @@ def update_config():
     # agent_avatar below): a bad backup_dest_dir persisted to config.json
     # would silently redirect every future backup into the repo or
     # data/projects/ until someone noticed. Refused outright, not rewritten.
-    if data.get('backup_dest_dir') and 'backup_dest_dir' in _CONFIG_EDITABLE_KEYS:
+    if data.get('backup_dest_dir'):
         from mc import backup as _backup
         try:
             _backup.validate_backup_dest_dir(data['backup_dest_dir'])
         except _backup.BackupError as e:
             return jsonify({'error': str(e)}), 400
-    if 'backup_schedule' in data and 'backup_schedule' in _CONFIG_EDITABLE_KEYS:
+    if 'backup_schedule' in data:
         val = str(data['backup_schedule'] or 'off').strip().lower()
         if val not in ('off', 'daily', 'weekly'):
             return jsonify({'error': "backup_schedule must be 'off', 'daily' or 'weekly'"}), 400
         data['backup_schedule'] = val
-    if 'backup_keep' in data and 'backup_keep' in _CONFIG_EDITABLE_KEYS:
+    if 'backup_keep' in data:
         val = data['backup_keep']
         try:
             if isinstance(val, bool) or int(val) != val or int(val) < 1:
@@ -450,7 +450,7 @@ def update_config():
         except (TypeError, ValueError):
             return jsonify({'error': 'backup_keep must be an integer >= 1'}), 400
         data['backup_keep'] = keep
-    if data.get('default_provider') and 'default_provider' in _CONFIG_EDITABLE_KEYS:
+    if data.get('default_provider'):
         # Same reasoning as character_routes._validated_engine's provider
         # check: a saved default that isn't a registered runtime would
         # silently fall through to 'claude' everywhere it's read, which is
@@ -465,7 +465,7 @@ def update_config():
             return jsonify({'error': f'unknown provider {prov!r} — available: '
                                      f'{", ".join(sorted(known))}'}), 400
         data['default_provider'] = prov
-    if 'engine_fallback_order' in data and 'engine_fallback_order' in _CONFIG_EDITABLE_KEYS:
+    if 'engine_fallback_order' in data:
         # Same reasoning as default_provider above: a hand-typed or stale
         # entry naming a provider that doesn't exist on this box would sit in
         # config.json silently skipped by resolve_fallback() forever — refuse
