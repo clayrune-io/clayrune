@@ -10987,7 +10987,8 @@ def _router_stat(project_id, requested_model, chosen_model, source, reason=''):
         if fp.exists():
             try:
                 stats = json.loads(fp.read_text(encoding='utf-8') or '{}')
-            except Exception:
+            except Exception as e:
+                _log(f"[router-stats] {project_id} read failed: {e}")
                 stats = {}
         if not isinstance(stats, dict):
             stats = {}
@@ -11008,8 +11009,8 @@ def _router_stat(project_id, requested_model, chosen_model, source, reason=''):
             }
         stats['_updated'] = now_iso()
         write_json_atomic(fp, stats, indent=2)
-    except Exception:
-        pass  # telemetry must never break dispatch
+    except Exception as e:
+        _log(f"[router-stats] {project_id} update failed: {e}")
 
 # ── Auto model router (classifier) ──────────────────────────────────────────
 # Cheap Haiku oneshot that picks one of Haiku / Sonnet / Opus for a given user

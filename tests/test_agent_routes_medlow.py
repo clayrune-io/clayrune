@@ -343,3 +343,22 @@ def test_chat_search_logs_an_unreadable_transcript(tmp_path, monkeypatch):
     monkeypatch.setattr(routes, '_log', logs.append)
     assert routes._search_project_transcripts({'project_path': 'sample'}, 'text') == []
     assert logs == ['[chat-search] could not read fixture.jsonl: fixture read error']
+
+
+def test_router_stats_logs_read_and_write_failures(tmp_path, monkeypatch):
+    from mc.blueprints import agent_routes as routes
+
+    path = tmp_path / 'sample_router_stats.json'
+    path.write_text('{', encoding='utf-8')
+    logs = []
+
+    def fail(*a, **kw):
+        raise OSError('fixture write error')
+
+    monkeypatch.setattr(routes, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(routes, '_log', logs.append)
+    monkeypatch.setattr(routes, 'write_json_atomic', fail)
+    routes._router_stat('sample', 'sonnet', 'sonnet', 'manual')
+    assert len(logs) == 2
+    assert 'read failed' in logs[0]
+    assert 'update failed' in logs[1]
