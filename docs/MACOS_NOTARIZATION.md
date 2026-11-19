@@ -15,6 +15,9 @@ only** — the closed-source Rust `mc-tunnel` moat is unaffected.
 
 ## TL;DR (per release)
 
+Build from a Git checkout with Git on PATH. The spec uses the Git index to
+select built-in skill files for the app bundle.
+
 ```bash
 pyinstaller installer/build-macos.spec --noconfirm     # builds dist/Clayrune.app
 tools/notarize-macos.sh                        # -> Clayrune-macOS.zip + .build.json

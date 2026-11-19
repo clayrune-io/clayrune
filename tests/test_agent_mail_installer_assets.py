@@ -1,6 +1,6 @@
 """Source-only packaging gates; never runs installers, imports app, or contacts services.
 
-macOS: evaluate only the spec's literal datas list, and traverse the local static
+macOS: evaluate the spec's data entries and traverse the local static
 import graph that PyInstaller Analysis follows, including imports inside functions.
 Windows/Linux: installers clone the whole repository; check the actual Git archive
 against the on-disk asset inventory (so an untracked new module is caught too).
@@ -14,6 +14,8 @@ import tarfile
 from pathlib import Path
 
 import pytest
+
+from macos_spec_data import macos_datas
 
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON = sorted(ROOT.glob('mc/**/agent_mail*.py'))
@@ -62,12 +64,7 @@ def import_graph():
 
 @pytest.fixture(scope='module')
 def mac_data():
-    tree = ast.parse((ROOT / 'installer/build-macos.spec').read_text(encoding='utf-8'))
-    assignment = next(n for n in tree.body if isinstance(n, ast.Assign)
-                      and any(isinstance(t, ast.Name) and t.id == 'datas' for t in n.targets))
-    # No full spec execution: that would build identity temp files/run git/import PyInstaller.
-    expression = compile(ast.Expression(assignment.value), '<datas>', 'eval')
-    return eval(expression, {'__builtins__': {}, 'R': lambda *parts: ROOT.joinpath(*parts)})
+    return macos_datas(ROOT)
 
 
 @pytest.mark.parametrize('path', PYTHON, ids=lambda p: p.name)
@@ -118,14 +115,14 @@ def test_mac_analysis_uses_the_checked_entrypoint_and_manifests():
     assert isinstance(options['hiddenimports'], ast.Name) and options['hiddenimports'].id == 'hidden'
 
 
-@pytest.mark.parametrize('path', [
-    *sorted((ROOT / 'data/skills/builtin').glob('*/SKILL.md')),
-    ROOT / 'mc/desk_connect/mcp_catalogue.json',
-], ids=lambda path: str(path.relative_to(ROOT)))
-def test_mac_datas_includes_builtin_skills_and_mcp_catalogue(path, mac_data):
-    relative = path.relative_to(ROOT)
-    assert any(
-        path.is_relative_to(src) and Path(dest) / path.relative_to(src) == relative
-        if src.is_dir() else path == src and Path(dest) / src.name == relative
-        for src, dest in mac_data
-    )
+def test_mac_datas_includes_every_committed_builtin_skill_file(mac_data, source_archive):
+    skills = Path('data/skills/builtin')
+    expected = {path for path in source_archive
+                if path.startswith(f'{skills.as_posix()}/') and (ROOT / path).is_file()}
+    assert expected
+    assert {(Path(dest) / src.name).as_posix()
+            for src, dest in mac_data if src.is_relative_to(ROOT / skills)} == expected
+
+
+def test_mac_datas_includes_mcp_catalogue(mac_data):
+    assert (ROOT / 'mc/desk_connect/mcp_catalogue.json', 'mc/desk_connect') in mac_data
