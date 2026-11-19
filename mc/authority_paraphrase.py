@@ -23,16 +23,19 @@ deterministic, no model call, no I/O, and it may only ever make the guard
 refuse MORE. The phrase list runs first and is not consulted here, so nothing
 in this file can let through a text the list refuses.
 
-Two deliberate passes, both pinned by tests/test_authority_corpus.py:
+One deliberate pass, pinned by tests/test_authority_corpus.py: a match is
+skipped when a negation sits in front of it in the same clause ("Never skip
+the human review", "ask first rather than acting autonomously"). Those TIGHTEN
+a gate; the shipped steward skill is written that way and has to keep
+installing.
 
-  * A match is skipped when a negation sits in front of it in the same clause
-    ("Never skip the human review", "ask first rather than acting
-    autonomously"). Those TIGHTEN a gate; the shipped steward skill is written
-    that way and has to keep installing.
-  * "Act autonomously on reversible work" is not refused. Reversible-freely /
-    irreversible-asks is the boundary the product already documents; the same
-    sentence that mentions irreversible, destructive, all, every, any or
-    everything is refused.
+There is no pass for autonomy "on reversible work" (ruled 2026-11-18). Three
+promoted artifacts read "Act autonomously on reversible work", "without
+pre-approval", "only confirm on irreversible moves" and "the user can override
+standing rules". Each narrows an approval step to a subset or lets a rule be
+set aside, which is a grant however reasonable the subset sounds: a person
+may type that boundary into a rules file, the learning system may not author
+it. The last block of shapes below exists for those three.
 
 It is still a list of shapes. A wording outside all of them passes; the
 KNOWN_HOLES list in tests/authority_corpus_data.py holds the ones measured.
@@ -87,6 +90,14 @@ _SKIP_VERBS = (r"skip|bypass|circumvent|ignor|disabl|overrid|remov|drop|defeat|"
                r"evad|rewrit|replac|work(?:ing)? around|get(?:ting)? around|"
                r"turn(?:ing)? off|switch(?:ing)? off")
 _SKIP = r"\b(?:" + _SKIP_VERBS + r")\w*"
+# The verbs of stopping for a person, the ways of saying "the part that cannot
+# be taken back", and the things an agent is bound by.
+_GATED = (r"(?:confirm|ask|check in|surface|escalate|pause|stop|wait|"
+          r"(?:seek|request|get|need|require)\s+" + _APPROVAL + r")")
+_UNDOABLE = (r"(?:irreversibl\w*|destructive|can(?:no|')t be undone|"
+             r"can not be undone|not reversible)")
+_RULE = (r"(?:rules?|briefs?|guard-?rails?|gates?|instructions?|constraints?|"
+         r"restrictions?|polic(?:y|ies))")
 
 _SHAPES: list[tuple[str, str]] = [
     # ── approval-seeking verb under a negation ──────────────────────────────
@@ -161,7 +172,7 @@ _SHAPES: list[tuple[str, str]] = [
     # on a schedule" describes a job, so run/execute only count with
     # "unsupervised".
     ('autonomy',
-     r"\b(?:act|operate|work|decide|behave)\w*\s+" + _W + r"{0,1}?"
+     r"\b(?:act|operate|work|decide|behave|pursu)\w*\s+" + _W + r"{0,3}?"
      r"(?:autonomously|unsupervised)\b"
      r"|\b(?:run|execute)\w*\s+unsupervised\b"),
     ('own-authority',
@@ -237,6 +248,38 @@ _SHAPES: list[tuple[str, str]] = [
      r"\b(?:creat|mint|generat|issu|provision)\w*\s+" + _W + r"{0,3}?"
      r"(?:api keys?|credentials?|access tokens?|secrets?|service accounts?)\s+"
      + _W + r"{0,2}?(?:yourself|on your own)\b"),
+    # ── an approval step narrowed to a subset; a rule made optional ─────────
+    ('without-pre-approval',
+     r"\bwithout\s+" + _DET + r"{0,3}pre-?(?:approval|authori[sz]ation|"
+     r"clearance|confirmation)\b"),
+    ('gate-only-irreversible',
+     r"\b(?:only\s+(?:batch and\s+)?" + _GATED + r"|" + _GATED + r"\s+only)\b"
+     r"[^.;!?]{0,60}?\b" + _UNDOABLE),
+    ('approval-reserved',
+     r"\b(?:" + _APPROVAL + r"|approvals?|confirmations?)\s+(?:should be|"
+     r"must be|is|are|to be)\s+(?:only\s+)?(?:reserved|saved|kept)\s+for\b"),
+    ('no-ask-question',
+     _negated((r"ask", r"asking")) + r"\s+(?:(?:the|your)\s+" + _PERSON
+     + r"\s+)?[\"'“‘(]?\s*(?:do you want|should i|shall i|would you like|"
+     r"may i|can i|is it ok(?:ay)?|want me to)\b"),
+    ('no-reconfirm',
+     r"(?:" + _NEG_BARE + r"|" + _NEG_ING + r")\b[^.;!?]{0,80}?\b(?:ask(?:ing)?"
+     r"\s+for|seek(?:ing)?|request(?:ing)?|wait(?:ing)?\s+for|requir\w+|"
+     r"need\w*)\s+" + _DET + r"{0,3}re-?(?:confirmation|approval|"
+     r"authori[sz]ation)\b"),
+    ('rules-overridable',
+     r"\b(?:users?|operators?|owners?|humans?)\s+(?:can|may|should be able to|"
+     r"should have the ability to|(?:is|are)\s+(?:able|allowed|free)\s+to)\s+"
+     r"(?:(?:explicitly|always|simply|freely)\s+)?(?:overrid|overrul|bypass|"
+     r"waiv|suspend|lift|set aside)\w*\s+" + _W + r"{0,4}?" + _RULE + r"\b"),
+    ('rules-bypassed',
+     r"\b" + _RULE + r"\s+(?:(?:sometimes|occasionally|often|may|might)\s+)?"
+     r"(?:need|needs|have|has|ought)\s+to\s+be\s+(?:bypassed|skipped|ignored|"
+     r"overridden|set aside|broken|waived)\b"),
+    ('override-honoured',
+     r"\b(?:hono[u]?r|obey|follow|apply|accept)\w*\s+(?:that|the|any|every|"
+     r"such an?|an)\s+override\s+(?:immediately|at once|straight away|"
+     r"without\b)"),
 ]
 
 _COMPILED = [(name, re.compile(rx, re.IGNORECASE)) for name, rx in _SHAPES]
@@ -248,10 +291,6 @@ _MARKUP = re.compile(r'[*`]|(?<!\w)_+|_+(?!\w)')
 _PRIOR_NEGATION = re.compile(
     r"\b(?:never|not|cannot|nor|neither|nobody|without|dont|rather than|"
     r"instead of)\b|n't\b",
-    re.IGNORECASE)
-_REVERSIBLE = re.compile(r'\breversible\b', re.IGNORECASE)
-_BEYOND_REVERSIBLE = re.compile(
-    r'\b(?:irreversibl\w*|destructive|everything|all|every|any)\b',
     re.IGNORECASE)
 
 
@@ -278,12 +317,9 @@ def paraphrase_violation(text: str) -> str:
     """Return the matched wording if `text` has the shape of an authority
     grant, else ''. Never raises on a string; `None` and '' return ''."""
     for sentence in _sentences(text):
-        for name, rx in _COMPILED:
+        for _name, rx in _COMPILED:
             for m in rx.finditer(sentence):
                 if _tightens(sentence, m.start()):
-                    continue
-                if (name == 'autonomy' and _REVERSIBLE.search(sentence)
-                        and not _BEYOND_REVERSIBLE.search(sentence)):
                     continue
                 return m.group(0)
     return ''

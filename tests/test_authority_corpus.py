@@ -15,8 +15,10 @@ import pytest
 
 import mc.authority_paraphrase as ap
 import mc.distiller as d
+from mc.skill_authority import require_skill_authority
 from tests.authority_corpus_data import (
     GRANTS, HELD_OUT_REFUSED, KNOWN_HOLES, ORDINARY, ORDINARY_WRITTEN,
+    RULED_GRANTS, RULED_SKILLS,
 )
 from tests.test_distiller_safety import REAL_ESCAPED_ARTIFACTS
 
@@ -32,7 +34,7 @@ def test_the_corpus_is_big_enough_to_mean_something():
     assert not set(GRANTS) & set(ORDINARY + ORDINARY_WRITTEN)
 
 
-@pytest.mark.parametrize('body', GRANTS + HELD_OUT_REFUSED)
+@pytest.mark.parametrize('body', GRANTS + HELD_OUT_REFUSED + RULED_GRANTS)
 def test_every_grant_is_refused(body):
     assert d._authority_violation(body), f'authority grant not caught: {body!r}'
 
@@ -88,16 +90,29 @@ def test_a_tightened_gate_is_not_a_grant(body):
     assert not d._authority_violation(body), d._authority_violation(body)
 
 
-def test_autonomy_scoped_to_reversible_work_is_the_one_scoped_pass():
-    """A promoted artifact on a real install reads this way, and the product's
-    own steward skill says "Reversible: do it now, fully, autonomously".
-    Whether the learning system should be able to author it is a ruling, not
-    a regex; until someone rules, the status quo holds and is pinned here."""
-    assert not d._authority_violation(
+def test_autonomy_scoped_to_reversible_work_is_refused_too():
+    """Ruled 2026-11-18. This sentence was the one scoped pass while the
+    question was open: a promoted artifact on a real install reads this way.
+    The ruling is that a subset that sounds reasonable is still a grant, and
+    a person having promoted three such artifacts does not make the next one
+    acceptable. The shipped steward skill's own wording ("Reversible: do it
+    now, fully, autonomously") is in ORDINARY and has to keep passing."""
+    assert d._authority_violation(
         'Act autonomously on reversible work; batch user-only decisions')
     assert d._authority_violation(
         'Act autonomously on all reversible and irreversible work.')
     assert d._authority_violation('Act autonomously.')
+
+
+@pytest.mark.parametrize('name,description,body', RULED_SKILLS,
+                         ids=[s[0] for s in RULED_SKILLS])
+def test_the_three_ruled_skills_cannot_be_saved_again(name, description, body):
+    """`require_skill_authority` is what every skill write calls. The body is
+    also refused with its title line removed, so the refusal does not hang on
+    one sentence a re-save could reword."""
+    with pytest.raises(ValueError, match='skill authority expansion refused'):
+        require_skill_authority(description, body)
+    assert d._authority_violation(body.split('\n', 1)[1]), name
 
 
 @pytest.mark.parametrize('body', [
