@@ -208,3 +208,17 @@ def test_process_registration_logs_project_lookup_failure(monkeypatch):
                              identity=('fixture', None))
     assert processes[123]['project_name'] == 'sample'
     assert any('fixture project read failed' in line for line in logs)
+
+
+def test_skipped_merge_leaves_a_diagnostic(monkeypatch):
+    from mc.blueprints import agent_routes as routes
+
+    logs = []
+    monkeypatch.setattr(routes, 'load_project', lambda pid: {'id': pid})
+    monkeypatch.setattr(routes, '_log', lambda line, **kwargs: logs.append(line))
+    monkeypatch.setattr(routes._agent_worktree, 'merge_back',
+                        lambda project, sid: ('skipped', 'unknown base ref master'))
+    routes._worktree_merge_back_on_end(
+        {'session_id': 'sample', 'project_id': 'project', '_worktree_isolated': True},
+        _cold_done=True)
+    assert logs == ['[worktree] merge-back skipped for sample: unknown base ref master']

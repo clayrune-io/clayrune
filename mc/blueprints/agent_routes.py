@@ -1814,6 +1814,8 @@ def _worktree_merge_back_on_end(session, _attempt=0, _cold_done=False):
             _log_agent_activity(
                 pid, f'Agent branch {status} ({sid[:8]}): '
                      f'branch {_agent_worktree.branch_name(sid)} — {detail[:160]}')
+        elif status == 'skipped':
+            _log(f"[worktree] merge-back skipped for {sid[:12]}: {detail}")
     except Exception as e:
         _log(f"[worktree] merge-back failed for {sid[:12]}: {e}")
 
