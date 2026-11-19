@@ -42,6 +42,19 @@ def store(tmp_path, monkeypatch):
 
 # -- signal feed --------------------------------------------------------------
 
+def test_historical_bad_scores_do_not_poison_filter_or_sort(store):
+    rows = [
+        {'id': 'bad', 'project_id': 'p', 'story_score': 'high'},
+        {'id': 'overflow', 'project_id': 'p', 'story_score': 10**400},
+        {'id': 'valid', 'project_id': 'p', 'story_score': '0.75'},
+    ]
+    original = ''.join(json.dumps(row) + '\n' for row in rows)
+    store.SIGNALS_PATH.write_text(original, encoding='utf-8')
+    assert [row['id'] for row in store.list_signals('p', min_score=0.5)] == ['valid']
+    assert [row['story_score'] for row in store.list_signals('p', sort='score')] == [0.75, 0, 0]
+    assert store.SIGNALS_PATH.read_text(encoding='utf-8') == original
+
+
 def test_signal_appends_and_reads_back(store):
     store.append_signal('mission_control', 'release', 'Shipped drag-to-hire')
     store.append_signal('apex_trader', 'commit', 'bump deps')

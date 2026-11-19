@@ -703,6 +703,7 @@ def _read_signals() -> list[dict]:
         if row.get('_consume'):
             consumed[row['_consume']] = row.get('consumed_by') or 'unknown'
             continue
+        row['story_score'] = _as_number(row.get('story_score')) or 0
         out.append(row)
     for row in out:
         if row.get('id') in consumed:
@@ -1952,7 +1953,10 @@ def _as_number(value):
             return None
     if not isinstance(value, (int, float)):
         return None
-    value = float(value)
+    try:
+        value = float(value)
+    except OverflowError:
+        return None
     return value if value == value and value not in (float('inf'), float('-inf')) else None
 
 

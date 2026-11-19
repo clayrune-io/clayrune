@@ -58,6 +58,21 @@ def test_post_and_list_signals(client):
     assert rows[0]['project_id'] == 'mission_control'
 
 
+@pytest.mark.parametrize('score', ['high', True, {}, 'NaN', 'Infinity', 10**400])
+def test_signal_refuses_invalid_score(client, score):
+    response = client.post('/api/desk/signals', json={
+        'project_id': 'p', 'summary': 'Unscorable signal', 'story_score': score})
+    assert response.status_code == 400
+    assert client.get('/api/desk/signals').get_json() == []
+
+
+def test_signal_normalizes_numeric_score_from_input(client):
+    response = client.post('/api/desk/signals', json={
+        'project_id': 'p', 'summary': 'Scored signal', 'story_score': '0.75'})
+    assert response.status_code == 201
+    assert response.get_json()['story_score'] == 0.75
+
+
 def test_signal_requires_project_and_summary(client):
     assert client.post('/api/desk/signals', json={'summary': 'x'}).status_code == 400
     assert client.post('/api/desk/signals', json={'project_id': 'p'}).status_code == 400

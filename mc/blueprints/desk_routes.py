@@ -262,12 +262,15 @@ def harvest():
 @bp.route('/api/desk/signals', methods=['POST'])
 def add_signal():
     d = request.get_json(silent=True) or {}
-    if not d.get('project_id') or not d.get('summary'):
+    if not isinstance(d, dict) or not d.get('project_id') or not d.get('summary'):
         return jsonify({'error': 'project_id and summary are required'}), 400
+    score = _desk._as_number(d.get('story_score'))
+    if d.get('story_score') is not None and score is None:
+        return jsonify({'error': 'story_score must be a finite number'}), 400
     entry = _desk.append_signal(
         d['project_id'], d.get('kind') or 'note', d['summary'],
         ref=d.get('ref'), detail=d.get('detail'),
-        story_score=d.get('story_score'), occurred_at=d.get('occurred_at'))
+        story_score=score, occurred_at=d.get('occurred_at'))
     return jsonify(entry), 201
 
 
