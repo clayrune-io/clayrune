@@ -55,6 +55,19 @@ def client(tmp_path, monkeypatch):
     return server.app.test_client()
 
 
+def test_failed_enrollment_mailer_reports_exit_status(client, monkeypatch):
+    from types import SimpleNamespace
+    from mc.blueprints import remote_routes as rr
+
+    logs = []
+    monkeypatch.setattr(rr.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=42))
+    monkeypatch.setattr(rr, '_log', lambda message, **kw: logs.append(message))
+    rr._send_enrollment_lost_alert(180)
+
+    assert any('mailer exited 42' in message for message in logs)
+    assert all('alert sent' not in message for message in logs)
+
+
 class TestRemoteStatus:
     def test_status_always_200_with_provider_key(self, client):
         # provider: null (open-source build) or a provider dict (mc_remote

@@ -698,10 +698,13 @@ def _send_enrollment_lost_alert(down_seconds: float) -> None:
         if not mailer.exists():
             _log(f"[remote-access] enrollment-lost alert: mailer not found at {mailer}", flush=True)
             return
-        subprocess.run(
+        result = subprocess.run(
             [sys.executable, str(mailer), "--subject", subject, "--body", body],
             capture_output=True, timeout=60, check=False,
         )
+        if result.returncode:
+            _log(f"[remote-access] enrollment-lost mailer exited {result.returncode}", flush=True)
+            return
         _log(f"[remote-access] enrollment lost ~{mins}m — alert sent", flush=True)
     except Exception as e:
         _log(f"[remote-access] enrollment-lost alert could not be sent: {e}", flush=True)
