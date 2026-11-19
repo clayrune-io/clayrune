@@ -7678,36 +7678,20 @@ def _revive_history_lines(project_path, claude_sid, user_label, max_messages=Non
     truncation notice and the "restored from transcript" marker — neither
     is a real message with its own timestamp).
     """
-    lines, ts = _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label,
-                                                max_messages=max_messages)
+    lines, ts = _transcript_buffer_lines_and_ts(
+        project_path, claude_sid, user_label, max_messages=max_messages, show_cutoff=True)
     if lines:
-        # Say so at the TOP when there is more above. Scrolling up and simply
-        # running out of conversation is indistinguishable from having lost it.
-        notice = _buffer_truncation_notice(
-            project_path, claude_sid,
-            max_messages if max_messages is not None else _transcript_buffer_default())
-        if notice:
-            lines.insert(0, notice)
-            ts.insert(0, None)
         lines.append('[— restored from transcript; conversation continues below —]')
         ts.append(None)
     return lines, ts
 
 
-def _buffer_truncation_notice(project_path, claude_sid, shown):
-    """A line saying history was cut, when it was — silence here is what made
-    the truncation read as lost data rather than a display limit."""
-    try:
-        f = _find_transcript_file(project_path, claude_sid)
-        if not f:
-            return None
-        total = len(_parse_transcript_messages(f, max_messages=100000))
-        if total > shown:
-            return (f'[— earlier history not shown: {total - shown} of {total} '
-                    f'messages above this point. The agent still has the full '
-                    f'conversation. —]')
-    except Exception:
-        pass
+def _buffer_truncation_notice(total, shown):
+    """Distinguish a display limit from lost history."""
+    if total > shown:
+        return (f'[— earlier history not shown: {total - shown} of {total} '
+                f'messages above this point. The agent still has the full '
+                f'conversation. —]')
     return None
 
 
@@ -7727,7 +7711,8 @@ def _transcript_buffer_lines(project_path, claude_sid, user_label, max_messages=
                                            max_messages=max_messages)[0]
 
 
-def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_messages=None):
+def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_messages=None,
+                                    *, show_cutoff=False):
     """Same rendering as `_transcript_buffer_lines`, plus a parallel list of
     each line's source timestamp (the transcript entry's own `timestamp`
     field, ISO string, or None when a line has no 1:1 source message — e.g.
@@ -7745,7 +7730,11 @@ def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_me
         # Uncapped, then strip, then cap: the strip anchors on the handoff
         # FOOTER, which a pre-strip 5000-char cap cuts off (see
         # parse_transcript_file's user_text_cap).
-        msgs = _parse_transcript_messages(f, max_messages=max_messages, user_text_cap=None)
+        parse_limit = max(max_messages, 100000) if show_cutoff else max_messages
+        msgs = _parse_transcript_messages(f, max_messages=parse_limit, user_text_cap=None)
+        notice = _buffer_truncation_notice(min(len(msgs), 100000), max_messages) if show_cutoff else None
+        if len(msgs) > max_messages:
+            msgs = msgs[-max_messages:]
         lines = []
         ts = []
         for m in msgs:
@@ -7778,6 +7767,9 @@ def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_me
                 # same convention the live stream reader uses.
                 lines.append(_agent_runtime.stop_hook_marker(m.get('kind') or ''))
                 ts.append(None)
+        if lines and notice:
+            lines.insert(0, notice)
+            ts.insert(0, None)
         return lines, ts
     except Exception as e:
         _log(f"[transcript-render] failed: {e}")

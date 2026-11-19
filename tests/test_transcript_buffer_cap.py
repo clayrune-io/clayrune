@@ -46,35 +46,29 @@ def test_revival_uses_the_shared_default_not_its_own(monkeypatch):
     """The regression itself: revival must not carry a private, smaller cap."""
     seen = {}
     monkeypatch.setitem(state.CONFIG, 'transcript_buffer_max_messages', 300)
-    monkeypatch.setattr(ar, '_transcript_buffer_lines',
-                        lambda pp, cs, ul, max_messages=None: seen.setdefault('cap', max_messages) and [])
-    monkeypatch.setattr(ar, '_buffer_truncation_notice', lambda *a, **k: None)
-    ar._revive_history_lines('/p', 'csid', 'Ron')
-    # None means "use the shared default" — the one thing it must not do is
-    # pass a hardcoded 40.
-    assert seen.get('cap') in (None, 300)
+    def render(*args, **kwargs):
+        seen.update(kwargs)
+        return [], []
+
+    monkeypatch.setattr(ar, '_transcript_buffer_lines_and_ts', render)
+    ar._revive_history_lines('/p', 'csid', 'Example')
+    assert seen['max_messages'] is None and seen['show_cutoff'] is True
 
 
-def test_truncation_notice_when_history_is_cut(monkeypatch):
-    monkeypatch.setattr(ar, '_find_transcript_file', lambda pp, cs: Path('x.jsonl'))
-    monkeypatch.setattr(ar, '_parse_transcript_messages',
-                        lambda f, max_messages=0: [{'role': 'user'}] * 900)
-    note = ar._buffer_truncation_notice('/p', 'csid', 300)
+def test_truncation_notice_when_history_is_cut():
+    note = ar._buffer_truncation_notice(900, 300)
     assert note and '600 of 900' in note
     # It must also say the agent is not similarly limited, or the user will
     # reasonably assume the conversation was damaged.
     assert 'full conversation' in note
 
 
-def test_no_notice_when_everything_fits(monkeypatch):
-    monkeypatch.setattr(ar, '_find_transcript_file', lambda pp, cs: Path('x.jsonl'))
-    monkeypatch.setattr(ar, '_parse_transcript_messages',
-                        lambda f, max_messages=0: [{'role': 'user'}] * 12)
-    assert ar._buffer_truncation_notice('/p', 'csid', 300) is None
+def test_no_notice_when_everything_fits():
+    assert ar._buffer_truncation_notice(12, 300) is None
 
 
 def test_notice_never_raises(monkeypatch):
     """Best-effort: a counting failure must not break a revival."""
     monkeypatch.setattr(ar, '_find_transcript_file',
                         lambda pp, cs: (_ for _ in ()).throw(OSError('gone')))
-    assert ar._buffer_truncation_notice('/p', 'csid', 300) is None
+    assert ar._revive_history_lines('/p', 'csid', 'Example') == ([], [])

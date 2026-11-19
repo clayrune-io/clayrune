@@ -266,3 +266,22 @@ def test_callback_fallback_keeps_marker_first_replies():
     for reply in ('[file:sample.txt]', '[Docs](example) explain it', '> A quotation'):
         session = {'log_lines': ['> Example: task', reply, '[exited with code 0]']}
         assert routes._last_reply_text(session) == reply
+
+
+def test_revive_parses_history_once_and_preserves_cutoff(monkeypatch):
+    from mc.blueprints import agent_routes as routes
+
+    reads = []
+    messages = [{'role': 'assistant', 'text': f'reply {number}'} for number in range(4)]
+
+    def parse(path, max_messages, **kwargs):
+        reads.append(path)
+        return messages[-max_messages:]
+
+    monkeypatch.setattr(routes, '_find_transcript_file', lambda *args: 'fixture.jsonl')
+    monkeypatch.setattr(routes, '_parse_transcript_messages', parse)
+    lines, timestamps = routes._revive_history_lines('sample', 'chat', 'Example', max_messages=2)
+    assert '2 of 4' in lines[0]
+    assert lines[1:3] == ['reply 2', 'reply 3']
+    assert len(lines) == len(timestamps)
+    assert reads == ['fixture.jsonl']
