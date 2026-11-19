@@ -1124,9 +1124,7 @@ def add_proposal(signal_id: str, voice: str, why: str, *,
         # Never re-offer a signal the human has already ruled on, and never
         # double-propose one that is already pending a decision.
         for p in props.values():
-            if p.get('signal_id') == signal_id and p.get('state') != 'dismissed':
-                return None
-            if p.get('signal_id') == signal_id and p.get('state') == 'dismissed':
+            if p.get('signal_id') == signal_id:
                 return None
         prop = {
             'id': _new_id('prop'),
@@ -1305,20 +1303,6 @@ def _campaign_bounds(camp: dict) -> dict:
     }
 
 
-def _check_earmark_locked(store: dict, project_id: str | None, budget: dict | None, *,
-                          exclude_campaign_id: str | None = None) -> None:
-    """Retired (MC-977 2026-10-01, Presence screen retired). Section 5.2 used to
-    refuse a `source: 'project'` earmark the project's budget pool could not
-    cover; the pool is no longer editable anywhere, and a limit the user cannot
-    see and edit on the campaign must not refuse anything. Campaign budgets are
-    self-contained now, so this never raises. Kept (not deleted) so the two call
-    sites and any stored `presence.budget` need no migration; a `source:
-    'project'` budget from an old client is re-filed as the campaign's own amount
-    by `_retire_project_earmark` the next time the store is read.
-    """
-    return None
-
-
 class CampaignExists(ValueError):
     """A client-chosen campaign id is already taken (the route answers 409)."""
 
@@ -1385,11 +1369,6 @@ def create_campaign(title: str, thesis: str, *, voice=None, voices=None,
     }
     with _store_lock:
         store = _read_store()
-        # §5.2: Launch refuses an earmark the project cannot cover — checked
-        # here too, since create_campaign is the only entry point a caller
-        # can hand a `how.budget` to on day one (no separate Launch route
-        # exists yet; this ticket is the backend shapes, not R2-11).
-        _check_earmark_locked(store, project_id, (camp['how'] or {}).get('budget'))
         if camp['id'] in store['campaigns']:
             raise CampaignExists(camp['id'])
         bounds = _campaign_bounds(camp)
@@ -1536,12 +1515,6 @@ def update_campaign(campaign_id: str, patch: dict, *, forbid_start: bool = False
             problems = _start_gate_problems(camp)
             if problems:
                 raise ValueError('cannot start: ' + '; '.join(problems))
-        # §5.2: re-checked on every update that touches how.budget, not just
-        # at creation — a PATCH is how a later Launch/edit raises the
-        # earmark, and the project pool it's checked against may itself have
-        # changed since create_campaign's own check.
-        _check_earmark_locked(store, camp.get('project_id'), (camp.get('how') or {}).get('budget'),
-                              exclude_campaign_id=campaign_id)
         next_bounds = _campaign_bounds(camp)
         camp['approval'] = {
             'bounds': next_bounds,

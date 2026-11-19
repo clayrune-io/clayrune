@@ -76,8 +76,6 @@ def list_folders() -> list[dict]:
         provenance = _provenance()
         for key in sorted(keys):
             record = metadata.get(key, {})
-            if record.get('deleted'):
-                continue
             items = []
             for kind, directory in zip(pieces.ASSET_KINDS, _directories(key)):
                 if directory.is_dir():
