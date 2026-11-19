@@ -505,21 +505,22 @@ SYSTEM_STATUS_PATH: Path = None  # type: ignore[assignment]  # wired
 def _load_system_status_from_disk():
     """Populate `state._LAST_SYSTEM_STATUS` on startup so the panel shows something
     immediately even if no agent has run since the restart."""
+    if SYSTEM_STATUS_PATH is None:
+        return
     try:
         if SYSTEM_STATUS_PATH.exists():
             state._LAST_SYSTEM_STATUS = json.loads(SYSTEM_STATUS_PATH.read_text(encoding='utf-8'))
-    except Exception:
+    except Exception as exc:
+        _log(f"[system] status cache read failed: {exc}", flush=True)
         state._LAST_SYSTEM_STATUS = {}
 
 
 def _save_system_status_to_disk():
     try:
         SYSTEM_STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        SYSTEM_STATUS_PATH.write_text(
-            json.dumps(state._LAST_SYSTEM_STATUS, indent=2), encoding='utf-8'
-        )
-    except Exception:
-        pass  # Non-fatal — cache stays in memory.
+        write_json_atomic(SYSTEM_STATUS_PATH, state._LAST_SYSTEM_STATUS, indent=2)
+    except Exception as exc:
+        _log(f"[system] status cache write failed: {exc}", flush=True)
 
 
 def _capture_system_init(msg):
@@ -594,8 +595,8 @@ def _capture_system_init(msg):
                     _allowance_state.clear_exhaustion('claude')
                 else:
                     _allowance_state.observe('claude', msg)
-    except Exception:
-        pass  # Capture is best-effort; never break the reader on a parse error.
+    except Exception as exc:
+        _log(f"[system] status capture failed: {exc}", flush=True)
 
 
 _load_system_status_from_disk()
@@ -719,7 +720,8 @@ def _mc_usage_from_agent_logs():
             try:
                 entries = json.loads(log_path.read_text(encoding='utf-8',
                                                         errors='replace'))
-            except Exception:
+            except Exception as exc:
+                _log(f"[usage] reading agent log {log_path.name} failed: {exc}", flush=True)
                 continue
             if not isinstance(entries, list):
                 continue
@@ -776,8 +778,8 @@ def _mc_usage_from_agent_logs():
                     week_t[model] = int(week_t.get(model, 0)) + tok
                 if ts == today_str:
                     today_t[model] = int(today_t.get(model, 0)) + tok
-    except Exception:
-        pass
+    except Exception as exc:
+        _log(f"[usage] aggregating agent logs failed: {exc}", flush=True)
 
     return {
         'today': today_t,
@@ -1298,8 +1300,8 @@ def system_usage_get():
         if cc_path.exists():
             cc_data = json.loads(cc_path.read_text(encoding='utf-8'))
             cc_available = True
-    except Exception:
-        pass
+    except Exception as exc:
+        _log(f"[usage] reading Claude stats cache failed: {exc}", flush=True)
 
     # All-time top models: prefer MC aggregated if it has data, fall back to CC.
     mc_all = mc.get('all_time', {})
@@ -2206,7 +2208,8 @@ def _load_bundled_build_info(repo_root):
         return None
     try:
         return json.loads(path.read_text(encoding='utf-8'))
-    except Exception:
+    except Exception as exc:
+        _log(f"[system] reading bundled build info failed: {exc}", flush=True)
         return None
 
 
