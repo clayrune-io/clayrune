@@ -484,6 +484,8 @@ def _absolutize_paths(servers: dict[str, Any], install_dir: Path) -> dict[str, A
     )
     out: dict[str, Any] = {}
     for name, cfg in servers.items():
+        if not isinstance(cfg, dict):
+            continue
         cfg2 = dict(cfg)
         args = cfg2.get('args')
         if isinstance(args, list):
