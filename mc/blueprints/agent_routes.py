@@ -710,17 +710,22 @@ def _ensure_incognito_project():
     see any updates the user has made, e.g. renamed it).
     """
     fp = DATA_DIR / f'{INCOGNITO_PROJECT_ID}.json'
-    if fp.exists():
-        try:
-            return json.loads(fp.read_text(encoding='utf-8'))
-        except Exception:
-            pass
+    create_record = False
+    try:
+        rec = json.loads(fp.read_text(encoding='utf-8'))
+        if not isinstance(rec, dict):
+            raise ValueError('project record must be an object')
+        return rec
+    except FileNotFoundError:
+        create_record = True
+    except (OSError, ValueError) as e:
+        _log(f"[incognito] project record read failed: {e}")
     base = Path(state.CONFIG.get('auto_workspace_base') or str(Path.home() / 'MissionControl'))
     workspace = base / '_incognito'
     try:
         workspace.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
+    except OSError as e:
+        _log(f"[incognito] workspace creation failed: {e}")
     rec = {
         'id': INCOGNITO_PROJECT_ID,
         'name': 'Incognito',
@@ -738,10 +743,11 @@ def _ensure_incognito_project():
         '_is_incognito_project': True,
         'last_updated': now_iso() if 'now_iso' in globals() else datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
     }
-    try:
-        write_json_atomic(fp, rec, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+    if create_record:
+        try:
+            write_json_atomic(fp, rec, indent=2, ensure_ascii=False)
+        except OSError as e:
+            _log(f"[incognito] project record write failed: {e}")
     return rec
 
 # Built-in re-declaration for the engram memory plugin. engram is a *plugin*
