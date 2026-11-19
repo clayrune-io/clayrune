@@ -203,6 +203,64 @@ def go(w, *a, now=NOW, **k):
     return stored(piece, vid)
 
 
+def test_failed_post_ledger_keeps_budget_and_cadence_until_repaired(world, monkeypatch):
+    from mc import desk_spend_guard
+
+    campaign(world, post_cap=1, how={'budget': {'source': 'own', 'amount': 0.015}})
+    piece, vid = version(world)
+    original = _desk._write_store
+
+    def fail_ledger_write(store):
+        if store['ledger']:
+            raise OSError('ledger disk write failed')
+        return original(store)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(_desk, '_write_store', fail_ledger_write)
+        first = go(world, piece, vid)
+        assert first['state'] in ('submitted', 'verified_published')
+        assert not ledger()
+        assert _publish.get_receipt(vid)['ledger_pending']['cost'] == 0.015
+        assert desk_spend_guard.campaign_budget(CID)['remaining'] == 0
+        second = go(world, *version(world, piece='p2', vid='v2'))
+        assert second['state'] == 'held'
+        assert 'post cap' in second['failure']['reason']
+        assert _tick.run_once(NOW)['sent'] == []
+
+    _tick.run_once(NOW)
+    _tick.run_once(NOW)
+    assert len(ledger()) == 1
+    assert ledger()[0]['cost'] == 0.015
+    assert desk_spend_guard.campaign_budget(CID)['remaining'] == 0
+    assert not _publish.get_receipt(vid)['ledger_pending']
+    assert len(world.wire.posts) == 1
+
+
+def test_repair_replays_ledger_success_without_double_counting(world, monkeypatch):
+    from mc import desk_spend_guard
+
+    campaign(world, post_cap=2, how={'budget': {'source': 'own', 'amount': 0.05}})
+    piece, vid = version(world)
+    original = _publish._write_store
+
+    def fail_marker_clear(store):
+        if not store['receipts'][vid]['ledger_pending']:
+            raise OSError('failed to clear pending receipt')
+        return original(store)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(_publish, '_write_store', fail_marker_clear)
+        assert go(world, piece, vid)['state'] == 'verified_published'
+        assert _publish.get_receipt(vid)['ledger_pending']
+        assert desk_spend_guard.campaign_budget(CID)['spent'] == 0.015
+        assert len(ledger()) == 1
+
+    _tick.run_once(NOW)
+    assert len(ledger()) == 1
+    assert not _publish.get_receipt(vid)['ledger_pending']
+    assert len(world.wire.posts) == 1
+
+
 # -- M19: approve_version -----------------------------------------------------------
 
 def test_approve_refuses_from_wrong_states(world):

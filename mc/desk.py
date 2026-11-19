@@ -1110,9 +1110,6 @@ def delete_platform_rules(name: str) -> bool:
 # human learns to ignore the surface. The latch is keyed on the SIGNAL id, not
 # the proposal id — a fresh proposal for the same signal is the same ask wearing
 # a new id, which is exactly how `preference-1ba8d678` came back from the dead.
-PROPOSAL_STATES = ('proposed', 'accepted', 'dismissed')
-
-
 def add_proposal(signal_id: str, voice: str, why: str, *,
                  campaign_id: str | None = None) -> dict | None:
     """Record one of Posy's suggestions. Returns None if it was already ruled on."""
@@ -1156,23 +1153,6 @@ def get_proposal(proposal_id: str) -> dict | None:
         return (_read_store().get('proposals') or {}).get(proposal_id)
 
 
-def decide_proposal(proposal_id: str, state: str, *,
-                    draft_dispatch: str | None = None) -> dict | None:
-    if state not in PROPOSAL_STATES:
-        raise ValueError(f'unknown proposal state {state!r}')
-    with _store_lock:
-        store = _read_store()
-        prop = (store.get('proposals') or {}).get(proposal_id)
-        if not prop:
-            return None
-        prop['state'] = state
-        prop['decided_at'] = now_iso()
-        if draft_dispatch:
-            prop['draft_dispatch'] = draft_dispatch
-        _write_store(store)
-        return prop
-
-
 def signal_is_ruled_on(signal_id: str) -> bool:
     """True once the human has accepted or dismissed a proposal for this signal.
 
@@ -1182,7 +1162,7 @@ def signal_is_ruled_on(signal_id: str) -> bool:
     """
     with _store_lock:
         for p in (_read_store().get('proposals') or {}).values():
-            if p.get('signal_id') == signal_id and p.get('state') in ('accepted', 'dismissed'):
+            if p.get('signal_id') == signal_id and p.get('state') in ('accepting', 'accepted', 'dismissed'):
                 return True
     return False
 
@@ -2322,7 +2302,7 @@ def record_published(*, platform: str, voice: str, body: str,
                      format: str | None = None,
                      account: str | None = None,
                      term: str | None = None,
-                     cost: float = 0) -> dict:
+                     cost: float = 0, publish_id: str | None = None) -> dict:
     """Record that a human released something. NOT a publish path.
 
     `piece_id/format/account/term/cost` (§8 R1-L, §10.7): without these a
@@ -2348,6 +2328,12 @@ def record_published(*, platform: str, voice: str, body: str,
     }
     with _store_lock:
         store = _read_store()
+        if publish_id is not None:
+            from mc.desk_post_ledger import matching_post
+            prior = matching_post(store['ledger'], publish_id, url)
+            if prior is not None:
+                return prior
+            entry['publish_id'] = publish_id
         store['ledger'].append(entry)
         _write_store(store)
     return entry

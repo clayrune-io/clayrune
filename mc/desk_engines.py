@@ -70,6 +70,7 @@ from typing import Any, Callable
 from mc import desk as _desk
 from mc import desk_oauth as _oauth
 from mc import desk_pieces as _pieces
+from mc import desk_post_ledger as _post_ledger
 from mc import desk_stitch as _stitch
 from mc import desk_vault_lock as _vault_lock
 from mc.addons import hold as _addons_hold
@@ -1328,7 +1329,7 @@ def budget_state(campaign_id: str, *, _store: dict | None = None) -> dict:
                 if j.get('campaign_id') == campaign_id)
     spent += sum(_num(r.get('reserved_usd')) for r in store['renders'].values()
                  if r.get('campaign_id') == campaign_id)
-    spent += sum(_num(r.get('cost')) for r in _desk.list_ledger(limit=10 ** 9)
+    spent += sum(_num(r.get('cost')) for r in _post_ledger.accounted_posts()
                  if r.get('campaign_id') == campaign_id)
     return {'amount': round(amount, 6), 'spent': round(spent, 6),
             'remaining': round(max(amount - spent, 0.0), 6), 'source': b.get('source', 'none')}

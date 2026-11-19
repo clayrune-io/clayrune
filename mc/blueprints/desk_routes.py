@@ -51,6 +51,7 @@ from mc import desk_pieces as _pieces
 from mc import desk_withdrawal as _withdrawal
 from mc import desk_ledger_input as _ledger_input
 from mc import desk_publish as _publish
+from mc import desk_proposal_decisions as _proposal_decisions
 from mc import desk_retro as _retro
 from mc import desk_research as _research
 from mc import desk_story as _story
@@ -1954,7 +1955,7 @@ def triage():
 
 @bp.route('/api/desk/proposals', methods=['GET'])
 def list_proposals():
-    """?state=proposed|accepted|dismissed|all"""
+    """?state=proposed|accepting|accepted|dismissed|all"""
     state = request.args.get('state', 'proposed')
     rows = _desk.list_proposals(None if state == 'all' else state)
     # Join the signal in so the human can check the claim without a second call.
@@ -1994,12 +1995,10 @@ def accept_proposal(proposal_id):
     Two questions, asked in order and never merged: "is this worth saying"
     (here) and "is this the right way to say it" (releasing the draft).
     """
-    prop = _desk.get_proposal(proposal_id)
-    if not prop:
-        return jsonify({'error': 'proposal not found'}), 404
-    if prop.get('state') != 'proposed':
-        return jsonify({'error': f"already {prop['state']}"}), 409
+    return _proposal_decisions.accept(proposal_id, _prepare_proposal_dispatch)
 
+
+def _prepare_proposal_dispatch(prop):
     signal = next((s for s in _desk.list_signals(limit=100000)
                    if s['id'] == prop['signal_id']), None)
     if signal is None:
@@ -2020,31 +2019,25 @@ def accept_proposal(proposal_id):
         return err
     brief = _brief.build_brief(signal, voice=prop['voice'], campaign=camp,
                                project_name=project.get('name'))
-    if dispatch_agent is None:
+    dispatch = dispatch_agent
+    if dispatch is None:
         return jsonify({'error': 'dispatch not wired', 'brief': brief}), 503
-    try:
-        session_id = dispatch_agent(
+
+    def launch(session_id):
+        return dispatch(
             pid, brief, '',
             display_task=f'Draft a {_brief.platform_for(prop["voice"])} post: '
                          f'{(signal.get("summary") or "")[:70]}',
             character=agent_ref,
-            source='agent', strict_character=True, **eng)
-    except Exception as e:
-        _log(f'[desk] accept dispatch failed for {proposal_id}: {e}')
-        return jsonify({'error': f'dispatch failed: {e}'}), 502
+            source='agent', strict_character=True, reuse_session_id=session_id, **eng)
 
-    _desk.decide_proposal(proposal_id, 'accepted', draft_dispatch=session_id)
-    return jsonify({'ok': True, 'session_id': session_id,
-                    'platform': _brief.platform_for(prop['voice'])}), 202
+    return launch
 
 
 @bp.route('/api/desk/proposals/<proposal_id>/dismiss', methods=['POST'])
 def dismiss_proposal(proposal_id):
     """A latched no. The signal is never proposed again — see desk.signal_is_ruled_on."""
-    prop = _desk.decide_proposal(proposal_id, 'dismissed')
-    if prop is None:
-        return jsonify({'error': 'proposal not found'}), 404
-    return jsonify({'ok': True, 'proposal': prop})
+    return _proposal_decisions.dismiss(proposal_id)
 
 
 @bp.route('/api/desk/brief', methods=['POST'])

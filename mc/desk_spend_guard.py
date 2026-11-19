@@ -30,12 +30,11 @@ every caller in the process, so two calls racing for the last of a budget cannot
 both pass. A reservation is released when the call fails (`release`) and is
 swapped for the real ledger row when it succeeds: a read writes its row and
 drops the hold under the same lock (`settle_read`), so no other caller can see
-neither or both. A post's ledger row is written by `desk_tick._record_ledger`
-right after `publish` returns, inside the tick's `_send_lock`, which is the same
-lock every campaign publish already takes; a second send cannot start between
-the two. Holds live in memory: a restart drops them, and the ledger rows are
-what survive. If a settled read's ledger write fails the hold is KEPT (and
-logged CRITICAL) so the spend is never undercounted.
+neither or both. A confirmed campaign post transfers its hold to a pending
+publish receipt under the spend lock. The tick retries the ledger write until
+the receipt is settled. Budget and cadence count the pending receipt across
+restarts and count the ledger row once it exists. If a settled read's ledger
+write fails the in-memory hold is kept and logged.
 
 ONE CALL IS NOT COUNTED. After an X post `desk_publish` asks `GET /2/users/me`
 for the handle so the permalink is readable. X does not price that call on the
@@ -120,15 +119,15 @@ def campaign_budget(campaign_id: str) -> dict:
     `SpendRefused` when the campaign is gone or the spend accounting cannot be
     read: an unreadable ledger must not read as "nothing spent"."""
     from mc import desk_engines
-    try:
-        b = desk_engines.budget_state(campaign_id)
-    except desk_engines.Refused as e:
-        raise SpendRefused(f'campaign {campaign_id} no longer exists, so its budget cannot be checked') from e
-    except RuntimeError as e:
-        raise SpendRefused(f'the spend records could not be read ({e}): nothing paid was sent') from e
-    reads = sum(float(r.get('cost') or 0) for r in _desk.list_reads()
-                if r.get('campaign_id') == campaign_id)
     with _lock:
+        try:
+            b = desk_engines.budget_state(campaign_id)
+        except desk_engines.Refused as e:
+            raise SpendRefused(f'campaign {campaign_id} no longer exists, so its budget cannot be checked') from e
+        except RuntimeError as e:
+            raise SpendRefused(f'the spend records could not be read ({e}): nothing paid was sent') from e
+        reads = sum(float(r.get('cost') or 0) for r in _desk.list_reads()
+                    if r.get('campaign_id') == campaign_id)
         reserved = sum(r.amount for r in _reservations.values() if r.campaign_id == campaign_id)
     remaining = max(b['amount'] - b['spent'] - reads - reserved, 0.0)
     return {'amount': b['amount'], 'spent': b['spent'], 'reads': round(reads, 6),

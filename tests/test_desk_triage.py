@@ -20,6 +20,8 @@ The properties worth guarding:
      best five" will always find five.
 """
 import sys
+from concurrent.futures import Future, ThreadPoolExecutor
+from threading import Event
 from pathlib import Path
 
 import pytest
@@ -203,8 +205,75 @@ def test_a_proposal_is_accepted_once(client):
     s = _sig(client)
     p = client.post('/api/desk/proposals', json={
         'signal_id': s['id'], 'voice': 'personal', 'why': 'w'}).get_json()
-    assert client.post(f"/api/desk/proposals/{p['id']}/accept", headers=HUMAN).status_code == 202
-    assert client.post(f"/api/desk/proposals/{p['id']}/accept", headers=HUMAN).status_code == 409
+    url = f"/api/desk/proposals/{p['id']}/accept"
+    first = client.post(url, headers=HUMAN)
+    second = client.post(url, headers=HUMAN)
+    assert first.status_code == second.status_code == 202
+    assert first.get_json() == second.get_json()
+    assert len(client.dispatch_calls) == 1
+
+
+def test_concurrent_accept_shares_dispatch_and_refuses_dismiss(client, monkeypatch):
+    from mc import desk_proposal_decisions
+
+    s = _sig(client)
+    p = desk.add_proposal(s['id'], 'personal', 'worth drafting')
+    url = f"/api/desk/proposals/{p['id']}"
+    dispatch_entered = Event()
+    duplicate_joined = Event()
+    release_dispatch = Event()
+    dispatches = []
+
+    class ObservedResult(Future):
+        def result(self, timeout=None):
+            duplicate_joined.set()
+            return super().result(timeout)
+
+    def dispatch(*args, **kwargs):
+        dispatches.append(desk.get_proposal(p['id']))
+        dispatch_entered.set()
+        assert release_dispatch.wait(5)
+        return kwargs.get('reuse_session_id') or 'test-session'
+
+    monkeypatch.setattr(desk_routes, 'dispatch_agent', dispatch)
+    monkeypatch.setattr(desk_proposal_decisions, 'Future', ObservedResult)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(client.application.test_client().post, url + '/accept', headers=HUMAN)
+        try:
+            assert dispatch_entered.wait(5)
+            second = pool.submit(client.application.test_client().post, url + '/accept', headers=HUMAN)
+            assert duplicate_joined.wait(5)
+            refused = client.post(url + '/dismiss')
+        finally:
+            release_dispatch.set()
+        a, b = first.result(), second.result()
+    assert len(dispatches) == 1
+    assert dispatches[0]['state'] == 'accepting'
+    assert dispatches[0]['draft_dispatch'] == a.get_json()['session_id']
+    assert a.status_code == b.status_code == 202
+    assert a.get_json() == b.get_json()
+    assert refused.status_code == 409
+    assert client.post(url + '/dismiss').status_code == 409
+    assert desk.get_proposal(p['id'])['state'] == 'accepted'
+
+
+def test_failed_proposal_dispatch_returns_to_proposed(client, monkeypatch):
+    s = _sig(client)
+    p = desk.add_proposal(s['id'], 'personal', 'worth drafting')
+    url = f"/api/desk/proposals/{p['id']}/accept"
+
+    def fail(*args, **kwargs):
+        raise ValueError('writer unavailable')
+
+    with monkeypatch.context() as patch:
+        patch.setattr(desk_routes, 'dispatch_agent', fail)
+        assert client.post(url, headers=HUMAN).status_code == 502
+        row = desk.get_proposal(p['id'])
+        assert row['state'] == 'proposed'
+        assert row['dispatch_error'] == 'writer unavailable'
+
+    assert client.post(url, headers=HUMAN).status_code == 202
+    assert len(client.dispatch_calls) == 1
 
 
 def test_dismissal_is_latched_on_the_signal(client):
