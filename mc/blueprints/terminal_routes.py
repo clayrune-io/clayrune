@@ -328,22 +328,15 @@ def terminal_launch():
     # MC-928: real PTY, opt-in via {"pty": true}. See launch_pty_session()
     # (this file) and mc/pty_backend.py — a wholly separate spawn path so the
     # default (pty omitted/false) below is untouched.
-    if data.get('pty'):
+    is_pty = bool(data.get('pty'))
+    if is_pty:
         session_id, err = launch_pty_session(project_id, command, cwd=cwd)
         if err:
             return jsonify({'error': err}), 400
-        mgr = get_manager(project_id)
-        with mgr.lock:
-            for sid in list(mgr.session_ids):
-                asess = agent_sessions.get(sid)
-                if asess and asess['status'] in ('running', 'idle'):
-                    cmd_label = command.replace('\n', ' ').replace('\r', '')[:60]
-                    asess['log_lines'].append(f'[terminal:{session_id}:{cmd_label}]')
-        return jsonify({'ok': True, 'session_id': session_id, 'is_pty': True})
-
-    session_id, err = launch_pipe_session(project_id, command, cwd=cwd)
-    if err:
-        return jsonify({'error': err}), 500
+    else:
+        session_id, err = launch_pipe_session(project_id, command, cwd=cwd)
+        if err:
+            return jsonify({'error': err}), 500
 
     # Notify any active agent SSE streams for this project (only this project's sessions)
     mgr = get_manager(project_id)
@@ -354,6 +347,8 @@ def terminal_launch():
                 cmd_label = command.replace('\n', ' ').replace('\r', '')[:60]
                 asess['log_lines'].append(f'[terminal:{session_id}:{cmd_label}]')
 
+    if is_pty:
+        return jsonify({'ok': True, 'session_id': session_id, 'is_pty': True})
     return jsonify({'ok': True, 'session_id': session_id})
 
 
