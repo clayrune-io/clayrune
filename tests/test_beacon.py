@@ -17,6 +17,22 @@ import beacon
 from beacon import aggregator, schema
 
 
+def test_stream_ignores_generation_timestamp(monkeypatch):
+    from mc.blueprints import beacon_routes
+
+    snapshots = iter([
+        {'generated_at': 'one', 'projects': []},
+        {'generated_at': 'two', 'projects': []},
+        {'generated_at': 'three', 'projects': [{'id': 'p1'}]},
+    ])
+    monkeypatch.setattr(beacon_routes.beacon, 'build_digest', lambda: next(snapshots))
+    monkeypatch.setattr(beacon_routes.time, 'sleep', lambda _seconds: None)
+    stream = iter(beacon_routes.beacon_stream().response)
+    assert json.loads(next(stream).removeprefix('data: '))['generated_at'] == 'one'
+    assert json.loads(next(stream).removeprefix('data: '))['generated_at'] == 'three'
+    stream.close()
+
+
 # ── fixtures ──────────────────────────────────────────────────────────────────
 
 OLD_TS = '2020-01-01T00:00:00Z'          # far enough past to be stale
