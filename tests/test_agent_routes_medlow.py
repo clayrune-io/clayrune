@@ -258,3 +258,11 @@ def test_provider_list_reads_one_quota_log_tail(tmp_path, monkeypatch):
         rows = routes.agent_providers().get_json()['providers']
     assert all('model' in row['quota_warnings'] for row in rows)
     assert reads == [path]
+
+
+def test_callback_fallback_keeps_marker_first_replies():
+    from mc.blueprints import agent_routes as routes
+
+    for reply in ('[file:sample.txt]', '[Docs](example) explain it', '> A quotation'):
+        session = {'log_lines': ['> Example: task', reply, '[exited with code 0]']}
+        assert routes._last_reply_text(session) == reply

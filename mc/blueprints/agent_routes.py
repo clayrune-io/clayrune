@@ -60,6 +60,7 @@ from mc import agent_shim_completion as _agent_shim_completion  # MC-1150 P4: cr
 from mc import mid_turn_send as _mid_turn_send  # MC-1086: steer / queue / interrupt routing
 from mc import completion_scribe as _completion_scribe  # R38: Scribe model call runs after the project lock is released
 from mc import triggered_turns as _triggered_turns  # seed-line label for non-human turns
+from mc import reply_line_kind as _reply_line_kind
 from mc import engine_selection
 from mc import claude_cli_min_version as _claude_cli_min_version  # Claude model -> minimum CLI guard
 from mc import agent_mail_continuation as _mail_continuation
@@ -9195,10 +9196,8 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
 def _last_reply_text(session):
     """The child's last real assistant text, for the spawner callback.
 
-    Deliberately the same exclusions _log_agent_completion uses for its
-    summary: skip MC status lines in [brackets] and the dispatcher's own
-    "> user: task" seed, or the callback would hand the spawner back the very
-    task it just sent (MC-935 hit exactly that on the agent_log summary).
+    Skip MC status and user seed lines while keeping links, block quotes,
+    and file/browser display markers in the reply.
 
     Reconstructs every trailing real-content line (not just the last one) so
     a delta-chunked Mode-A reply (Gemini/Qwen/Codex/...) is not truncated to
@@ -9214,7 +9213,10 @@ def _last_reply_text(session):
     collected = []
     for line in reversed(session.get('log_lines') or []):
         t = (line or '').strip()
-        if not t or t.startswith('[') or t.startswith('> '):
+        display_marker = t.startswith(('[file:', '[browser:', '[browser-attach:'))
+        if (not t or t.startswith('---') and line.startswith('\n---')
+                or re.match(r'^>\s+\S[^:\n]{0,40}:\s', t)
+                or (_reply_line_kind.is_status_line(t) and not display_marker)):
             if collected:
                 break
             continue
