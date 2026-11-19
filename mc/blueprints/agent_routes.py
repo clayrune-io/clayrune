@@ -107,6 +107,7 @@ from mc.pending_delivery_http import delivery_response
 from mc import workflows as _workflows  # leaf module (no Flask import); see _notify_workflow_step
 from mc import state as _mc_state  # readers write _mc_state._LAST_SYSTEM_STATUS verbatim
 from mc.atomic_json import read_text_with_retry, write_json_atomic
+from mc.agent_uncertain_launch import UncertainLaunchError
 from mc.core import _log, now_iso, time_ago, TimestampedLines
 from mc.state import (
     _backlog_sync_lock,
@@ -14703,7 +14704,9 @@ def agent_followup(project_id):
                 if isinstance(e, _agent_runtime.vendor_fence.VendorFenceError):
                     return jsonify({'ok': False, 'error': str(e), 'session_id': session_id}), 409
                 _log(f"[{session_provider}] follow-up failed for {session_id}: {e}")
-                return jsonify({'ok': False, 'delivered': False, 'error': str(e),
+                return jsonify({'ok': False,
+                                'delivered': None if isinstance(e, UncertainLaunchError) else False,
+                                'error': str(e),
                                 'session_id': session_id}), 502
             _log_agent_activity(project_id, f"Agent follow-up (provider={session_provider}): {message[:100]}")
             return jsonify({'ok': True, 'session_id': session_id})
@@ -15723,7 +15726,9 @@ def agent_interrupt(project_id, *, _internal=None):
                 if isinstance(e, _agent_runtime.vendor_fence.VendorFenceError):
                     return _ret({'ok': False, 'error': str(e), 'session_id': session_id}, 409)
                 _log(f"[{session_provider}] interrupt failed for {session_id}: {e}")
-                return _ret({'ok': False, 'delivered': False, 'error': str(e),
+                return _ret({'ok': False,
+                             'delivered': None if isinstance(e, UncertainLaunchError) else False,
+                             'error': str(e),
                              'session_id': session_id}, 502)
             _log_agent_activity(project_id, f"Agent interrupt (provider={session_provider}): {message[:80]}")
             return _ret({'ok': True, 'session_id': session_id})

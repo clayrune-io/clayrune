@@ -9,6 +9,7 @@
 - Provider rows share one quota log read, the conversation list shares one history read, and worktree code statistics use one Git reachability walk (R7, R16, R57). Clean worktrees are retried after a cleanup refusal, skipped merges log their reason, and failed removal preserves the branch (R60, R61). Plan cleanup skips unchanged histories and server logs record failures in dispatch, search, documents, usage, router stats, and worktree cache I/O.
 - R39 follow-up. A live native session refuses sends and retries until its first context build succeeds.
 - R1 follow-up. Provider settings are staged with private permissions. Startup loads valid provider rows even when a neighboring row is corrupt.
+- R49 follow-up. Follow-up and interrupt report unresolved launches as unknown and a missing Gemini binary as a refusal.
 
 ## [2026-11-18] - Workflow canvas: connection drags start at the exact centre of unconnected port dots
 
