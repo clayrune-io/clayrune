@@ -43,3 +43,21 @@ def test_coverage_reads_fresh_and_scheduled_seeds(monkeypatch):
     monkeypatch.setitem(routes.state.CONFIG, 'user_name', 'Example')
     for seed in ('> Example: open sample.py', '> [scheduled run]: open sample.py'):
         assert routes._coverage_last_user_message({'log_lines': [seed]}) == 'open sample.py'
+
+
+def test_auth_probe_timeout_clears_stale_success(monkeypatch):
+    from mc.blueprints import agent_routes as routes
+
+    def timeout(*args, **kwargs):
+        raise routes.subprocess.TimeoutExpired('fixture', 20)
+
+    monkeypatch.setattr(routes, '_claude_auth_state', {'ok': True})
+    monkeypatch.setattr(routes, '_merge_registry_path', lambda: None)
+    monkeypatch.setattr(routes, '_resolve_claude', lambda: 'fixture')
+    monkeypatch.setattr(routes, '_auth_probe_cwd', lambda: None)
+    monkeypatch.setattr(routes, '_prune_auth_probe_transcripts', lambda: None)
+    monkeypatch.setattr(routes.subprocess, 'run', timeout)
+    result = routes._run_claude_auth_probe()
+    assert result['ok'] is False
+    assert result['reason'] == 'unknown'
+    assert result['last_probe_at'] > 0

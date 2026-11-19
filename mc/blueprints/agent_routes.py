@@ -3554,11 +3554,14 @@ def _run_claude_auth_probe() -> dict:
             _mark_claude_auth_error(
                 'unknown', combined or f'claude probe exited {result.returncode}')
     except subprocess.TimeoutExpired:
+        _mark_claude_auth_error('unknown', 'Claude auth probe timed out')
         with _claude_auth_lock:
             _claude_auth_state['last_probe_at'] = _time.time()
     except FileNotFoundError:
         _mark_claude_auth_error('cli_not_found', 'claude CLI not on PATH')
-    except Exception:
+    except Exception as e:
+        _log(f"[claude-auth] probe failed: {e}")
+        _mark_claude_auth_error('unknown', 'Claude auth probe failed')
         with _claude_auth_lock:
             _claude_auth_state['last_probe_at'] = _time.time()
     # Runs on every path, including the failure ones — a CLI that errored may
