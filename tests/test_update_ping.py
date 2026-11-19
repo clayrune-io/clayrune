@@ -206,6 +206,21 @@ def client(tmp_path, monkeypatch):
     return app.test_client(), cfg_path, live
 
 
+@pytest.mark.parametrize(('route', 'data'), [
+    ('seen', None), ('choice', {'enabled': False}),
+])
+def test_update_disclosure_refuses_to_replace_a_corrupt_config(client, route, data):
+    c, path, live = client
+    path.write_bytes(b'{')
+    before = dict(live)
+
+    reply = c.post(f'/api/update-ping/{route}', json=data)
+
+    assert reply.status_code == 500
+    assert path.read_bytes() == b'{'
+    assert live == before
+
+
 def test_seen_sets_disclosed_only(client):
     c, path, live = client
     assert c.post('/api/update-ping/seen').status_code == 200
