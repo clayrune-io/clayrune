@@ -46,6 +46,7 @@ from typing import Callable, cast
 
 from mc import skill_stats_file as _stats_file  # ML8: unreadable is never "empty" (stdlib-only leaf)
 from mc import distiller_readback_scan as _readback_scan  # ML25: the read-floor's scoped, stat-cached lister (stdlib-only leaf)
+from mc import authority_paraphrase as _authority_paraphrase  # ML3: the authority guard's second, structural check (stdlib-only leaf)
 
 # ── Injected helpers (set by register()) ─────────────────────────────────────
 
@@ -1780,7 +1781,12 @@ def _authority_violation(body: str) -> str:
     authority, else ''. Checked against the FULL rendered artifact (frontmatter
     description + body), so a benign title can't smuggle a permissive body."""
     m = _AUTHORITY_RE.search(body or '')
-    return m.group(0) if m else ''
+    if m:
+        return m.group(0)
+    # ML3: the list above only knows its own wordings ("Do not wait for a
+    # go-ahead." passed it). The second check can add a refusal, never remove
+    # one, and is as deterministic as the list.
+    return _authority_paraphrase.paraphrase_violation(body or '')
 
 
 def authority_violation(body: str) -> str:

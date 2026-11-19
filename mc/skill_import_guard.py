@@ -227,6 +227,20 @@ def _line_at(text: str, lines: list[str], pos: int) -> tuple[int, str]:
     return line_no, line_text[:200]
 
 
+def _phrase_pos(text: str, phrase: str) -> int:
+    """Where the authority guard's matched wording sits in `text`. A phrase
+    list hit is a literal substring. The structural check reads hard-wrapped
+    lines as one sentence and drops emphasis marks, so its wording may only be
+    there with a line break or `**` between the words; failing that too, the
+    finding points at the top of the file and still quotes the wording."""
+    pos = text.find(phrase)
+    if pos >= 0:
+        return pos
+    words = [re.escape(w).replace("'", "['’]") for w in phrase.split()]
+    m = re.search(r'[\s*`_]+'.join(words), text, re.IGNORECASE) if words else None
+    return m.start() if m else 0
+
+
 def scan_text(filename: str, text: str) -> list[Finding]:
     """Scan one file's text content. Pure function — no filesystem access."""
     findings: list[Finding] = []
@@ -239,15 +253,18 @@ def scan_text(filename: str, text: str) -> list[Finding]:
             'instruction aimed at overriding the agent\'s own rules',
         ))
 
-    # Constitutional authority-expansion vocabulary, shared verbatim with the
-    # Distiller's outbound guard (distiller._authority_violation) rather than
-    # a second copy of the same phrase list.
-    am = _distiller._AUTHORITY_RE.search(text)
-    if am:
-        line_no, snippet = _line_at(text, lines, am.start())
+    # Constitutional authority-expansion check: the Distiller's outbound guard
+    # itself (distiller._authority_violation), not a second copy of it and not
+    # its phrase list alone. MC-1179 ML3: this used to search _AUTHORITY_RE,
+    # so when the guard gained its structural check the scanner kept passing
+    # "Do not wait for a go-ahead." in every file the install sink does not
+    # read (anything but SKILL.md's description and body).
+    phrase = _distiller._authority_violation(text)
+    if phrase:
+        line_no, snippet = _line_at(text, lines, _phrase_pos(text, phrase))
         findings.append(Finding(
             'prompt_injection', 'critical', filename, line_no, snippet,
-            f'matches authority-expansion phrase: {am.group(0)!r}',
+            f'matches authority-expansion phrase: {phrase!r}',
         ))
 
     for m in _DESTRUCTIVE_RE.finditer(text):
