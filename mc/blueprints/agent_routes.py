@@ -10749,6 +10749,7 @@ def _persist_runtime_start_failure(session, attempt=None):
 _RUNTIME_CALLBACKS = _delegation_settlement.runtime_callbacks({
     'on_process_exit': _runtime_log_completion,
     'on_init': _runtime_note_init,
+    'turn_lock': lambda project_id: get_manager(project_id).lock,
 })
 
 

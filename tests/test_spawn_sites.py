@@ -588,6 +588,97 @@ class TestGeminiRuntimeSmoke:
         assert session['status'] == 'running'
         assert session['log_lines'] == []
 
+    def test_exited_gemini_reader_is_detached_before_followup(self, tmp_path, monkeypatch):
+        from types import SimpleNamespace
+        from typing import Any
+
+        rt = ar.GeminiRuntime()
+        exits = []
+        old: Any = SimpleNamespace(pid=123, wait=lambda: 1, stdout=iter(()))
+        session = {'proc': old, 'status': 'running', 'process_alive': True, 'log_lines': []}
+        handle = ar.SessionHandle(
+            mc_session_id='s', provider='gemini', mode='A', project_id='p',
+            project_path=str(tmp_path), session_dict=session,
+            meta={'callbacks': {'on_process_exit': lambda *args: exits.append(args)}},
+        )
+
+        def poll():
+            rt._read_stream(old, handle)
+            return 1
+
+        def stop_before_spawn():
+            raise RuntimeError('stop before test spawn')
+
+        old.poll = poll
+        monkeypatch.setattr(ar.vendor_fence, 'check_launch', lambda *args: None)
+        monkeypatch.setattr(rt, 'resolve_binary', stop_before_spawn)
+        with pytest.raises(RuntimeError, match='stop before test spawn'):
+            rt.write_followup(handle, 'new turn')
+        assert exits == []
+        assert session['status'] == 'running'
+        assert session['process_alive']
+        assert session['log_lines'] == []
+
+    def test_superseded_gemini_keeps_buffered_prose(self, tmp_path):
+        from types import SimpleNamespace
+        from typing import Any
+
+        rt = ar.GeminiRuntime()
+        exits = []
+        session = {'status': 'running', 'log_lines': []}
+
+        def stream():
+            yield '{"type":"message","role":"assistant","content":"already received"}'
+            session['proc'] = replacement
+
+        replacement = object()
+        proc: Any = SimpleNamespace(wait=lambda: 1, stdout=stream())
+        session['proc'] = proc
+        handle = ar.SessionHandle(
+            mc_session_id='s', provider='gemini', mode='A', project_id='p',
+            project_path=str(tmp_path), session_dict=session,
+            meta={'callbacks': {'on_process_exit': lambda *args: exits.append(args)}},
+        )
+        rt._read_stream(proc, handle)
+        assert session['log_lines'] == ['already received']
+        assert session['status'] == 'running'
+        assert exits == []
+
+    def test_gemini_question_and_exit_share_turn_ownership(self, tmp_path, monkeypatch):
+        import json
+        from threading import RLock
+        from types import SimpleNamespace
+        from typing import Any
+
+        rt = ar.GeminiRuntime()
+        control = '```mc:question\n{"questions":[{"question":"Continue?"}]}\n```'
+        proc: Any = SimpleNamespace(wait=lambda: 0, stdout=iter((json.dumps({
+            'type': 'message', 'role': 'assistant', 'content': control,
+        }),)))
+        session = {'proc': proc, 'status': 'running', 'log_lines': []}
+        lock = RLock()
+        owns_lock = getattr(lock, '_is_owned')
+        observed = []
+        apply = rt.apply_mc_tool_blocks
+
+        def scan(*args):
+            observed.append(('question', owns_lock()))
+            return apply(*args)
+
+        handle = ar.SessionHandle(
+            mc_session_id='s', provider='gemini', mode='A', project_id='p',
+            project_path=str(tmp_path), session_dict=session,
+            meta={'callbacks': {
+                'turn_lock': lambda project_id: lock,
+                'on_process_exit': lambda *args: observed.append(('exit', owns_lock())),
+            }},
+        )
+        monkeypatch.setattr(rt, 'apply_mc_tool_blocks', scan)
+        rt._read_stream(proc, handle)
+        assert observed == [('question', True), ('exit', True)]
+        assert session['waiting_for_question']
+        assert session['status'] == 'idle'
+
     def test_gemini_capabilities(self):
         rt = ar.get_runtime('gemini')
         caps = rt.capabilities()

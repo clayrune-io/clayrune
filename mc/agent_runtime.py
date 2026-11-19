@@ -44,6 +44,7 @@ from mc.pending_delivery import complete_or_defer
 from mc.terminal_delivery import TerminalDeliveryGate
 from mc.delivery_attempt import DeliveryAttempt
 from mc import incognito_registry as _incognito_registry
+from mc import runtime_turn_ownership as _runtime_turn_ownership
 from mc import vendor_fence
 from mc import test_run_detection as _test_run_detection
 from mc.core import TimestampedLines, _log
@@ -4936,7 +4937,8 @@ class GeminiRuntime(AgentRuntime):
         # Empty-turn detection (mc/empty_turn.py) — same rule as _mode_a_reader.
         tool_calls = 0
         turn_error_seen = False
-        _empty_turn.begin_turn(session)
+        if session.get('proc') is proc:
+            _empty_turn.begin_turn(session)
         # The CURRENT contiguous text run (deltas since the last non-text
         # event). Written to `log_lines` as ONE element when the run ends,
         # never one element per delta. Every consumer of `log_lines` treats
@@ -5147,74 +5149,73 @@ class GeminiRuntime(AgentRuntime):
                 rc = proc.wait()
             except Exception:
                 rc = -1
-            # MC Tool Protocol: scan this turn's text for mc: blocks (e.g. an
-            # emulated AskUserQuestion) and apply them before deciding status.
-            # A question pauses the turn in 'idle' awaiting the user's reply.
-            mc_res = {'blocks_found': False, 'paused': False}
-            if session.get('proc') is proc:
-                try:
-                    _flush_run()
-                    turn_text = ''.join(turn_text_parts)
-                    if turn_text.strip():
-                        _turn_clock.note_reply(session)
-                    mc_res = self.apply_mc_tool_blocks(session, turn_text)
-                    if _mc_suppressing and not mc_res['blocks_found'] and turn_text.strip():
-                        session['log_lines'].append(turn_text.strip())
-                    if mc_res['paused']:
-                        session['log_lines'].append(
-                            '[Waiting for your answer — choose above to continue]')
-                except Exception as e:
-                    session.setdefault('log_lines', TimestampedLines()).append(
-                        f'[mc-tool scan error: {e}]')
-            if session.get('proc') is proc:
-                # `_interrupted` → the user killed this turn; the non-zero rc
-                # is the kill, not a crash. Leave the status interrupt() set.
-                if session.get('status') == 'running' and not session.get('_interrupted'):
-                    if mc_res['paused']:
-                        session['status'] = 'idle'
-                    else:
-                        session['status'] = 'completed' if rc == 0 else 'error'
-                        if rc == 0 and not turn_error_seen:
-                            # See _mode_a_reader: backlog d37d0183.
-                            _empty_turn.mark(session, _empty_turn.empty_reason(
-                                visible_text=strip_mc_tool_blocks(''.join(turn_text_parts)),
-                                tool_calls=tool_calls, paused=False,
-                                had_control_blocks=mc_res['blocks_found']),
-                                set_error=True)
-                    session['last_status_change_time'] = _time.time()
-                    if not mc_res['paused'] and rc != 0:
-                        session['log_lines'].append(f"[gemini exited with code {rc}]")
-                        try:
-                            # Include the dropped non-JSON stderr tail —
-                            # gemini's real error text lands there, not in
-                            # the JSON event stream.
-                            tail = '\n'.join(
-                                (session.get('_gemini_stderr_tail') or [])[-30:]
-                                + session['log_lines'][-30:])
-                            hint = self.explain_exit_error(rc, tail)
-                        except Exception:
-                            hint = None
-                        if hint:
-                            session['log_lines'].append(f"[hint] {hint}")
-                session['process_alive'] = False
-                exit_ev = AgentEvent(
-                    type=EventType.PROCESS_EXIT,
-                    provider='gemini',
-                    session_id=None,
-                    mc_session_id=handle.mc_session_id,
-                    timestamp=_now_iso(),
-                    payload={'rc': rc},
-                )
-                _cb('on_process_exit', exit_ev)
+            with _runtime_turn_ownership.finalizing(handle):
+                # The old turn still owns prose it buffered before the handoff.
+                _flush_run()
+                # MC Tool Protocol: scan this turn's text for mc: blocks (e.g. an
+                # emulated AskUserQuestion) and apply them before deciding status.
+                # A question pauses the turn in 'idle' awaiting the user's reply.
+                mc_res = {'blocks_found': False, 'paused': False}
+                if session.get('proc') is proc:
+                    try:
+                        turn_text = ''.join(turn_text_parts)
+                        if turn_text.strip():
+                            _turn_clock.note_reply(session)
+                        mc_res = self.apply_mc_tool_blocks(session, turn_text)
+                        if _mc_suppressing and not mc_res['blocks_found'] and turn_text.strip():
+                            session['log_lines'].append(turn_text.strip())
+                        if mc_res['paused']:
+                            session['log_lines'].append(
+                                '[Waiting for your answer — choose above to continue]')
+                    except Exception as e:
+                        session.setdefault('log_lines', TimestampedLines()).append(
+                            f'[mc-tool scan error: {e}]')
+                if session.get('proc') is proc:
+                    # `_interrupted` → the user killed this turn; the non-zero rc
+                    # is the kill, not a crash. Leave the status interrupt() set.
+                    if session.get('status') == 'running' and not session.get('_interrupted'):
+                        if mc_res['paused']:
+                            session['status'] = 'idle'
+                        else:
+                            session['status'] = 'completed' if rc == 0 else 'error'
+                            if rc == 0 and not turn_error_seen:
+                                # See _mode_a_reader: backlog d37d0183.
+                                _empty_turn.mark(session, _empty_turn.empty_reason(
+                                    visible_text=strip_mc_tool_blocks(''.join(turn_text_parts)),
+                                    tool_calls=tool_calls, paused=False,
+                                    had_control_blocks=mc_res['blocks_found']),
+                                    set_error=True)
+                        session['last_status_change_time'] = _time.time()
+                        if not mc_res['paused'] and rc != 0:
+                            session['log_lines'].append(f"[gemini exited with code {rc}]")
+                            try:
+                                # Include the dropped non-JSON stderr tail —
+                                # gemini's real error text lands there, not in
+                                # the JSON event stream.
+                                tail = '\n'.join(
+                                    (session.get('_gemini_stderr_tail') or [])[-30:]
+                                    + session['log_lines'][-30:])
+                                hint = self.explain_exit_error(rc, tail)
+                            except Exception:
+                                hint = None
+                            if hint:
+                                session['log_lines'].append(f"[hint] {hint}")
+                    session['process_alive'] = False
+                    exit_ev = AgentEvent(
+                        type=EventType.PROCESS_EXIT,
+                        provider='gemini',
+                        session_id=None,
+                        mc_session_id=handle.mc_session_id,
+                        timestamp=_now_iso(),
+                        payload={'rc': rc},
+                    )
+                    _cb('on_process_exit', exit_ev)
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
         vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
-        old_proc = session.get('proc')
-        if old_proc and old_proc.poll() is None:
-            session['proc'] = None
-            _kill_pid(old_proc.pid)
+        _runtime_turn_ownership.retire(handle, _kill_pid)
         session.pop('_interrupted', None)  # new turn — clear the prior kill flag
 
         bin_path = self.resolve_binary()
