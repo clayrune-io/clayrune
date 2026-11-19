@@ -11241,6 +11241,13 @@ def _resolve_runtime_model(runtime, p, model_override='', provider_name=''):
 
 
 @after_publication
+def _native_context_refusal(session_id):
+    return {
+        'ok': False, 'delivered': False, 'session_id': session_id,
+        'error': 'The initial agent context is unavailable. Start a new chat if dispatch failed.',
+    }
+
+
 def _dispatch_via_runtime(p, task, *, provider_name,
                           incognito=False, trigger_type='manual',
                           trigger_id='', reuse_session_id='',
@@ -11383,6 +11390,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             'status': 'running',
             'task': task,
             'log_lines': TimestampedLines([f"> {_triggered_turns.seed_label(user_label, trigger_type)}: {_seed_task}"]),
+            '_native_context_pending': True,
             'started_at': now_iso(),
             'session_id': session_id,
             'project_id': project_id,
@@ -11486,6 +11494,9 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             system_prompt = role_context.system_prompt
             begin_native_delivery(session)
         _native_followup_context.record_build(p, session, task, _prompt_fp)
+        with mgr.lock:
+            session['_system_prompt'] = system_prompt
+            session.pop('_native_context_pending')
     except Exception as e:
         _log(f"[runtime-dispatch] context build failed: {e}")
         with mgr.lock:
@@ -13898,6 +13909,8 @@ def agent_send(project_id):
         session = agent_sessions.get(session_id) if session_id else None
         if session and session.get('project_id') != project_id:
             session = None  # session belongs to a different project — ignore
+        if session and session.get('_native_context_pending'):
+            return jsonify(_native_context_refusal(session_id)), 409
         if not session:
             decision = 'fresh_or_revive'
         elif session.get('status') == 'running':
@@ -14597,6 +14610,8 @@ def agent_followup(project_id):
         existing = agent_sessions.get(session_id)
         if not existing or existing['project_id'] != project_id:
             return jsonify({'error': 'session not found'}), 404
+        if existing.get('_native_context_pending'):
+            return jsonify(_native_context_refusal(session_id)), 409
 
         _mail_continuation.guard_session(existing, p)
         _limit_attempt = existing.get('_limit_resume_attempt') if _limit_internal else None
@@ -15639,6 +15654,8 @@ def agent_interrupt(project_id, *, _internal=None):
         session = agent_sessions.get(session_id)
         if not session or session['project_id'] != project_id:
             return _ret({'error': 'session not found'}, 404)
+        if session.get('_native_context_pending'):
+            return _ret(_native_context_refusal(session_id), 409)
         if session['status'] not in ('running', 'idle', 'error'):
             return _ret({'error': 'agent not active'}, 400)
         if is_midturn:

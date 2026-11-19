@@ -475,6 +475,41 @@ def test_plain_runtime_error_reports_failed_delivery(app_env, monkeypatch, endpo
     assert 'simulated pipe failure' in body['error']
 
 
+@pytest.mark.parametrize('endpoint', ['followup', 'interrupt'])
+@pytest.mark.parametrize('incognito', [False, True])
+def test_retry_cannot_launch_after_a_failed_native_context_build(app_env, monkeypatch, endpoint, incognito):
+    from types import SimpleNamespace
+
+    ar = app_env['ar']
+    calls = []
+    runtime = SimpleNamespace(name='codex', dispatch=lambda **kwargs: calls.append('dispatch'),
+                              write_followup=lambda *args: calls.append('followup'))
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda _: runtime)
+    monkeypatch.setattr(ar, '_resolve_runtime_model', lambda *a: '')
+    monkeypatch.setattr(ar.get_manager('p1'), 'ensure_guardian', lambda: None)
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_persist_runtime_start_failure', lambda *a: None)
+    monkeypatch.setattr(ar, '_advance_delegation_turn', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_write_usage_breakdown_turn_start_checkpoint', lambda *a: None)
+    monkeypatch.setattr(ar, '_allowance_refusal', lambda *a, **k: None)
+    monkeypatch.setattr(ar._native_followup_context, 'message_for_turn', lambda p, s, m: m)
+    monkeypatch.setattr(ar, '_clock_wrap', lambda p, s, m, orig: m)
+    monkeypatch.setattr(ar, '_bridge_images_for_blind_model', lambda m, *a, **k: m)
+
+    def unreadable(*args, **kwargs):
+        raise OSError('test context is unreadable')
+
+    monkeypatch.setattr(ar, '_build_agent_context', unreadable)
+    with pytest.raises(OSError, match='test context is unreadable'):
+        ar._dispatch_via_runtime(app_env['project'], 'first task', provider_name='codex',
+                                 incognito=incognito)
+    sid, = app_env['sessions']
+    reply = app_env['client'].post(f'/api/project/p1/agent/{endpoint}',
+                                   json={'session_id': sid, 'message': 'retry'})
+    assert not calls
+    assert not reply.get_json()['ok']
+
+
 @pytest.mark.parametrize(('route', 'body'), [
     ('/api/project/p1/agent/dispatch', {'task': 12}),
     ('/api/project/p1/agent/dispatch', {'task': 'example', 'resume_conversation_id': []}),

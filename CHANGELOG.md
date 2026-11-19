@@ -7,6 +7,7 @@
 - Session scans take a snapshot, superseded Mode A readers skip resume recovery, and rollover lists only children with work still pending (R22, R27, R29, R41, R44). Claude resumes retain their recorded provider across older conversation IDs and restore the visible tail in one parse (R31, R42). Interim report fallbacks keep links and display markers (R34).
 - Malformed request fields return a bad-request response, Claude transcript lookups validate IDs, and native dispatch refuses failed context builds or pending-log writes before spawning (R15, R39, R40, R55). Failed native follow-ups and interrupts report failure, and Claude stop and respawn close stdin outside the project lock (R49, R53).
 - Provider rows share one quota log read, the conversation list shares one history read, and worktree code statistics use one Git reachability walk (R7, R16, R57). Clean worktrees are retried after a cleanup refusal, skipped merges log their reason, and failed removal preserves the branch (R60, R61). Plan cleanup skips unchanged histories and server logs record failures in dispatch, search, documents, usage, router stats, and worktree cache I/O.
+- R39 follow-up. A live native session refuses sends and retries until its first context build succeeds.
 
 ## [2026-11-18] - Workflow canvas: connection drags start at the exact centre of unconnected port dots
 
