@@ -148,12 +148,13 @@ def _read_cache(cache_path: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _write_cache(cache_path: Path, payload: Dict[str, Any]) -> None:
+def _write_cache(cache_path: Path, payload: Dict[str, Any], log=None) -> None:
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         write_json_atomic(cache_path, payload, indent=1)
-    except Exception:
-        pass  # best-effort: a missing cache only costs a re-scan
+    except Exception as exc:
+        if log:
+            log(f'[slash-commands] could not write inventory cache: {exc}')
 
 
 def load_inventory(binary: Optional[Path], cache_path: Path,
@@ -182,7 +183,7 @@ def load_inventory(binary: Optional[Path], cache_path: Path,
                     'extract_seconds': round(time.time() - t0, 2),
                     'source': 'extracted',
                 }
-                _write_cache(cache_path, payload)
+                _write_cache(cache_path, payload, log=log)
                 return payload
             if log:
                 log('[slash-commands] extraction found 0 commands — using fallback')
