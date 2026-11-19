@@ -11474,11 +11474,10 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # an error before the CLI emits thread.started). A real INIT
             # event overwrites it — see _mode_a_reader.
             session['provider_session_id'] = resume_id
+        _allocate_delegation_turn(session)
+        _log_agent_dispatch_pending(session, strict=bool((session.get('_notify_session') or '').strip()))
         agent_sessions[session_id] = session
         mgr.session_ids.add(session_id)
-
-    _allocate_delegation_turn(session)
-    _log_agent_dispatch_pending(session, strict=bool((session.get('_notify_session') or '').strip()))
 
     # Build system_prompt blob (MEMORY/AGENT_RULES). `incognito=True` is
     # passed THROUGH to _build_agent_context, not used to skip the call

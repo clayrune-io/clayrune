@@ -347,3 +347,26 @@ def test_explicit_runtime_context_does_not_mutate_project_seed(monkeypatch, tmp_
     assert captured['context']['provider'] == 'codex'
     assert project['provider'] == 'claude'
     assert captured['dispatch']['system_prompt'] == 'shared-memory'
+
+
+def test_native_dispatch_refusal_does_not_publish_a_running_session(monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    from types import SimpleNamespace
+    from threading import RLock
+
+    sessions = {}
+    manager = SimpleNamespace(lock=RLock(), session_ids=set(), ensure_guardian=lambda: None)
+    monkeypatch.setattr(ar, 'agent_sessions', sessions)
+    monkeypatch.setattr(ar, 'get_manager', lambda pid: manager)
+    monkeypatch.setattr(ar, '_allocate_delegation_turn', lambda session: 1)
+    monkeypatch.setattr(ar, '_resolve_runtime_model', lambda *a: '')
+
+    def fail(*a, **kwargs):
+        assert kwargs['strict']
+        raise OSError('fixture log write failure')
+
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', fail)
+    with pytest.raises(OSError, match='fixture log write failure'):
+        ar._dispatch_via_runtime({'id': 'fixture'}, 'test', provider_name='codex',
+                                 notify_session='parent')
+    assert sessions == {} and manager.session_ids == set()
