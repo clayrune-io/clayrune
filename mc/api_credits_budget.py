@@ -304,6 +304,14 @@ def _load_ledger(*, strict: bool = False) -> Dict[str, Any]:
     return led
 
 
+def _try_load_ledger() -> Optional[Dict[str, Any]]:
+    try:
+        return _load_ledger(strict=True)
+    except (OSError, ValueError) as exc:
+        _log(f'[api-credits] ledger is unreadable: {type(exc).__name__}', flush=True)
+        return None
+
+
 def _save_ledger(led: Dict[str, Any]) -> None:
     _data_dir.mkdir(parents=True, exist_ok=True)
     write_json_atomic(ledger_path(), led, indent=1)
@@ -350,7 +358,9 @@ def record(*, caller: str, model: str, usage: Dict[str, int], cost: Optional[flo
              'cost_usd': cost, 'estimated': bool(estimated)}
     notice = ''
     with _lock:
-        led = _load_ledger(strict=event_id is not None)
+        led = _load_ledger(strict=True) if event_id is not None else _try_load_ledger()
+        if led is None:
+            return
         if event_id is not None:
             receipts = led.setdefault('pending_receipts', [])
             if event_id in receipts:
@@ -419,7 +429,9 @@ def halt(reason: str, kind: str, settings: Optional[Dict[str, Any]] = None) -> N
     start, _ = cycle_bounds(_now(), s['reset_day'])
     notice = ''
     with _lock:
-        led = _load_ledger()
+        led = _try_load_ledger()
+        if led is None:
+            return
         led['halt'] = {'reason': reason, 'kind': kind, 'ts': _iso(_now()),
                        'cycle': start.isoformat()}
         led['last_error'] = reason
@@ -433,15 +445,17 @@ def halt(reason: str, kind: str, settings: Optional[Dict[str, Any]] = None) -> N
 
 def clear_halt() -> None:
     with _lock:
-        led = _load_ledger()
-        if led.pop('halt', None) is not None:
+        led = _try_load_ledger()
+        if led is not None and led.pop('halt', None) is not None:
             _save_ledger(led)
 
 
 def note_error(message: str) -> None:
     """Remember the last non-halting failure for the status card."""
     with _lock:
-        led = _load_ledger()
+        led = _try_load_ledger()
+        if led is None:
+            return
         led['last_error'] = message
         led['last_error_ts'] = _iso(_now())
         _save_ledger(led)
@@ -507,7 +521,8 @@ def status() -> Dict[str, Any]:
     from mc import api_credits_pending as pending
     with _lock:
         accounted = pending.flush()
-        led = _load_ledger()
+        ledger = _try_load_ledger()
+    led = ledger if ledger is not None else {'cycles': {}}
     cyc = led['cycles'].get(start.isoformat()) or _empty_cycle()
     spent = float(cyc.get('spent_usd', 0.0))
     stop = _stop_usd(s)
@@ -516,6 +531,8 @@ def status() -> Dict[str, Any]:
         state, reason = 'off', ''
     elif s['mode'] == 'measure':
         state, reason = 'measuring', 'estimated, not billed'
+    elif ledger is None:
+        state, reason = 'stopped', 'spend ledger could not be read'
     elif not accounted:
         state, reason = 'stopped', 'pending spend could not be recorded'
     elif h:
