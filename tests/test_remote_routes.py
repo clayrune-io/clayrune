@@ -110,6 +110,20 @@ class TestNameDevicePage:
         assert r.headers.get('Cache-Control') == 'no-store'
 
 
+def test_device_page_preserves_user_agent_as_script_data(client):
+    ua = 'Browser <variant> & __EMAIL__'
+
+    reply = client.get('/_mc/name-device', headers={
+        'User-Agent': ua, 'Cf-Access-Authenticated-User-Email': 'example@example.test',
+    })
+
+    line = next(line for line in reply.get_data(as_text=True).splitlines()
+                if line.startswith('const UA'))
+    serialized = line.split('=', 1)[1].strip().removesuffix(';')
+    assert '<' not in serialized and '&' not in serialized
+    assert json.loads(serialized) == ua
+
+
 class TestSessionLabelEndpoint:
     def test_untunneled_post_rejected_403(self, client):
         r = client.post('/api/_mc/session-label',

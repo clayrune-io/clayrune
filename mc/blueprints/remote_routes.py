@@ -24,6 +24,7 @@ daemon loop gains obs.heartbeat('session-label-enforcer').
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -32,6 +33,7 @@ from html import escape
 from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, redirect, request
+from jinja2.utils import htmlsafe_json_dumps
 
 from mc import obs, state
 from mc.human_only_gate import human_only
@@ -476,10 +478,9 @@ async function submit() {
 </body>
 </html>
 """
-    html = (html
-            .replace('__NONCE__', json.dumps(nonce))
-            .replace('__UA__',    json.dumps(ua))
-            .replace('__EMAIL__', json.dumps(email)))
+    script_data = {'NONCE': nonce, 'UA': ua, 'EMAIL': email}
+    html = re.sub(r'__(NONCE|UA|EMAIL)__',
+                  lambda match: htmlsafe_json_dumps(script_data[match[1]]), html)
     resp = Response(html, mimetype='text/html; charset=utf-8')
     resp.headers['Cache-Control'] = 'no-store'
     return resp
