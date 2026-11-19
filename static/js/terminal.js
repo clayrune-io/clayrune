@@ -130,7 +130,9 @@ function initTerminalXterm(sessionId, isPty) {
     },
     fontFamily: "'JetBrains Mono', monospace",
     fontSize: _isMobileDevice ? 9 : 12,
-    lineHeight: 1.4,
+    // 1.0, not 1.4: block glyphs (QR codes, progress bars) must tile with no
+    // gap between rows, or a terminal QR code cannot be scanned.
+    lineHeight: 1.0,
     cursorBlink: !!isPty,
     // Pipe sessions: input goes through the "Send input" box below (line-
     // buffered, matches the pipe's own stdin). Real-PTY sessions (MC-928)

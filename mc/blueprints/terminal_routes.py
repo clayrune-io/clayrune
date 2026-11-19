@@ -29,6 +29,7 @@ remote-login flow.
 """
 
 import json
+import codecs
 import os
 import subprocess
 import threading
@@ -90,6 +91,11 @@ def _read_terminal_stream(proc, session):
     """
     my_proc = proc
     fd = proc.stdout.fileno()
+    # Incremental: a multi-byte UTF-8 character (e.g. the half-block glyphs a
+    # terminal QR code is drawn with) can straddle two 4096-byte reads. Decoding
+    # each chunk on its own turns that character into replacement marks and
+    # shifts the rest of the row sideways.
+    decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
     try:
         while True:
             if session.get('proc') is not my_proc:
@@ -99,8 +105,13 @@ def _read_terminal_stream(proc, session):
             except OSError:
                 break
             if not chunk:
+                tail = decoder.decode(b'', final=True)
+                if tail:
+                    terminal_output_buffer.append_chunk(session, tail)
                 break
-            text = chunk.decode('utf-8', errors='replace')
+            text = decoder.decode(chunk)
+            if not text:
+                continue
             # Caps memory growth; counts what it cuts in session['dropped'].
             terminal_output_buffer.append_chunk(session, text)
     except Exception as e:
