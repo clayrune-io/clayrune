@@ -1877,8 +1877,8 @@ def _register_process(proc, name, proc_type, session_id, project_id, command_pre
         p = load_project(project_id)
         if p:
             project_name = p.get('name', project_id)
-    except Exception:
-        pass
+    except Exception as e:
+        _log(f"[process] project name lookup failed for {project_id}: {e}")
     _img, _ct = identity if identity is not None else _proc_identity(proc.pid)
     with process_tracker_lock:
         tracked_processes[proc.pid] = {

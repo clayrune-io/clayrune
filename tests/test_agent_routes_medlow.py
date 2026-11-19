@@ -189,3 +189,22 @@ def test_superseded_mode_a_reader_leaves_resume_recovery_to_owner(monkeypatch):
     }
     routes._read_agent_stream(proc, session)
     assert recoveries == []
+
+
+def test_process_registration_logs_project_lookup_failure(monkeypatch):
+    from types import SimpleNamespace
+    from mc.blueprints import agent_routes as routes
+
+    def unreadable(project_id):
+        raise OSError('fixture project read failed')
+
+    logs = []
+    processes = {}
+    monkeypatch.setattr(routes, 'load_project', unreadable)
+    monkeypatch.setattr(routes, '_log', logs.append)
+    monkeypatch.setattr(routes, 'tracked_processes', processes)
+    monkeypatch.setattr(routes, '_persist_pid_ledger', lambda: None)
+    routes._register_process(SimpleNamespace(pid=123), 'fixture', 'agent', 'session', 'sample',
+                             identity=('fixture', None))
+    assert processes[123]['project_name'] == 'sample'
+    assert any('fixture project read failed' in line for line in logs)
