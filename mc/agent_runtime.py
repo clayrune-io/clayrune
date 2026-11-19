@@ -4285,9 +4285,10 @@ class GeminiRuntime(AgentRuntime):
             # exhausted your daily quota on this model" was silently dropped:
             # explain_exit_error() had nothing to pattern-match against and
             # fell back to a generic "exited with code N" guess.
-            err = msg.get('error') or {}
-            err_text = err.get('message') or msg.get('message') or 'Gemini reported an error with no message'
-            _exhausted = _allowance_state.detect('gemini', msg)
+            err = msg.get('error')
+            detail = err.get('message') if isinstance(err, dict) else err
+            err_text = str(detail or msg.get('message') or 'Gemini reported an error with no message')
+            _exhausted = _allowance_state.detect('gemini', {**msg, 'error': {'message': err_text}})
             if _exhausted:
                 return AgentEvent(
                     type=EventType.ALLOWANCE_EXHAUSTED, provider='gemini',
@@ -4538,24 +4539,29 @@ class GeminiRuntime(AgentRuntime):
             raw = b''
             try:
                 raw = e.read()
-            except Exception:
-                pass
+            except Exception as exc:
+                _log(f'[gemini] failed to read quota error response: {exc}')
             try:
                 parsed = json.loads(raw.decode('utf-8', 'replace')) if raw else {}
             except Exception:
                 parsed = {}
             err = (parsed.get('error') or {}) if isinstance(parsed, dict) else {}
+            if not isinstance(err, dict):
+                err = {}
             status = err.get('status') or ''
-            message = err.get('message') or f'HTTP {e.code}'
+            message = str(err.get('message') or f'HTTP {e.code}')
             if e.code == 429 or status == 'RESOURCE_EXHAUSTED':
                 quota_id = quota_value = None
-                for d in (err.get('details') or []):
+                details = err.get('details')
+                for d in (details if isinstance(details, list) else ()):
                     if isinstance(d, dict) and str(d.get('@type', '')).endswith('QuotaFailure'):
-                        viol = (d.get('violations') or [{}])[0]
-                        quota_id = viol.get('quotaId')
-                        quota_value = viol.get('quotaValue')
+                        violations = d.get('violations')
+                        if isinstance(violations, list) and violations and isinstance(violations[0], dict):
+                            viol = violations[0]
+                            quota_id = viol.get('quotaId')
+                            quota_value = viol.get('quotaValue')
                         break
-                tier = 'free' if quota_id and 'freetier' in quota_id.lower() else 'unknown'
+                tier = 'free' if isinstance(quota_id, str) and 'freetier' in quota_id.lower() else 'unknown'
                 return {'reachable': True, 'ok': False, 'quota_status': 'exceeded', 'tier': tier,
                         'quota_id': quota_id, 'quota_value': quota_value,
                         'invalid_key': False, 'error_text': message}
@@ -5005,7 +5011,11 @@ class GeminiRuntime(AgentRuntime):
                     continue
 
                 _test_run_detection.observe(session, 'gemini', line, proc)
-                ev = self.parse_event(line, handle.mc_session_id)
+                try:
+                    ev = self.parse_event(line, handle.mc_session_id)
+                except Exception as exc:
+                    _log(f'[gemini] failed to parse stream event: {exc}')
+                    continue
                 if not (ev and ev.type == EventType.ASSISTANT_TEXT):
                     # Any other event ends the text run: write it out first
                     # so it lands before the tool/error/status line.

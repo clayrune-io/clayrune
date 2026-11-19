@@ -338,6 +338,41 @@ class TestGeminiProbeLiveQuota:
         assert result['invalid_key'] is True
         assert result['quota_status'] == 'unknown'
 
+    def test_quota_status_survives_malformed_violations(self, monkeypatch):
+        import io
+        import urllib.error
+
+        payload = {'error': {'details': [{
+            '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+            'violations': ['malformed'],
+        }]}}
+
+        def fail(*args, **kwargs):
+            raise urllib.error.HTTPError(
+                'https://example.invalid', 429, 'quota', {},
+                io.BytesIO(json.dumps(payload).encode('utf-8')),
+            )
+
+        monkeypatch.setattr(agent_runtime.urllib.request, 'urlopen', fail)
+        result = self.rt._probe_live_quota('fake-key')
+        assert result['quota_status'] == 'exceeded'
+        assert result['tier'] == 'unknown'
+
+    def test_string_error_does_not_end_the_reader(self):
+        from types import SimpleNamespace
+
+        proc = SimpleNamespace(wait=lambda: 0, stdout=iter((
+            '{"type":"result","status":"error","error":"failed"}',
+            '{"type":"message","role":"assistant","content":"later output"}',
+        )))
+        session = {'proc': proc, 'status': 'running', 'log_lines': []}
+        handle = agent_runtime.SessionHandle(
+            mc_session_id='s', provider='gemini', mode='A', project_path='.',
+            project_id='p', session_dict=session,
+        )
+        self.rt._read_stream(proc, handle)
+        assert session['log_lines'] == ['[gemini error] failed', 'later output']
+
     def test_network_failure_is_unreachable_not_invalid(self):
         """A DNS/timeout failure must not be reported as an invalid key — that
         would tell the user to redo something that was never the problem."""
