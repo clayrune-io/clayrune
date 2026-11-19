@@ -1792,7 +1792,10 @@ def poll(job_id: str, *, unattended: bool = False) -> dict | None:
         if ttl and age_h > ttl:
             return settle(lambda j: _fail(j, 'expired', f'the output was not downloaded within {ttl} h and the engine removed it', free=False))
         return {**seen, 'poll_error': {'kind': e.kind, 'message': str(e)}}
-    saved = _save_outputs(job, GenerationRequest(**{k: v for k, v in job['request'].items()}), blobs)
+    try:
+        saved = _save_outputs(job, GenerationRequest(**job['request']), blobs)
+    except (EngineError, OSError) as e:
+        return settle(lambda j: _fail(j, 'engine', f'rendered, but the output could not be saved: {_safe(e)}', free=False))
 
     def ready(j):
         j['status'] = 'ready'

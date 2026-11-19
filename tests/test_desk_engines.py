@@ -678,6 +678,28 @@ def test_veo_download_failure_is_retried_then_expires_after_48h(client, vendor, 
     assert j['status'] == 'failed' and j['failure']['kind'] == 'expired'
 
 
+def test_veo_output_save_failure_is_terminal_and_keeps_the_cost(client, vendor, monkeypatch):
+    _campaign(_own(10))
+    jid = _veo_submit(client, vendor)
+    original_ref = eng._read_store()['jobs'][jid]['engine_ref']
+    assert original_ref
+    vendor.on('GET', '/operations/op1', vendor.json(200, {'done': True, 'response': {'generateVideoResponse': {
+        'generatedSamples': [{'video': {'uri': 'https://generativelanguage.googleapis.com/dl'}}]}}}))
+    vendor.on('GET', 'googleapis.com/dl', (200, {'content-type': 'video/mp4'}, b'VEO'))
+
+    def cannot_save(*args):
+        raise OSError('disk full')
+
+    monkeypatch.setattr(eng, '_save_outputs', cannot_save)
+    path = f'/api/desk/engines/jobs/{jid}'
+    failed = client.get(path).get_json()['job']
+    assert failed['status'] == 'failed' and 'disk full' in failed['failure']['message']
+    assert failed['cost_usd'] == pytest.approx(3.2)
+    assert eng._read_store()['jobs'][jid]['engine_ref'] == original_ref
+    assert client.get(path).get_json()['job'] == failed
+    assert len(vendor.to('googleapis.com/dl', 'GET')) == 1
+
+
 def test_veo_references_and_first_frame_use_bytes_base64_not_inline_data(client, vendor, uploads):
     _campaign(_own(10))
     img = uploads / 'r.png'
