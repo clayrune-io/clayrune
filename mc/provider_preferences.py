@@ -191,14 +191,19 @@ def patch_preferences(record: Mapping[str, Any], patch: Any,
 def background_model(config: Mapping[str, Any], provider: str, role: str,
                      *, default: str = '') -> str:
     """Role pin > provider background preference > legacy pin > CR task policy."""
-    entry = (config.get('provider_defaults') or {}).get(provider) or {}
-    for field in (role, 'background_model'):
-        if field in entry:
-            value = entry[field]
-            if value.startswith('tier:'):
-                return agent_runtime.get_runtime(provider).latest_for(value[5:])
-            return value
-    if not isinstance(config.get('provider_defaults'), dict):
+    scoped = config.get('provider_defaults')
+    if isinstance(scoped, dict):
+        entry = scoped.get(provider)
+        if isinstance(entry, dict):
+            value = entry.get(role, entry.get('background_model'))
+            if isinstance(value, str):
+                if not value.startswith('tier:'):
+                    return value
+                try:
+                    return resolve_tracking_request(agent_runtime.get_runtime(provider), value)
+                except (KeyError, ValueError):
+                    return automatic_model(provider, default=default)
+    else:
         legacy_model = _legacy_background_model(config, provider, role, default=default)
         if legacy_model:
             return legacy_model
