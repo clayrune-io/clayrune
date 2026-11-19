@@ -2518,7 +2518,7 @@ class ClaudeRuntime(AgentRuntime):
         to build the path without existence-checking should use
         _build_transcript_path() instead.
         """
-        if not session_id:
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', session_id or ''):
             return None
         encodings = self._encoded_dir_candidates(project_path)
         if not encodings:
