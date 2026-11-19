@@ -59,7 +59,9 @@ try {
     await deskLoaded(page);
     await page.waitForFunction(() => window.DeskV1Engines);
     await page.evaluate(() => {
-      document.body.innerHTML = '<div id="scene-root"><div class="desk-v1-sb-scene" data-scene-id="s1">Scene one</div></div><div id="panel"></div>';
+      // The shell's 1s refresh countdown writes #refresh-timer; wiping the body
+      // without it throws a page error once the smoke outlives its first second.
+      document.body.innerHTML = '<span id="refresh-timer" hidden></span><div id="scene-root"><div class="desk-v1-sb-scene" data-scene-id="s1">Scene one</div></div><div id="panel"></div>';
       window.DeskV1Engines.mountVideoRender(document.getElementById('panel'), {
         owner: { kind: 'studio', id: 'smoke' }, projectId: 'p1', getStoryboard: () => ({ scenes: [{ id: 's1' }] }),
         sceneRoot: document.getElementById('scene-root'),
@@ -85,7 +87,7 @@ try {
     check(requests.every(r => r.path.endsWith('/models') || r.path.endsWith('/models/quote')), `${width}: browsing and quote never submit or call table estimates`);
     catalogueFailed = false;
     await page.evaluate(() => {
-      document.body.innerHTML = '<div id="image-panel"></div>';
+      document.body.innerHTML = '<span id="refresh-timer" hidden></span><div id="image-panel"></div>';
       window.DeskV1Engines.mountImageGenerate(document.getElementById('image-panel'), { projectId: 'p1' });
     });
     await page.waitForSelector('[data-eng-prompt]');
