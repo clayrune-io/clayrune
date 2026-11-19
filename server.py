@@ -1077,6 +1077,8 @@ _run_structured_condense = memory._run_structured_condense
 _dispatch_condense = memory._dispatch_condense
 
 from mc.runtime_lifecycle_service import RuntimeLifecycleService
+# Keep the bridge disabled until dispatch supplies real launch authorization
+# and a native source format for each supported provider.
 _runtime_lifecycle_service = RuntimeLifecycleService(
     db_path=(DATA_DIR.parent / 'conversation_lifecycle.sqlite3').resolve(),
     enabled=False,
