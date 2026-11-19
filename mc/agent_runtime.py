@@ -8342,11 +8342,8 @@ class CodexRuntime(AgentRuntime):
     # see model_supported() override below).
     _LEGACY_MODEL_IDS = frozenset({'gpt-5.4', 'gpt-5.4-mini'})
 
-    # Per-file mtime cache for model_choices(), keyed by path so switching
-    # (or monkeypatching, in tests) the cache path never serves another
-    # path's stale entry. Class-level: the catalog is process-global, not
-    # per-instance.
-    _model_cache: Dict[str, Tuple[float, List[Tuple[str, str]]]] = {}
+    # The model picker and launch validator share the CLI's cache by path.
+    _model_cache: dict[str, tuple[tuple[int, int, int], list]] = {}
     _model_cache_missing_logged: set = set()
 
     # codex has no gemini-style `-latest` / claude-style bare-alias handle —
@@ -8403,70 +8400,55 @@ class CodexRuntime(AgentRuntime):
             return display_name
         return '-'.join(parts[:2]) + ' ' + ' '.join(parts[2:])
 
-    def model_choices(self) -> List[Tuple[str, str]]:
-        """Live Codex model catalog, read from the CLI's own cache file so the
-        picker stops drifting behind hand-maintained MODEL_CHOICES. Falls
-        back to the static list on any missing/unreadable/malformed file."""
-        from mc.core import _log
+    def _read_model_cache(self) -> Optional[list]:
         path = self._model_cache_path()
-        try:
-            mtime = path.stat().st_mtime
-        except OSError as e:
-            # No Codex CLI (or never run) is a normal install state, and this
-            # runs on every picker render and cross-provider mismatch check —
-            # log once per path, not once per call.
-            if str(path) not in CodexRuntime._model_cache_missing_logged:
-                CodexRuntime._model_cache_missing_logged.add(str(path))
-                _log(f"[codex] models cache unavailable ({path}): {e}; using static catalog")
-            return list(self.MODEL_CHOICES)
         key = str(path)
-        cached = CodexRuntime._model_cache.get(key)
-        if cached is not None and cached[0] == mtime:
-            return list(cached[1])
         try:
+            st = path.stat()
+            identity = (st.st_mtime_ns, st.st_size, st.st_ino)
+            cached = self._model_cache.get(key)
+            if cached is not None and cached[0] == identity:
+                return cached[1]
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             entries = data.get('models') if isinstance(data, dict) else None
             if not isinstance(entries, list):
                 raise ValueError('models field missing or not a list')
-            listed = [m for m in entries
-                      if isinstance(m, dict) and m.get('visibility') == 'list'
-                      and m.get('slug')]
-            listed.sort(key=lambda m: m.get('priority', 0))
-            choices = [
-                (str(m['slug']), self._label_from_display_name(str(m.get('display_name') or m['slug'])))
-                for m in listed
-            ]
-            if not choices:
-                raise ValueError('no list-visibility models in cache')
-        except Exception as e:
-            _log(f"[codex] models cache read/parse failed ({path}): {e}")
-            return list(self.MODEL_CHOICES)
-        CodexRuntime._model_cache[key] = (mtime, choices)
-        return list(choices)
+        except FileNotFoundError as exc:
+            if key not in self._model_cache_missing_logged:
+                self._model_cache_missing_logged.add(key)
+                _log(f'[codex] models cache unavailable ({path}): {exc}')
+            return None
+        except Exception as exc:
+            _log(f'[codex] models cache read/parse failed ({path}): {exc}')
+            return None
+        self._model_cache[key] = (identity, entries)
+        return entries
+
+    def model_choices(self) -> List[Tuple[str, str]]:
+        """Return the CLI's live catalog, falling back to the static list."""
+        return self.discover_models() or list(self.MODEL_CHOICES)
 
     def discover_models(self) -> Optional[List[Tuple[str, str]]]:
         """Live cache only -- None on anything model_choices() would have
         fallen back from (missing/unreadable/malformed file), never the
         static MODEL_CHOICES guess. See AgentRuntime.discover_models()."""
-        path = self._model_cache_path()
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            entries = data.get('models') if isinstance(data, dict) else None
-            if not isinstance(entries, list):
-                return None
-            listed = [m for m in entries
-                      if isinstance(m, dict) and m.get('visibility') == 'list'
-                      and m.get('slug')]
-            listed.sort(key=lambda m: m.get('priority', 0))
-            choices = [
-                (str(m['slug']), self._label_from_display_name(str(m.get('display_name') or m['slug'])))
-                for m in listed
-            ]
-            return choices or None
-        except Exception:
+        entries = self._read_model_cache()
+        if entries is None:
             return None
+        listed = [m for m in entries
+                  if isinstance(m, dict) and m.get('visibility') == 'list'
+                  and m.get('slug')]
+        try:
+            listed.sort(key=lambda m: m.get('priority', 0))
+        except TypeError as exc:
+            _log(f'[codex] models cache contains incompatible priorities: {exc}')
+            return None
+        choices = [
+            (str(m['slug']), self._label_from_display_name(str(m.get('display_name') or m['slug'])))
+            for m in listed
+        ]
+        return choices or None
 
     _bin_cache: Optional[str] = None
     _npx_fallback: bool = False
@@ -9546,15 +9528,9 @@ class CodexRuntime(AgentRuntime):
         visibility -- hidden entries are still servable), None when the file
         is missing/unreadable/empty. That file is fetched per account by the
         CLI itself, so it is the one authority we do not second-guess."""
-        try:
-            with open(self._model_cache_path(), 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            entries = data.get('models') if isinstance(data, dict) else None
-            slugs = {str(m['slug']) for m in (entries or [])
-                     if isinstance(m, dict) and m.get('slug')}
-            return slugs or None
-        except Exception:
-            return None
+        slugs = {str(m['slug']) for m in self._read_model_cache() or []
+                 if isinstance(m, dict) and m.get('slug')}
+        return slugs or None
 
     def _gate_model(self, model: str) -> Tuple[str, str]:
         """(model to pass, warning) -- never hand `-m` a slug the installed

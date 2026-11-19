@@ -2666,27 +2666,42 @@ def test_codex_catalog_reads_the_live_cache_ordered_by_priority(monkeypatch, tmp
     ]
 
 
-def test_codex_catalog_caches_by_file_mtime(monkeypatch, tmp_path):
-    """A second call must not re-read the file while mtime is unchanged, and
-    must pick up an edit once mtime moves."""
+def test_codex_catalog_reloads_when_size_changes_at_the_same_mtime(monkeypatch, tmp_path):
     from conftest import stub_codex_models_cache
     path = stub_codex_models_cache(monkeypatch, tmp_path)
     codex = agent_runtime.get_runtime('codex')
     first = codex.model_choices()
     assert first[0] == ('gpt-6-astra', 'GPT-6 Astra')
 
-    # Same mtime: edit the bytes but don't touch the clock — must still see
-    # the cached (stale) result.
+    # The launch validator must see a shorter replacement even if the
+    # filesystem reports the same mtime.
     stat = path.stat()
     new_models = [{'slug': 'gpt-7-nova', 'display_name': 'GPT-7-Nova',
                    'visibility': 'list', 'priority': 1}]
     path.write_text(json.dumps({'models': new_models}), encoding='utf-8')
-    os.utime(path, (stat.st_atime, stat.st_mtime))
-    assert codex.model_choices() == first
-
-    # New mtime: must reparse.
-    os.utime(path, (stat.st_atime, stat.st_mtime + 5))
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     assert codex.model_choices() == [('gpt-7-nova', 'GPT-7 Nova')]
+
+
+def test_codex_catalog_and_launch_share_one_cache_parse(monkeypatch, tmp_path):
+    from conftest import stub_codex_models_cache
+
+    path = stub_codex_models_cache(monkeypatch, tmp_path)
+    reads = []
+    real_load = json.load
+
+    def load(stream):
+        if Path(stream.name) == path:
+            reads.append(stream.name)
+        return real_load(stream)
+
+    monkeypatch.setattr(json, 'load', load)
+    codex = CodexRuntime()
+    listed = codex.model_choices()
+    assert codex.discover_models() == listed
+    assert ('codex-auto-review', 'Codex Auto Review') not in listed
+    assert 'codex-auto-review' in codex._cache_slugs()
+    assert len(reads) == 1
 
 
 @pytest.mark.parametrize('missing,models', [
