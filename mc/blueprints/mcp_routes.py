@@ -243,7 +243,8 @@ def get_project_mcp_enabled(project_id):
     opted_in = isinstance(sel, list)
     try:
         catalog = sorted(_mcp_server_catalog(p).keys())
-    except Exception:
+    except Exception as exc:
+        _log(f'[mcp] could not list the project loadout catalogue: {type(exc).__name__}', flush=True)
         catalog = []
     return jsonify({
         'opted_in': opted_in,
@@ -284,7 +285,8 @@ def set_project_mcp_enabled(project_id):
 
     try:
         catalog = set(_mcp_server_catalog(existing).keys())
-    except Exception:
+    except Exception as exc:
+        _log(f'[mcp] could not validate the project loadout catalogue: {type(exc).__name__}', flush=True)
         catalog = set(enabled)
     chosen = [n for n in dict.fromkeys(enabled) if n in catalog]
     for keep in _MCP_ALWAYS_KEEP:

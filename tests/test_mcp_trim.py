@@ -197,6 +197,24 @@ def _stub_endpoint_catalog(srv, monkeypatch, names):
     monkeypatch.setattr(_bp_mcp, '_mcp_server_catalog', lambda project: dict(cat))
 
 
+def test_loadout_catalogue_failure_is_logged(srv, client, monkeypatch):
+    from mc.blueprints import mcp_routes
+
+    _make_project(srv, 'p')
+
+    def broken(project):
+        raise OSError('unreadable')
+
+    logs = []
+    monkeypatch.setattr(mcp_routes, '_mcp_server_catalog', broken)
+    monkeypatch.setattr(mcp_routes, '_log', lambda message, **kwargs: logs.append(message))
+
+    assert client.get('/api/project/p/mcp-enabled').get_json()['catalog'] == []
+    assert client.put('/api/project/p/mcp-enabled', json={'enabled': ['filesystem']}).status_code == 200
+    assert len(logs) == 2
+    assert all('catalogue: OSError' in message for message in logs)
+
+
 def test_get_mcp_enabled_default_off(srv, client, monkeypatch):
     _make_project(srv, 'p')
     _stub_endpoint_catalog(srv, monkeypatch, ['filesystem'])
