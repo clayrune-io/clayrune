@@ -35,3 +35,11 @@ def test_disabled_memory_push_does_not_load_project(monkeypatch):
     routes._observe_memory_push_input(session, 'Read', {'file_path': 'sample.py'})
     routes._observe_memory_push_result(session, 'Read', 'file error')
     assert loads == []
+
+
+def test_coverage_reads_fresh_and_scheduled_seeds(monkeypatch):
+    from mc.blueprints import agent_routes as routes
+
+    monkeypatch.setitem(routes.state.CONFIG, 'user_name', 'Example')
+    for seed in ('> Example: open sample.py', '> [scheduled run]: open sample.py'):
+        assert routes._coverage_last_user_message({'log_lines': [seed]}) == 'open sample.py'

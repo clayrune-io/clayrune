@@ -4670,14 +4670,16 @@ def _coverage_last_user_message(session) -> str:
 
     Read from `log_lines` rather than wired into the ~8 places that dispatch or
     send a message: one read site cannot drift out of sync with the others, and
-    every one of those sites already appends the message in this exact shape
-    (`\\n> {user_label}: {message}\\n`).
+    the visible seed includes a prompt label and may have a leading newline.
     """
     label = state.CONFIG.get('user_name') or 'User'
-    prefix = f"\n> {label}: "
+    prefixes = (f"> {label}: ", f"> {_triggered_turns.SCHEDULED_LABEL}: ")
     for line in reversed(session.get('log_lines') or []):
-        if isinstance(line, str) and line.startswith(prefix):
-            return line[len(prefix):].strip()
+        if isinstance(line, str):
+            line = line.lstrip('\n')
+            for prefix in prefixes:
+                if line.startswith(prefix):
+                    return line[len(prefix):].strip()
     return ''
 
 
