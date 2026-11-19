@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-18] - macOS script installer creates a working Applications launcher (MC-1179 P86)
+
+- `~/Applications/Clayrune.command` now opens the launcher from the actual install directory, including custom paths with spaces or apostrophes. Re-running the script installer regenerates launchers created by earlier installs.
+
 ## [2026-11-18] - Workflow canvas: connection drags start at the exact centre of unconnected port dots
 
 - Decorative stop stubs now ignore pointer events, so their dashed line and cap cannot intercept a connection drag. This fixes outcome, otherwise and approval-option ports on the canvas and in the inspector without changing their appearance.

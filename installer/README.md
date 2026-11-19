@@ -77,10 +77,16 @@ is handed an installation prompt.
 | `uninstall.ps1` | Safe Windows uninstaller. Default preserves Clayrune data and all provider state; `-PurgeData` removes Clayrune-owned data after a stronger confirmation. Installed as a Start Menu shortcut. |
 | `install-prompt.md` | The actual installer logic, written as a prescriptive prompt for Claude. The bootstrap fetches this and pipes it into `claude --dangerously-skip-permissions`. |
 | `start.sh` | Per-user launcher (Linux). Activates `.venv`, starts `python server.py`, opens the browser. The installer registers this as a `.desktop` file in `~/.local/share/applications/`. |
-| `start.command` | Per-user launcher (macOS). Same role as `start.sh`. The installer copies it to `~/Applications/Clayrune.command`. |
+| `start.command` | Per-user launcher (macOS). Same role as `start.sh`. The installer writes `~/Applications/Clayrune.command` to run it from the installed checkout. |
 | `uninstall-macos.command` | Safe macOS uninstaller for source installs and the signed `.app`. Default preserves Clayrune data and all provider state; `--purge-data` is separately confirmed. Installed at `~/Applications/Uninstall Clayrune.command` by the script installer and bundled into the signed app. |
 | `start.bat` | Per-user launcher (Windows). Same role. Run directly for a visible dev console (live logs). The `.lnk` shortcut does **not** target it directly — see `start-hidden.vbs`. |
 | `start-hidden.vbs` | Default Windows entry point. Runs `start.bat` with **no console window** (end users shouldn't see the server log console) and sets `CLAYRUNE_HIDDEN=1` so logs are written to `data\logs\clayrune.log` instead. The installer points the Desktop / Start Menu `.lnk` here (via `wscript.exe`). |
+
+## Verify the macOS script launcher
+
+1. On a clean Mac, run `sh installer/install.sh` from a checkout containing the fix. Confirm the dashboard opens, then stop that installer's server using the PID it printed.
+2. In Finder, double-click `~/Applications/Clayrune.command`. Confirm the dashboard opens at `http://localhost:5199`, then stop the launcher with Ctrl+C in its Terminal window.
+3. From the install directory (`~/Clayrune` by default), run `./installer/start.command`. Confirm the dashboard opens again.
 
 ## Why this design
 

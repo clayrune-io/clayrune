@@ -3,7 +3,7 @@
 # Activates the venv, starts the Flask server, opens the browser.
 #
 # .command files open in Terminal.app when double-clicked from Finder.
-# Invoked from ~/Applications/Clayrune.command (copy made by the installer).
+# Invoked directly or by the wrapper at ~/Applications/Clayrune.command.
 
 set -e
 

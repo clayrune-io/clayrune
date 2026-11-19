@@ -92,6 +92,9 @@ launcher verifies the exact installer script hash before executing it. Signed
 artifacts produced after the Microsoft profile is configured will also carry a
 timestamped trusted publisher identity; the current public download is unsigned.
 
+After a macOS script install, double-click `~/Applications/Clayrune.command`
+to relaunch. Re-run the script installer to regenerate a broken launcher.
+
 ### Uninstall
 
 New script-based installs add **Uninstall Clayrune** to the Windows Start Menu

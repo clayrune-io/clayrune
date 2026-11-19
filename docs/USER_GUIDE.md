@@ -2365,6 +2365,10 @@ A: Currently manual: open a terminal, `cd ~/Clayrune && git pull`, then
 restart the server via Settings → Server → Restart server. A one-click
 update button is on the roadmap. `[clayrune:goto view="settings"]`
 
+**Q: How do I relaunch Clayrune after a macOS script install?**
+A: In Finder, double-click `~/Applications/Clayrune.command`. If an earlier
+install created a broken launcher, re-run the script installer to regenerate it.
+
 **Q: How do I uninstall Clayrune?**
 A: On Windows, choose **Uninstall Clayrune** from the Start Menu. On macOS,
 open `~/Applications/Uninstall Clayrune.command`. The default preserves your

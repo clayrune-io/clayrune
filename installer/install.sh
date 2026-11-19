@@ -765,7 +765,13 @@ if [ "$OS" = "macos" ]; then
   fi
   chmod +x "$START_CMD" 2>/dev/null || true
   mkdir -p "$HOME/Applications"
-  cp "$START_CMD" "$HOME/Applications/Clayrune.command"
+  # Run the launcher in its checkout so it can resolve the install directory.
+  START_CMD="$(CDPATH= cd -- "$INSTALL_DIR/installer" && pwd)/start.command"
+  _sq=$(printf '%s' "$START_CMD" | sed "s/'/'\\\\''/g")
+  {
+    printf '#!/bin/sh\n'
+    printf "exec '%s'\n" "$_sq"
+  } > "$HOME/Applications/Clayrune.command"
   chmod +x "$HOME/Applications/Clayrune.command"
   printf "  Created %s\n" "$HOME/Applications/Clayrune.command"
   if [ -f "$UNINSTALL_CMD" ]; then
