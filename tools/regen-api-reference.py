@@ -4,10 +4,9 @@ the source.
 
 This tool never writes the curated reference. It does two things:
 
-1. Lists every route declared in server.py and in mc/blueprints/*.py (any
-   "<name>.route(...)" decorator; a Blueprint's own url_prefix is joined).
-   It reads the source with ast and never imports server, because importing
-   server starts background threads.
+1. Lists routes decorated in server.py and throughout mc/, including Flask's
+   HTTP method shortcuts. A Blueprint's own url_prefix is joined. The scan
+   reads source with ast because importing server starts background threads.
 2. Flags drift: routes that exist in code but not in the curated reference,
    and routes referenced in the doc but no longer present in code.
 
@@ -33,10 +32,9 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SERVER_PY = ROOT / 'server.py'
 DOC = ROOT / 'data' / 'agent_reference' / 'CLAYRUNE_API.md'
 
-BLUEPRINT_DIR = ROOT / 'mc' / 'blueprints'
+ROUTE_DECORATORS = frozenset({'route', 'get', 'post', 'put', 'patch', 'delete'})
 
 # Routes intentionally NOT in the curated reference — UI-only, CF/remote
 # internals, push notifications, walkthrough, internal callbacks. Keep this
@@ -84,7 +82,7 @@ def _shape(path: str) -> str:
 
 
 def _source_files() -> list[Path]:
-    return [SERVER_PY] + sorted(BLUEPRINT_DIR.glob('*.py'))
+    return [ROOT / 'server.py'] + sorted((ROOT / 'mc').rglob('*.py'))
 
 
 def _string_constants(tree: ast.AST) -> dict[str, str]:
@@ -167,7 +165,7 @@ def scan_routes_detailed(files: list[Path] | None = None):
                 continue
             for dec in node.decorator_list:
                 if not (isinstance(dec, ast.Call) and isinstance(dec.func, ast.Attribute)
-                        and dec.func.attr == 'route' and dec.args):
+                        and dec.func.attr in ROUTE_DECORATORS and dec.args):
                     continue
                 value = _resolve(dec.args[0], consts)
                 if value is None:
@@ -175,12 +173,14 @@ def scan_routes_detailed(files: list[Path] | None = None):
                     continue
                 owner = dec.func.value
                 prefix = prefixes.get(owner.id, '') if isinstance(owner, ast.Name) else ''
-                routes.append((_norm(prefix + value), _methods(dec)))
+                decorator = dec.func.attr
+                methods = _methods(dec) if decorator == 'route' else [decorator.upper()]
+                routes.append((_norm(prefix + value), methods))
     return routes, unresolved, unapplied
 
 
 def scan_routes(files: list[Path] | None = None) -> list[tuple[str, list[str]]]:
-    """Return [(normalized_path, methods)] for server.py and mc/blueprints/."""
+    """Return [(normalized_path, methods)] for server.py and mc/."""
     return scan_routes_detailed(files)[0]
 
 
@@ -259,7 +259,7 @@ def main() -> int:
             tag = '  ' if _excluded(p) else '* '
             print(f'{tag}{",".join(methods):20s} {p}')
     else:
-        print(f'routes in server.py + mc/blueprints/: {len(code)} ({len(code_paths_documentable)} documentable paths, {len(code_paths_all) - len(code_paths_documentable)} excluded paths)')
+        print(f'routes in server.py + mc/: {len(code)} ({len(code_paths_documentable)} documentable paths, {len(code_paths_all) - len(code_paths_documentable)} excluded paths)')
         print(f'CLAYRUNE_API.md mentions: {len(documented)} paths')
         if unresolved:
             print(f'Not resolved to a path ({len(unresolved)}): ' + ', '.join(unresolved))
