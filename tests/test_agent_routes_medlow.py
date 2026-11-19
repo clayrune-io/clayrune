@@ -92,3 +92,27 @@ def test_handoff_ignores_finished_children_but_keeps_pending_background_work(mon
     monkeypatch.setattr(routes._bg_tasks, 'held_tasks', lambda s: s['session_id'] == 'idle-background')
     children = routes._in_flight_children('sample', 'parent')
     assert [child['session_id'] for child in children] == ['running', 'idle-background']
+
+
+def test_guardian_compares_only_fresh_samples_from_same_process(monkeypatch):
+    import psutil
+    from types import SimpleNamespace
+    from mc.blueprints import agent_routes as routes
+
+    totals = {1: 100, 2: 3}
+
+    def process(pid):
+        return SimpleNamespace(
+            cpu_times=lambda: SimpleNamespace(user=totals[pid], system=0),
+            children=lambda **kwargs: [],
+        )
+
+    monkeypatch.setattr(psutil, 'Process', process)
+    first, second = SimpleNamespace(pid=1), SimpleNamespace(pid=2)
+    session = {}
+    assert not routes._proc_is_cpu_idle(session, first, 0)
+    assert not routes._proc_is_cpu_idle(session, second, 10)
+    assert routes._proc_is_cpu_idle(session, second, 20)
+    assert not routes._proc_is_cpu_idle(session, second, 100)
+    totals[2] = 1
+    assert not routes._proc_is_cpu_idle(session, second, 110)

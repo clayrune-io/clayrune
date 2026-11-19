@@ -18678,12 +18678,15 @@ def _proc_is_cpu_idle(session, proc, now):
                 pass
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return True  # process is gone — let the dead-process check handle it
+    prev_proc = session.get('_guardian_prev_cpu_proc')
     prev_total = session.get('_guardian_prev_cpu_total')
     prev_time = session.get('_guardian_prev_cpu_time', now)
+    session['_guardian_prev_cpu_proc'] = proc
     session['_guardian_prev_cpu_total'] = cur_total
     session['_guardian_prev_cpu_time'] = now
-    if prev_total is None:
-        return False  # first sample — wait for next tick before declaring idle
+    if (prev_proc is not proc or prev_total is None or cur_total < prev_total
+            or now - prev_time > 3 * GUARDIAN_CHECK_INTERVAL):
+        return False  # wait for two comparable samples before declaring idle
     delta_cpu = cur_total - prev_total
     delta_wall = max(0.001, now - prev_time)
     # If the process burned less than 0.5s of CPU per ~10s of wall time, call it idle
