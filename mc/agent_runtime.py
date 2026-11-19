@@ -10457,6 +10457,7 @@ class OpenCodeRuntime(AgentRuntime):
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
+            session['proc'] = None
             _kill_pid(old_proc.pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
@@ -10820,6 +10821,7 @@ class GooseRuntime(AgentRuntime):
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
+            session['proc'] = None
             _kill_pid(old_proc.pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
@@ -11121,6 +11123,7 @@ class AiderRuntime(AgentRuntime):
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
+            session['proc'] = None
             _kill_pid(old_proc.pid)
         # Re-state --model: aider is respawned per turn and the flag is not
         # sticky, so without this the chat drops to aider's default model.
@@ -11466,6 +11469,7 @@ class KiroRuntime(AgentRuntime):
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
+            session['proc'] = None
             _kill_pid(old_proc.pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)

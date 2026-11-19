@@ -2286,6 +2286,34 @@ def test_capabilities_name_matches_runtime_name(provider_name):
     )
 
 
+@pytest.mark.parametrize('provider', ['opencode', 'goose', 'aider', 'kiro'])
+def test_replaced_mode_a_turn_loses_ownership_before_kill(provider, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    rt = agent_runtime.get_runtime(provider)
+    old = SimpleNamespace(pid=123, poll=lambda: None, wait=lambda: 1, stdout=iter(()))
+    session = {'proc': old, 'status': 'running', 'log_lines': []}
+    exits = []
+    handle = agent_runtime.SessionHandle(
+        mc_session_id='s', provider=provider, mode='A', project_id='p',
+        project_path=str(tmp_path), session_dict=session,
+        meta={'callbacks': {'on_process_exit': lambda *args: exits.append(args)}},
+    )
+    monkeypatch.setattr(agent_runtime.vendor_fence, 'check_launch', lambda *args: None)
+
+    def finish_old_reader(pid):
+        assert pid == old.pid
+        agent_runtime._mode_a_reader(old, handle, rt)
+        raise RuntimeError('stop before test spawn')
+
+    monkeypatch.setattr(agent_runtime, '_kill_pid', finish_old_reader)
+    with pytest.raises(RuntimeError, match='stop before test spawn'):
+        rt.write_followup(handle, 'new turn')
+    assert exits == []
+    assert session['status'] == 'running'
+    assert session['log_lines'] == []
+
+
 @pytest.mark.parametrize('provider_name', [
     'gemini', 'codex', 'opencode', 'goose', 'aider', 'kiro',
 ])
