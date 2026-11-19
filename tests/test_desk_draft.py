@@ -180,6 +180,16 @@ def test_brief_demands_a_teaching_block_and_forbids_publishing(store):
     assert 'PENDING' in b
 
 
+def test_draft_and_rework_briefs_use_generic_reviewer_copy(store):
+    signal = _signal(store)
+    item = {'id': 'draft-1', 'project_id': 'p', 'voice': 'personal', 'body': 'Current draft'}
+    note = 'Start with the result in my own words.'
+    brief = desk_brief.build_rework_brief(signal, item=item, note=note)
+    assert "THE REVIEWER'S NOTE" in brief
+    assert 'The reviewer reads it while deciding' in brief
+    assert note in brief
+
+
 def test_brief_permits_saying_nothing(store):
     """A period with nothing worth saying produces nothing — a requirement."""
     b = desk_brief.build_brief(_signal(store), voice='personal')

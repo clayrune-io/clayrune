@@ -2,22 +2,16 @@
 
 Spec: `docs/THE_DESK_SPEC.md`. Scan: `docs/research/SOCIAL_WORKSPACE_FIELD_SCAN.md`.
 
-WHO WRITES, AND WHY THIS MODULE IS NOT A PERSONA. The Desk is staffed from the
-existing roster and does not add a marketing agent — the standing position of
-2026-08-29 declined one and its reasoning holds. **Posy**
-(`social-media-strategist`) writes and holds the platform judgement. What the
-Desk adds is *the office she works in*: the state she reads, the constraints she
-writes under, and the surface Ron manages her from. This module is the office's
-briefing desk, nothing more. It assembles; it does not judge and it does not
-generate.
+The project picks its Desk agent from the existing roster. This module assembles
+the project evidence and publishing constraints for that agent's brief.
 
 WHAT GOES IN A BRIEF, and each earns its place from something measured:
 
-  * THE SIGNAL, with its ref. A draft must link to what it came from so Ron can
+  * THE SIGNAL, with its ref. A draft must link to what it came from so the reviewer can
     check the claim before releasing it. Untraceable claims are the fastest way
     to lose trust in the whole system.
   * THE VOICE, as verbatim rewrites rather than adjectives. `desk.voice_brief`
-    hands over the edits Ron actually made, because a summary of a voice is
+    hands over the reviewer's edits, because a summary of a voice is
     where its specificity goes to die.
   * WHAT WE HAVE ALREADY SAID that is close to this. Without it an autonomous
     writer re-announces the same feature every month, in front of the exact
@@ -54,7 +48,7 @@ from mc.desk_local_url import local_url
 # record), because a thesis often deserves both rooms — written twice, once per
 # voice, never cross-posted.
 #
-# This was a hardcoded {'ron': 'x', 'clayrune': 'linkedin'} dict. It is now read
+# The platform was once hardcoded per voice. It is now read
 # off the voice record so a user-created voice picks its own platform.
 
 # PLATFORM RULES ARE USER DATA — see mc/desk.py's "platform rules" section.
@@ -113,7 +107,7 @@ def destination_for(voice: str) -> str:
 def build_triage_brief(signals: list[dict], *, voices: list[str],
                        campaign: dict | None = None,
                        max_picks: int = 5) -> str:
-    """Ask Posy WHICH signals are worth a post, and in which voice.
+    """Ask the project's Desk agent which signals are worth a post, and in which voice.
 
     This is the judgement `score_signal` was standing in for. A keyword regex
     cannot tell a shipped feature from a chore that happens to say "shipped", and
@@ -296,7 +290,7 @@ def build_brief(signal: dict, *, voice: str | None = None,
         '',
         '`teaching` is REQUIRED and is not a summary of the post. In two or three '
         'sentences: why this angle, why this platform, why now, and what it is '
-        'competing against in the reader\'s feed. Ron reads it while deciding, '
+        'competing against in the reader\'s feed. The reviewer reads it while deciding, '
         'so it has to teach at the moment of judgement.',
         '',
         '`media` is a list of real file paths, or omit it if you have no '
@@ -315,12 +309,11 @@ def build_brief(signal: dict, *, voice: str | None = None,
 def build_rework_brief(signal: dict, *, item: dict, note: str,
                        campaign: dict | None = None,
                        project_name: str | None = None) -> str:
-    """The brief for redrafting a pushed-back post — closes the loop Ron asked
-    for: a push-back puts the writer straight back to work, instead of sitting
-    on the queue until a human notices the row and retypes the handoff by hand.
+    """The brief for redrafting a pushed-back post. The writer receives the
+    review note automatically, so the reviewer can resume from the same draft.
 
     Built on top of `build_brief` for the SAME signal the rejected draft came
-    from, with the rejected body and Ron's note spliced in ahead of the normal
+    from, with the rejected body and the reviewer's note ahead of the normal
     delivery instructions, and a REPLACEMENT delivery block appended after —
     the one from `build_brief` still applies except for the extra
     `reworked_from` field, which is how the queue links the new draft back to
@@ -344,7 +337,7 @@ def build_rework_brief(signal: dict, *, item: dict, note: str,
         '── THE DRAFT THAT WAS PUSHED BACK ──',
         item.get('body') or '(empty)',
         '',
-        '── THE NOTE, IN RON\'S OWN WORDS (do not paraphrase this away) ──',
+        '── THE REVIEWER\'S NOTE, IN THEIR OWN WORDS ──',
         note,
         '',
         'Write a new draft that actually fixes what the note says is wrong — '
