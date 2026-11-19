@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-18] - API reference checker finds Flask route shortcuts and routes throughout `mc/`
+
+- The check-only scan now includes Flask's `get`, `post`, `put`, `patch` and `delete` decorators and discovers routes in `mc/` modules outside `mc/blueprints/` (backlog a4518a34).
+
 ## [2026-11-18] - macOS script installer creates a working Applications launcher (MC-1179 P86)
 
 - `~/Applications/Clayrune.command` now opens the launcher from the actual install directory, including custom paths with spaces or apostrophes. Re-running the script installer regenerates launchers created by earlier installs.
