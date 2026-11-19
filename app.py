@@ -184,12 +184,15 @@ def _check_npm():
 
 
 def _refresh_path():
-    """Refresh PATH from the Windows registry so newly-installed tools are found."""
+    """Append newly installed Windows tools without overriding the launcher's PATH."""
     if sys.platform != 'win32':
         return
     try:
+        import ntpath
         import winreg
-        paths = []
+        current = os.environ.get('PATH', '')
+        paths = current.split(';') if current else []
+        seen = {ntpath.normcase(path) for path in paths}
         for root, subkey in [
             (winreg.HKEY_LOCAL_MACHINE, r'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'),
             (winreg.HKEY_CURRENT_USER, r'Environment'),
@@ -197,13 +200,21 @@ def _refresh_path():
             try:
                 with winreg.OpenKey(root, subkey) as key:
                     val, _ = winreg.QueryValueEx(key, 'Path')
-                    paths.extend(val.split(';'))
-            except OSError:
-                pass
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                print(f'[Clayrune] Could not read registry PATH ({subkey}): {exc}', flush=True)
+                continue
+            for entry in val.split(';'):
+                path = ntpath.expandvars(entry)
+                normalized = ntpath.normcase(path)
+                if path and normalized not in seen:
+                    paths.append(path)
+                    seen.add(normalized)
         if paths:
-            os.environ['PATH'] = ';'.join(p for p in paths if p)
-    except Exception:
-        pass
+            os.environ['PATH'] = ';'.join(paths)
+    except Exception as exc:
+        print(f'[Clayrune] Could not refresh PATH: {exc}', flush=True)
 
 
 def _augment_unix_path():

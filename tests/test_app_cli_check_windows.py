@@ -12,6 +12,9 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+import sys
+from contextlib import nullcontext
+from types import SimpleNamespace
 
 import pytest
 
@@ -79,3 +82,27 @@ def test_a_tool_that_is_not_installed_still_reads_as_missing(win, monkeypatch):
     monkeypatch.setattr(shutil, 'which', lambda name, *a, **k: None)
     assert app_mod._check_npm() is False
     assert app_mod._check_claude_cli() is False
+
+
+def test_refresh_path_keeps_existing_precedence_and_expands_registry(monkeypatch):
+    import app as desktop_app
+
+    fake_registry = SimpleNamespace(
+        HKEY_LOCAL_MACHINE='system',
+        HKEY_CURRENT_USER='user',
+        OpenKey=lambda root, subkey: nullcontext(root),
+        QueryValueEx=lambda root, name: ({
+            'system': r'%MC_TEST_PROGRAMS%\Node;C:\Windows',
+            'user': r'C:\Agent\venv;C:\UserTools',
+        }[root], 2),
+    )
+    monkeypatch.setitem(sys.modules, 'winreg', fake_registry)
+    monkeypatch.setattr(desktop_app.sys, 'platform', 'win32')
+    monkeypatch.setenv('MC_TEST_PROGRAMS', r'C:\Program Files')
+    monkeypatch.setenv('PATH', r'C:\Agent\venv;C:\Windows')
+
+    desktop_app._refresh_path()
+
+    assert desktop_app.os.environ['PATH'].split(';') == [
+        r'C:\Agent\venv', r'C:\Windows', r'C:\Program Files\Node', r'C:\UserTools',
+    ]
