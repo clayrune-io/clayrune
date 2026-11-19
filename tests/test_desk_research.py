@@ -173,6 +173,14 @@ def test_runner_refuses_failures(root, monkeypatch, failure):
         assert proc.killed
 
 
+def test_missing_project_folder_uses_the_runner_error_contract(root, monkeypatch):
+    monkeypatch.setattr(research, 'capability', lambda *a: {'toolless': False, 'label': 'read-only'})
+    monkeypatch.setattr(research.subprocess, 'Popen', pytest.fail)
+    with pytest.raises(ValueError, match='Project folder is unavailable'):
+        research.run('claude', prompt='task', system_prompt='', model='', effort='', stdin_text='{}',
+                     project={'project_path': str(root / 'moved')})
+
+
 def test_research_kill_switch_is_allowlisted():
     from mc.blueprints.settings_routes import _CONFIG_EDITABLE_KEYS
     assert research.CONFIG_KEY in _CONFIG_EDITABLE_KEYS

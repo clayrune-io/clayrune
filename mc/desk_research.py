@@ -159,7 +159,10 @@ def run(provider: str, *, prompt: str, system_prompt: str, model: str, effort: s
                 data['reply'] = notice + '\n\n' + data['reply']
             return disclose(json.dumps(data, ensure_ascii=False))
         return disclose(notice + '\n\n' + raw)
-    root = Path(project['project_path']).resolve(strict=True) if project and project.get('project_path') else None
+    try:
+        root = Path(project['project_path']).resolve(strict=True) if project and project.get('project_path') else None
+    except OSError as e:
+        raise ValueError('Project folder is unavailable. Check the project path and try again.') from e
     runtime = cast(agent_runtime.ClaudeRuntime, agent_runtime.get_runtime('claude'))
     instruction = (system_prompt + '\n\n' + prompt + DATA_RULE +
                    f'\nCapabilities: {caps["label"]}. Project folder: {root or "none"}.')
