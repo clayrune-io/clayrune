@@ -60,6 +60,7 @@ import base64
 import json
 import os
 import uuid
+from time import monotonic
 
 from flask import Blueprint, jsonify, request
 
@@ -141,11 +142,20 @@ class _PageConn:
         return False
 
     def call(self, method, params=None):
+        conn = self._ws
+        if conn is None:
+            raise PickError('cdp_error', 'page connection is closed', 502)
         i = next(self._ids)
+        deadline = monotonic() + self._timeout
         try:
-            self._ws.send(json.dumps({'id': i, 'method': method, 'params': params or {}}))
+            conn.settimeout(self._timeout)
+            conn.send(json.dumps({'id': i, 'method': method, 'params': params or {}}))
             while True:
-                r = json.loads(self._ws.recv())
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise PickError('cdp_timeout', f'{method} timed out', 504)
+                conn.settimeout(remaining)
+                r = json.loads(conn.recv())
                 if r.get('id') != i:
                     continue    # an unrelated event; keep reading
                 if r.get('error'):

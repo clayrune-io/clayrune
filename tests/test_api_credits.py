@@ -119,6 +119,18 @@ def test_plan_not_eligible_and_no_tokens_leak(tmp_path):
     assert 'SECRET' not in json.dumps(plan.detect(creds(tmp_path, 'max', 'default_claude_max_5x')))
 
 
+def test_unreadable_plan_metadata_is_logged_without_contents(tmp_path, capsys):
+    from mc import api_credits_plan
+
+    path = tmp_path / 'plan.json'
+    path.write_text('unparseable private data', encoding='utf-8')
+
+    assert api_credits_plan.detect(path)['status'] == 'unknown'
+    logs = capsys.readouterr().out
+    assert 'plan metadata could not be read: JSONDecodeError' in logs
+    assert 'unparseable private data' not in logs
+
+
 def test_plan_missing_or_broken_file_is_unknown(tmp_path):
     assert plan.detect(tmp_path / 'nope.json')['status'] == 'unknown'
     bad = tmp_path / 'bad.json'
@@ -509,6 +521,24 @@ def test_measure_mode_records_estimate_after_subscription_call():
     turn_on(mode='off')
     offload.note_subscription_call(user_text='x', output_text='y', model='haiku')
     assert budget.status()['cycle']['estimated_calls'] == 1
+
+
+def test_vault_lock_probe_failure_logs_only_the_exception_type(monkeypatch):
+    from mc import api_credits_offload, secrets_store
+
+    def failed_probe():
+        raise OSError('private error detail')
+
+    logs = []
+    api_credits_offload.forget_key()
+    monkeypatch.setattr(secrets_store, 'is_locked', failed_probe)
+    monkeypatch.setattr(secrets_store, 'get_secret_value', lambda *a, **kw: 'test-only-key')
+    monkeypatch.setattr(api_credits_offload, '_log', lambda message, **kw: logs.append(message))
+    try:
+        assert api_credits_offload._read_key('test-only') == ('test-only-key', '')
+        assert logs == ['[api-credits] vault lock check failed: OSError']
+    finally:
+        api_credits_offload.forget_key()
 
 
 def test_key_test_outcomes():

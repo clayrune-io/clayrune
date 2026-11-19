@@ -383,7 +383,7 @@ def _plan_team_member(m, project_id):
         return None, _error_text(eng_err)
 
     raw_name = str(m.get('agent_name') or '').strip()
-    agent_name = _chars.clean_agent_name(raw_name)
+    agent_name = _chars.clean_agent_name(raw_name) if m.get('agent_name') is not None else None
     if raw_name and not agent_name:
         return None, 'the "goes by" name is unusable: one to three words'
 

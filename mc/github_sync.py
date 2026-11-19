@@ -23,7 +23,7 @@ import subprocess
 import threading
 import uuid
 
-from mc.core import record_backlog_status_change
+from mc.core import _log, record_backlog_status_change
 
 # ── Injected helpers (set by register()) ─────────────────────────────────────
 
@@ -163,7 +163,7 @@ def _merge_field(item, field, gh_val, base, project_id, num):
 
     Returns True if the local value changed.
 
-      gh unchanged vs base                  → keep local (may be pushed)
+      gh unchanged vs base                  → keep local (only status can be pushed)
       gh changed, local untouched vs base   → take gh
       gh changed, local also changed        → conflict: keep local, log
     """
@@ -319,8 +319,6 @@ def _pull_issues(project: dict, repo: str) -> tuple[int, int, int]:
             num = item.get('github_issue_number')
             if num is None or num in seen_nums:
                 continue
-            if item.get('github_synced_at') == _now_iso():
-                continue  # just created/linked this cycle
             item['github_deleted'] = True
             item['github_issue_number'] = None
             item.pop('last_synced_state', None)
@@ -430,8 +428,9 @@ def _push_items(project: dict, repo: str) -> int:
                 # single save is what structurally prevents the runaway.
                 try:
                     _save_project(project_id, project)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log(f"[github-sync] {project_id}: could not save link to issue #{new_num}: {exc}",
+                         flush=True)
 
                 priority = item.get('priority', 'normal')
                 if priority != 'normal':

@@ -197,6 +197,24 @@ def _stub_endpoint_catalog(srv, monkeypatch, names):
     monkeypatch.setattr(_bp_mcp, '_mcp_server_catalog', lambda project: dict(cat))
 
 
+def test_loadout_catalogue_failure_is_logged(srv, client, monkeypatch):
+    from mc.blueprints import mcp_routes
+
+    _make_project(srv, 'p')
+
+    def broken(project):
+        raise OSError('unreadable')
+
+    logs = []
+    monkeypatch.setattr(mcp_routes, '_mcp_server_catalog', broken)
+    monkeypatch.setattr(mcp_routes, '_log', lambda message, **kwargs: logs.append(message))
+
+    assert client.get('/api/project/p/mcp-enabled').get_json()['catalog'] == []
+    assert client.put('/api/project/p/mcp-enabled', json={'enabled': ['filesystem']}).status_code == 200
+    assert len(logs) == 2
+    assert all('catalogue: OSError' in message for message in logs)
+
+
 def test_get_mcp_enabled_default_off(srv, client, monkeypatch):
     _make_project(srv, 'p')
     _stub_endpoint_catalog(srv, monkeypatch, ['filesystem'])
@@ -238,6 +256,25 @@ def test_put_mcp_enabled_rejects_non_list(srv, client, monkeypatch):
     _make_project(srv, 'p')
     _stub_endpoint_catalog(srv, monkeypatch, ['filesystem'])
     assert client.put('/api/project/p/mcp-enabled', json={'enabled': 'filesystem'}).status_code == 400
+
+
+def test_put_mcp_enabled_rejects_corrupt_project(srv, client):
+    path = srv.DATA_DIR / 'broken.json'
+    path.write_bytes(b'{')
+
+    reply = client.put('/api/project/broken/mcp-enabled', json={'enabled': []})
+
+    assert reply.status_code == 404
+    assert path.read_bytes() == b'{'
+
+
+def test_put_mcp_enabled_rejects_non_object_without_clearing_loadout(srv, client):
+    _make_project(srv, 'p', enabled_mcp_servers=['filesystem'])
+
+    reply = client.put('/api/project/p/mcp-enabled', json=[])
+
+    assert reply.status_code == 400
+    assert client.get('/api/project/p/mcp-enabled').get_json()['enabled'] == ['filesystem']
 
 
 def test_put_mcp_enabled_unknown_project_404(srv, client):

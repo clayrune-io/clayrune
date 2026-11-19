@@ -60,8 +60,8 @@ def _read_key(name: str) -> Tuple[Optional[str], str]:
     try:
         if vault.is_locked():
             return None, 'vault is locked'
-    except Exception:
-        pass
+    except Exception as exc:
+        _log(f'[api-credits] vault lock check failed: {type(exc).__name__}', flush=True)
     with _key_lock:
         hit = _key_cache.get(name)
         if hit and time.monotonic() - hit[0] < _KEY_TTL_S:

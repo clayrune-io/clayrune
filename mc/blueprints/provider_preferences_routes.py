@@ -25,8 +25,10 @@ def _project(project_id):
         return None
     if not re.fullmatch(r'[A-Za-z0-9_-]+', project_id):
         raise ValueError('Invalid project id')
+    from mc.blueprints.project_routes import EXCLUDED_SIDECAR_SUFFIXES
+
     path = DATA_DIR / (project_id + '.json')
-    if not path.is_file():
+    if path.name.endswith(EXCLUDED_SIDECAR_SUFFIXES) or not path.is_file():
         raise FileNotFoundError('Project not found')
     return json.loads(path.read_text(encoding='utf-8'))
 

@@ -139,6 +139,22 @@ class TestConflicts:
         assert 'You are the code-reviewer.' in (client.global_dir / 'code-reviewer.md').read_text(encoding='utf-8')
 
 
+@pytest.mark.parametrize('explicit_clear', [False, True])
+def test_team_overwrite_distinguishes_omitted_name_from_clear(client, explicit_clear):
+    path = client.global_dir / 'code-reviewer.md'
+    path.write_text(EXISTING.replace('model:', 'agent_name: Reviewer\nmodel:'), encoding='utf-8')
+    member = _member('code-reviewer', scope='global')
+    member.pop('agent_name')
+    if explicit_clear:
+        member['agent_name'] = ''
+
+    reply = client.post('/api/characters/team', json=_team(
+        [member], overwrite=['global:code-reviewer']))
+
+    assert reply.status_code == 201
+    assert ('agent_name: Reviewer' in path.read_text(encoding='utf-8')) is not explicit_clear
+
+
 class TestRollback:
     def test_a_write_failing_midway_keeps_nothing(self, client, monkeypatch):
         from mc import characters as ch

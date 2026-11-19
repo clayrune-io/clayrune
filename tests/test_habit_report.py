@@ -146,11 +146,57 @@ def test_unattended_session_logs_but_would_not_mint(env):
     assert row['origin'] == 'unattended' and row['would_mint'] is False
 
 
+@pytest.mark.parametrize('source', ['live', 'explicit', 'pseudo_project'])
+def test_incognito_message_does_not_reach_habit_logs(env, monkeypatch, source):
+    hr, mem, tmp_path = env
+    session = {**_session(), 'incognito': True, 'project_id': 'p1'}
+    if source == 'live':
+        monkeypatch.setitem(mem.state.agent_sessions, 'sid-1', session)
+    project_id = '_incognito' if source == 'pseudo_project' else 'p1'
+    logs = []
+    monkeypatch.setattr(hr, '_log', lambda message: logs.append(message))
+
+    assert hr.observe_user_message(project_id, 'sid-1', REAL_HABIT,
+                                   session=session if source == 'explicit' else None) is None
+    assert _rows(tmp_path, project_id) == []
+    assert not logs
+
+
 def test_agent_caller_message_is_skipped(env):
     hr, _, tmp = env
     assert hr.observe_user_message('p1', 'sid-1', REAL_HABIT, session=_session(),
                                    human=False) is None
     assert _rows(tmp) == []
+
+
+@pytest.mark.parametrize('log_row', [
+    None,
+    {'session_id': 'old-id', 'claude_session_ids': ['followup-id'], 'incognito': True},
+])
+def test_habit_observer_requires_a_known_public_session(env, monkeypatch, log_row):
+    from mc.blueprints import agent_routes
+
+    hr, _, tmp = env
+    monkeypatch.setattr(agent_routes, '_load_agent_log',
+                        lambda pid: [log_row] if log_row else [])
+    logs = []
+    monkeypatch.setattr(hr, '_log', logs.append)
+
+    assert hr.observe_user_message('p1', 'followup-id', REAL_HABIT) is None
+    assert _rows(tmp) == []
+    assert logs == []
+
+
+def test_habit_observer_accepts_a_known_public_log_alias(env, monkeypatch):
+    from mc.blueprints import agent_routes
+
+    hr, _, tmp = env
+    row = {'session_id': 'old-id', 'claude_session_ids': ['followup-id'],
+           'trigger_type': 'manual'}
+    monkeypatch.setattr(agent_routes, '_load_agent_log', lambda pid: [row])
+
+    assert hr.observe_user_message('p1', 'followup-id', REAL_HABIT)
+    assert len(_rows(tmp)) == 1
 
 
 def test_flag_off_disables_observer(env, monkeypatch):
@@ -165,6 +211,29 @@ def test_non_cue_message_logs_nothing(env):
     assert hr.observe_user_message('p1', 'sid-1', 'fix the bug in agent_routes.py',
                                    session=_session()) is None
     assert _rows(tmp) == []
+
+
+def test_habit_deduplication_holds_one_lock_through_prune_and_insert(env, monkeypatch):
+    from threading import Lock
+
+    hr, _, _ = env
+    lock = Lock()
+    checked = []
+
+    class Recent(dict):
+        def items(self):
+            checked.append(lock.locked())
+            return super().items()
+
+        def __setitem__(self, key, stamp):
+            checked.append(lock.locked())
+            super().__setitem__(key, stamp)
+
+    monkeypatch.setattr(hr, '_recent', Recent())
+    monkeypatch.setattr(hr, '_recent_lock', lock, raising=False)
+    assert hr._seen_recently(('session', 'message')) is False
+    assert hr._seen_recently(('session', 'message')) is True
+    assert checked == [True, True, True]
 
 
 def test_same_message_via_send_and_followup_logs_once(env):

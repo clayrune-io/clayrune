@@ -34,6 +34,8 @@ import threading
 import time
 from pathlib import Path
 
+from mc.media_path_safety import has_network_or_device_prefix
+
 MEDIA_DIR: Path = None  # type: ignore[assignment]
 
 # One writer lock per project — the two stream readers (Mode A / Mode B) can be
@@ -137,7 +139,7 @@ def record_from_text(project_id: str, session_id: str, text: str,
             # reaches the gallery. Diagrams have no file, so they skip the check.
             if item.get('kind') in ('image', 'video'):
                 try:
-                    if not Path(item['path']).is_file():
+                    if has_network_or_device_prefix(item['path']) or not Path(item['path']).is_file():
                         continue
                 except OSError:
                     continue        # unreadable / malformed path → not media
@@ -209,7 +211,9 @@ def list_media(project_id: str) -> list[dict]:
         # the index entry is written, so this is routine, not corruption.
         if row.get('kind') in ('image', 'video'):
             try:
-                row = dict(row, missing=not Path(row.get('path', '')).is_file())
+                media_path = row.get('path', '')
+                missing = has_network_or_device_prefix(media_path) or not Path(media_path).is_file()
+                row = dict(row, missing=missing)
             except OSError:
                 row = dict(row, missing=True)
         out.append(row)

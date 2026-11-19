@@ -24,13 +24,16 @@ daemon loop gains obs.heartbeat('session-label-enforcer').
 
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
 import time as _time
+from html import escape
 from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, redirect, request
+from jinja2.utils import htmlsafe_json_dumps
 
 from mc import obs, state
 from mc.human_only_gate import human_only
@@ -475,10 +478,9 @@ async function submit() {
 </body>
 </html>
 """
-    html = (html
-            .replace('__NONCE__', json.dumps(nonce))
-            .replace('__UA__',    json.dumps(ua))
-            .replace('__EMAIL__', json.dumps(email)))
+    script_data = {'NONCE': nonce, 'UA': ua, 'EMAIL': email}
+    html = re.sub(r'__(NONCE|UA|EMAIL)__',
+                  lambda match: htmlsafe_json_dumps(script_data[match[1]]), html)
     resp = Response(html, mimetype='text/html; charset=utf-8')
     resp.headers['Cache-Control'] = 'no-store'
     return resp
@@ -698,10 +700,13 @@ def _send_enrollment_lost_alert(down_seconds: float) -> None:
         if not mailer.exists():
             _log(f"[remote-access] enrollment-lost alert: mailer not found at {mailer}", flush=True)
             return
-        subprocess.run(
+        result = subprocess.run(
             [sys.executable, str(mailer), "--subject", subject, "--body", body],
             capture_output=True, timeout=60, check=False,
         )
+        if result.returncode:
+            _log(f"[remote-access] enrollment-lost mailer exited {result.returncode}", flush=True)
+            return
         _log(f"[remote-access] enrollment lost ~{mins}m — alert sent", flush=True)
     except Exception as e:
         _log(f"[remote-access] enrollment-lost alert could not be sent: {e}", flush=True)
@@ -975,7 +980,7 @@ def remote_devices():
     if p is None:
         return jsonify({'error': 'no_provider', 'devices': []}), 501
     try:
-        from mc_remote import enrollment as _mc_enrollment, device_keys, config
+        from mc_remote import enrollment as _mc_enrollment, config
     except Exception as e:
         return jsonify({'error': 'import_error', 'message': str(e), 'devices': []}), 500
 
@@ -983,15 +988,9 @@ def remote_devices():
     if err is not None:
         return jsonify(err), 503
 
-    try:
-        identity = device_keys.load_identity()
-    except Exception:
-        identity = None
-    this_device_id = identity.device_id if identity else None
-
     body = _mc_enrollment.list_devices_via_cp(
         cp_base_url=config.control_plane_base_url(),
-        this_device_id=this_device_id,
+        this_device_id=auth_kwargs.get('device_id'),
         **auth_kwargs,
     )
     return jsonify(body)
@@ -1191,7 +1190,7 @@ def mc_callback():
     except Exception as e:
         return _mc_callback_html(
             "Remote access isn't fully wired yet",
-            f"<p>Couldn't reach the enrollment module ({e}).</p>",
+            f"<p>Couldn't reach the enrollment module ({escape(str(e))}).</p>",
             status=500, accent="#ef4444",
         )
 
@@ -1199,7 +1198,7 @@ def mc_callback():
 
     if result.get("ok"):
         identity = result["identity"]
-        host = identity.hostname
+        host = escape(str(identity.hostname))
         return _mc_callback_html(
             "You're connected!",
             f"<p>Your Clayrune dashboard is reachable from anywhere at:</p>"
@@ -1208,9 +1207,11 @@ def mc_callback():
             f"https://{host}</p>",
         )
 
+    message = escape(str(result.get('message', 'Unknown error')))
+    error = escape(str(result.get('error', 'unknown')))
     return _mc_callback_html(
         "Sign-in didn't complete",
-        f"<p>{result.get('message', 'Unknown error')}</p>"
-        f"<p style='font-size:12px;color:#9ca3af'>Code: {result.get('error', 'unknown')}</p>",
+        f"<p>{message}</p>"
+        f"<p style='font-size:12px;color:#9ca3af'>Code: {error}</p>",
         status=400, accent="#ef4444",
     )

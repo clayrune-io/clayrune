@@ -215,6 +215,37 @@ def test_no_describer_available_says_so_to_agent_and_log(registry, img):
     assert len(log) == 1 and 'could NOT be described' in log[0]
 
 
+def test_cached_image_description_needs_no_health_probe(registry, img, monkeypatch):
+    vendor = FakeRT('claude', sighted=True)
+    registry['claude'] = vendor
+    expected = vb._describe_one(str(img), 'claude')
+    assert expected[0]
+
+    def unexpected_probe():
+        pytest.fail('cached description triggered a health probe')
+
+    monkeypatch.setattr(vendor, 'health_check', unexpected_probe)
+
+    assert vb._describe_one(str(img), 'claude') == expected
+    assert len(vendor.calls) == 1
+
+
+def test_vision_exception_does_not_overwrite_shared_runtime_error(registry, img, monkeypatch):
+    vendor = FakeRT('claude', sighted=True)
+    vendor.last_error = 'previous runtime error'
+    registry['claude'] = vendor
+
+    def fail(*args, **kwargs):
+        raise OSError('current vision request failed')
+
+    monkeypatch.setattr(vendor, 'describe_image', fail)
+
+    desc, _, why = vb._describe_one(str(img), 'claude')
+
+    assert desc is None and 'current vision request failed' in why
+    assert vendor.last_error == 'previous runtime error'
+
+
 def test_every_describer_erroring_is_reported_with_reasons(registry, img):
     _blind_qwen(registry)
     registry['claude'] = FakeRT('claude', sighted=True, fail='timeout after 120s')

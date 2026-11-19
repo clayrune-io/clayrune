@@ -243,6 +243,17 @@ def test_timeout_reports_unknown_outcome_and_does_not_retry():
     assert len(server.action_requests()) == 1
 
 
+def test_disconnected_server_reports_unknown_outcome_and_does_not_retry():
+    from http.client import RemoteDisconnected
+
+    server = FakeServer()
+    server.routes[('POST', '/agent/send')] = RemoteDisconnected()
+    is_err, body = _call(_host(server), 'clayrune_send_message', {'target_session_id': OTHER, 'message': 'x'})
+
+    assert is_err and body['outcome'] == 'unknown'
+    assert len(server.action_requests()) == 1
+
+
 def test_unreachable_server_reports_nothing_sent():
     server = FakeServer()
     server.routes[('POST', '/agent/send')] = urllib.error.URLError(ConnectionRefusedError())

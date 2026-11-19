@@ -54,6 +54,7 @@ from typing import Callable
 
 import mc.agent_worktree as _wt
 import mc.project_sync as _sync
+from mc.core import _log
 
 CACHE_TTL = 60.0          # seconds a project's survey is reused
 MAX_WORKTREES = 1500      # hard cap on worktrees examined per project
@@ -249,8 +250,8 @@ def start_measure(project: dict, max_age: float | None = None) -> bool:
         res = None
         try:
             res = measure_agents_dir(project)
-        except Exception:
-            res = None
+        except Exception as exc:
+            _log(f'[preserved-worktrees] disk measurement failed for {pid}: {exc}', flush=True)
         finally:
             with _cache_lock:
                 st['running'] = False
@@ -525,12 +526,12 @@ def survey_cached(project: dict, is_live: Callable[[str], bool] | None = None,
     """`survey_project` behind a CACHE_TTL cache with one in-flight survey per
     (project, size) key. Adds `cached` and `age_s` to a copy of the result."""
     key = (project.get('id', ''), bool(include_size))
-    now = time.monotonic()
+    requested_at = now = time.monotonic()
 
     def _hit():
         with _cache_lock:
             ent = _cache.get(key)
-        if ent and not refresh and now - ent[0] < CACHE_TTL:
+        if ent and (not refresh or ent[0] > requested_at) and now - ent[0] < CACHE_TTL:
             return dict(ent[1], cached=True, age_s=round(now - ent[0], 1))
         return None
 

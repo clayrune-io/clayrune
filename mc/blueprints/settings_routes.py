@@ -50,7 +50,7 @@ import json
 
 from mc.ui_field_validation import validate_colors
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, abort, jsonify, request
 
 from mc import provider_preferences
 from mc import state
@@ -88,16 +88,22 @@ DEFAULT_DOMAINS = [
     {'id': 'hobby', 'label': 'Hobby', 'color': 'var(--amber-text)', 'bg': 'var(--amber-dim)'},
 ]
 
-def _load_settings():
+def _load_settings(*, for_update=False):
     defaults = {'domains': list(DEFAULT_DOMAINS)}
-    if SETTINGS_PATH.exists():
-        try:
-            with open(SETTINGS_PATH, encoding='utf-8') as f:
-                saved = json.load(f)
-            for k, v in saved.items():
-                defaults[k] = v
-        except Exception:
-            pass
+    try:
+        with open(SETTINGS_PATH, encoding='utf-8') as f:
+            saved = json.load(f)
+        if not isinstance(saved, dict):
+            raise ValueError('expected a settings object')
+        defaults.update(saved)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as exc:
+        _log(f'[settings] could not read domain settings: {type(exc).__name__}', flush=True)
+        if for_update:
+            response = jsonify({'error': 'domain settings could not be read'})
+            response.status_code = 409
+            abort(response)
     return defaults
 
 def _save_settings(settings):
@@ -344,7 +350,6 @@ _CONFIG_EDITABLE_KEYS = {
 # matters at the next fresh context build; agent_name/user_name change
 # rarely; MCP set is per-project (not a global key here).
 _RESPAWN_TRIGGER_KEYS = {
-    'billing',
     'agent_model', 'agent_effort', 'agent_max_turns', 'agent_permission_mode',
     'agent_channels', 'agent_remote_control', 'use_streaming_agent',
     # --include-partial-messages is a launch flag, so a live session only starts
@@ -425,18 +430,18 @@ def update_config():
     # agent_avatar below): a bad backup_dest_dir persisted to config.json
     # would silently redirect every future backup into the repo or
     # data/projects/ until someone noticed. Refused outright, not rewritten.
-    if data.get('backup_dest_dir') and 'backup_dest_dir' in _CONFIG_EDITABLE_KEYS:
+    if data.get('backup_dest_dir'):
         from mc import backup as _backup
         try:
             _backup.validate_backup_dest_dir(data['backup_dest_dir'])
         except _backup.BackupError as e:
             return jsonify({'error': str(e)}), 400
-    if 'backup_schedule' in data and 'backup_schedule' in _CONFIG_EDITABLE_KEYS:
+    if 'backup_schedule' in data:
         val = str(data['backup_schedule'] or 'off').strip().lower()
         if val not in ('off', 'daily', 'weekly'):
             return jsonify({'error': "backup_schedule must be 'off', 'daily' or 'weekly'"}), 400
         data['backup_schedule'] = val
-    if 'backup_keep' in data and 'backup_keep' in _CONFIG_EDITABLE_KEYS:
+    if 'backup_keep' in data:
         val = data['backup_keep']
         try:
             if isinstance(val, bool) or int(val) != val or int(val) < 1:
@@ -445,7 +450,7 @@ def update_config():
         except (TypeError, ValueError):
             return jsonify({'error': 'backup_keep must be an integer >= 1'}), 400
         data['backup_keep'] = keep
-    if data.get('default_provider') and 'default_provider' in _CONFIG_EDITABLE_KEYS:
+    if data.get('default_provider'):
         # Same reasoning as character_routes._validated_engine's provider
         # check: a saved default that isn't a registered runtime would
         # silently fall through to 'claude' everywhere it's read, which is
@@ -460,7 +465,7 @@ def update_config():
             return jsonify({'error': f'unknown provider {prov!r} — available: '
                                      f'{", ".join(sorted(known))}'}), 400
         data['default_provider'] = prov
-    if 'engine_fallback_order' in data and 'engine_fallback_order' in _CONFIG_EDITABLE_KEYS:
+    if 'engine_fallback_order' in data:
         # Same reasoning as default_provider above: a hand-typed or stale
         # entry naming a provider that doesn't exist on this box would sit in
         # config.json silently skipped by resolve_fallback() forever — refuse
@@ -527,6 +532,7 @@ def update_config():
 
 
 @bp.route('/api/setup/complete', methods=['POST'])
+@provider_preferences.serialized_write
 def setup_complete():
     """Record that first-run setup was finished or declined ("Not now").
 
@@ -544,20 +550,25 @@ def setup_complete():
     if is_unattended_caller():
         return jsonify({'error': 'this action needs a human — an unattended '
                                  'agent session cannot change settings'}), 403
-    state.CONFIG['setup_completed'] = True
     # Read-merge-write (as mc.agent_runtime.maybe_set_sole_provider_default):
     # a concurrent editor of unrelated keys in config.json is not clobbered.
     try:
         with open(CONFIG_PATH, encoding='utf-8') as f:
             on_disk = json.load(f)
-    except Exception:
+    except FileNotFoundError:
         on_disk = dict(state.CONFIG)
+    except (OSError, ValueError) as exc:
+        _log(f'[settings] could not read config while completing setup: {exc}', flush=True)
+        return jsonify({'error': 'could not read config'}), 500
+    if not isinstance(on_disk, dict):
+        return jsonify({'error': 'config must be an object'}), 500
     on_disk['setup_completed'] = True
     try:
         write_json_atomic(CONFIG_PATH, on_disk, indent=2, ensure_ascii=False)
     except Exception as e:
         _log(f"[settings] failed to persist setup_completed: {e}", flush=True)
         return jsonify({'error': f'failed to save config: {e}'}), 500
+    state.CONFIG['setup_completed'] = True
     return jsonify({'ok': True, 'setup_completed': True})
 
 
@@ -659,7 +670,7 @@ def add_domain():
     label = data.get('label', domain_id.capitalize())
     color = data.get('color', 'var(--text-dim)')
     bg = data.get('bg', 'var(--surface3)')
-    settings = _load_settings()
+    settings = _load_settings(for_update=True)
     domains = settings.get('domains', [])
     if any(d['id'] == domain_id for d in domains):
         return jsonify({'error': 'domain already exists'}), 409
@@ -675,7 +686,7 @@ def update_domain(domain_id):
     if error:
         return jsonify({'error': error}), 400
 
-    settings = _load_settings()
+    settings = _load_settings(for_update=True)
     domains = settings.get('domains', [])
     domain = next((d for d in domains if d['id'] == domain_id), None)
     if not domain:
@@ -694,7 +705,7 @@ def update_domain(domain_id):
 def delete_domain(domain_id):
     if domain_id == 'general':
         return jsonify({'error': 'cannot delete general domain'}), 400
-    settings = _load_settings()
+    settings = _load_settings(for_update=True)
     domains = settings.get('domains', [])
     before = len(domains)
     domains = [d for d in domains if d['id'] != domain_id]

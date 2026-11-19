@@ -200,6 +200,26 @@ def test_size_is_opt_in(repo, project):
     assert s['size_complete'] is True
 
 
+def test_forced_refresh_consumes_a_result_completed_while_waiting(monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    project = {'id': 'refresh-race'}
+    clock = iter((1, 3, 4, 5, 6))
+    monkeypatch.setattr(pw, 'time', SimpleNamespace(monotonic=lambda: next(clock)))
+
+    @contextmanager
+    def flight(key):
+        with pw._cache_lock:
+            pw._cache[key] = (2, {'items': []})
+        yield
+
+    monkeypatch.setattr(pw, '_flight_lock', flight)
+    monkeypatch.setattr(pw, 'survey_project', lambda *a, **kw: pytest.fail('redundant survey'))
+
+    assert pw.survey_cached(project, refresh=True) == {'items': [], 'cached': True, 'age_s': 1}
+
+
 def test_cache_reuses_and_refresh_bypasses(repo, project):
     _commit(_add_wt(repo, '777777777777'))
     first = pw.survey_cached(project)
@@ -334,6 +354,24 @@ def test_measure_does_not_follow_a_link(repo, project, tmp_path):
             pytest.skip('cannot create a junction here')
     m = pw.measure_agents_dir(project)
     assert m['per_folder']['a4a4a4a4a4a4']['bytes'] == 0
+
+
+def test_disk_measurement_failure_is_logged_and_returns_to_unmeasured(monkeypatch):
+    from types import SimpleNamespace
+
+    project = {'id': 'failed-measure'}
+    logs = []
+
+    def fail(_project):
+        raise OSError('walk failed')
+
+    monkeypatch.setattr(pw, 'measure_agents_dir', fail)
+    monkeypatch.setattr(pw.threading, 'Thread', lambda *, target, **kwargs: SimpleNamespace(start=target))
+    monkeypatch.setattr(pw, '_log', lambda message, **kw: logs.append(message), raising=False)
+
+    assert pw.start_measure(project)
+    assert pw.disk_status(project)['state'] == 'unmeasured'
+    assert any('disk measurement failed' in message and 'walk failed' in message for message in logs)
 
 
 def test_start_measure_is_background_and_single_flight(repo, project):

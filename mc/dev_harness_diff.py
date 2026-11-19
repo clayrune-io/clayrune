@@ -37,7 +37,7 @@ class FreezeError(ValueError):
     """Fixed diagnostic codes only: never include raw Git output or filenames."""
 
 
-def git_bytes(repo: Path, args: list[str]) -> bytes:
+def git_bytes(repo: Path, args: list[str], *, no_match_error: str | None = None) -> bytes:
     """NUL-safe supplement to the existing text Git wrapper; no shell/logging."""
     try:
         result = subprocess.run(['git', *args], cwd=repo, stdin=subprocess.DEVNULL,
@@ -46,6 +46,8 @@ def git_bytes(repo: Path, args: list[str]) -> bytes:
                                 startupinfo=project_sync._STARTUPINFO)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise FreezeError('git_unavailable') from exc
+    if result.returncode == 1 and no_match_error is not None:
+        raise FreezeError(no_match_error)
     if result.returncode:
         raise FreezeError('git_failed')
     if len(result.stdout) > MAX_GIT_BYTES:
@@ -282,7 +284,8 @@ def merge_tree(repo: Path, base: str, incoming: str) -> str:
 def candidate_worktree(project: dict[str, Any], frozen: dict[str, Any]) -> Iterator[Path]:
     """Reuse create/remove and link-safe cleanup, with no shared runtime links."""
     repo = Path(project['project_path']).resolve()
-    git_bytes(repo, ['check-ignore', '-q', '.clayrune/agents/dh_probe'])
+    git_bytes(repo, ['check-ignore', '-q', '.clayrune/agents/dh_probe'],
+              no_match_error='worktree_directory_not_ignored')
     session = 'dh_' + uuid.uuid4().hex
     # A synthetic local commit makes the merged tree checkoutable; no target ref moves.
     commit = git_bytes(repo, ['-c', 'user.name=Dev Harness', '-c', 'user.email=dev-harness@localhost',

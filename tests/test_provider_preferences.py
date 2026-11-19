@@ -169,6 +169,15 @@ def test_unconfigured_preview_requires_a_provider_instead_of_inventing_claude(cl
     assert 'No provider selected' in response.get_json()['error']
 
 
+def test_provider_preferences_refuses_project_sidecar_records(client, tmp_path):
+    http, _settings = client
+    (tmp_path / 'example.json').write_text('{"id": "example"}', encoding='utf-8')
+    (tmp_path / 'example_agent_log.json').write_text('{}', encoding='utf-8')
+
+    assert http.get('/api/engine/preferences?project_id=example').status_code == 200
+    assert http.get('/api/engine/preferences?project_id=example_agent_log').status_code == 404
+
+
 def test_human_gate_and_failed_persistence_do_not_mutate_preferences(client, monkeypatch):
     http, settings = client
     original = copy.deepcopy(state.CONFIG)

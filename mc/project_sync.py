@@ -510,6 +510,14 @@ def dismiss_commit(project_id: str, sha: str) -> tuple[bool, str]:
     sha = (sha or '').strip()
     if not re.fullmatch(r'[0-9a-f]{7,64}', sha):
         return False, 'invalid sha'
+    if len(sha) not in (40, 64):
+        path = project.get('project_path')
+        if not path:
+            return False, 'project path is not configured'
+        ok, resolved = git_run(path, ['rev-parse', '--verify', f'{sha}^{{commit}}'])
+        if not ok or not re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', resolved):
+            return False, 'commit ID is unknown or ambiguous'
+        sha = resolved
     dismissed = project.setdefault('code_sync_dismissed_commits', [])
     if sha not in dismissed:
         dismissed.append(sha)

@@ -32,6 +32,35 @@ def test_fake_gh_records_and_dispatches(gs, fake_gh, project_store):
     assert backlog[0]["text"] == "Hello"
 
 
+def test_a_missing_issue_is_unlinked_even_in_the_same_timestamp(gs, fake_gh, monkeypatch):
+    stamp = '2026-11-18T00:00:00Z'
+    monkeypatch.setattr(gs, '_now_iso', lambda: stamp)
+    fake_gh.on(['issue', 'list'], stdout='[]')
+    item = {'github_issue_number': 42, 'github_synced_at': stamp, 'text': 'Keep the local task'}
+    project = {'id': 'p', 'backlog': [item]}
+
+    gs._pull_issues(project, 'o/r')
+
+    assert item['github_issue_number'] is None
+    assert item['github_deleted'] is True
+    assert item['text'] == 'Keep the local task'
+
+
+def test_issue_creation_logs_a_failed_immediate_project_save(gs, fake_gh, monkeypatch):
+    fake_gh.on(['issue', 'create'], stdout='https://github.example.test/o/r/issues/42')
+    logs = []
+    monkeypatch.setattr(gs, '_log', lambda msg, **kw: logs.append(msg), raising=False)
+
+    def fail(*args):
+        raise OSError('temporary disk error')
+
+    monkeypatch.setattr(gs, '_save_project', fail)
+    project = {'id': 'p', 'backlog': [{'id': 'new', 'text': 'Local task', 'status': 'open'}]}
+
+    assert gs._push_items(project, 'o/r') == 1
+    assert any('could not save link to issue #42: temporary disk error' in message for message in logs)
+
+
 def test_sanitize_strips_html_and_control(gs):
     out = gs.sanitize("<script>x</script>hi\x07 there")
     assert "<script>" not in out

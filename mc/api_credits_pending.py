@@ -48,8 +48,9 @@ def record(**entry: Any) -> None:
     with budget._lock:
         settings = budget.load_settings()
         start, _ = budget.cycle_bounds(budget._now(), settings['reset_day'])
-        row = dict(entry, event_id=uuid4().hex, cycle_start=start.isoformat(),
-                   recorded_at=budget._iso(budget._now()))
+        row = dict(entry, event_id=uuid4().hex)
+        row.setdefault('cycle_start', start.isoformat())
+        row.setdefault('recorded_at', budget._iso(budget._now()))
         _unsaved.setdefault(path(), {})[row['event_id']] = row
         # flush also persists the queue before attempting any ledger write.
         flush()

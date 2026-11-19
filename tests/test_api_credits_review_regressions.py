@@ -54,6 +54,48 @@ def test_failed_ledger_write_cannot_reopen_spent_budget(monkeypatch):
         f'CLI billed 9.5, ledger retained {spent}, can_spend={allowed}; failed 9-dollar delta was discarded')
 
 
+@pytest.mark.parametrize('damaged', [b'{', b'{"cycles": null}'])
+@pytest.mark.parametrize('writer', ['record', 'halt', 'note_error', 'clear_halt'])
+def test_unreadable_ledger_cannot_be_replaced_by_status_write(damaged, writer):
+    budget.ledger_path().write_bytes(damaged)
+    model = 'claude-haiku-5-5'
+    actions = {
+        'record': lambda: budget.record(caller='test', model=model, usage={},
+                                        cost=1.0, estimated=False),
+        'halt': lambda: budget.halt('test stop', 'test'),
+        'note_error': lambda: budget.note_error('test error'),
+        'clear_halt': budget.clear_halt,
+    }
+
+    assert budget.can_spend(model) == (False, 'accounting_pending')
+    actions[writer]()
+
+    assert budget.ledger_path().read_bytes() == damaged
+    assert budget.can_spend(model) == (False, 'accounting_pending')
+    assert budget.status()['state'] == 'stopped'
+
+
+def test_billed_call_is_replayed_after_unreadable_ledger_is_restored():
+    model = 'claude-haiku-5-5'
+
+    def charge(cost: float):
+        budget.record(caller='offload:test', model=model, usage={}, cost=cost, estimated=False)
+
+    charge(8.50)
+    ledger = budget.ledger_path()
+    saved = ledger.read_bytes()
+    ledger.write_bytes(b'{')
+
+    charge(1.00)
+    assert ledger.read_bytes() == b'{'
+
+    ledger.write_bytes(saved)
+    assert budget.can_spend(model) == (False, 'stop_point_reached')
+    assert budget.spent_this_cycle() == pytest.approx(9.50)
+    assert budget.can_spend(model) == (False, 'stop_point_reached')
+    assert budget.spent_this_cycle() == pytest.approx(9.50)
+
+
 def test_cold_dispatch_uses_latest_sticky_choice():
     # Execute the exact selection statements from the dispatch function, without
     # its real process/context side effects. The log is newest first, as written

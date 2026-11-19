@@ -35,6 +35,7 @@ import time as _time
 import uuid
 
 from mc.blueprints import browser_routes as br
+from mc.core import _log
 
 HIDDEN_URL_PREFIX = 'about:blank#clayrune-hidden-read-'
 _CALL_TIMEOUT_S = 8
@@ -174,8 +175,8 @@ class HiddenTabReader(br.ProfilePageReader):
         if browser is not None and tid:
             try:
                 browser.call('Target.closeTarget', {'targetId': tid}, timeout=3)
-            except Exception:
-                pass
+            except Exception as exc:
+                _log(f'[browser-agent-read] could not close the hidden tab: {type(exc).__name__}', flush=True)
         for c in (page, browser):
             if c is not None:
                 c.close()

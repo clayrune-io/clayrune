@@ -55,6 +55,55 @@ def client(tmp_path, monkeypatch):
     return server.app.test_client()
 
 
+def test_failed_enrollment_mailer_reports_exit_status(client, monkeypatch):
+    from types import SimpleNamespace
+    from mc.blueprints import remote_routes as rr
+
+    logs = []
+    monkeypatch.setattr(rr.subprocess, 'run', lambda *a, **kw: SimpleNamespace(returncode=42))
+    monkeypatch.setattr(rr, '_log', lambda message, **kw: logs.append(message))
+    rr._send_enrollment_lost_alert(180)
+
+    assert any('mailer exited 42' in message for message in logs)
+    assert all('alert sent' not in message for message in logs)
+
+
+def test_enrollment_callback_renders_provider_message_as_text(client, monkeypatch):
+    from mc.blueprints import remote_routes as rr
+    from mc_remote import enrollment
+
+    monkeypatch.setattr(rr, '_get_remote_provider', object)
+    monkeypatch.setattr(enrollment, 'complete', lambda _: {
+        'ok': False, 'message': 'Device <name> & region', 'error': 'bad <label>',
+    })
+
+    reply = client.get('/api/mc-callback')
+
+    assert reply.status_code == 400
+    assert b'Device &lt;name&gt; &amp; region' in reply.data
+    assert b'bad &lt;label&gt;' in reply.data
+
+
+def test_device_list_reads_one_identity(client, monkeypatch):
+    from types import SimpleNamespace
+    from mc.blueprints import remote_routes as rr
+    from mc_remote import device_keys, enrollment
+
+    reads = []
+
+    def identity():
+        reads.append(None)
+        return SimpleNamespace(device_id='device-a', enrollment_token='test-only')
+
+    monkeypatch.setattr(rr, '_get_remote_provider', object)
+    monkeypatch.setattr(device_keys, 'load_identity', identity)
+    monkeypatch.setattr(enrollment, 'list_devices_via_cp',
+                        lambda **kw: {'devices': [kw['this_device_id'], kw['device_id']]})
+
+    assert client.get('/api/remote/devices').get_json() == {'devices': ['device-a', 'device-a']}
+    assert len(reads) == 1
+
+
 class TestRemoteStatus:
     def test_status_always_200_with_provider_key(self, client):
         # provider: null (open-source build) or a provider dict (mc_remote
@@ -79,6 +128,20 @@ class TestNameDevicePage:
         assert r.status_code == 200
         assert b'Name this device' in r.data
         assert r.headers.get('Cache-Control') == 'no-store'
+
+
+def test_device_page_preserves_user_agent_as_script_data(client):
+    ua = 'Browser <variant> & __EMAIL__'
+
+    reply = client.get('/_mc/name-device', headers={
+        'User-Agent': ua, 'Cf-Access-Authenticated-User-Email': 'example@example.test',
+    })
+
+    line = next(line for line in reply.get_data(as_text=True).splitlines()
+                if line.startswith('const UA'))
+    serialized = line.split('=', 1)[1].strip().removesuffix(';')
+    assert '<' not in serialized and '&' not in serialized
+    assert json.loads(serialized) == ua
 
 
 class TestSessionLabelEndpoint:

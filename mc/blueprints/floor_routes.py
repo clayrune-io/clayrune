@@ -17,7 +17,8 @@ this view exists. The bench is the whole roster, marked with where each type
 is already working — never filtered by it, or a busy type would have nowhere
 to be placed or edited from.
 
-Read-only. It starts nothing, stops nothing, and touches no state.
+The Floor snapshot reads session state and can repair persisted labels.
+The figure naming route updates those labels.
 """
 import json
 import threading
@@ -112,6 +113,11 @@ def read_labels():
     remembering to run anything; the write is best-effort, so a read-only file
     still renders correctly, it just re-repairs next time.
     """
+    with _labels_lock:
+        return _read_labels_locked()
+
+
+def _read_labels_locked():
     try:
         if not LABELS_PATH or not Path(LABELS_PATH).is_file():
             return {}
@@ -155,7 +161,7 @@ def set_label(session_id, name=None, by='user', avatar=None):
     must not thereby delete the name.
     """
     with _labels_lock:
-        labels = read_labels()
+        labels = _read_labels_locked()
         cur = labels.get(session_id) or {}
         rec = {'name': cur.get('name', ''), 'avatar': cur.get('avatar', ''),
                'by': cur.get('by') or by}

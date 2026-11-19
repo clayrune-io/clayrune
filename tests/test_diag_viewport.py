@@ -49,6 +49,24 @@ def _snapshot(**overrides):
     return body
 
 
+def test_presence_heartbeat_prunes_only_expired_entries(client, monkeypatch):
+    from types import SimpleNamespace
+
+    now = 1000
+    presence = {('proj', 'expired'): now - push_mobile.PRESENCE_FRESH_SEC,
+                ('proj', 'fresh'): now - 1}
+    monkeypatch.setattr(push_mobile, '_presence_state', presence)
+    monkeypatch.setattr(push_mobile, '_time', SimpleNamespace(time=lambda: now))
+
+    reply = client.post('/api/presence', json={'watching': [
+        {'project_id': 'proj', 'session_id': 'new'},
+    ]})
+
+    assert reply.status_code == 200
+    assert reply.get_json()['touched'] == 1
+    assert presence == {('proj', 'fresh'): now - 1, ('proj', 'new'): now}
+
+
 def test_post_writes_one_line_outside_data_projects(client, tmp_path):
     r = client.post('/api/diag/viewport', json=_snapshot())
     assert r.status_code == 200
@@ -81,6 +99,19 @@ def test_oversized_body_rejected_413(client):
     r = client.post('/api/diag/viewport', json=huge)
     assert r.status_code == 413
     assert r.get_json()['ok'] is False
+
+
+def test_viewport_stops_reading_an_oversized_stream_without_content_length(client):
+    from io import BytesIO
+
+    cap = push_mobile._VIEWPORT_DIAG_MAX_BODY
+    incoming = BytesIO(b'x' * (cap * 10))
+    reply = client.post('/api/diag/viewport', environ_overrides={
+        'wsgi.input': incoming, 'wsgi.input_terminated': True, 'CONTENT_LENGTH': '',
+    })
+
+    assert reply.status_code == 413
+    assert incoming.tell() <= cap + 1
 
 
 def test_non_dict_json_body_is_a_clean_400(client):

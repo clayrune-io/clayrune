@@ -48,7 +48,7 @@ def _persist(updates: dict) -> None:
     try:
         with open(CONFIG_PATH, encoding='utf-8') as f:
             on_disk = json.load(f)
-    except Exception:
+    except FileNotFoundError:
         on_disk = dict(state.CONFIG)
     on_disk.update(updates)
     write_json_atomic(CONFIG_PATH, on_disk, indent=2, ensure_ascii=False)

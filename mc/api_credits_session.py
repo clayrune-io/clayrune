@@ -59,14 +59,17 @@ def would_bill_credits(trigger_type: Any, spawned_by: Any, notify_session: Any,
         ok, _reason = budget.can_spend(offload.resolve_model(model or '', settings), settings)
         if not ok:
             return False
-        if billing != 'credits':
-            stop = settings['budget_usd'] * settings['stop_pct'] / 100
-            if stop - budget.spent_this_cycle(settings) < settings['session_reserve_usd']:
-                return False
+        if billing != 'credits' and _below_session_reserve(settings):
+            return False
         return True
     except Exception as exc:
         _log(f'[api-credits-session] would_bill_credits failed: {type(exc).__name__}', flush=True)
         return False
+
+
+def _below_session_reserve(settings: dict) -> bool:
+    stop = settings['budget_usd'] * settings['stop_pct'] / 100
+    return stop - budget.spent_this_cycle(settings) < settings['session_reserve_usd']
 
 
 def _subscription(session: dict, reason: str) -> None:
@@ -109,11 +112,9 @@ def env_for_session(session: dict, env: dict[str, str]) -> dict[str, str]:
         if not ok:
             _subscription(session, reason)
             return child
-        if session.get('billing') != 'credits':
-            stop = settings['budget_usd'] * settings['stop_pct'] / 100
-            if stop - budget.spent_this_cycle(settings) < settings['session_reserve_usd']:
-                _subscription(session, 'insufficient_session_reserve')
-                return child
+        if session.get('billing') != 'credits' and _below_session_reserve(settings):
+            _subscription(session, 'insufficient_session_reserve')
+            return child
         from mc import secrets_store
         try:
             key = secrets_store.get_secret_value(settings['secret_name'],

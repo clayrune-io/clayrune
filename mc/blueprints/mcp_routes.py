@@ -60,9 +60,8 @@ def wire(*, load_project_fn, save_project_fn, data_dir, mcp_server_catalog_fn):
 # transports supported: stdio (local subprocess), http (streamable HTTP),
 # sse (legacy HTTP+SSE). See mcp.py for the schema details.
 
-# Servers force-kept in any custom per-project loadout — dropping them would
-# silently break a load-bearing capability. `engram` = cross-session memory;
-# losing it kills the whole memory system for that project (see CLAUDE.md).
+# Preserve access to the Engram MCP integration when it is in the catalogue
+# and a project opts into a custom loadout.
 _MCP_ALWAYS_KEEP = ('engram',)
 
 
@@ -244,7 +243,8 @@ def get_project_mcp_enabled(project_id):
     opted_in = isinstance(sel, list)
     try:
         catalog = sorted(_mcp_server_catalog(p).keys())
-    except Exception:
+    except Exception as exc:
+        _log(f'[mcp] could not list the project loadout catalogue: {type(exc).__name__}', flush=True)
         catalog = []
     return jsonify({
         'opted_in': opted_in,
@@ -264,12 +264,15 @@ def set_project_mcp_enabled(project_id):
     refusal = refuse_unattended("change a project's MCP loadout")
     if refusal is not None:
         return refusal
-    filepath = DATA_DIR / f'{project_id}.json'
-    if not filepath.exists():
+    existing = load_project(project_id)
+    if not existing:
         return jsonify({'error': 'project not found'}), 404
-    data = request.get_json(silent=True) or {}
-    enabled = data.get('enabled', None)
-    existing = json.loads(filepath.read_text(encoding='utf-8'))
+    data = request.get_json(silent=True)
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return jsonify({'error': 'expected a JSON object'}), 400
+    enabled = data.get('enabled')
 
     if enabled is None:
         existing.pop('enabled_mcp_servers', None)
@@ -282,7 +285,8 @@ def set_project_mcp_enabled(project_id):
 
     try:
         catalog = set(_mcp_server_catalog(existing).keys())
-    except Exception:
+    except Exception as exc:
+        _log(f'[mcp] could not validate the project loadout catalogue: {type(exc).__name__}', flush=True)
         catalog = set(enabled)
     chosen = [n for n in dict.fromkeys(enabled) if n in catalog]
     for keep in _MCP_ALWAYS_KEEP:

@@ -23,7 +23,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(pr, '_runtime_lifecycle_service', None)
     monkeypatch.setitem(state.CONFIG, 'auto_workspace_base', str(tmp_path / 'workspace'))
     settings = {'domains': [{'id': 'fixture', 'color': 'old-color', 'bg': 'old-bg'}]}
-    monkeypatch.setattr(sr, '_load_settings', lambda: json.loads(json.dumps(settings)))
+    monkeypatch.setattr(sr, '_load_settings', lambda *, for_update=False: json.loads(json.dumps(settings)))
     monkeypatch.setattr(sr, '_save_settings', lambda value: settings.update(value))
     monkeypatch.setattr(hr, '_hm_load_manifest', lambda _: {'project_id': 'fixture'})
     monkeypatch.setattr(hr, '_hm_load_workstream', lambda *a: {'id': 'ws', 'title': 'Original'})

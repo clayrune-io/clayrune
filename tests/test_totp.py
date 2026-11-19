@@ -168,6 +168,12 @@ def test_bad_migration_uris_raise(bad):
         totp.parse_migration_uri(bad)
 
 
+@pytest.mark.parametrize('field', ['digits', 'period'])
+def test_bad_numeric_otpauth_field_raises_a_totp_error(field):
+    with pytest.raises(totp.TotpError, match='digits and period must be integers'):
+        totp.parse_otpauth_uri(f'otpauth://totp/example?secret={RFC_SEED}&{field}=invalid')
+
+
 def test_suggested_name():
     assert totp.suggested_name({'issuer': 'GitHub', 'account': 'ron@example.com'}) \
         == 'github.ron-example-com.totp'

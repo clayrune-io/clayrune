@@ -19,6 +19,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from mc.core import _log
+
 # (credit USD per month, display label). Team is pooled and the amount is
 # user-entered (up to $500), so it carries no default.
 _PLANS: Dict[str, Dict[str, Any]] = {
@@ -70,7 +72,10 @@ def detect(path: Optional[Path] = None) -> Dict[str, Any]:
             return out
         sub = oauth.get('subscriptionType')
         tier = oauth.get('rateLimitTier')
-    except Exception:
+    except FileNotFoundError:
+        return out
+    except Exception as exc:
+        _log(f'[api-credits] plan metadata could not be read: {type(exc).__name__}', flush=True)
         return out
     sub = sub if isinstance(sub, str) else ''
     tier = tier if isinstance(tier, str) else ''

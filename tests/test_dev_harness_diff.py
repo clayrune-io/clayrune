@@ -37,6 +37,17 @@ def branch(repo):
     git(repo, 'checkout', '-q', 'master')
 
 
+def test_candidate_reports_when_its_worktree_directory_is_not_ignored(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(dh.subprocess, 'run', lambda *args, **kwargs:
+                        SimpleNamespace(returncode=1, stdout=b''))
+
+    with pytest.raises(dh.FreezeError, match='^worktree_directory_not_ignored$'):
+        with dh.candidate_worktree({'project_path': str(tmp_path)}, {}):
+            pytest.fail('candidate cannot be created without the ignore rule')
+
+
 def test_preview_covers_index_unstaged_untracked_deleted_and_ignored(repo):
     git(repo, 'mv', 'app.py', 'renamed file.py')
     (repo / 'renamed file.py').write_text('value = 2\n', encoding='utf-8')

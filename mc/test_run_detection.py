@@ -1,4 +1,6 @@
-"""MC-1148 P8: passive, default-off fallback for unwrapped vendor tool calls.
+"""MC-1148 P8: passive fallback for unwrapped vendor tool calls.
+
+Runs with test-run progress enabled.
 
 No command execution, rewriting, output parsing or launcher/job correlation.
 Readers enqueue small observations; only the bounded worker touches storage.

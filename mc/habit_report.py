@@ -27,6 +27,7 @@ Flags (`state.CONFIG`, both default True):
 """
 import json
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -123,42 +124,49 @@ def _log_dir():
     return base / 'habit_candidates'
 
 
-def _session_identity(project_id, session_id, session):
-    """(task, trigger_type, resolved session id) from the live session, else
-    from the project's agent_log row (a chat revived after a restart has no
-    live session when its next message lands)."""
-    if session is None and session_id:
-        s = state.agent_sessions.get(session_id)
-        if s and s.get('project_id') == project_id:
-            session = s
+def _resolve_session(project_id, session_id, session):
+    """Resolve identity and privacy together before observing any text."""
+    if not session_id:
+        return None
+    if session is None:
+        session = state.agent_sessions.get(session_id)
     if session is not None:
-        return (session.get('task', '') or '', session.get('trigger_type', '') or '',
-                session.get('session_id') or session_id)
+        if session.get('project_id') == project_id and session.get('session_id') == session_id:
+            return session
+        return None
     try:
         from mc.blueprints import agent_routes as _ar
+        match = None
         for r in _ar._load_agent_log(project_id) or []:
-            if (session_id and (r.get('session_id') == session_id
-                                or r.get('claude_session_id') == session_id
-                                or session_id in (r.get('claude_session_ids') or []))):
-                return (r.get('task', '') or '', r.get('trigger_type', '') or '',
-                        session_id)
+            if (r.get('session_id') == session_id
+                    or r.get('claude_session_id') == session_id
+                    or session_id in (r.get('claude_session_ids') or [])):
+                if r.get('incognito'):
+                    return None  # A private match takes precedence over an old alias.
+                if match is None:
+                    match = r
+        return match
     except Exception as e:
         _log(f'[habit-report] agent_log lookup failed: {e}')
-    return '', '', session_id
+        return None
 
 
 _recent = {}   # (session_id, message) -> monotonic seen-at; /agent/send hands
                # the same message on to /agent/followup in-process.
 
 
+_recent_lock = threading.Lock()
+
+
 def _seen_recently(key):
-    now = time.monotonic()
-    for k in [k for k, t in _recent.items() if now - t > _DEDUPE_WINDOW_S]:
-        _recent.pop(k, None)
-    if key in _recent:
-        return True
-    _recent[key] = now
-    return False
+    with _recent_lock:
+        now = time.monotonic()
+        for k in [k for k, t in _recent.items() if now - t > _DEDUPE_WINDOW_S]:
+            _recent.pop(k, None)
+        if key in _recent:
+            return True
+        _recent[key] = now
+        return False
 
 
 def observe_user_message(project_id, session_id, message, *, session=None,
@@ -170,7 +178,10 @@ def observe_user_message(project_id, session_id, message, *, session=None,
     the operator's. Returns the logged row (for tests) or None. Never raises.
     """
     try:
-        if not human or not enabled():
+        if not human or project_id == '_incognito' or not enabled():
+            return None
+        session = _resolve_session(project_id, session_id, session)
+        if not session or session.get('incognito'):
             return None
         hit = classify(message)
         if hit is None:
@@ -178,7 +189,9 @@ def observe_user_message(project_id, session_id, message, *, session=None,
         if _seen_recently((session_id or '', message)):
             return None
         from mc import memory as _mem
-        task, trigger_type, sid = _session_identity(project_id, session_id, session)
+        task = session.get('task') or ''
+        trigger_type = session.get('trigger_type') or ''
+        sid = session_id
         origin = _mem._stamp_origin(task.strip(), trigger_type)
         row = {
             'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),

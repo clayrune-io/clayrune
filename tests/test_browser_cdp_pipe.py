@@ -133,6 +133,23 @@ def test_events_go_only_to_the_connection_that_owns_the_session():
         p2.recv()
 
 
+def test_nested_attach_response_can_precede_the_attach_event():
+    def script(msg, emit):
+        if msg['method'] == 'Target.attachToTarget':
+            _answer(msg, emit, {'sessionId': msg['params']['targetId']})
+
+    fc = FakeChromium(script)
+    try:
+        page = fc.transport.page_conn('root', timeout=1)
+        page.send(json.dumps({'id': 12, 'method': 'Target.attachToTarget',
+                              'params': {'targetId': 'nested', 'flatten': True}}))
+        assert json.loads(page.recv())['id'] == 12
+        fc.emit({'method': 'Page.screencastFrame', 'sessionId': 'nested', 'params': {}})
+        assert json.loads(page.recv())['sessionId'] == 'nested'
+    finally:
+        fc.eof()
+
+
 def test_browser_level_auto_attach_events_go_to_the_connection_that_enabled_it():
     def script(msg, emit):
         _answer(msg, emit, {'sessionId': 'X1'} if msg['method'] == 'Target.attachToTarget' else {})
@@ -147,6 +164,32 @@ def test_browser_level_auto_attach_events_go_to_the_connection_that_enabled_it()
     assert json.loads(guard.recv())['params']['sessionId'] == 'A1'
     with pytest.raises(websocket.WebSocketTimeoutException):
         other.recv()
+
+
+def test_failed_attach_does_not_own_the_next_auto_attached_target():
+    def script(msg, emit):
+        if msg['method'] == 'Target.attachToTarget':
+            emit({'id': msg['id'], 'error': {'message': 'target unavailable'}})
+        else:
+            _answer(msg, emit)
+
+    fc = FakeChromium(script)
+    guard = fc.transport.browser_conn(timeout=1)
+    requester = fc.transport.browser_conn(timeout=1)
+    try:
+        guard.send(json.dumps({'id': 1, 'method': 'Target.setAutoAttach',
+                               'params': {'autoAttach': True, 'flatten': True}}))
+        assert json.loads(guard.recv())['id'] == 1
+        requester.send(json.dumps({'id': 1, 'method': 'Target.attachToTarget',
+                                   'params': {'targetId': 'target', 'flatten': True}}))
+        assert 'error' in json.loads(requester.recv())
+
+        fc.emit({'method': 'Target.attachedToTarget',
+                 'params': {'sessionId': 'auto', 'targetInfo': {'targetId': 'target'}}})
+
+        assert json.loads(guard.recv())['params']['sessionId'] == 'auto'
+    finally:
+        fc.eof()
 
 
 def test_an_explicit_attach_event_goes_to_the_requester_not_the_auto_attach_holder():
@@ -187,6 +230,52 @@ def test_the_transports_own_attach_is_not_shown_to_the_page_connection(event_fir
     fc.emit({'method': 'Page.loadEventFired', 'sessionId': 'S1', 'params': {}})
     # the first thing the page sees is ITS event, not a stray attach for itself
     assert json.loads(page.recv())['method'] == 'Page.loadEventFired'
+
+
+@pytest.mark.parametrize('order', ['event_first', 'response_first', 'auto_first'])
+def test_timed_out_internal_attach_does_not_reach_other_clients(order):
+    def script(msg, emit):
+        if msg['method'] == 'Target.attachToTarget':
+            return
+        _answer(msg, emit)
+        if msg['method'] == 'Target.detachFromTarget':
+            emit({'method': 'Target.detachedFromTarget', 'params': msg['params']})
+
+    fc = FakeChromium(script)
+    guard = fc.transport.browser_conn(timeout=1)
+    other = fc.transport.browser_conn(timeout=1)
+    try:
+        guard.send(json.dumps({'id': 1, 'method': 'Target.setAutoAttach',
+                               'params': {'autoAttach': True, 'flatten': True}}))
+        assert json.loads(guard.recv())['id'] == 1
+        with pytest.raises(TimeoutError):
+            fc.transport.request('Target.attachToTarget',
+                                 {'targetId': 'T1', 'flatten': True}, timeout=0.05)
+        cmd = fc.wait_for('Target.attachToTarget')
+        late_attach = {'method': 'Target.attachedToTarget',
+                       'params': {'sessionId': 'late', 'targetInfo': {'targetId': 'T1'}}}
+        auto = {'method': 'Target.attachedToTarget',
+                'params': {'sessionId': 'auto', 'targetInfo': {'targetId': 'T1'}}}
+        if order == 'auto_first':
+            fc.emit(auto)
+        if order != 'response_first':
+            fc.emit(late_attach)
+        _answer(cmd, fc.emit, {'sessionId': 'late'})
+        if order == 'response_first':
+            fc.emit(late_attach)
+        if order == 'auto_first':
+            assert json.loads(guard.recv())['params']['sessionId'] == 'auto'
+        for conn in (guard, other):
+            conn.send(json.dumps({'id': 2, 'method': 'Browser.getVersion'}))
+            assert json.loads(conn.recv()).get('id') == 2
+
+        assert fc.wait_for('Target.detachFromTarget')['params'] == {'sessionId': 'late'}
+        if order != 'auto_first':
+            fc.emit(auto)
+            assert json.loads(guard.recv())['params']['sessionId'] == 'auto'
+    finally:
+        fc.transport.close()
+        fc.eof()
 
 
 def test_closing_a_page_connection_detaches_its_session():

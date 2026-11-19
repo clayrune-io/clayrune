@@ -136,6 +136,25 @@ def test_search_refreshes_lazily(tmp_path, home):
     assert ds.search(p, 'quokka')[0]['file'] == 'docs/new.md'
 
 
+@pytest.mark.parametrize('moved', [True, False])
+def test_missing_docs_directory_removes_stale_search_results(tmp_path, home, moved):
+    p = _proj(tmp_path)
+    _write(p, 'a.md', '# A\nalpha content here\n')
+    assert ds.search(p, 'alpha')
+
+    if moved:
+        target = tmp_path / 'new-root'
+        target.mkdir()
+        p['project_path'] = str(target)
+    else:
+        docs = Path(p['project_path']) / 'docs'
+        (docs / 'a.md').unlink()
+        docs.rmdir()
+
+    assert ds.search(p, 'alpha') == []
+    assert ds.search(p, 'alpha', refresh=False) == []
+
+
 def test_moved_project_root_drops_the_old_tree(tmp_path, home):
     p = _proj(tmp_path)
     _write(p, 'a.md', '# A\nalpha content here\n')

@@ -112,7 +112,15 @@ def _is_being_watched(project_id: str, session_id: str) -> bool:
     return (_time.time() - ts) < PRESENCE_FRESH_SEC
 
 
+_vapid_lock = threading.Lock()
+
+
 def _load_vapid_keys() -> dict:
+    with _vapid_lock:
+        return _load_or_create_vapid_keys()
+
+
+def _load_or_create_vapid_keys() -> dict:
     """Return the VAPID keypair, generating + persisting one if missing.
 
     Private key is stored as the raw 32-byte EC scalar, base64url-encoded.
@@ -127,8 +135,15 @@ def _load_vapid_keys() -> dict:
     try:
         with open(PUSH_VAPID_PATH, 'r', encoding='utf-8') as f:
             d = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
+        if not isinstance(d, dict) or not all(
+            isinstance(d.get(key), str) and d[key] for key in ('public', 'private')
+        ):
+            raise ValueError('invalid VAPID key file')
+    except FileNotFoundError:
         d = None
+    except (OSError, ValueError) as exc:
+        _log(f"[push] VAPID key file unreadable: {type(exc).__name__}", flush=True)
+        return {}
 
     # Migration: an earlier build stored the private key as full PEM, which
     # py_vapid can't parse via from_string. Detect and convert to raw on load
@@ -149,8 +164,8 @@ def _load_vapid_keys() -> dict:
                 needs_persist = True
                 _log('[push] migrated VAPID private key from PEM to raw format', flush=True)
             except Exception as e:
-                _log(f"[push] VAPID PEM migration failed: {e}; regenerating", flush=True)
-                d = None  # fall through to regen
+                _log(f"[push] VAPID PEM migration failed: {type(e).__name__}", flush=True)
+                return {}
         if d is not None:
             if not needs_persist:
                 return d
@@ -277,13 +292,14 @@ def _prune_notifications(items: list) -> list:
 
 
 def _append_notification(*, title: str, body: str, url: str, kind: str,
-                         project_id: str, session_id: str) -> None:
+                         project_id: str, session_id: str, project_name: str | None = None) -> None:
     """Append one Inbox event. Best-effort — never raises to the caller."""
     if PUSH_NOTIF_PATH is None:
         return
     try:
-        p = load_project(project_id) if (load_project and project_id) else None
-        project_name = (p or {}).get('name') or project_id or 'Clayrune'
+        if project_name is None:
+            p = load_project(project_id) if (load_project and project_id) else None
+            project_name = (p or {}).get('name') or project_id or 'Clayrune'
         item = {
             'id': uuid.uuid4().hex,
             'ts': int(_time.time()),
@@ -424,13 +440,6 @@ def _notify_push(title: str, body: str, *, url: str = '',
     if log_inbox:
         _append_notification(title=title, body=body, url=url, kind=kind,
                              project_id=project_id, session_id=session_id)
-    try:
-        from pywebpush import webpush, WebPushException
-    except Exception as e:
-        return {'ok': False, 'error': f'pywebpush_missing: {e}'}
-    keys = _load_vapid_keys()
-    if not keys.get('private'):
-        return {'ok': False, 'error': 'no_vapid_key'}
     subs = _load_push_subscriptions()
     if not subs:
         return {'ok': False, 'error': 'no_subscribers'}
@@ -444,8 +453,15 @@ def _notify_push(title: str, body: str, *, url: str = '',
         'ts': int(_time.time()),
     }
     payload = json.dumps(payload_dict)
-    sent, failed, removed = 0, 0, []
+    sent, failed = 0, 0
+    delivered: dict[str, int] = {}
+    stale: set[str] = set()
     last_error = None
+    attempted_fcm = False
+    webpush = None
+    webpush_exception = None
+    web_setup_error = ''
+    keys = {}
     for nonce, sub in list(subs.items()):
         if not isinstance(sub, dict):
             continue
@@ -463,13 +479,14 @@ def _notify_push(title: str, body: str, *, url: str = '',
         sub_type = sub.get('type', '') or ''
 
         if sub_type == 'fcm':
+            attempted_fcm = True
             ok, err, drop = _push_send_fcm(sub, payload_dict)
             if ok:
-                sub['last_used_at'] = int(_time.time())
+                delivered[nonce] = int(_time.time())
                 sent += 1
             else:
                 if drop:
-                    removed.append(nonce)
+                    stale.add(nonce)
                 else:
                     failed += 1
                     last_error = err
@@ -483,6 +500,20 @@ def _notify_push(title: str, body: str, *, url: str = '',
         }
         if not sub_info['endpoint']:
             continue
+        if webpush is None and not web_setup_error:
+            try:
+                from pywebpush import webpush, WebPushException
+                webpush_exception = WebPushException
+            except Exception as e:
+                web_setup_error = f'pywebpush_missing: {e}'
+            else:
+                keys = _load_vapid_keys()
+                if not keys.get('private'):
+                    web_setup_error = 'no_vapid_key'
+        if web_setup_error or webpush is None or webpush_exception is None:
+            failed += 1
+            last_error = web_setup_error
+            continue
         # Never let a failure line carry a key: the subscriber's, or ours.
         _sub_keys = sub_info['keys'] if isinstance(sub_info['keys'], dict) else {}
         _secrets = [*_sub_keys.values(), keys['private']]
@@ -495,13 +526,13 @@ def _notify_push(title: str, body: str, *, url: str = '',
                 ttl=300,
                 timeout=WEBPUSH_TIMEOUT_S,
             )
-            sub['last_used_at'] = int(_time.time())
+            delivered[nonce] = int(_time.time())
             sent += 1
-        except WebPushException as e:
+        except webpush_exception as e:
             resp = getattr(e, 'response', None)
             code = resp.status_code if resp is not None else 0
             if code in (404, 410):
-                removed.append(nonce)
+                stale.add(nonce)
             else:
                 failed += 1
                 detail = (resp.text[:200] if resp is not None and resp.text else str(e))
@@ -517,19 +548,41 @@ def _notify_push(title: str, body: str, *, url: str = '',
             _log(f"[push] delivery failed host={push_delivery_queue.endpoint_host(sub_info['endpoint'])}: "
                  f"{type(e).__name__}: "
                  f"{push_delivery_queue.redact(e, sub_info['endpoint'], _secrets)[:200]}", flush=True)
+    removed = 0
+    if delivered or stale:
+        with _push_state_lock:
+            current = _load_push_subscriptions()
+            changed = False
+            for nonce in delivered.keys() | stale:
+                sub = current.get(nonce)
+                if not isinstance(sub, dict) or any(
+                    sub.get(field) != subs[nonce].get(field)
+                    for field in ('type', 'endpoint', 'keys', 'token')
+                ):
+                    continue
+                if nonce in stale:
+                    del current[nonce]
+                    removed += 1
+                    changed = True
+                else:
+                    used_at = delivered[nonce]
+                    if used_at > (sub.get('last_used_at') or 0):
+                        sub['last_used_at'] = used_at
+                        changed = True
+            if changed:
+                _save_push_subscriptions(current)
     if removed:
-        for n in removed:
-            subs.pop(n, None)
-        _log(f"[push] removed {len(removed)} stale subscription(s)", flush=True)
-    _save_push_subscriptions(subs)
+        _log(f"[push] removed {removed} stale subscription(s)", flush=True)
+    if web_setup_error and not attempted_fcm:
+        return {'ok': False, 'error': web_setup_error}
     return {
-        'ok': True, 'sent': sent, 'failed': failed, 'removed': len(removed),
+        'ok': True, 'sent': sent, 'failed': failed, 'removed': removed,
         'last_error': last_error,
     }
 
 
 def _queue_push(title: str, body: str, *, url: str = '', project_id: str = '',
-                session_id: str = '', kind: str = 'agent') -> None:
+                session_id: str = '', kind: str = 'agent', project_name: str | None = None) -> None:
     """Hand one push to the delivery worker. The result of `_notify_push` is
     dropped, as it was when it was called inline (nothing read it).
 
@@ -538,7 +591,7 @@ def _queue_push(title: str, body: str, *, url: str = '', project_id: str = '',
     behind a stalled push service or vanish with a push the full queue drops.
     Only the network delivery is deferred."""
     _append_notification(title=title, body=body, url=url, kind=kind,
-                         project_id=project_id, session_id=session_id)
+                         project_id=project_id, session_id=session_id, project_name=project_name)
     _push_queue.submit(lambda: _notify_push(
         title, body, url=url, project_id=project_id, session_id=session_id,
         kind=kind, log_inbox=False))
@@ -594,7 +647,7 @@ def _handle_push_signal(project_id: str, session_id: str, msg: dict) -> None:
                     target = f'/?project={project_id}&session={session_id}'
                     _queue_push(title, text, url=target,
                                 project_id=project_id, session_id=session_id,
-                                kind='agent')
+                                kind='agent', project_name=p.get('name') or project_id or 'Clayrune')
         elif msg_type == 'result':
             p = load_project(project_id) or {}
             if not p.get('notify_push_enabled', True):
@@ -619,7 +672,7 @@ def _handle_push_signal(project_id: str, session_id: str, msg: dict) -> None:
                 body = 'Waiting for you'
             _queue_push(title, body, url=target,
                         project_id=project_id, session_id=session_id,
-                        kind='turn_complete')
+                        kind='turn_complete', project_name=p.get('name') or project_id or 'Clayrune')
     except Exception as e:
         _log(f"[push] _handle_push_signal error: {e}", flush=True)
 
@@ -1276,7 +1329,10 @@ def api_diag_viewport():
     cl = request.content_length
     if cl is not None and cl > _VIEWPORT_DIAG_MAX_BODY:
         return jsonify({'ok': False, 'error': 'payload_too_large'}), 413
-    raw = request.get_data(as_text=False) or b''  # cached (default): get_json below reuses it
+    bound = _VIEWPORT_DIAG_MAX_BODY + 1
+    app_limit = request.max_content_length
+    request.max_content_length = bound if app_limit is None else min(bound, app_limit)
+    raw = request.get_data(as_text=False) or b''  # get_json reuses the cached bytes
     if len(raw) > _VIEWPORT_DIAG_MAX_BODY:
         return jsonify({'ok': False, 'error': 'payload_too_large'}), 413
     body = request.get_json(force=True, silent=True) or {}
@@ -1305,6 +1361,10 @@ def api_presence():
     """
     body = request.get_json(silent=True) or {}
     watching = body.get('watching') or []
+    cutoff = _time.time() - PRESENCE_FRESH_SEC
+    with _presence_lock:
+        for key in [key for key, seen in _presence_state.items() if seen <= cutoff]:
+            del _presence_state[key]
     n = 0
     if isinstance(watching, list):
         for w in watching:

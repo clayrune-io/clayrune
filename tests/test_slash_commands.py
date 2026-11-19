@@ -143,6 +143,21 @@ def test_stale_cache_is_preferred_over_fallback_when_extraction_yields_nothing(t
     assert [c['name'] for c in inv['commands']] == ['one']
 
 
+def test_inventory_keeps_results_when_a_cache_write_fails(tmp_path, monkeypatch):
+    binary = _bin(tmp_path, GOAL_PAIR)
+    logs = []
+
+    def fail(*args, **kwargs):
+        raise OSError('disk full')
+
+    monkeypatch.setattr(sc, 'write_json_atomic', fail)
+
+    inventory = sc.load_inventory(binary, tmp_path / 'cache.json', log=logs.append)
+
+    assert inventory['source'] == 'extracted'
+    assert any('could not write inventory cache: disk full' in message for message in logs)
+
+
 def test_cache_file_is_valid_json(tmp_path):
     b = _bin(tmp_path, b'a={type:"local",name:"one",description:"D",supportsNonInteractive:!0};')
     cache = tmp_path / 'cache.json'
