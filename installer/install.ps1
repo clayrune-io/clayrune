@@ -452,9 +452,21 @@ function Install-ClaudeNpm {
 # judged ONLY by `claude --version` (Test-ClaudeWorks) - layout-agnostic.
 function Invoke-ClaudeNpmInstall {
     param([string]$Label)
-    if (Get-Process -Name claude -ErrorAction SilentlyContinue) {
-        Write-Host '  Close running Claude sessions before retrying CLI setup.' -ForegroundColor Yellow
-        return $false
+    $npmRoot = [IO.Path]::GetFullPath((Get-NpmPrefix)).TrimEnd('\', '/') +
+        [IO.Path]::DirectorySeparatorChar
+    foreach ($process in (Get-Process -Name claude -ErrorAction SilentlyContinue)) {
+        try {
+            $processPath = $process.Path
+            if (-not $processPath) { continue }
+            $processPath = [IO.Path]::GetFullPath($processPath)
+        } catch {
+            # The process may have exited or its executable may be inaccessible.
+            continue
+        }
+        if ($processPath.StartsWith($npmRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            Write-Host "  Close the running Claude CLI at '$processPath' before retrying CLI setup." -ForegroundColor Yellow
+            return $false
+        }
     }
     # A present-but-non-working `claude` => go straight to a clean repair.
     $broken = (Get-Command claude -ErrorAction SilentlyContinue) -and -not (Test-ClaudeWorks)
@@ -669,8 +681,7 @@ if (Test-ClaudeWorks) {
         Write-Host 'operation not permitted). That usually means Clayrune is open and' -ForegroundColor Yellow
         Write-Host 'holding claude.exe. Fix by hand:' -ForegroundColor Yellow
         Write-Host ''
-        Write-Host '  1. Close Clayrune completely, then in PowerShell:'
-        Write-Host '  Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force' -ForegroundColor Cyan
+        Write-Host '  Close Clayrune and any running npm-installed Claude CLI sessions, then in PowerShell:'
         Write-Host "  Remove-Item -Recurse -Force '$anthDir'" -ForegroundColor Cyan
         Write-Host '  npm install -g @anthropic-ai/claude-code' -ForegroundColor Cyan
         Write-Host '  claude --version' -ForegroundColor Cyan

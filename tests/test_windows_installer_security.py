@@ -37,29 +37,70 @@ def test_build_pins_bootstrap_to_commit_and_hash():
     assert "raw.githubusercontent.com/clayrune-io/clayrune/$commit/installer/install.ps1" in build
 
 
-def test_cli_repair_stops_before_mutation_when_a_claude_process_is_running(tmp_path):
+INSTALL = ROOT / 'installer/install.ps1'
+
+
+def _npm_install_source():
+    source = INSTALL.read_text(encoding='utf-8')
+    name = 'function Invoke-ClaudeNpmInstall {'
+    return name + source.split(name, 1)[1].split('\n}\n', 1)[0] + '\n}\n'
+
+
+def test_cli_install_source_checks_process_paths_under_npm_prefix():
+    install = _npm_install_source()
+    assert 'Get-NpmPrefix' in install
+    assert '$process.Path' in install
+    assert '.StartsWith($npmRoot, [StringComparison]::OrdinalIgnoreCase)' in install
+    assert "Claude CLI at '$processPath'" in install
+    assert 'Stop-Process' not in INSTALL.read_text(encoding='utf-8')
+
+
+@pytest.mark.parametrize('kind', ['npm', 'desktop', 'similar-prefix', 'missing-path', 'unreadable-path'])
+def test_cli_install_blocks_only_running_claude_under_npm_prefix(tmp_path, kind):
     ps = shutil.which('powershell') or shutil.which('pwsh')
     if ps is None:
         pytest.skip('PowerShell required')
-    source = (ROOT / 'installer/install.ps1').read_text(encoding='utf-8')
-    name = 'function Invoke-ClaudeNpmInstall {'
-    function = name + source.split(name, 1)[1].split('\n}\n', 1)[0] + '\n}\n'
+    npm_prefix = tmp_path / 'npm'
+    path = {
+        'npm': str(tmp_path / 'NPM' / 'node_modules' / 'claude.exe'),
+        'desktop': str(tmp_path / 'Claude Desktop' / 'claude.exe'),
+        'similar-prefix': str(tmp_path / 'npm-desktop' / 'claude.exe'),
+    }.get(kind, '')
+    executable_literal = "'" + path.replace("'", "''") + "'"
     script = tmp_path / 'repair-probe.ps1'
     script.write_text(
+        'param($NpmPrefix, $Kind)\n'
+        f'$Executable = {executable_literal}\n'
         "$ErrorActionPreference = 'Stop'\n"
-        "function Get-Process { param($Name) [pscustomobject]@{Id = 9999} }\n"
-        "function Test-ClaudeWorks { return $false }\n"
-        "function Install-ClaudeNpm { throw 'unexpected attempt to reinstall' }\n"
-        + function + "\nInvoke-ClaudeNpmInstall -Label 'probe'\n",
+        'function Get-NpmPrefix { return $NpmPrefix }\n'
+        'function Get-Process {\n'
+        '    param($Name)\n'
+        '    if ($Kind -eq "unreadable-path") {\n'
+        '        $process = [pscustomobject]@{Id = 9999}\n'
+        '        $process | Add-Member -MemberType ScriptProperty -Name Path -Value { throw "Access denied" }\n'
+        '        return $process\n'
+        '    }\n'
+        '    return [pscustomobject]@{Path = $Executable}\n'
+        '}\n'
+        'function Get-Command { param($Name) return $null }\n'
+        'function Test-ClaudeWorks { return $true }\n'
+        'function Install-ClaudeNpm { param([switch]$Clean) Write-Host "install called" }\n'
+        + _npm_install_source() + "\nInvoke-ClaudeNpmInstall -Label 'probe'\n",
         encoding='utf-8',
     )
     result = subprocess.run(
-        [ps, '-NoProfile', '-NonInteractive', '-File', str(script)],
+        [ps, '-NoProfile', '-NonInteractive', '-File', str(script), str(npm_prefix), kind],
         capture_output=True, text=True, timeout=10, check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert 'Close running Claude sessions' in result.stdout
-    assert result.stdout.splitlines()[-1] == 'False'
+    if kind == 'npm':
+        assert f"Close the running Claude CLI at '{path}'" in result.stdout
+        assert 'install called' not in result.stdout
+        assert result.stdout.splitlines()[-1] == 'False'
+    else:
+        assert 'Close the running Claude CLI' not in result.stdout
+        assert 'install called' in result.stdout
+        assert result.stdout.splitlines()[-1] == 'True'
 
 
 def test_signing_workflow_requires_oidc_and_verifies_signature():
