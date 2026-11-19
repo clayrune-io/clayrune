@@ -23,18 +23,15 @@ cat <<'EOF'
 This will install Clayrune on this Mac.
 
 It will:
-  1. Ask which AI you work with (Claude Code / OpenAI Codex / Gemini)
-  2. Install that CLI (if missing) and Node.js 20 via nvm (user-space, no sudo)
-  3. Ask you to sign in once, if the chosen CLI needs it
-  4. Clone Clayrune to ~/Clayrune
-  5. Set up Python venv + a launcher in ~/Applications/
-  6. Open the dashboard in your browser
+  1. Clone Clayrune to ~/Clayrune
+  2. Set up Python dependencies and a launcher in ~/Applications/
+  3. Open the dashboard to choose and set up your AI provider
 
 Estimated time: 5-10 minutes.
 Disk space: about 500 MB.
 
 You can audit what runs by reading:
-  https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install-prompt.md
+  https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install.sh
 
 EOF
 
@@ -42,12 +39,9 @@ printf 'Press Enter to continue, or Ctrl+C to abort... '
 read _ < /dev/tty || true
 echo
 
-# Run the bootstrap. CLAYRUNE_PROMPT_URL points at the GitHub raw URL until
-# clayrune.io DNS is configured. Once the domain is live, drop the env var.
-curl -sSL https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install.sh | \
-  CLAYRUNE_PROMPT_URL=https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install-prompt.md sh
-
-EXIT_CODE=$?
+EXIT_CODE=0
+curl -sSL https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install.sh |
+  sh || EXIT_CODE=$?
 
 echo
 echo "============================================================"
@@ -68,3 +62,4 @@ echo
 
 printf 'Press Enter to close this window... '
 read _ < /dev/tty || true
+exit "$EXIT_CODE"

@@ -314,7 +314,8 @@ def _read_record_raw(project_id):
         return None
     try:
         raw = json.loads(filepath.read_text(encoding='utf-8'))
-    except Exception:
+    except Exception as exc:
+        _log(f"[projects] reading record {filepath.name} failed: {exc}", flush=True)
         return None
     return raw if isinstance(raw, dict) else None
 
@@ -761,7 +762,9 @@ def update_project(project_id):
     routing_data = data.copy()  # retain request-only proof for the concurrent-create recheck
     data.pop('passcode', None)  # request proof must never become project data
 
-    existing = json.loads(filepath.read_text(encoding='utf-8')) if not is_new else {'id': project_id}
+    existing = {'id': project_id} if is_new else _read_record_raw(project_id)
+    if existing is None:
+        return jsonify({'error': 'project record is unreadable'}), 409
     existing.setdefault('backlog', [])
     if 'provider_overrides' in data:
         try:
@@ -774,19 +777,19 @@ def update_project(project_id):
             key in data for key in ('agent_model', 'agent_effort')):
         return jsonify({'error': 'Use provider_overrides for project engine preferences'}), 409
 
-    # ── Auto-create a dedicated workspace folder when creating a project with no path.
+    # ── Pick an automatic workspace path, then create it after validation.
+    auto_workspace = None
     if is_new:
         provided_path = (data.get('project_path') or '').strip()
         if not provided_path:
             base = Path(state.CONFIG.get('auto_workspace_base') or str(Path.home() / 'MissionControl'))
             try:
-                base.mkdir(parents=True, exist_ok=True)
                 candidate = base / project_id
                 n = 1
                 while candidate.exists():
                     candidate = base / f'{project_id}_{n}'
                     n += 1
-                candidate.mkdir(parents=True, exist_ok=True)
+                auto_workspace = candidate
                 data['project_path'] = str(candidate)
             except Exception as e:
                 return jsonify({'error': f'could not create workspace folder: {e}'}), 500
@@ -806,7 +809,7 @@ def update_project(project_id):
             _log(f"[project] resolving workspace path failed: {e}")
             resolved = candidate_path
         for pf in DATA_DIR.glob('*.json'):
-            if pf.stem == project_id or pf.stem.endswith('_agent_log'):
+            if pf.stem == project_id or pf.name.endswith(EXCLUDED_SIDECAR_SUFFIXES):
                 continue
             try:
                 with open(pf, encoding='utf-8') as f:
@@ -902,12 +905,21 @@ def update_project(project_id):
                 if refusal is not None:
                     return refusal
                 is_new = False
-                existing = json.loads(filepath.read_text(encoding='utf-8'))
+                existing = _read_record_raw(project_id)
+                if existing is None:
+                    return jsonify({'error': 'project record is unreadable'}), 409
+                if auto_workspace is not None:
+                    data.pop('project_path', None)
                 existing.setdefault('backlog', [])
                 for k, v in data.items():
                     if k not in ('log_msg', 'backlog'):
                         existing[k] = v
                 existing['last_updated'] = now_iso()
+            elif auto_workspace is not None:
+                try:
+                    auto_workspace.mkdir(parents=True, exist_ok=False)
+                except OSError as exc:
+                    return jsonify({'error': f'could not create workspace folder: {exc}'}), 500
             save_project(project_id, existing)
             if is_new:
                 DeliveryStore(Path(DATA_DIR).parent / 'delegation_delivery.sqlite3').recreate_project(project_id)
@@ -1354,21 +1366,8 @@ def add_backlog_item(project_id):
     if error:
         return jsonify({'error': error}), 400
 
-    p = load_project(project_id)
-    if p is None:
-        return jsonify({'error': 'not found'}), 404
-
-    backlog = p.setdefault('backlog', [])
-    # Number the existing items first, so the new one takes the next free slot
-    # rather than colliding with a backfill that hasn't happened yet.
-    _ensure_backlog_numbers(p)
-    seq = int(p.get('backlog_seq') or 0) + 1
-    p['backlog_seq'] = seq
-
     item = {
         'id': str(uuid.uuid4())[:8],
-        'num': seq,
-        'key': _format_backlog_key(p.get('backlog_key'), seq),
         'text': data['text'].strip(),
         'priority': data.get('priority', 'normal'),
         'status': 'open',
@@ -1384,9 +1383,18 @@ def add_backlog_item(project_id):
     if proposer is not None:
         _backlog_proposals.stamp_proposed(item, proposer)
 
-    backlog.insert(0, item)
-    p['last_updated'] = now_iso()
-    save_project(project_id, p)
+    def _append(p):
+        # Backfill old numbers and allocate the next one under the same lock.
+        _ensure_backlog_numbers(p)
+        seq = int(p.get('backlog_seq') or 0) + 1
+        p['backlog_seq'] = item['num'] = seq
+        item['key'] = _format_backlog_key(p.get('backlog_key'), seq)
+        p.setdefault('backlog', []).insert(0, item)
+        p['last_updated'] = now_iso()
+        return True
+
+    if not mutate_project(project_id, _append):
+        return jsonify({'error': 'not found'}), 404
     return jsonify({'ok': True, 'item': item})
 
 
@@ -1394,8 +1402,10 @@ def add_backlog_item(project_id):
 @_role_writes.charter_write
 def update_backlog_item(project_id, item_id):
     data = request.get_json()
-    if not data:
+    if not isinstance(data, dict) or not data:
         return jsonify({'error': 'no data'}), 400
+    if 'text' in data and not isinstance(data['text'], str):
+        return jsonify({'error': 'text must be a string'}), 400
 
     error = validate_backlog_fields(data)
     if error:
@@ -1477,7 +1487,11 @@ def update_backlog_item(project_id, item_id):
     # Export first (tools/backlog-journal-export.py) — this drops the rest on the
     # floor and the project file is untracked, so there is nothing to recover from.
     if 'notes' in data and isinstance(data['notes'], list):
-        item['notes'] = data['notes'][-50:]
+        notes = data['notes']
+        if len(notes) > 50:
+            _log(f"[backlog] note cap on {project_id}/{item_id}: evicting "
+                 f"{len(notes) - 50} oldest note(s), unrecoverable", flush=True)
+        item['notes'] = notes[-50:]
 
     p['last_updated'] = now_iso()
     save_project(project_id, p)
@@ -1492,7 +1506,8 @@ def _append_note_to_backlog_item(project_id, item_id, text, agent_code='user'):
     with _backlog_sync_lock:
         try:
             p = load_project(project_id)
-        except Exception:
+        except Exception as exc:
+            _log(f"[backlog] reading {project_id} for note {item_id} failed: {exc}", flush=True)
             return False
         if p is None:
             return False
@@ -1524,7 +1539,8 @@ def _append_note_to_backlog_item(project_id, item_id, text, agent_code='user'):
                 p['last_updated'] = now_iso()
                 try:
                     save_project(project_id, p)
-                except Exception:
+                except Exception as exc:
+                    _log(f"[backlog] saving note {project_id}/{item_id} failed: {exc}", flush=True)
                     return False
                 return True
         return False
@@ -2473,8 +2489,8 @@ def _image_path_allowed(real: str) -> bool:
                 except Exception:
                     continue
                 allowed.append(pp)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log(f"[projects] loading image allowlist failed: {exc}", flush=True)
     rn = os.path.normcase(real)
     for a in allowed:
         try:
@@ -2611,8 +2627,8 @@ def serve_file():
             except Exception:
                 continue
             allowed_projects.append(pp)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log(f"[projects] loading file allowlist failed: {exc}", flush=True)
     rn = os.path.normcase(real)
     ok = False
     matched_project = False
@@ -3006,6 +3022,6 @@ def get_grid_layout():
     if layout_path.exists():
         try:
             return jsonify(json.loads(layout_path.read_text(encoding='utf-8')))
-        except Exception:
-            pass
+        except Exception as exc:
+            _log(f"[projects] reading grid layout failed: {exc}", flush=True)
     return jsonify({'order': []})

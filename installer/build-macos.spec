@@ -17,6 +17,7 @@
 import datetime
 import json
 import os
+from pathlib import Path
 import subprocess
 import tempfile
 
@@ -35,6 +36,31 @@ REPO_ROOT = os.path.dirname(SPECPATH)  # noqa: F821 — injected by PyInstaller
 
 def R(*parts):
     return os.path.join(REPO_ROOT, *parts)
+
+
+def _builtin_skill_datas():
+    """List individual tracked files so local skills stay out of the bundle."""
+    root = Path(REPO_ROOT).resolve()
+    try:
+        tracked = subprocess.check_output(
+            ['git', 'ls-files', '-z', '--', 'data/skills/builtin'],
+            cwd=root, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(
+            'Cannot bundle built-in skills. Build from a Git checkout with Git on PATH.'
+        ) from exc
+    if not tracked:
+        raise RuntimeError('No tracked built-in skill files found in the Git checkout.')
+
+    entries = []
+    for name in tracked.rstrip(b'\0').split(b'\0'):
+        relative = Path(os.fsdecode(name))
+        source = root / relative
+        if not source.is_file() or source.resolve() != source:
+            raise RuntimeError(f'Expected a regular tracked skill file at {relative}')
+        entries.append((str(source), relative.parent.as_posix()))
+    return entries
 
 
 block_cipher = None
@@ -101,8 +127,6 @@ datas = [
     # startup (character_routes._install_builtin_characters). Leave it out
     # and a fresh frozen install never gets the base agent.
     (R('data', 'agents', 'builtin'), 'data/agents/builtin'),
-    # Canonical cycle text must be available without native skill discovery.
-    (R('data', 'skills', 'builtin', 'mc-steward'), 'data/skills/builtin/mc-steward'),
     # server.py's _install_guardrail_hooks_on_boot loads this by FILE PATH
     # (importlib.util.spec_from_file_location against _APP_DIR), not as a
     # `mc.*` package import PyInstaller's Analysis would discover on its own —
@@ -122,8 +146,11 @@ datas = [
     # app's Connect-by-address recognises no service (the loader fails closed). Neither was
     # listed before slice P1 (docs/DESK_SERVICE_PROFILES_SPEC.md).
     (R('mc', 'desk_connect', 'registry.json'), 'mc/desk_connect'),
+    (R('mc', 'desk_connect', 'mcp_catalogue.json'), 'mc/desk_connect'),
     (R('mc', 'desk_connect', 'profiles'), 'mc/desk_connect/profiles'),
 ]
+# Shipped skills are installed on startup, including tracked canonical cycle text.
+datas += _builtin_skill_datas()
 
 # SHARED_RULES.md is deliberately NOT bundled. It is user data — read verbatim
 # into every agent's system prompt on every project — and it stays on disk in

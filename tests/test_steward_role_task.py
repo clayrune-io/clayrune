@@ -13,6 +13,7 @@ from typing import Optional
 
 import pytest
 
+from macos_spec_data import macos_datas
 from mc import steward_role_task as task
 from mc.steward_role_model import RoleError
 
@@ -198,20 +199,42 @@ def test_canonical_directive_contains_ordered_safety_contract(staged):
         assert obsolete not in directive
 
 
-def test_skill_is_an_entry_to_packaged_canonical_resource(staged):
-    skill = (staged / SKILL / 'SKILL.md').read_text(encoding='utf-8')
+@pytest.fixture
+def indexed_skill(staged):
+    subprocess.run(['git', 'init', '-q'], cwd=staged, check=True)
+    subprocess.run(['git', 'add', '-f', '--', SKILL.as_posix()], cwd=staged, check=True)
+    return staged.resolve()
+
+
+def test_skill_is_an_entry_to_packaged_canonical_resource(indexed_skill):
+    skill = (indexed_skill / SKILL / 'SKILL.md').read_text(encoding='utf-8')
     assert '[CYCLE_DIRECTIVE.md](CYCLE_DIRECTIVE.md)' in skill
     assert 'post one `blocked` note' not in skill
-    spec = ast.parse((ROOT / 'installer/build-macos.spec').read_text(encoding='utf-8'))
-    entries = []
-    for node in ast.walk(spec):
-        if isinstance(node, ast.Tuple) and len(node.elts) == 2:
-            call, destination = node.elts
-            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == 'R':
-                if all(isinstance(a, ast.Constant) for a in call.args):
-                    entries.append((tuple(a.value for a in call.args), ast.literal_eval(destination)))
-    assert (('data', 'skills', 'builtin', 'mc-steward'), 'data/skills/builtin/mc-steward') in entries
-    assert (staged / SKILL / 'CYCLE_DIRECTIVE.md').is_file()
+    directive = indexed_skill / SKILL / 'CYCLE_DIRECTIVE.md'
+    assert (directive, SKILL.as_posix()) in macos_datas(indexed_skill)
+
+
+def test_macos_bundle_omits_untracked_skill_directory(indexed_skill):
+    builtin = SKILL.parent
+    ignored = indexed_skill / builtin / 'scratch-skill'
+    ignored.mkdir()
+    (ignored / 'SKILL.md').write_text('local skill', encoding='utf-8')
+    (indexed_skill / '.gitignore').write_text(f'/{builtin.as_posix()}/{ignored.name}/\n', encoding='utf-8')
+
+    datas = macos_datas(indexed_skill)
+    assert {(src, dst) for src, dst in datas if Path(dst).is_relative_to(builtin)} == {
+        (indexed_skill / SKILL / 'SKILL.md', SKILL.as_posix()),
+        (indexed_skill / SKILL / 'CYCLE_DIRECTIVE.md', SKILL.as_posix()),
+    }
+
+
+def test_macos_bundle_requires_git_for_builtin_skills(tmp_path, monkeypatch):
+    def missing_git(*args, **kwargs):
+        raise FileNotFoundError('git')
+
+    monkeypatch.setattr(subprocess, 'check_output', missing_git)
+    with pytest.raises(RuntimeError, match='Build from a Git checkout with Git on PATH'):
+        macos_datas(tmp_path)
 
 
 def test_builtin_checksum_preserves_local_edits_without_replacing_contract(staged, tmp_path, monkeypatch):

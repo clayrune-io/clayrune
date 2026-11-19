@@ -81,6 +81,14 @@ def _key_path() -> Path:
     return clayrune_home() / "remote_identity_mirror.key"
 
 
+def _load_key(path: Path) -> bytes:
+    encoded = path.read_text(encoding="utf-8").strip()
+    key = base64.b64decode(encoded, validate=True)
+    if len(key) != 32:
+        raise ValueError("invalid identity mirror key length")
+    return key
+
+
 def _load_or_create_key() -> bytes:
     """File-only key, deliberately never stored in the OS keyring.
 
@@ -89,12 +97,10 @@ def _load_or_create_key() -> bytes:
     """
     p = _key_path()
     try:
-        if p.is_file():
-            encoded = p.read_text(encoding="utf-8").strip()
-            if encoded:
-                return base64.b64decode(encoded)
-    except OSError as e:
-        log.warning("identity mirror key read failed: %s", e)
+        return _load_key(p)
+    except FileNotFoundError:
+        if mirror_path().exists():
+            raise
     raw = os.urandom(32)
     _write_private_text(p, base64.b64encode(raw).decode("ascii"))
     return raw
@@ -140,7 +146,7 @@ def read() -> Optional[dict]:
         return None
 
     try:
-        key = _load_or_create_key()
+        key = _load_key(_key_path())
     except Exception as e:
         log.warning("identity mirror key unavailable: %s", e)
         return None

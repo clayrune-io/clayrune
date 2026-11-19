@@ -96,6 +96,14 @@ def fake_install(tmp_path, monkeypatch):
            'checkout': checkout, 'nongit': nongit}
 
 
+def test_registered_projects_log_bad_record_and_keep_good_ones(tmp_path, capsys):
+    (tmp_path / 'good.json').write_text('{}', encoding='utf-8')
+    (tmp_path / 'damaged.json').write_text('{', encoding='utf-8')
+
+    assert bk._iter_registered_projects(tmp_path) == [{'id': 'good'}]
+    assert 'damaged.json' in capsys.readouterr().out
+
+
 def test_size_preview_defaults_everything_on(fake_install):
     preview = bk.size_preview()
     for name in ('records', 'artifacts', 'media', 'transcripts', 'unprotected'):

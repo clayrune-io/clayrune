@@ -6,8 +6,9 @@ project (the load-bearing DATA_DIR-pollution rule), so per-project sidecar state
 belongs outside it. See CLAUDE.md "LOAD-BEARING RULE — DATA_DIR pollution".
 """
 import json
-import os
 from pathlib import Path
+
+from mc.atomic_json import write_json_atomic
 
 from ._config import CFG, _log
 
@@ -59,9 +60,5 @@ def read_all_heartbeats() -> dict:
 
 
 def write_heartbeat(project_id: str, hb: dict) -> None:
-    """Atomic last-write-wins write (tmp + os.replace), mirroring the
-    _atomic_write_text discipline used by the memory writers."""
-    p = heartbeat_path(project_id)
-    tmp = p.parent / (p.name + '.tmp')
-    tmp.write_text(json.dumps(hb, indent=2, ensure_ascii=False), encoding='utf-8')
-    os.replace(tmp, p)
+    """Publish a complete heartbeat even when writers overlap."""
+    write_json_atomic(heartbeat_path(project_id), hb, indent=2, ensure_ascii=False)

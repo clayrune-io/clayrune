@@ -743,13 +743,17 @@ if [ -n "$CHOSEN_PROVIDER" ]; then
 import json, sys
 path, provider = sys.argv[1], sys.argv[2]
 try:
-    with open(path) as f:
+    with open(path, encoding='utf-8-sig') as f:
         cfg = json.load(f)
-except (FileNotFoundError, ValueError):
+except FileNotFoundError:
     cfg = {}
+except (OSError, ValueError) as exc:
+    sys.exit(f'Could not read {path}: {exc}')
+if not isinstance(cfg, dict):
+    sys.exit(f'Expected a JSON object in {path}')
 if not cfg.get('default_provider'):
     cfg['default_provider'] = provider
-    with open(path, 'w') as f:
+    with open(path, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, indent=2)
 PYEOF
 fi

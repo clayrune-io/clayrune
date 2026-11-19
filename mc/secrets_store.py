@@ -1340,8 +1340,9 @@ def _refresh_legacy_keyring_cache() -> bool:
         try:
             import keyring
             present = bool(keyring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT))
-        except Exception:
-            present = False
+        except Exception as exc:
+            _log(f"[secrets] legacy keyring presence check failed: {exc}", flush=True)
+            return bool(_legacy_keyring_entry_cached)
     _legacy_keyring_entry_cached = present
     return present
 

@@ -886,6 +886,23 @@ def test_mirror_still_reseals_for_a_key_that_does_open_something(fake_keyring_va
 
 # ── Health check: is_readable / list_secrets(check_readable=True) ──────────
 
+@pytest.mark.parametrize('known_presence', [True, False, None])
+def test_failed_legacy_keyring_probe_preserves_last_known_presence(
+        fake_keyring_vault, monkeypatch, capsys, known_presence):
+    import keyring
+
+    vault, _ = fake_keyring_vault
+    monkeypatch.setattr(vault, '_legacy_keyring_entry_cached', known_presence)
+
+    def denied(*args):
+        raise OSError('keyring unavailable')
+
+    monkeypatch.setattr(keyring, 'get_password', denied)
+    assert vault._refresh_legacy_keyring_cache() is bool(known_presence)
+    assert vault._legacy_keyring_entry_cached is known_presence
+    assert 'keyring unavailable' in capsys.readouterr().out
+
+
 def test_is_readable_true_for_a_healthy_entry(vault):
     vault.set_secret('a.b', 'value-value')
     assert vault.is_readable('a.b') is True

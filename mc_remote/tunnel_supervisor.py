@@ -282,24 +282,13 @@ class TunnelSupervisor:
     def _watchdog_loop(self) -> None:
         """Poll cloudflared health between attestations.
 
-        Whenever cloudflared is NOT alive, wake the attestation thread for an
-        out-of-band retry (which re-issues start() on the next OK).
-
-        DOWN IS A STATE, NOT AN EDGE. This used to fire only on a True→False
-        transition, starting from `was_alive = None`. So a tunnel that was
-        already dead the first time the watchdog looked recorded "dead" and
-        never fired again — it polled a corpse every 5s, forever, while
-        `status()` reported the stale attestation and the user saw nothing.
-        That is exactly how remote access stayed down for an hour on
-        2026-08-14 with no recovery and no signal; a supervisor restart, or a
-        crash during a re-issue, is enough to land in it.
-
-        Re-arming on a level rather than an edge means the retry keeps being
-        requested until it works. `_wake_attest` only shortcuts a sleep, and
-        the attest loop has its own backoff, so a persistently-dead tunnel
-        costs one attestation per backoff interval, not one per poll.
+        Wake attestation on the first down poll and at most once per
+        _BACKOFF_MAX_S while the connector stays down. The 2026-08-14 outage
+        showed why recovery must be level-triggered: a connector can already
+        be dead at startup or exit again between polls after a re-issue.
         """
         down_since: Optional[float] = None
+        last_watchdog_wake: Optional[float] = None
         while not self._cancel.is_set():
             self._cancel.wait(timeout=_WATCHDOG_INTERVAL_S)
             if self._cancel.is_set():
@@ -313,18 +302,22 @@ class TunnelSupervisor:
                 if down_since is not None:
                     log.info("cloudflared is back after %.0fs down", time.time() - down_since)
                 down_since = None
+                last_watchdog_wake = None
                 with self._lock:
                     self._state.cloudflared_down_since = None
                     self._state.down_alert_sent_at = None
                 continue
 
-            now = time.time()
             if down_since is None:
-                down_since = now
+                down_since = time.time()
                 log.warning("cloudflared is not alive; asking attest loop to re-issue")
                 with self._lock:
-                    self._state.cloudflared_down_since = now
-            self._wake_attest.set()
+                    self._state.cloudflared_down_since = down_since
+
+            now = time.monotonic()
+            if last_watchdog_wake is None or now - last_watchdog_wake >= _BACKOFF_MAX_S:
+                last_watchdog_wake = now
+                self._wake_attest.set()
             self._maybe_alert_down(down_since)
 
     # ─── Down alert ───────────────────────────────────────────────────────
@@ -359,11 +352,14 @@ class TunnelSupervisor:
             if not mailer.exists():
                 log.warning("down alert: mailer not found at %s", mailer)
                 return
-            subprocess.run(
+            result = subprocess.run(
                 [sys.executable, str(mailer), "--subject", subject, "--body", body],
                 capture_output=True, timeout=60, check=False,
             )
-            log.warning("remote access down %dm — alert sent", mins)
+            if result.returncode == 0:
+                log.warning("remote access down %dm — alert sent", mins)
+            else:
+                log.warning("remote access down %dm — mailer exited %s", mins, result.returncode)
         except Exception as e:
             log.warning("down alert could not be sent: %s", e)
 

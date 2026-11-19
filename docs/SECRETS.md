@@ -604,7 +604,7 @@ How the streaming route behaves (`mc/secrets_exec_stream.py`; the frames are in
 - **A locked vault is refused outright**, even when the command references no secret: the
   route runs an arbitrary command, which a human-held lock should gate.
 - **A session has a bounded life.** It is ended after `exec_stream_max_age_hours` (a
-  `config.json` key, read live, default 24, `0` = no cap; a junk value falls back to 24), with
+  `config.json` key read when the session starts, default 24, `0` = no cap; a junk value falls back to 24), with
   an error frame explaining why. It is also ended if the attached reader stops taking output
   for 60 s while a frame is waiting (werkzeug has no send timeout, and a reader that never
   reads would otherwise pin one of the 16 slots forever); that teardown also shuts the

@@ -84,7 +84,7 @@ MAX_STDIN_POST = 1 << 20
 
 def _max_age_s() -> float:
     """Maximum session age in seconds, from ``exec_stream_max_age_hours`` in config.json
-    (live read, default 24; 0 disables — the convention of every other minutes/hours knob).
+    (read at session start, default 24; 0 disables).
     A junk value falls back to the default rather than disabling the cap."""
     try:
         from mc import state

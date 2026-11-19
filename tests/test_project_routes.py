@@ -638,6 +638,74 @@ def test_backlog_malformed_and_404(client):
     assert client.get('/api/project/nope/backlog').status_code == 404
 
 
+def test_update_project_refuses_corrupt_record_without_replacing_it(client):
+    from mc.blueprints import project_routes as pr
+
+    record = pr.DATA_DIR / 'tproj.json'
+    record.write_text('{', encoding='utf-8')
+    response = client.post('/api/project/tproj', json={'name': 'new'}, headers=HUMAN)
+    assert response.status_code == 409
+    assert record.read_text(encoding='utf-8') == '{'
+
+
+def test_invalid_new_project_does_not_create_workspace(client):
+    from mc import state
+
+    workspace = Path(state.CONFIG['auto_workspace_base']) / 'tproj'
+    response = _human_project_post(
+        client, '/api/project/tproj', json={'default_character': 'invalid'})
+    assert response.status_code == 400
+    assert not workspace.exists()
+
+
+def test_backlog_patch_rejects_non_text_and_logs_trimmed_notes(client, capsys):
+    _seed(client, backlog=[{'id': 'item', 'text': 'before', 'status': 'open'}])
+    endpoint = '/api/project/tproj/backlog/item'
+    assert client.patch(endpoint, json={'text': 42}).status_code == 400
+    notes = [{'text': str(index)} for index in range(51)]
+    result = client.patch(endpoint, json={'notes': notes})
+    assert result.status_code == 200
+    assert result.get_json()['item']['notes'] == notes[1:]
+    assert '1 oldest note(s)' in capsys.readouterr().out
+
+
+def test_overlapping_backlog_adds_take_distinct_numbers(client, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from mc.blueprints import project_routes as pr
+
+    _seed(client, backlog_key='CONC', backlog_seq=4)
+    load_project = pr.load_project
+    start = threading.Barrier(2)
+    second_read = threading.Event()
+
+    def synchronized_load(project_id):
+        project = load_project(project_id)
+        if project_id == 'tproj' and project and project['backlog_seq'] == 4:
+            # On the old path, both reads can reach this point before saving.
+            # On the locked path, the first completes after a bounded wait.
+            if threading.current_thread().name.endswith('_0'):
+                second_read.wait(timeout=0.5)
+            else:
+                second_read.set()
+        return project
+
+    def add(text):
+        with client.application.test_client() as concurrent:
+            start.wait(timeout=5)
+            response = concurrent.post('/api/project/tproj/backlog',
+                                       json={'text': text}, headers=HUMAN)
+            assert response.status_code == 200
+            return response.get_json()['item']
+
+    monkeypatch.setattr(pr, 'load_project', synchronized_load)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        items = list(pool.map(add, ['first', 'second']))
+    assert {item['num'] for item in items} == {5, 6}
+    assert {item['key'] for item in items} == {'CONC-05', 'CONC-06'}
+    assert load_project('tproj')['backlog_seq'] == 6
+
+
 def test_backlog_note_append(client):
     _seed(client, backlog=[{'id': 'it1', 'text': 't'}])
     r = client.post('/api/project/tproj/backlog/it1/note',

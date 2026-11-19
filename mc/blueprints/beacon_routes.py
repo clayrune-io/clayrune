@@ -55,13 +55,15 @@ def beacon_stream():
         for tick in range(601):
             try:
                 digest = beacon.build_digest()
-                payload = json.dumps(digest, sort_keys=True, ensure_ascii=False)
+                content = {key: value for key, value in digest.items() if key != 'generated_at'}
+                payload = (json.dumps(digest, sort_keys=True, ensure_ascii=False)
+                           if content != last else None)
             except Exception as e:
                 _log(f"[beacon] stream build failed: {e}")
                 payload = None
-            if payload and payload != last:
+            if payload:
+                last = content
                 yield f"data: {payload}\n\n"
-                last = payload
             elif tick % 15 == 0:
                 # Heartbeat comment keeps proxies/clients from idling out.
                 yield ": keepalive\n\n"

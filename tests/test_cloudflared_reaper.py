@@ -34,10 +34,11 @@ def test_ledger_roundtrip_dedupes_and_sorts(ledger):
     assert cf._ledger_read() == [111, 333, 444]
 
 
-def test_ledger_read_survives_missing_and_corrupt_file(ledger):
+def test_ledger_read_survives_missing_and_corrupt_file(ledger, caplog):
     assert cf._ledger_read() == []          # never written
     ledger.write_text('not json{{')
     assert cf._ledger_read() == []          # corrupt → empty, not a crash
+    assert 'could not read cloudflared PID ledger' in caplog.text
     ledger.write_text('{"pid": 1}')
     assert cf._ledger_read() == []          # wrong shape → empty
 

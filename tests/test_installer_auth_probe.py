@@ -19,7 +19,7 @@ PS = shutil.which('powershell') or shutil.which('pwsh')
     ('not JSON', 1, False, 'ERROR:'),
     ('', 0, True, 'ERROR:'),
 ])
-def test_auth_status_is_bounded_and_fail_closed(output, code, timeout, expected):
+def test_auth_status_is_bounded_and_fail_closed(output, code, timeout, expected, tmp_path):
     source = (ROOT / 'installer/install.ps1').read_text(encoding='utf-8')
     function = source.split('function Test-ClaudeAuth {', 1)[1].split("\nWrite-Host '======================================'", 1)[0]
     function = 'function Test-ClaudeAuth {' + function
@@ -29,6 +29,7 @@ def test_auth_status_is_bounded_and_fail_closed(output, code, timeout, expected)
 $ErrorActionPreference = 'Stop'
 $script:cleaned = $false
 function Start-Job { param($ScriptBlock) return 'owned-job' }
+function Get-Command { throw 'unexpected CLI lookup outside the stubbed job' }
 function Wait-Job { param($Job, $Timeout)
     if ($Timeout -ne 20) { throw 'wrong timeout' }
     WAIT_RESULT
@@ -42,7 +43,10 @@ FUNCTION
 try { Test-ClaudeAuth } catch { Write-Output ('ERROR:' + $_) }
 if (-not $script:cleaned) { throw 'job was not cleaned up' }
 '''.replace('WAIT_RESULT', '' if timeout else 'return $Job').replace('OUTPUT', output).replace('CODE', str(code)).replace('FUNCTION', function)
-    result = subprocess.run([PS, '-NoProfile', '-NonInteractive', '-Command', script],
+    # Keep the stubbed function out of the shell argv, which the real-CLI guard scans.
+    probe = tmp_path / 'auth-probe.ps1'
+    probe.write_text(script, encoding='utf-8')
+    result = subprocess.run([PS, '-NoProfile', '-NonInteractive', '-File', str(probe)],
                             stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=15)
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip().startswith(expected), result.stdout

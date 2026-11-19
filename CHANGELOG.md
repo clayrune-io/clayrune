@@ -11,6 +11,13 @@
 ## [2026-11-18] - API reference checker finds Flask route shortcuts and routes throughout `mc/`
 
 - The check-only scan now includes Flask's `get`, `post`, `put`, `patch` and `delete` decorators and discovers routes in `mc/` modules outside `mc/blueprints/` (backlog a4518a34).
+## [2026-11-18] - Platform reliability fixes (MC-1179 pass 07)
+
+- P7, P16, P18, P25. Preserve the last keyring presence result on a failed lookup, log stdin relay failures, and update the stream lifetime and passkey documentation.
+- P31, P35, P57, P61, P62. Preserve the restore point selected for rollback, log unreadable backup records, allocate backlog keys under the write lock, validate project records before saving or creating workspaces, and reject invalid backlog text and log trimmed notes.
+- P37, P42, P46, P51, P52. Report locked or undeletable browser profiles and reader failures, keep the server and sessions running if a replacement fails to spawn, report a missing Claude CLI, and write the status cache atomically.
+- P73, P75, P77, P84, P85. Suppress unchanged Beacon updates, publish concurrent heartbeat writes atomically, retry attestation every 60 seconds while the tunnel stays down, preserve identity mirror keys on read failure, and report mailer and connector ledger failures.
+- P72, P90, P92, P93, P95. Keep the launcher's Windows PATH, preserve installer settings, include Git-tracked built-in skills and the Desk MCP catalogue in the macOS bundle, show macOS setup failures, and ask users to close a running npm-installed Claude CLI before repairing it. The Windows setup batch file uses CRLF.
 
 ## [2026-11-18] - macOS script installer creates a working Applications launcher (MC-1179 P86)
 

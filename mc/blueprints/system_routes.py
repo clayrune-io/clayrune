@@ -505,21 +505,22 @@ SYSTEM_STATUS_PATH: Path = None  # type: ignore[assignment]  # wired
 def _load_system_status_from_disk():
     """Populate `state._LAST_SYSTEM_STATUS` on startup so the panel shows something
     immediately even if no agent has run since the restart."""
+    if SYSTEM_STATUS_PATH is None:
+        return
     try:
         if SYSTEM_STATUS_PATH.exists():
             state._LAST_SYSTEM_STATUS = json.loads(SYSTEM_STATUS_PATH.read_text(encoding='utf-8'))
-    except Exception:
+    except Exception as exc:
+        _log(f"[system] status cache read failed: {exc}", flush=True)
         state._LAST_SYSTEM_STATUS = {}
 
 
 def _save_system_status_to_disk():
     try:
         SYSTEM_STATUS_PATH.parent.mkdir(parents=True, exist_ok=True)
-        SYSTEM_STATUS_PATH.write_text(
-            json.dumps(state._LAST_SYSTEM_STATUS, indent=2), encoding='utf-8'
-        )
-    except Exception:
-        pass  # Non-fatal — cache stays in memory.
+        write_json_atomic(SYSTEM_STATUS_PATH, state._LAST_SYSTEM_STATUS, indent=2)
+    except Exception as exc:
+        _log(f"[system] status cache write failed: {exc}", flush=True)
 
 
 def _capture_system_init(msg):
@@ -594,8 +595,8 @@ def _capture_system_init(msg):
                     _allowance_state.clear_exhaustion('claude')
                 else:
                     _allowance_state.observe('claude', msg)
-    except Exception:
-        pass  # Capture is best-effort; never break the reader on a parse error.
+    except Exception as exc:
+        _log(f"[system] status capture failed: {exc}", flush=True)
 
 
 _load_system_status_from_disk()
@@ -719,7 +720,8 @@ def _mc_usage_from_agent_logs():
             try:
                 entries = json.loads(log_path.read_text(encoding='utf-8',
                                                         errors='replace'))
-            except Exception:
+            except Exception as exc:
+                _log(f"[usage] reading agent log {log_path.name} failed: {exc}", flush=True)
                 continue
             if not isinstance(entries, list):
                 continue
@@ -776,8 +778,8 @@ def _mc_usage_from_agent_logs():
                     week_t[model] = int(week_t.get(model, 0)) + tok
                 if ts == today_str:
                     today_t[model] = int(today_t.get(model, 0)) + tok
-    except Exception:
-        pass
+    except Exception as exc:
+        _log(f"[usage] aggregating agent logs failed: {exc}", flush=True)
 
     return {
         'today': today_t,
@@ -1298,8 +1300,8 @@ def system_usage_get():
         if cc_path.exists():
             cc_data = json.loads(cc_path.read_text(encoding='utf-8'))
             cc_available = True
-    except Exception:
-        pass
+    except Exception as exc:
+        _log(f"[usage] reading Claude stats cache failed: {exc}", flush=True)
 
     # All-time top models: prefer MC aggregated if it has data, fall back to CC.
     mc_all = mc.get('all_time', {})
@@ -1641,7 +1643,10 @@ def system_status_refresh():
         # NOT applied here — we WANT the full tool/MCP roster in the init so
         # the panel reflects the user's real environment, not a sandboxed
         # subset (which is why we don't reuse Claydo's flags).
-        cmd = [_resolve_claude(),
+        claude = _resolve_claude()
+        if not claude:
+            raise FileNotFoundError('Claude CLI not found')
+        cmd = [claude,
                '--max-turns', '1',
                '--print', '--verbose',
                '--input-format', 'stream-json',
@@ -1941,26 +1946,22 @@ def _perform_server_restart_async(audit_entry):
     os._exit(2) past an absolute deadline no matter what.
     """
     def _do_restart():
-        # Watchdog: under any circumstance, terminate within 10s of being
-        # asked to restart. Daemon thread won't be joined; os._exit is a hard
-        # SIGKILL-equivalent that bypasses atexit hooks but that's the point.
+        restart_time = state._LAST_RESTART_TIME
+        # Bound teardown once the replacement has spawned.
         def _watchdog():
             _time.sleep(10.0)
             try: _log("[restart] watchdog tripped — forcing termination")
             except Exception: pass
             os._exit(2)
-        threading.Thread(target=_watchdog, daemon=True).start()
-
         _time.sleep(0.4)  # let the HTTP 202 actually reach the client
 
         # (1) Spawn the new instance FIRST. Even if everything below hangs,
         # the user already has a fresh server starting up. The new instance's
         # port-conflict bypass will wait for the old socket to free.
-        spawned = False
-        # Pre-hydration guarded keys only: see provider_env_scope.relaunch_env.
-        new_env = relaunch_env()
-        new_env['MC_RESTART_FROM_PID'] = str(os.getpid())
         try:
+            # Pre-hydration guarded keys only: see provider_env_scope.relaunch_env.
+            new_env = relaunch_env()
+            new_env['MC_RESTART_FROM_PID'] = str(os.getpid())
             popen_kwargs = {
                 'env': new_env,
                 'cwd': os.getcwd(),
@@ -1999,18 +2000,22 @@ def _perform_server_restart_async(audit_entry):
                 popen_kwargs['stdin'] = subprocess.DEVNULL
                 _redirect_restart_child_output(popen_kwargs)
             spawn_replacement([sys.executable] + sys.argv, **popen_kwargs)
-            spawned = True
-            _log("[restart] spawned new server process")
         except Exception as e:
             _log(f"[restart] failed to spawn new instance: {e}")
+            if state._LAST_RESTART_TIME == restart_time:
+                state._LAST_RESTART_TIME = 0
+            return
+
+        _log("[restart] spawned new server process")
+        threading.Thread(target=_watchdog, daemon=True).start()
 
         # (2) Best-effort graceful stop, bounded by a wall-clock timeout.
         # Run in its own thread so a deadlock cannot prevent the os._exit
         # below. Whether or not it finishes, we proceed.
         stop_done = threading.Event()
         def _bounded_stop():
-            # MC-1150 P4: spare adoptable agents only if a replacement server started.
-            try: _stop_all_sessions_for_restart(spare_adoptable=spawned)
+            # MC-1150 P4: the replacement can adopt eligible agents.
+            try: _stop_all_sessions_for_restart(spare_adoptable=True)
             except Exception as e:
                 try: _log(f"[restart] stop-all failed: {e}")
                 except Exception: pass
@@ -2030,9 +2035,9 @@ def _perform_server_restart_async(audit_entry):
         # Brief settle so the new process can claim the port if the OS is
         # quick about it; the new instance is allowed to wait longer.
         _time.sleep(0.25)
-        try: _log(f"[restart] exiting old process (spawned={spawned})")
+        try: _log("[restart] exiting old process")
         except Exception: pass
-        os._exit(0 if spawned else 1)
+        os._exit(0)
 
     threading.Thread(target=_do_restart, daemon=True).start()
 
@@ -2206,7 +2211,8 @@ def _load_bundled_build_info(repo_root):
         return None
     try:
         return json.loads(path.read_text(encoding='utf-8'))
-    except Exception:
+    except Exception as exc:
+        _log(f"[system] reading bundled build info failed: {exc}", flush=True)
         return None
 
 

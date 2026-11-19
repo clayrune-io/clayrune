@@ -175,8 +175,13 @@ def _ledger_read() -> list:
         import json
         with open(_PID_LEDGER, "r", encoding="utf-8") as fh:
             data = json.load(fh)
-        return [int(x) for x in data] if isinstance(data, list) else []
-    except Exception:
+        if not isinstance(data, list):
+            raise ValueError("expected a list of PIDs")
+        return [int(x) for x in data]
+    except FileNotFoundError:
+        return []
+    except Exception as exc:
+        log.warning("could not read cloudflared PID ledger: %s", exc)
         return []
 
 
@@ -387,9 +392,8 @@ class CloudflaredProcess:
     def _read_output_loop(self) -> None:
         """Pipe cloudflared's combined stdout/stderr into MC's log.
 
-        Filters out HTTP/2 stream-cancel "ERR" lines (cloudflared reports
-        normal client-disconnect with `error code 0` as ERR). These are
-        protocol-clean and very noisy with SSE-heavy origins like MC.
+        Log every line. Routine HTTP/2 stream cancellations, which cloudflared
+        reports as errors, are excluded from the status error summary.
         """
         proc = self._proc
         if proc is None or proc.stdout is None:
