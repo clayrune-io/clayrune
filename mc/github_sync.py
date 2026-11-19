@@ -319,8 +319,6 @@ def _pull_issues(project: dict, repo: str) -> tuple[int, int, int]:
             num = item.get('github_issue_number')
             if num is None or num in seen_nums:
                 continue
-            if item.get('github_synced_at') == _now_iso():
-                continue  # just created/linked this cycle
             item['github_deleted'] = True
             item['github_issue_number'] = None
             item.pop('last_synced_state', None)
