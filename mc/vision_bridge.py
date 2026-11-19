@@ -146,12 +146,13 @@ def _describe_one(path: str, agent_provider: str) -> Tuple[Optional[str], str, s
                 continue
         except Exception:
             continue
+        error = ''
         try:
             res = rt.describe_image(str(p), prompt=DESCRIBE_PROMPT,
                                     model=rt.VISION_DESCRIBE_MODEL,
                                     timeout=DESCRIBE_TIMEOUT)
         except Exception as e:
-            res, rt.last_error = None, f'{type(e).__name__}: {e}'
+            res, error = None, f'{type(e).__name__}: {e}'
         text = (getattr(res, 'text', '') or '').strip() if res is not None else ''
         if text:
             with _cache_lock:
@@ -159,10 +160,10 @@ def _describe_one(path: str, agent_provider: str) -> Tuple[Optional[str], str, s
                     _cache.pop(next(iter(_cache)))
                 _cache[key] = (text, label, '')
             return text, label, ''
-        tried.append(f"{label}: {str(getattr(rt, 'last_error', '') or 'no output')[:160]}")
+        failure = error or getattr(rt, 'last_error', '') or 'no output'
+        tried.append(f"{label}: {str(failure)[:160]}")
     if not tried:
-        return None, '', ('no vision-capable provider is signed in and within its '
-                          'allowance (checked claude, gemini, qwen)')
+        return None, '', 'no vision-capable provider is signed in and within its allowance'
     return None, '', 'every describer failed (' + '; '.join(tried) + ')'
 
 
