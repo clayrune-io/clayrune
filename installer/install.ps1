@@ -12,11 +12,7 @@
 # / Start Menu shortcut, and opens the app in the user's browser. Provider
 # setup is intentionally deferred to the first-run UI unless explicitly pinned.
 #
-# Read the install prompt before running:
-#   iwr https://clayrune.io/install-prompt.md -useb | Select-Object -ExpandProperty Content
-#
-# Override URLs (for testing):
-#   $env:CLAYRUNE_PROMPT_URL = '...'
+# Optional settings:
 #   $env:CLAYRUNE_NO_CONFIRM = '1'   # skip the 5-second abort window
 #   $env:CLAYRUNE_PROVIDER = '...'  # optional explicit provider override:
 #                                    # claude|codex|gemini|qwen
@@ -33,9 +29,6 @@
 #   3  an explicitly requested Claude CLI is installed but NOT AUTHENTICATED
 
 $ErrorActionPreference = 'Stop'
-
-$PromptUrl = if ($env:CLAYRUNE_PROMPT_URL) { $env:CLAYRUNE_PROMPT_URL } `
-             else { 'https://clayrune.io/install-prompt.md' }
 
 function Refresh-Path {
     $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' +
@@ -410,19 +403,11 @@ function Get-NpmPrefix {
 # extract-then-rename can't replace it -> EPERM, npm aborts the finalize and
 # leaves the bin shims but an incomplete package. The leftover
 # `@anthropic-ai/.claude-code-*` staging dir then trips the NEXT install too.
-# So before any (re)install we must (1) kill claude processes and (2) purge
-# the leftover @anthropic-ai dir. Do NOT gate health on a hardcoded internal
+# Wait for running Claude sessions to close before repairing the package
+# or cleaning npm's leftovers. Do NOT gate health on a hardcoded internal
 # file path - the package layout changes between versions (older builds had
 # node_modules/@anthropic-ai/claude-code/cli.js; current ones do not). The
 # only version-stable health check is `claude --version` (Test-ClaudeWorks).
-
-function Stop-ClaudeProcesses {
-    # Safe here: this runs in the PowerShell bootstrap, BEFORE we ever spawn
-    # the `claude -p` install prompt - so we're not killing our own installer.
-    try {
-        Get-Process claude -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-    } catch {}
-}
 
 # Clear npm leftovers that break a fresh install:
 #  - the @anthropic-ai dir npm's EPERM leaves half-written (staging
@@ -450,7 +435,6 @@ function Clear-ClaudeNpmLeftovers {
 # Install (or, with -Clean, hard-repair) the global Claude CLI via npm.
 function Install-ClaudeNpm {
     param([switch]$Clean)
-    Stop-ClaudeProcesses          # always: a live claude.exe is what causes EPERM
     if ($Clean) {
         Write-Host '  Clearing the locked/partial global package first...'
         [void](Invoke-Native npm uninstall -g '@anthropic-ai/claude-code')
@@ -468,6 +452,10 @@ function Install-ClaudeNpm {
 # judged ONLY by `claude --version` (Test-ClaudeWorks) - layout-agnostic.
 function Invoke-ClaudeNpmInstall {
     param([string]$Label)
+    if (Get-Process -Name claude -ErrorAction SilentlyContinue) {
+        Write-Host '  Close running Claude sessions before retrying CLI setup.' -ForegroundColor Yellow
+        return $false
+    }
     # A present-but-non-working `claude` => go straight to a clean repair.
     $broken = (Get-Command claude -ErrorAction SilentlyContinue) -and -not (Test-ClaudeWorks)
     Install-ClaudeNpm -Clean:$broken
@@ -740,7 +728,6 @@ if (-not $claudeAuthenticated) {
     Write-Host '         When you see "' -NoNewline; Write-Host 'Logged in' -ForegroundColor Cyan -NoNewline; Write-Host '", type ' -NoNewline; Write-Host 'exit' -ForegroundColor Cyan -NoNewline; Write-Host ' to leave the Claude REPL.'
     Write-Host ''
     Write-Host 'Step 2.' -ForegroundColor White -NoNewline; Write-Host ' Re-run this installer in a NEW PowerShell window:'
-    Write-Host '         $env:CLAYRUNE_PROMPT_URL = ''https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install-prompt.md''' -ForegroundColor Cyan
     Write-Host '         iwr https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install.ps1 -useb | iex' -ForegroundColor Cyan
     Write-Host ''
     # Exit code 3 = "not authenticated", specifically. See the EXIT CODES
