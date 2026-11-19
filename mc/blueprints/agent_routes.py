@@ -8956,7 +8956,7 @@ def _session_cumulative_transcript_telemetry(project_id, session):
 
 def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
                                 write_turn_start=True, attempt=None, self_started=False,
-                                postlaunch=False):
+                                postlaunch=False, record_usage=True):
     """Write a placeholder agent_log row at dispatch time so trigger correlation
     survives a server restart that kills the session before _log_agent_completion
     can run.
@@ -8984,6 +8984,9 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
     `postlaunch=True` extends token rollback to callback-turn bookkeeping
     after that claim. Strict errors still propagate to the rearm caller;
     prelaunch callers retain their existing refusal policy.
+
+    `record_usage=False` lets a caller holding the project lock defer optional
+    accounting until after it publishes the new session and releases the lock.
     """
     project_id = session.get('project_id')
     skip_history = not project_id or session.get('incognito') or session.get('housekeeping')
@@ -9155,9 +9158,12 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
         if self_started:
             session['status'] = 'running'
             session['last_status_change_time'] = _time.time()
-    if skip_history:
-        return True
+    if not skip_history and record_usage:
+        _record_pending_usage(session, identity_only=identity_only, write_turn_start=write_turn_start)
+    return True
 
+
+def _record_pending_usage(session, *, identity_only=False, write_turn_start=True):
     # P1-3 fix (docs/_journal/4668eafc-mc998-fenn-review.md finding 3): a
     # dispatch-time 'baseline' session_checkpoint row, zero cumulative tokens
     # at dispatch time. Without this, a still-running session is completely
@@ -9190,11 +9196,12 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
     # (not a turn) and when the caller writes its own turn_start
     # (`_advance_delegation_turn`; the second call of a notify_session
     # dispatch, whose pre-Popen call already wrote this turn's).
+    sid = session['session_id']
     try:
         _store = _UsageBreakdownStore(Path(DATA_DIR).parent / 'usage_breakdown.sqlite')
         _first_turn = _store.record_session_checkpoint(**_usage_breakdown_sampler.baseline_checkpoint_fields(
-            sid, provider=(entry.get('provider') or 'claude'),
-            observed_at=entry.get('started_at') or now_iso()))
+            sid, provider=(session.get('provider') or 'claude'),
+            observed_at=session.get('started_at') or now_iso()))
         if not identity_only:
             _store.mark_session_running(sid)
     except Exception as e:
@@ -9202,7 +9209,6 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False,
     else:
         if not identity_only and not _first_turn and write_turn_start:
             _write_usage_breakdown_turn_start_checkpoint(session)
-    return True
 
 def _last_reply_text(session):
     """The child's last real assistant text, for the spawner callback.
@@ -11487,9 +11493,13 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # event overwrites it — see _mode_a_reader.
             session['provider_session_id'] = resume_id
         _allocate_delegation_turn(session)
-        _log_agent_dispatch_pending(session, strict=bool((session.get('_notify_session') or '').strip()))
+        pending_written = _log_agent_dispatch_pending(
+            session, strict=bool((session.get('_notify_session') or '').strip()), record_usage=False)
         agent_sessions[session_id] = session
         mgr.session_ids.add(session_id)
+
+    if pending_written:
+        _record_pending_usage(session)
 
     # Build system_prompt blob (MEMORY/AGENT_RULES). `incognito=True` is
     # passed THROUGH to _build_agent_context, not used to skip the call

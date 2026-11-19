@@ -12,6 +12,7 @@
 - R49 follow-up. Follow-up and interrupt report unresolved launches as unknown and a missing Gemini binary as a refusal.
 - R27 follow-up. Resume recovery rechecks the process and turn under the project lock before claiming a fresh launch.
 - R44 follow-up. Rollover retains children with server jobs still open after their provider turn ends.
+- R40 follow-up. Native dispatch publishes its pending row and session in order, then records usage outside the project lock.
 
 ## [2026-11-18] - Workflow canvas: connection drags start at the exact centre of unconnected port dots
 

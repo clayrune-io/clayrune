@@ -400,3 +400,41 @@ def test_native_context_error_never_launches_unruled_session(monkeypatch):
     session, = sessions.values()
     assert session['status'] == 'error' and not session['process_alive']
     assert failed == [session]
+
+
+def test_native_dispatch_usage_writes_run_after_pending_publication(tmp_path, monkeypatch):
+    from threading import RLock
+    from types import SimpleNamespace
+    from mc.blueprints import agent_routes as ar
+
+    manager = SimpleNamespace(lock=RLock(), session_ids=set(), ensure_guardian=lambda: None)
+    sessions = {}
+    entries = []
+    events = []
+    runtime = SimpleNamespace(name='codex', dispatch=lambda **kwargs: events.append(('launch', False, True)))
+    monkeypatch.setattr(ar, 'agent_sessions', sessions)
+    monkeypatch.setattr(ar, 'get_manager', lambda _: manager)
+    monkeypatch.setattr(ar, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda _: runtime)
+    monkeypatch.setattr(ar, '_resolve_runtime_model', lambda *args: '')
+    monkeypatch.setattr(ar, '_build_agent_context', lambda *a, **k: 'context')
+    monkeypatch.setattr(ar, '_log_agent_activity', lambda *a: None)
+
+    def write_pending(project_id, update):
+        events.append(('pending', manager.lock._is_owned(), bool(sessions)))
+        update(entries)
+
+    def write_usage(name):
+        events.append((name, manager.lock._is_owned(), bool(sessions)))
+        return True
+
+    monkeypatch.setattr(ar, '_update_agent_log', write_pending)
+    monkeypatch.setattr(ar, '_UsageBreakdownStore', lambda path: SimpleNamespace(
+        record_session_checkpoint=lambda **kwargs: write_usage('baseline'),
+        mark_session_running=lambda sid: write_usage('running fact')))
+    sid = ar._dispatch_via_runtime({'id': 'sample'}, 'test', provider_name='codex')
+    assert entries[0]['session_id'] == sid and sid in manager.session_ids
+    assert events == [
+        ('pending', True, False), ('baseline', False, True),
+        ('running fact', False, True), ('launch', False, True),
+    ]
