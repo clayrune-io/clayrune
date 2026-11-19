@@ -2323,6 +2323,30 @@ def test_parse_event_empty_returns_none(provider_name):
     assert rt.parse_event('\n') is None
 
 
+@pytest.mark.parametrize('event_type', ['item.started', 'item.updated', 'item.completed'])
+def test_codex_ignores_nonobject_items(event_type):
+    assert CodexRuntime().parse_event(json.dumps({'type': event_type, 'item': 'oops'})) is None
+
+
+@pytest.mark.parametrize('event_type', ['error', 'turn.failed'])
+def test_codex_parses_string_errors(event_type):
+    event = CodexRuntime().parse_event(json.dumps({'type': event_type, 'error': 'boom'}))
+    assert event.type is EventType.ERROR
+    assert event.payload['text'] == 'boom'
+
+
+def test_kiro_preserves_session_id_from_notification_parameters():
+    event = KiroRuntime().parse_event('{"method":"session/new","params":{"session_id":"native"}}')
+    assert event.type is EventType.INIT
+    assert event.session_id == event.payload['session_id'] == 'native'
+
+
+def test_goose_does_not_convert_thinking_blocks_to_chat_text():
+    event = GooseRuntime().parse_event(
+        '{"type":"assistant","content":[{"type":"thinking","thinking":"hm"}]}')
+    assert event is None
+
+
 @pytest.mark.parametrize('provider_name', [
     'gemini', 'codex', 'opencode', 'goose', 'aider', 'kiro',
 ])

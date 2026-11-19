@@ -8764,8 +8764,8 @@ class CodexRuntime(AgentRuntime):
             # Only the shell call is worth surfacing early — it is what the
             # user watches while it runs. Everything else would double up with
             # the item.completed event.
-            item = msg.get('item') or {}
-            if item.get('type') == 'command_execution':
+            item = msg.get('item')
+            if isinstance(item, dict) and item.get('type') == 'command_execution':
                 return AgentEvent(
                     type=EventType.TOOL_USE, provider='codex',
                     session_id=session_id, mc_session_id=mc_session_id,
@@ -8779,7 +8779,9 @@ class CodexRuntime(AgentRuntime):
                 )
             return None
         if etype == 'item.completed':
-            item = msg.get('item') or {}
+            item = msg.get('item')
+            if not isinstance(item, dict):
+                return None
             item_type = item.get('type', '')
             # ── codex 0.151 schema ──────────────────────────────────────
             if item_type in ('agent_message', 'assistant_message'):
@@ -8953,9 +8955,9 @@ class CodexRuntime(AgentRuntime):
                     session_id=session_id, mc_session_id=mc_session_id,
                     timestamp=_now_iso(), payload=_exhausted, raw=msg,
                 )
-            err_msg = (msg.get('message') or
-                       (msg.get('error') or {}).get('message', '') or
-                       str(msg))
+            error = msg.get('error')
+            detail = error.get('message') if isinstance(error, dict) else error
+            err_msg = str(msg.get('message') or detail or msg)
             if etype == 'error' and codex_error_is_notice(err_msg):
                 return AgentEvent(
                     type=EventType.WARN, provider='codex',
@@ -10664,8 +10666,8 @@ class GooseRuntime(AgentRuntime):
                 if not isinstance(block, dict):
                     continue
                 btype = block.get('type', '')
-                if btype == 'text':
-                    texts.append(block.get('text', ''))
+                if btype == 'text' and isinstance(block.get('text'), str):
+                    texts.append(block['text'])
                 elif btype == 'tool_use':
                     tool_blocks.append({'type': 'tool_use',
                                        'name': block.get('name', ''),
@@ -10676,7 +10678,7 @@ class GooseRuntime(AgentRuntime):
                                   session_id=session_id, mc_session_id=mc_session_id,
                                   timestamp=_now_iso(),
                                   payload={'blocks': tool_blocks}, raw=msg)
-            text = '\n'.join(texts).strip() or str(msg.get('content', ''))
+            text = content if isinstance(content, str) else '\n'.join(texts).strip()
             return (AgentEvent(type=EventType.ASSISTANT_TEXT, provider='goose',
                                session_id=session_id, mc_session_id=mc_session_id,
                                timestamp=_now_iso(), payload={'text': text}, raw=msg)
@@ -11294,8 +11296,10 @@ class KiroRuntime(AgentRuntime):
         error = msg.get('error')
         result = msg.get('result')
         method = msg.get('method', '')
-        params = msg.get('params') or {}
-        session_id = params.get('session_id') or (result or {}).get('session_id') if isinstance(result, dict) else None
+        raw_params = msg.get('params')
+        params = raw_params if isinstance(raw_params, dict) else {}
+        result_session = result.get('session_id') if isinstance(result, dict) else None
+        session_id = params.get('session_id') or result_session
 
         if error:
             err_msg = (error.get('message', str(error))
@@ -11312,7 +11316,7 @@ class KiroRuntime(AgentRuntime):
                                payload={'text': str(text)}, raw=msg)
                     if text else None)
         if method in ('session/new', 'session/load'):
-            sid = (result or {}).get('session_id') or session_id if isinstance(result, dict) else session_id
+            sid = result_session or session_id
             return AgentEvent(type=EventType.INIT, provider='kiro',
                               session_id=sid, mc_session_id=mc_session_id,
                               timestamp=_now_iso(),
