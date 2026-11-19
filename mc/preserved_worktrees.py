@@ -54,6 +54,7 @@ from typing import Callable
 
 import mc.agent_worktree as _wt
 import mc.project_sync as _sync
+from mc.core import _log
 
 CACHE_TTL = 60.0          # seconds a project's survey is reused
 MAX_WORKTREES = 1500      # hard cap on worktrees examined per project
@@ -249,8 +250,8 @@ def start_measure(project: dict, max_age: float | None = None) -> bool:
         res = None
         try:
             res = measure_agents_dir(project)
-        except Exception:
-            res = None
+        except Exception as exc:
+            _log(f'[preserved-worktrees] disk measurement failed for {pid}: {exc}', flush=True)
         finally:
             with _cache_lock:
                 st['running'] = False

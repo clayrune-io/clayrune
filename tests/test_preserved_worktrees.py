@@ -356,6 +356,24 @@ def test_measure_does_not_follow_a_link(repo, project, tmp_path):
     assert m['per_folder']['a4a4a4a4a4a4']['bytes'] == 0
 
 
+def test_disk_measurement_failure_is_logged_and_returns_to_unmeasured(monkeypatch):
+    from types import SimpleNamespace
+
+    project = {'id': 'failed-measure'}
+    logs = []
+
+    def fail(_project):
+        raise OSError('walk failed')
+
+    monkeypatch.setattr(pw, 'measure_agents_dir', fail)
+    monkeypatch.setattr(pw.threading, 'Thread', lambda *, target, **kwargs: SimpleNamespace(start=target))
+    monkeypatch.setattr(pw, '_log', lambda message, **kw: logs.append(message), raising=False)
+
+    assert pw.start_measure(project)
+    assert pw.disk_status(project)['state'] == 'unmeasured'
+    assert any('disk measurement failed' in message and 'walk failed' in message for message in logs)
+
+
 def test_start_measure_is_background_and_single_flight(repo, project):
     (repo / '.clayrune' / 'agents' / 'b5b5b5b5b5b5').mkdir(parents=True)
     assert pw.disk_status(project)['state'] == 'unmeasured'
