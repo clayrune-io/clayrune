@@ -15652,9 +15652,8 @@ def agent_interrupt(project_id, *, _internal=None):
                 return _ret({'error': 'no claude session id to hand off from'}, 400)
 
         # ── Multi-provider interrupt ──────────────────────────────────────
-        # Non-claude providers: kill via runtime.interrupt(), then re-dispatch
-        # the new message via runtime.write_followup() — the runtime owns
-        # both halves of the respawn dance.
+        # Non-Claude runtimes own process replacement and delivery through
+        # write_followup().
         session_provider = (session.get('provider') or 'claude').lower()
         if session_provider != 'claude':
             user_label = state.CONFIG.get('user_name') or 'User'
@@ -16460,8 +16459,8 @@ def agent_status(project_id):
                                and s.get('claude_session_id') in _pinned_csids),
                 # MC-937 Phase 4: currently-visible Task-tool/Workflow-fanout
                 # subagents dispatched from this session (see the liveness
-                # rule at _SUBAGENT_RUNNING_WINDOW_S above). [] for every
-                # session that isn't 'running' — computed without a scan.
+                # rule at _SUBAGENT_RUNNING_WINDOW_S above). Running and idle
+                # Claude sessions can both have active subagents.
                 'active_subagents': _active_subagents_for_session(
                     s, _proj.get('project_path', '')),
                 # Other sessions running this same conversation (see
