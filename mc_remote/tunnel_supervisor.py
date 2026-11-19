@@ -346,11 +346,14 @@ class TunnelSupervisor:
             if not mailer.exists():
                 log.warning("down alert: mailer not found at %s", mailer)
                 return
-            subprocess.run(
+            result = subprocess.run(
                 [sys.executable, str(mailer), "--subject", subject, "--body", body],
                 capture_output=True, timeout=60, check=False,
             )
-            log.warning("remote access down %dm — alert sent", mins)
+            if result.returncode == 0:
+                log.warning("remote access down %dm — alert sent", mins)
+            else:
+                log.warning("remote access down %dm — mailer exited %s", mins, result.returncode)
         except Exception as e:
             log.warning("down alert could not be sent: %s", e)
 

@@ -242,7 +242,7 @@ def test_alert_body_is_actionable_and_never_raises(sup):
     class FakeRun:
         def __call__(self, cmd, **kw):
             captured['cmd'] = cmd
-            return None
+            return sp.CompletedProcess(cmd, 0)
 
     import subprocess as sp
     orig = sp.run
@@ -259,6 +259,16 @@ def test_alert_body_is_actionable_and_never_raises(sup):
         body = cmd[cmd.index("--body") + 1]
         assert "ronl.clayrune.io" in body
         assert "Reconnect" in body, "alert should say how to fix it"
+
+
+def test_down_alert_reports_failed_mailer_exit(sup, monkeypatch, caplog):
+    from subprocess import CompletedProcess
+
+    monkeypatch.setattr(ts.subprocess, 'run',
+                        lambda cmd, **kw: CompletedProcess(cmd, 3))
+    sup._send_down_alert(3600, 'example.invalid')
+    assert 'mailer exited 3' in caplog.text
+    assert 'alert sent' not in caplog.text
 
 
 # ── Reconnect / resume must actually repair ──────────────────────────────────
