@@ -45,6 +45,7 @@ from typing import Callable, Optional
 
 from mc import desk as _desk
 from mc import desk_story as _story
+from mc import desk_campaign_engine as _campaign_engine
 from mc import desk_product_context as _product
 from mc import desk_storyboard as _sb
 from mc import desk_story_media as _media
@@ -304,6 +305,7 @@ def chat(body, load_project: Callable[[str], Optional[dict]]) -> dict:
         board = _board(store, kind, oid, key)
         thread = [t for t in (board.get('thread') or []) if isinstance(t, dict)]
         saved = [s for s in (board.get('scenes') or []) if isinstance(s, dict)]
+        camp = _campaign_engine.for_piece(store, oid) if kind == 'piece' else None
     payload, cut = _context(story, scenes, focus, thread, message)
     product = _product.product_context(project)
     if product is not None:
@@ -313,8 +315,7 @@ def chat(body, load_project: Callable[[str], Optional[dict]]) -> dict:
     if rec:
         who = rec.get('agent_name') or rec.get('display_name') or rec['name']
         persona = f'You are {who}. Your character:\n{rec["body"].strip()}\n\n{_story._PERSONA_TAIL}'
-    engine = _story._resolve_engine(project, rec)
-    effort = ((rec or {}).get('engine') or {}).get('effort') or ''
+    engine, effort = _campaign_engine.apply(camp, project, rec, _story._resolve_engine(project, rec))
     try:
         with _media.turn_media(saved, raw_scenes, message, focus, engine.provider, project) as media:
             media.apply(payload)

@@ -56,7 +56,7 @@ const MODULES = [
   'desk-v1-piece-versions-empty', 'desk-v1-piece', 'desk-v1-rules',
   'desk-v1-review', 'desk-v1-calendar-preview', 'desk-v1-calendar-unschedule',
   'desk-v1-calendar-detail', 'desk-v1-calendar-tray', 'desk-v1-calendar',
-  'desk-v1-how', 'desk-v1-suggestion-pieces', 'desk-v1-piece-lifecycle',
+  'desk-v1-how-model', 'desk-v1-how', 'desk-v1-suggestion-pieces', 'desk-v1-piece-lifecycle',
   'desk-v1-article-media', 'desk-v1-where-tiles', 'desk-v1-where-services',
   'desk-v1-where-highlight', 'desk-v1-post-preview-skins', 'desk-v1-post-preview',
   'desk-v1-where', 'desk-v1-what-cards', 'desk-v1-text-import',
@@ -120,6 +120,7 @@ const STYLES = [
   'desk-v1-calendar-interactions', 'desk-v1-campaign-content',
   'desk-v1-where-highlight', 'desk-v1-composer',
   'desk-v1-composer-preview', 'desk-v1-composer-media',
+  'desk-v1-how-model',
 ];
 
 const BARE = new Set(['desk-v1-post-preview-skins', 'desk-v1-post-preview']);

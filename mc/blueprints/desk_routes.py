@@ -56,6 +56,7 @@ from mc import desk_research as _research
 from mc import desk_story as _story
 from mc import desk_story_chat as _story_chat
 from mc import desk_campaign_chat as _campaign_chat
+from mc import desk_campaign_engine as _campaign_engine
 from mc import desk_storyboard as _storyboard
 from mc import desk_tick as _tick
 from mc import desk_voice_seed as _seed
@@ -133,6 +134,16 @@ def _pick_agent_error(project: dict):
     name = project.get('name') or project.get('id')
     return jsonify({'error': f'no agent picked for {name} yet — pick who plans for this project',
                     'pick_agent': True, 'project_id': project.get('id')}), 409
+
+
+def _engine_kwargs(camp: Optional[dict], project: dict, agent_ref: str):
+    """`dispatch_agent` keyword arguments carrying the campaign's own engine pick, as
+    `(kwargs, None)`; `({}, None)` when it has none. A pick that cannot run is
+    `({}, error response)`: the dispatch is refused, never run on another engine."""
+    try:
+        return _campaign_engine.dispatch_overrides(camp, project, agent_ref), None
+    except _campaign_engine.EngineError as e:
+        return {}, (jsonify({'error': str(e), 'engine_pick': True}), e.status)
 
 
 def _valid_agent_ref(project: dict, ref: str) -> bool:
@@ -457,6 +468,17 @@ def list_campaigns():
 _CLIENT_CAMPAIGN_ID = re.compile(r'^[A-Za-z0-9_-]{1,80}$')
 
 
+def _engine_pick_refused(body, campaign_id: Optional[str] = None):
+    """Validate (and normalise in place) a campaign body's `how.engine` before the
+    store write; the 400 response when the pick is not one the live catalog offers,
+    else None."""
+    try:
+        _campaign_engine.check_save(body, campaign_id, load_project)
+    except _campaign_engine.EngineError as e:
+        return jsonify({'error': str(e), 'engine_pick': True}), e.status
+    return None
+
+
 def _wants_v1() -> bool:
     return request.args.get('shape') == 'v1'
 
@@ -467,6 +489,9 @@ def _create_campaign_v1(d: dict):
     than quietly downgraded. The id may be the client's own (the optimistic
     draft already navigated to it); a taken id is a 409, not an overwrite."""
     body = _desk.v1_campaign_in(d)
+    refused = _engine_pick_refused(body)
+    if refused:
+        return refused
     state = body.pop('state', 'proposed')
     if state not in ('draft', 'proposed'):
         return jsonify({'error': 'a new campaign starts as a draft or a proposal'}), 400
@@ -493,6 +518,9 @@ def create_campaign():
     d = request.get_json(silent=True) or {}
     if _wants_v1():
         return _create_campaign_v1(d)
+    refused = _engine_pick_refused(d)
+    if refused:
+        return refused
     if not d.get('title') or not d.get('thesis'):
         # A campaign without a thesis is a folder. The thesis is what makes the
         # Board answer "why is this running now" instead of listing pending items.
@@ -516,7 +544,14 @@ def update_campaign(campaign_id):
     d = request.get_json(silent=True) or {}
     v1 = _wants_v1()
     try:
-        camp = _desk.update_campaign(campaign_id, _desk.v1_campaign_in(d) if v1 else d,
+        patch = _desk.v1_campaign_in(d) if v1 else d
+    except ValueError as e:                     # a malformed goal et al.: 400, as it was inside the try below
+        return jsonify({'error': str(e)}), 400
+    refused = _engine_pick_refused(patch, campaign_id)
+    if refused:
+        return refused
+    try:
+        camp = _desk.update_campaign(campaign_id, patch,
                                      forbid_start=v1, forbid_resume=is_unattended_caller())
     except _withdrawal.ResumeRefused as e:      # MC-1187 DK1; a ValueError, so first
         return jsonify({'error': str(e)}), 403
@@ -644,6 +679,9 @@ def suggest_for_campaign(campaign_id):
     agent_ref = _desk_agent_ref(project, camp)
     if not agent_ref:
         return _pick_agent_error(project)
+    eng, err = _engine_kwargs(camp, project, agent_ref)
+    if err:
+        return err
     if dispatch_agent is None:
         return jsonify({'error': 'dispatch not wired'}), 503
     chosen = (camp.get('plan') or {}).get('accounts') or []
@@ -655,7 +693,7 @@ def suggest_for_campaign(campaign_id):
             pid, brief, '',
             display_task=f'Suggest what, when and where for {camp.get("title") or campaign_id}',
             character=agent_ref,
-            source='agent', strict_character=True)
+            source='agent', strict_character=True, **eng)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except Exception as e:
@@ -823,6 +861,9 @@ def revise_piece_version(piece_id, version_id):
     agent_ref = _desk_agent_ref(project, camp)
     if not agent_ref:
         return _pick_agent_error(project)
+    eng, err = _engine_kwargs(camp, project, agent_ref)
+    if err:
+        return err
     if dispatch_agent is None:
         return jsonify({'error': 'dispatch not wired'}), 503
     acc = next((a for a in _accounts.list_accounts() if a.get('id') == ver.get('account_id')), None)
@@ -835,7 +876,7 @@ def revise_piece_version(piece_id, version_id):
             pid, brief, '',
             display_task=f'Revise "{piece.get("title") or piece_id}"',
             character=agent_ref,
-            source='agent', strict_character=True)
+            source='agent', strict_character=True, **eng)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except Exception as e:
@@ -1461,6 +1502,9 @@ def suggest_engagement_reply(item_id):
     agent_ref = _desk_agent_ref(project, camp)
     if not agent_ref:
         return _pick_agent_error(project)
+    eng, err = _engine_kwargs(camp, project, agent_ref)
+    if err:
+        return err
     if dispatch_agent is None:
         return jsonify({'error': 'dispatch not wired'}), 503
     voice = next((v for v in _desk.voice_names() if _brief.platform_for(v) == item.get('platform')), None)
@@ -1475,7 +1519,7 @@ def suggest_engagement_reply(item_id):
             pid, brief, '',
             display_task=f'Draft a reply to {item.get("author") or "a conversation"}',
             character=agent_ref,
-            source='agent', strict_character=True)
+            source='agent', strict_character=True, **eng)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except Exception as e:
@@ -1726,6 +1770,9 @@ def draft():
     agent_ref = _desk_agent_ref(project, campaign)
     if not agent_ref:
         return _pick_agent_error(project)
+    eng, err = _engine_kwargs(campaign, project, agent_ref)
+    if err:
+        return err
 
     brief = _brief.build_brief(signal, voice=voice, campaign=campaign,
                                project_name=project.get('name'))
@@ -1746,7 +1793,7 @@ def draft():
             display_task=f'Draft a {_brief.platform_for(voice)} post: '
                          f'{(signal.get("summary") or "")[:70]}',
             character=agent_ref,
-            source='agent', strict_character=True)
+            source='agent', strict_character=True, **eng)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except Exception as e:
@@ -1808,6 +1855,11 @@ def dispatch_rework(project_id: str, item: dict, note: str) -> dict:
         return {'dispatched': False, 'session_id': None,
                 'reason': 'dispatch not wired'}
 
+    camp = next((c for c in _desk.list_campaigns() if c.get('id') == item.get('campaign_id')), None)
+    eng, err = _engine_kwargs(camp, project, agent_ref)
+    if err:
+        return {'dispatched': False, 'session_id': None, 'reason': err[0].get_json()['error']}
+
     brief = _brief.build_rework_brief(signal, item=item, note=note,
                                       project_name=project.get('name'))
     try:
@@ -1816,7 +1868,7 @@ def dispatch_rework(project_id: str, item: dict, note: str) -> dict:
             display_task=f'Rework a {item.get("platform") or "draft"} post '
                          'after push-back',
             character=agent_ref,
-            source='agent', strict_character=True)
+            source='agent', strict_character=True, **eng)
     except Exception as e:
         _log(f'[desk] rework dispatch failed for {item.get("id")}: {e}')
         return {'dispatched': False, 'session_id': None,
@@ -1869,6 +1921,9 @@ def triage():
     agent_ref = _desk_agent_ref(project, camp)
     if not agent_ref:
         return _pick_agent_error(project)
+    eng, err = _engine_kwargs(camp, project, agent_ref)
+    if err:
+        return err
     if dispatch_agent is None:
         return jsonify({'error': 'dispatch not wired', 'brief': brief}), 503
 
@@ -1877,7 +1932,7 @@ def triage():
             pid, brief, '',
             display_task=f'Triage {len(pool)} signals — what is worth posting?',
             character=agent_ref,
-            source='agent', strict_character=True)
+            source='agent', strict_character=True, **eng)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except Exception as e:
@@ -1952,6 +2007,9 @@ def accept_proposal(proposal_id):
     agent_ref = _desk_agent_ref(project, camp)
     if not agent_ref:
         return _pick_agent_error(project)
+    eng, err = _engine_kwargs(camp, project, agent_ref)
+    if err:
+        return err
     brief = _brief.build_brief(signal, voice=prop['voice'], campaign=camp,
                                project_name=project.get('name'))
     if dispatch_agent is None:
@@ -1962,7 +2020,7 @@ def accept_proposal(proposal_id):
             display_task=f'Draft a {_brief.platform_for(prop["voice"])} post: '
                          f'{(signal.get("summary") or "")[:70]}',
             character=agent_ref,
-            source='agent', strict_character=True)
+            source='agent', strict_character=True, **eng)
     except Exception as e:
         _log(f'[desk] accept dispatch failed for {proposal_id}: {e}')
         return jsonify({'error': f'dispatch failed: {e}'}), 502

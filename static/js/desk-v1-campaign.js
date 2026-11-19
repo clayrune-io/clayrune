@@ -1306,6 +1306,7 @@
     el.innerHTML = `<div class="desk-v1-camp-posy">${DeskV1Kit.posyBoxHTML({
       inputId: 'desk-v1-camp-posy-input', scopeLabel, suggestion: sugg.suggestion, chips: sugg.chips, agentRef, pickAgent: true, pickerHere: params.panel === 'how',
     })}</div>`;
+    if (window.DeskV1HowModel) window.DeskV1HowModel.paintBox(el, camp);
     // The box only SHOWS the agent. With none chosen its name is a link to the
     // Campaign card on Brief (the one picker): open Brief if another stop is up,
     // scroll the card into view and put focus on the picker.

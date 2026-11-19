@@ -4,14 +4,14 @@
   const files = (p) => (p && p.presence && p.presence.product_materials) || [];
   let sequence = 0;
   const readLabel = (paths) => paths.length ? 'Reads: ' + paths.join(', ') : 'No starting product materials';
-  function readsHTML(project, agentRef) {
+  function readsHTML(project, agentRef, campaignId) {
     const paths = files(project);
     const id = 'desk-research-' + (++sequence);
     if (project && window.DeskV1Store.live()) requestAnimationFrame(async () => {
       const line = document.getElementById(id);
       if (!line) return;
       try {
-        const caps = await window.DeskV1Store.api('GET', `/api/desk/research-capabilities?project_id=${encodeURIComponent(project.id)}&agent=${encodeURIComponent(agentRef || '')}`);
+        const caps = await window.DeskV1Store.api('GET', `/api/desk/research-capabilities?project_id=${encodeURIComponent(project.id)}&agent=${encodeURIComponent(agentRef || '')}${campaignId ? '&campaign_id=' + encodeURIComponent(campaignId) : ''}`);
         if (!caps || typeof caps.label !== 'string') throw new Error('no capability information returned');
         if (!line.isConnected) return;
         line.dataset.researchLabel = caps.label;
