@@ -56,8 +56,9 @@ def _forward_stdin(port: int, token: str, session_id: str) -> None:
                 return
         _post(conn, base + '?eof=1', token)
         conn.close()
-    except (OSError, ValueError, http.client.HTTPException):
-        pass                              # stdin is gone or the child is: the main loop decides
+    except (OSError, ValueError, http.client.HTTPException) as exc:
+        print(f'with-secret: stdin relay failed: {vault.redact(str(exc))}',
+              file=sys.stderr, flush=True)
 
 
 def _end_session(port: int, token: str, session_id: str) -> None:
