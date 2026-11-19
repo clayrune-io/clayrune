@@ -1,0 +1,10 @@
+/* The Model / Effort pickers under the Agent picker on a campaign's Brief
+   (static/js/desk-v1-how-model.js), and the engine text after the agent's name in
+   the right-hand agent box. */
+.desk-v1-how-model-select { display: block; width: 100%; max-width: 100%; box-sizing: border-box; min-height: 36px; text-overflow: ellipsis; }
+.desk-v1-how-model-select:disabled { opacity: 0.6; }
+.desk-v1-how-model-effort-title { margin-top: 10px; }
+.desk-thread-engine { color: var(--text-dim); font-weight: 400; }
+@media (max-width: 960px) {
+  .desk-v1-how-model-select { min-height: 44px; font-size: 16px; }   /* 16px: iOS does not zoom the page on focus */
+}

@@ -103,6 +103,7 @@
               <div class="desk-v1-rules-hint" data-how-agent-hint></div>
               <div data-product-materials-host></div>
             </div>
+            <div data-how-model-host></div>
           </div>
           <div class="desk-v1-how-card">
             <div class="desk-v1-how-card-title">Strategy</div>
@@ -136,6 +137,7 @@
     }
     _bind(el, camp, project);
     _paintAgent(el, camp, project);
+    if (window.DeskV1HowModel) window.DeskV1HowModel.mount(el.querySelector('[data-how-model-host]'), camp, project);
     window.DeskV1ProductMaterials.mount(el.querySelector('[data-product-materials-host]'), project);
     window.DeskV1Reapproval.fillSlots(el, camp);
   }

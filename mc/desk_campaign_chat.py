@@ -56,6 +56,7 @@ from mc import desk_pieces as _pieces
 from mc import desk_story as _story
 from mc import desk_product_context as _product
 from mc import desk_dispatch as _dispatch
+from mc import desk_campaign_engine as _campaign_engine
 from mc.core import _log, now_iso
 
 PieceError = _pieces.PieceError
@@ -327,8 +328,7 @@ def chat(campaign_id: str, body, load_project: Callable[[str], Optional[dict]]) 
         payload['product'] = product
     who = rec.get('agent_name') or rec.get('display_name') or rec['name']
     persona = f'You are {who}. Your character:\n{rec["body"].strip()}\n\n{_PERSONA_TAIL}'
-    engine = _story._resolve_engine(project, rec)
-    effort = (rec.get('engine') or {}).get('effort') or ''
+    engine, effort = _campaign_engine.apply(camp, project, rec, _story._resolve_engine(project, rec))
     user_turn = {'id': 'tn-' + uuid.uuid4().hex[:10], 'role': 'user', 'text': message, 'at': now_iso(), 'scope': scope}
     try:
         with _dispatch.campaign_turn(campaign_id, project, who, user_turn) as dispatch_turn:

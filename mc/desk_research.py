@@ -220,7 +220,7 @@ def run(provider: str, *, prompt: str, system_prompt: str, model: str, effort: s
 
 def register(bp, load_project) -> None:
     from flask import jsonify, request
-    from mc import desk, desk_story
+    from mc import desk, desk_campaign_engine, desk_story
 
     @bp.route('/api/desk/research-capabilities', methods=['GET'])
     def research_capabilities():
@@ -231,6 +231,9 @@ def register(bp, load_project) -> None:
         try:
             rec = desk_story._agent(ref, project)
             engine = desk_story._resolve_engine(project, rec)
+            cid = request.args.get('campaign_id')   # a campaign's own pick changes what can run
+            camp = next((c for c in desk.list_campaigns() if c.get('id') == cid), None) if cid else None
+            engine, _effort = desk_campaign_engine.apply(camp, project, rec, engine, available=False)
             return jsonify(dict(capability(engine.provider, project), provider=engine.provider))
         except (ValueError, RuntimeError) as exc:
             return jsonify({'error': str(exc)}), 400
