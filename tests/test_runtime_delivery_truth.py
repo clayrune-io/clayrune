@@ -473,3 +473,19 @@ def test_plain_runtime_error_reports_failed_delivery(app_env, monkeypatch, endpo
     assert response.status_code == 502, body
     assert body['ok'] is False and body['delivered'] is False
     assert 'simulated pipe failure' in body['error']
+
+
+@pytest.mark.parametrize(('route', 'body'), [
+    ('/api/project/p1/agent/dispatch', {'task': 12}),
+    ('/api/project/p1/agent/dispatch', {'task': 'example', 'resume_conversation_id': []}),
+    ('/api/project/p1/agent/followup', {'message': 12}),
+    ('/api/project/p1/agent/followup', {'message': 'example', 'session_id': ['sample']}),
+    ('/api/agent/provider/claude/env', {'key': 12, 'value': 'example'}),
+    ('/api/agent/gemini/auth-login-remote/code', {'code': 12}),
+    ('/api/plans/delete', {'paths': [12]}),
+    ('/api/project/p1/agent/sample/job', ['example']),
+])
+def test_malformed_agent_fields_return_bad_request(app_env, route, body):
+    app_env['sessions']['sample'] = {'project_id': 'p1'}
+    response = app_env['client'].post(route, json=body)
+    assert response.status_code == 400

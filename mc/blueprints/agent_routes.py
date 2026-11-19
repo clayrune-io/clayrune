@@ -2018,7 +2018,11 @@ def agent_job_start(project_id, session_id, *, job_data=None, completion_hook=No
             return jsonify({'error': f'job not started: {e}'}), 409
         fence_armed = job_data is None and _fence_parity.armed(sess, state.CONFIG)
 
-    data = job_data if job_data is not None else (request.get_json() or {})
+    data = job_data if job_data is not None else request.get_json()
+    if not isinstance(data, dict) or any(
+            data.get(key) is not None and not isinstance(data[key], str)
+            for key in ('command', 'cwd')):
+        return jsonify({'error': 'command and cwd must be text'}), 400
     command = (data.get('command') or '').strip()
     if not command:
         return jsonify({'error': 'command required'}), 400
@@ -2639,8 +2643,10 @@ def agent_provider_set_env(name):
     via this surface)."""
     if name not in _agent_runtime._RUNTIMES:
         return jsonify({'error': f'unknown provider {name}'}), 404
-    body = request.get_json(force=True, silent=True) or {}
-    key = (body.get('key') or '').strip()
+    body = request.get_json(force=True, silent=True)
+    if not isinstance(body, dict) or not isinstance(body.get('key'), str):
+        return jsonify({'error': 'key must be text'}), 400
+    key = body['key'].strip()
     value = body.get('value')
     if not key or value is None:
         return jsonify({'error': 'key and value required'}), 400
@@ -3888,8 +3894,10 @@ def agent_auth_login_remote_code(provider):
     session."""
     if provider == 'claude' and _signin_channel.terminal_only():
         return jsonify({'error': _signin_channel.CODE_RELAY_REFUSAL}), 403
-    data = request.get_json() or {}
-    code = (data.get('code') or '').strip()
+    data = request.get_json()
+    if not isinstance(data, dict) or not isinstance(data.get('code'), str):
+        return jsonify({'error': 'code required'}), 400
+    code = data['code'].strip()
     if not code:
         return jsonify({'error': 'code required'}), 400
     with _captured_login_lock:
@@ -13583,7 +13591,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
 
 @bp.route('/api/project/<project_id>/agent/dispatch', methods=['POST'])
 def agent_dispatch(project_id):
-    data = request.get_json() or {}
+    data = request.get_json()
+    if not isinstance(data, dict) or any(
+            not isinstance(data.get(key, ''), str)
+            for key in ('task', 'resume_conversation_id')):
+        return jsonify({'error': 'task and resume_conversation_id must be text'}), 400
     task = data.get('task', '').strip()
     if not task:
         return jsonify({'error': 'task required'}), 400
@@ -14441,7 +14453,10 @@ def agent_followup(project_id):
     if not pp or not Path(pp).is_dir():
         return jsonify({'error': 'project_path not set'}), 400
 
-    data = request.get_json() or {}
+    data = request.get_json()
+    if not isinstance(data, dict) or any(
+            not isinstance(data.get(key, ''), str) for key in ('message', 'session_id')):
+        return jsonify({'error': 'message and session_id must be text'}), 400
     message = data.get('message', '').strip()
     session_id = data.get('session_id', '')
     if not message:
@@ -16149,10 +16164,10 @@ def read_plan_file():
 @bp.route('/api/plans/delete', methods=['POST'])
 def delete_plans():
     """Delete plan files from disk and scrub references from agent logs."""
-    data = request.get_json(force=True) or {}
-    paths = data.get('paths', [])
-    if not paths or not isinstance(paths, list):
-        return jsonify({'error': 'paths array required'}), 400
+    data = request.get_json(force=True)
+    paths = data.get('paths') if isinstance(data, dict) else None
+    if not isinstance(paths, list) or not paths or any(not isinstance(p, str) for p in paths):
+        return jsonify({'error': 'paths must be a nonempty array of strings'}), 400
     plans_dir = Path.home() / '.claude' / 'plans'
     resolved_plans_dir = plans_dir.resolve()
     deleted = 0
