@@ -2559,27 +2559,30 @@ def agent_providers():
 
 
 def _load_provider_env_file() -> Dict[str, Dict[str, str]]:
-    if not PROVIDER_ENV_PATH.exists():
-        return {}
     try:
-        return json.loads(PROVIDER_ENV_PATH.read_text(encoding='utf-8'))
-    except Exception:
+        data = json.loads(PROVIDER_ENV_PATH.read_text(encoding='utf-8'))
+    except FileNotFoundError:
         return {}
+    if not isinstance(data, dict) or any(not isinstance(v, dict) for v in data.values()):
+        raise ValueError('provider environment must be an object of provider objects')
+    return data
 
 
 def _save_provider_env_file(data: Dict[str, Dict[str, str]]) -> None:
     PROVIDER_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PROVIDER_ENV_PATH.write_text(
-        json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
+    write_json_atomic(PROVIDER_ENV_PATH, data, indent=2, ensure_ascii=False)
     _harden_secret_perms(PROVIDER_ENV_PATH)
 
 
 def _hydrate_provider_env_into_os() -> None:
     """Inject persisted provider env vars into os.environ so child agent
     processes inherit them. Shell-set vars win — we only fill blanks."""
-    for _provider, kv in (_load_provider_env_file() or {}).items():
-        if not isinstance(kv, dict):
-            continue
+    try:
+        data = _load_provider_env_file()
+    except (OSError, ValueError) as e:
+        _log(f"[provider-env] read failed during startup: {type(e).__name__}")
+        return
+    for _provider, kv in data.items():
         for k, v in kv.items():
             if k and v is not None:
                 # Recorded for every provider even when the shell wins below:
@@ -2654,9 +2657,13 @@ def agent_provider_set_env(name):
 
     val_str = str(value)
     with _provider_env_lock:
-        data = _load_provider_env_file()
-        data.setdefault(name, {})[key] = val_str
-        _save_provider_env_file(data)
+        try:
+            data = _load_provider_env_file()
+            data.setdefault(name, {})[key] = val_str
+            _save_provider_env_file(data)
+        except (OSError, ValueError) as e:
+            _log(f"[provider-env] update failed: {type(e).__name__}")
+            return jsonify({'error': 'Could not save the provider environment'}), 500
     _provider_env_scope.note_saved(name, key, val_str)
     if val_str:
         os.environ[key] = val_str

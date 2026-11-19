@@ -339,3 +339,17 @@ def test_status_panel_warns_when_claude_is_billed_to_an_api_key():
         assert 'not your subscription plan' in html[src]
         assert f'({src})' in html[src]
         assert 'ssp-v amber' in html[src]  # the file's existing warning style
+
+
+def test_provider_env_save_preserves_unreadable_store(ar_env, monkeypatch):
+    import os
+
+    ar, server = ar_env
+    old = '{"gemini":'
+    ar.PROVIDER_ENV_PATH.write_text(old, encoding='utf-8')
+    monkeypatch.delenv(KEY, raising=False)
+    with server.app.test_request_context(json={'key': KEY, 'value': 'test-value'}):
+        response = server.app.make_response(ar.agent_provider_set_env('claude'))
+    assert response.status_code == 500
+    assert ar.PROVIDER_ENV_PATH.read_text(encoding='utf-8') == old
+    assert KEY not in os.environ
