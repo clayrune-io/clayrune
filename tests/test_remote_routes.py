@@ -84,6 +84,26 @@ def test_enrollment_callback_renders_provider_message_as_text(client, monkeypatc
     assert b'bad &lt;label&gt;' in reply.data
 
 
+def test_device_list_reads_one_identity(client, monkeypatch):
+    from types import SimpleNamespace
+    from mc.blueprints import remote_routes as rr
+    from mc_remote import device_keys, enrollment
+
+    reads = []
+
+    def identity():
+        reads.append(None)
+        return SimpleNamespace(device_id='device-a', enrollment_token='test-only')
+
+    monkeypatch.setattr(rr, '_get_remote_provider', object)
+    monkeypatch.setattr(device_keys, 'load_identity', identity)
+    monkeypatch.setattr(enrollment, 'list_devices_via_cp',
+                        lambda **kw: {'devices': [kw['this_device_id'], kw['device_id']]})
+
+    assert client.get('/api/remote/devices').get_json() == {'devices': ['device-a', 'device-a']}
+    assert len(reads) == 1
+
+
 class TestRemoteStatus:
     def test_status_always_200_with_provider_key(self, client):
         # provider: null (open-source build) or a provider dict (mc_remote

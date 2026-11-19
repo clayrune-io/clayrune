@@ -980,7 +980,7 @@ def remote_devices():
     if p is None:
         return jsonify({'error': 'no_provider', 'devices': []}), 501
     try:
-        from mc_remote import enrollment as _mc_enrollment, device_keys, config
+        from mc_remote import enrollment as _mc_enrollment, config
     except Exception as e:
         return jsonify({'error': 'import_error', 'message': str(e), 'devices': []}), 500
 
@@ -988,15 +988,9 @@ def remote_devices():
     if err is not None:
         return jsonify(err), 503
 
-    try:
-        identity = device_keys.load_identity()
-    except Exception:
-        identity = None
-    this_device_id = identity.device_id if identity else None
-
     body = _mc_enrollment.list_devices_via_cp(
         cp_base_url=config.control_plane_base_url(),
-        this_device_id=this_device_id,
+        this_device_id=auth_kwargs.get('device_id'),
         **auth_kwargs,
     )
     return jsonify(body)
