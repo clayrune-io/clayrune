@@ -972,6 +972,18 @@ class AgentRuntime(ABC):
     name: str = ''
     display_name: str = ''
 
+    def __init__(self) -> None:
+        self._transform_state = threading.local()
+
+    @property
+    def last_error(self) -> str:
+        """Failure detail for the latest transform on the calling thread."""
+        return self._transform_state.last_error if hasattr(self._transform_state, 'last_error') else ''
+
+    @last_error.setter
+    def last_error(self, detail: str) -> None:
+        self._transform_state.last_error = detail
+
     # ── Model catalog (per provider) ─────────────────────────────────────────
     # [(id, label), ...] offered by the new-chat composer's Model picker for
     # THIS provider. Model ids are provider-specific — a claude id handed to
@@ -2074,10 +2086,6 @@ class ClaudeRuntime(AgentRuntime):
         if 'haiku' in low:
             return 'fast'
         return ''
-
-    # Why the last oneshot() returned None (rc + stderr tail / timeout / spawn
-    # failure). Callers raise/log it instead of an anonymous "call failed".
-    last_error = ''
 
     # Valid --effort levels accepted by the CLI (`claude --effort <level>`).
     EFFORT_LEVELS = ('low', 'medium', 'high', 'xhigh', 'max')
@@ -4020,6 +4028,7 @@ class GeminiRuntime(AgentRuntime):
         return identity, readiness, certification
 
     def __init__(self) -> None:
+        super().__init__()
         self._auth_cache: dict = {
             'ok': True,
             'status': 'unknown',
@@ -10157,6 +10166,7 @@ class OpenCodeRuntime(AgentRuntime):
     _ANNOUNCED_CAP = 512
 
     def __init__(self) -> None:
+        super().__init__()
         self._announced: Dict[str, str] = {}
         self._announced_lock = threading.Lock()
 
