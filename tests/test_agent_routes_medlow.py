@@ -285,3 +285,22 @@ def test_revive_parses_history_once_and_preserves_cutoff(monkeypatch):
     assert lines[1:3] == ['reply 2', 'reply 3']
     assert len(lines) == len(timestamps)
     assert reads == ['fixture.jsonl']
+
+
+def test_plan_scrub_skips_unaffected_agent_logs(tmp_path, monkeypatch):
+    from flask import Flask
+    from pathlib import Path
+    from mc import agent_log_maintenance
+    from mc.blueprints import agent_routes as routes
+
+    (tmp_path / 'fixture_agent_log.json').touch()
+    monkeypatch.setattr(routes, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(Path, 'home', staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(agent_log_maintenance, 'snapshot',
+                        lambda project: [{'plan_files': ['unrelated-plan']}])
+    writes = []
+    monkeypatch.setattr(agent_log_maintenance, 'commit', lambda *args: writes.append(args))
+    plan = str(tmp_path / '.claude' / 'plans' / 'missing-plan.md')
+    with Flask(__name__).test_request_context(json={'paths': [plan]}):
+        assert routes.delete_plans().get_json()['ok']
+    assert writes == []

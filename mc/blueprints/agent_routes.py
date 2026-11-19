@@ -16187,10 +16187,12 @@ def delete_plans():
                     if entry.get('plan_file', '') in deleted_paths:
                         entry['plan_file'] = ''
                         changed = True
-                    if entry.get('plan_files'):
-                        entry['plan_files'] = [p for p in entry['plan_files']
-                                               if p not in deleted_paths]
-                        changed = True
+                    plan_files = entry.get('plan_files')
+                    if plan_files:
+                        remaining = [p for p in plan_files if p not in deleted_paths]
+                        if len(remaining) != len(plan_files):
+                            entry['plan_files'] = remaining
+                            changed = True
                 if changed:
                     agent_log_maintenance.commit(project_id, before, log)
             except Exception as e:
