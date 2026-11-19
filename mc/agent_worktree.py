@@ -874,7 +874,8 @@ def _remove_locked(project: dict, session_id: str, delete_branch: bool,
         if not ok:
             # Fall back to a manual delete, but only after unlinking above.
             try:
-                shutil.rmtree(str(wt), ignore_errors=True)
+                if wt.exists():
+                    shutil.rmtree(str(wt))
                 _sync.git_run(base, ['worktree', 'prune'])
             except Exception as e:
                 return False, f'remove failed: {e} / {msg}'

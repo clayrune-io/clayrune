@@ -579,3 +579,27 @@ def test_gc_cache_logs_read_and_write_errors(tmp_path, monkeypatch):
     assert [line.split(' failed')[0] for line in logs] == [
         '[worktree] gc cache read', '[worktree] gc cache write',
     ]
+
+
+def test_remove_keeps_branch_when_fallback_cannot_delete(tmp_path, monkeypatch):
+    calls = []
+    project = {'id': 'sample', 'project_path': str(tmp_path)}
+    tree = tmp_path / 'tree'
+    tree.mkdir()
+    monkeypatch.setattr(w, 'worktree_path', lambda *args: tree)
+    monkeypatch.setattr(w, 'archive_scratch', lambda *args: (True, '', 0))
+    monkeypatch.setattr(w, 'prepare_delete', lambda *args: True)
+
+    def git_run(cwd, args, **kwargs):
+        calls.append(args)
+        return False, 'fixture git removal failed'
+
+    def refuse(path, ignore_errors=False):
+        if not ignore_errors:
+            raise PermissionError('fixture directory is locked')
+
+    monkeypatch.setattr(w._sync, 'git_run', git_run)
+    monkeypatch.setattr(w.shutil, 'rmtree', refuse)
+    ok, detail = w.remove(project, 'finished', delete_branch=True, force=True)
+    assert not ok and 'directory is locked' in detail
+    assert not any(args[0] == 'branch' for args in calls)
