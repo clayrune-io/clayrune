@@ -4713,66 +4713,9 @@ class GeminiRuntime(AgentRuntime):
 
     # ── Dispatch ──────────────────────────────────────────────────────────────
 
-    # Claude-Code-only instructions that confuse a weaker model — each names
-    # a tool (EnterPlanMode / ExitPlanMode / AskUserQuestion) Gemini lacks.
-    # Matched as line prefixes; each capability is a single line in the
-    # assembled --- SYSTEM --- block.
-    _CLAUDE_ONLY_PREFIXES = (
-        'IMPORTANT — Plan Mode:',
-        'Questions: When you need to ask the user',
-    )
-
     def _slim_system_prompt(self, system_prompt: str) -> str:
-        """Trim the generic (Claude-Code-shaped) system prompt to what
-        actually helps Gemini.
-
-        The full prompt has two problems for Gemini:
-          * Bloat — the ~100-endpoint CLAYRUNE API REFERENCE block is large
-            and rarely needed; Gemini can discover endpoints by curling the
-            server. Anthropic's prompt cache made that block free for
-            Claude; for Gemini it is dead weight on every call.
-          * Claude-only noise — instructions naming EnterPlanMode /
-            ExitPlanMode / AskUserQuestion refer to tools Gemini does not
-            have, and a stale project-level "Current task:" line has been
-            observed to derail it onto unrelated work.
-
-        Each transformation is independent and a no-op when its anchor is
-        absent, so a future change to the prompt format degrades gracefully
-        (less slimming) rather than corrupting the prompt.
-        """
-        if not system_prompt:
-            return system_prompt
-        text = system_prompt
-
-        # 1. Collapse the API REFERENCE block to a one-line pointer. It runs
-        #    from its header to the next recognizable section start.
-        m = re.search(r'\n*--- CLAYRUNE API REFERENCE ---\n', text)
-        if m:
-            after = text[m.end():]
-            nxt = re.search(
-                r'\n(--- [^\n]+ ---\n|Recent activity:|Recent conversations|Current task:)',
-                after)
-            tail = after[nxt.start():] if nxt else ''
-            pm = re.search(r'localhost:(\d+)', text)
-            host = (f"http://localhost:{pm.group(1)}" if pm
-                    else "the Clayrune server")
-            text = (text[:m.start()].rstrip()
-                    + "\n\n--- CLAYRUNE API ---\n"
-                    + f"Clayrune's HTTP API is on {host}. To discover "
-                    + "endpoints, curl GET / or grep server.py for @app.route."
-                    + (('\n' + tail) if tail else ''))
-
-        # 2. Drop Claude-only tool instructions (each is a single line).
-        text = '\n'.join(
-            ln for ln in text.split('\n')
-            if not any(ln.lstrip().startswith(p)
-                       for p in self._CLAUDE_ONLY_PREFIXES))
-
-        # 3. Drop the stale project-level "Current task:" line — it is NOT
-        #    the dispatched task (that is appended after a --- separator).
-        text = re.sub(r'(?m)^Current task:.*$', '', text)
-
-        return text.strip()
+        """Drop the stale project-level task before the dispatched task is appended."""
+        return re.sub(r'(?m)^Current task:.*$', '', system_prompt).strip()
 
     def dispatch(self, *,
                  project_path: str,
