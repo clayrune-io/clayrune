@@ -122,3 +122,14 @@ def test_live_session_survives_the_conversations_list_cut(client, tmp_path, monk
         f"{sids} (limit=3, 5 fresher decoys exist)")
     assert live_rows[0]['live'] is True
     assert live_rows[0]['status'] == 'running'
+
+
+def test_conversations_reads_the_agent_log_once(client, monkeypatch):
+    from mc.blueprints import agent_routes as routes
+
+    reads = []
+    monkeypatch.setattr(routes, '_load_agent_log', lambda pid: reads.append(pid) or [])
+    test_client, _ = client
+    response = test_client.get('/api/project/proj1/conversations?limit=3')
+    assert response.status_code == 200
+    assert reads == ['proj1']

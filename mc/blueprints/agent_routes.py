@@ -17559,7 +17559,7 @@ def _row_spawned_by(log_entry, live, by_sid=None):
     return (live.get('spawned_by') or live.get('_spawned_by') or '').strip()
 
 
-def _recent_codex_conversation_rows(project_id, p, limit, by_sid=None):
+def _recent_codex_conversation_rows(project_id, p, limit, by_sid=None, *, agent_log=None):
     """Codex conversations backed by real rollout transcripts.
 
     Was routed through `_non_claude_conversation_rows` on the (wrong)
@@ -17593,7 +17593,7 @@ def _recent_codex_conversation_rows(project_id, p, limit, by_sid=None):
     # Newest agent-log row per Codex thread id — same role as log_by_csid
     # plays for Claude below: live status/character/trigger come from here.
     log_by_psid = {}
-    for e in _load_agent_log(project_id):
+    for e in (_load_agent_log(project_id) if agent_log is None else agent_log):
         if (e.get('provider') or '').lower() != 'codex':
             continue
         psid = e.get('provider_session_id', '')
@@ -17727,7 +17727,8 @@ def _recent_codex_conversation_rows(project_id, p, limit, by_sid=None):
     return rows, covered_mc_sids
 
 
-def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None, by_sid=None):
+def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None, by_sid=None,
+                                 *, agent_log=None):
     """Agent-log rows for providers that leave no Claude transcript (MC-929).
 
     `GeminiRuntime.transcript_path()` (and every other non-Claude runtime
@@ -17753,7 +17754,7 @@ def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None, by_si
     """
     exclude_sids = exclude_sids or set()
     groups = {}
-    for e in _load_agent_log(project_id):
+    for e in (_load_agent_log(project_id) if agent_log is None else agent_log):
         if e.get('claude_session_id'):
             continue  # has a real transcript — the Claude path already owns it
         provider = (e.get('provider') or 'claude').lower()
@@ -18154,9 +18155,12 @@ def get_project_conversations(project_id):
     # at all, plus any Codex chat _recent_codex_conversation_rows couldn't
     # match to a rollout). codex_covered_sids keeps the two from double-listing
     # the same conversation.
-    codex_rows, codex_covered_sids = _recent_codex_conversation_rows(project_id, p, limit, by_sid=by_sid)
+    codex_rows, codex_covered_sids = _recent_codex_conversation_rows(
+        project_id, p, limit, by_sid=by_sid, agent_log=_full_log)
     out.extend(codex_rows)
-    out.extend(_non_claude_conversation_rows(project_id, p, limit, exclude_sids=codex_covered_sids, by_sid=by_sid))
+    out.extend(_non_claude_conversation_rows(
+        project_id, p, limit, exclude_sids=codex_covered_sids, by_sid=by_sid,
+        agent_log=_full_log))
     if canonical_rows:
         seen = {row.get('mc_session_id') for row in out if row.get('mc_session_id')}
         for row in canonical_rows:
