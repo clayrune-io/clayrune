@@ -2668,7 +2668,7 @@ def agent_provider_set_env(name):
     if val_str:
         os.environ[key] = val_str
     else:
-        # Empty value = clear the override (let shell env take over).
+        # Clearing removes the key from this server's current environment.
         os.environ.pop(key, None)
     return jsonify({'ok': True, 'key': key})
 
