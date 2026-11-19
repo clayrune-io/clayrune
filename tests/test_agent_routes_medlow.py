@@ -172,3 +172,20 @@ def test_prior_provider_finds_claude_lineage(monkeypatch):
         'claude_session_ids': ['earlier-chat', 'current-chat'],
     }])
     assert routes._prior_conversation_provider('sample', 'earlier-chat') == 'claude'
+
+
+def test_superseded_mode_a_reader_leaves_resume_recovery_to_owner(monkeypatch):
+    from types import SimpleNamespace
+    from mc.blueprints import agent_routes as routes
+
+    recoveries = []
+    monkeypatch.setattr(routes, '_unregister_process', lambda pid: None)
+    monkeypatch.setattr(routes._credits_session, 'replay_after_exit', lambda *a: False)
+    monkeypatch.setattr(routes, '_auto_recover_failed_resume', recoveries.append)
+    proc = SimpleNamespace(pid=123, stdout=(), wait=lambda: 1)
+    session = {
+        'project_id': 'sample', 'status': 'error', 'proc': object(),
+        '_resume_id': 'prior', '_dispatch_time': routes._time.time(),
+    }
+    routes._read_agent_stream(proc, session)
+    assert recoveries == []

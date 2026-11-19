@@ -6454,7 +6454,8 @@ def _read_agent_stream(proc, session):
                         session.pop('_dispatching_followup', None)
 
         # Auto-recover failed resume (Mode A)
-        if (not _credits_replayed and session.get('_resume_id')
+        if (not _credits_replayed and _completion_owned_by(session, my_proc)
+                and session.get('_resume_id')
                 and session.get('status') == 'error'
                 and not session.get('_resume_recovery_attempted')
                 and _time.time() - session.get('_dispatch_time', 0) < 60
