@@ -342,7 +342,7 @@ async function dispatchAgent(projectId) {
       pendingResumeProvider[projectId] = resumeProvider;
       pendingResumeMcSessionId[projectId] = resumeMcSessionId;
     }
-    input.value = task;  // restore the prompt we cleared above
+    window.mcSendRefusal.restoreComposer(input, task);  // restore the prompt we cleared above (FE14: also re-seeds textareaValues)
     if (typeof window.refreshAuthStatus === 'function') window.refreshAuthStatus();
     const banner = document.getElementById('auth-banner');
     if (banner) banner.classList.remove('hidden');
@@ -442,7 +442,7 @@ async function dispatchAgent(projectId) {
       if (errIdx >= 0) agentHistory.splice(errIdx, 1);
       delete activeAgentTab[projectId];
       agentConvNew[projectId] = true;
-      input.value = task;
+      window.mcSendRefusal.restoreComposer(input, task);  // FE14: also re-seeds textareaValues
       refreshModal();
       alert(data.error || 'Dispatch failed');
       return;
@@ -499,7 +499,7 @@ async function dispatchAgent(projectId) {
     if (errIdx >= 0) agentHistory.splice(errIdx, 1);
     delete activeAgentTab[projectId];
     agentConvNew[projectId] = true;
-    input.value = task;
+    window.mcSendRefusal.restoreComposer(input, task);  // FE14: also re-seeds textareaValues
     refreshModal();
     alert('Failed to dispatch: ' + e.message);
   }
@@ -611,8 +611,11 @@ async function _readAgentBuffer(projectId, sessionId) {
     if (serverLines.length === have) return sess;  // buffer in sync — nothing more to recover
     const missing = serverLines.slice(have);
     const missingTs = serverTs.slice(have);
-    for (const text of missing) {
-      const _mi = missing.indexOf(text);
+    for (let _mi = 0; _mi < missing.length; _mi++) {
+      // By index, never missing.indexOf(text): that finds the FIRST copy of a
+      // repeated line, so later copies were skipped as already-delivered and
+      // read the wrong timestamp (MC-1179 FE1).
+      const text = missing[_mi];
       // Race guard: SSE may have delivered the same line between fetch start
       // and now. Re-check our cursor against the index this iteration targets.
       if ((agentServerLines[sessionId] || 0) >= have + _mi + 1) continue;
@@ -830,6 +833,9 @@ function connectAgentStream(projectId, sessionId) {
   // through would give each popped window N streams and starve the origin's
   // 6-connection cap (docs: memory arch_sse_slot_management).
   if (window.__mcPopout && sessionId !== window.__mcPopout.sid) return;
+  // FE5: at most MAX_LIVE_AGENT_STREAMS (agent-stream-cap.js) streams per tab; a
+  // refused chat is kept current by the 15s status poll until it is viewed.
+  if (window.admitAgentStream?.(sessionId) === false) return;
   if (agentEventSources[sessionId]) {
     agentEventSources[sessionId].close();
   }

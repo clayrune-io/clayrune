@@ -6,6 +6,7 @@ import { hideSkillAnnouncement } from './skill-announcement.js';
 import { deferChatRefresh } from './chat-selection.js';
 import { agentTimeAttrs, agentTimeTagsHTML, stampAgentNarration } from './agent-time-tag.js';
 import './send-timeout.js';
+import './send-refusal.js';
 
 // Tag agent-bound POST bodies with client="mobile" when the viewport is
 // phone-sized. The backend then decides — based on mobile_brief_replies_enabled
@@ -4238,6 +4239,9 @@ function switchAgentTab(projectId, sessionId) {
   // Drilling into a conversation exits "New" mode.
   delete agentConvNew[projectId];
   const wasOnList = !activeAgentTab[projectId];
+  // FE5: the chat being left and the one entered both count as just viewed.
+  window.noteAgentViewed?.(activeAgentTab[projectId]);
+  window.noteAgentViewed?.(sessionId);
   activeAgentTab[projectId] = sessionId;
   // Mobile always lands on the conversations list now, so entering ANY chat
   // (even the lone one) is a Layer-3 push → hardware-back returns to the list.
@@ -5599,11 +5603,15 @@ function _dispatchQuestionAnswer(projectId, sessionId, container, answers) {
   if (agentStatusCache[sessionId]) agentStatusCache[sessionId].waitingForQuestion = false;
   const _hAns = agentHistory.find(h => h.sessionId === sessionId);
   if (_hAns) _hAns.waitingForQuestion = false;
+  // Keep what this clears so a refused send can draw the form again.
+  const _answeredPq = ((agentStatusCache[sessionId] || {}).pendingQuestions || [])
+    .find(p => p.question_id === (container.dataset.qid || ''));
   if (agentStatusCache[sessionId]) agentStatusCache[sessionId].pendingQuestions = [];
 
   const input = document.getElementById(`agent-followup-${sessionId}`);
   if (input) {
     input.value = message;
+    window.mcSendRefusal.noteQuestionAnswer(sessionId, container, _answeredPq);
     sendFollowup(projectId, sessionId);
   } else {
     fetch(API_BASE + `/api/project/${projectId}/agent/followup`, {
@@ -5618,6 +5626,7 @@ async function sendFollowup(projectId, sessionId, sendMode) {
   const input = document.getElementById(`agent-followup-${sessionId}`);
   const message = input.value.trim();
   if (!message) { input.focus(); return; }
+  const answeringQuestion = window.mcSendRefusal.takeQuestionAnswer(sessionId);
   const sendLinesBefore = (agentOutputBuffers[sessionId] || []).slice();
   let sendEcho;
 
@@ -5877,9 +5886,19 @@ async function sendFollowup(projectId, sessionId, sendMode) {
           el.appendChild(card);
         }
         const inp = document.getElementById(`agent-followup-${sessionId}`);
-        if (inp && !inp.value && !delivered) inp.value = message;
+        if (inp && !inp.value && !delivered) window.mcSendRefusal.restoreComposer(inp, message);
         delete _sendInFlight[sessionId];
         delete _preSendStatus[sessionId];
+        return;
+      }
+      // Any other refusal (409 revive refused, 502 delivered:false, 500
+      // dispatch failed ...) used to fall into the success path below: no toast,
+      // a sent-looking bubble, an empty composer. Same trace as the catch path.
+      if (!delivered) {
+        window.mcSendRefusal.settleRefusedSend({
+          projectId, sessionId, echo: sendEcho, message, delivered,
+          note: answeringQuestion, error: data.error,
+        });
         return;
       }
     }
@@ -6003,7 +6022,7 @@ async function sendFollowup(projectId, sessionId, sendMode) {
     // (turn_start never arrived). If turn_start DID arrive, the agent received
     // the message and is/was running — restoring would show stale text that the
     // user already sent, which is the "text jumps back" bug.
-    if (inp && !inp.value && !_turnStartAcked[sessionId] && !delivered) inp.value = message;
+    if (inp && !inp.value && !_turnStartAcked[sessionId] && !delivered) window.mcSendRefusal.restoreComposer(inp, message);
     if (!delivered) showToast(aborted
       ? 'Send timed out — network may be paused. Try again.'
       : `Send failed: ${e && e.message ? e.message : 'network error'}`, 4500);
