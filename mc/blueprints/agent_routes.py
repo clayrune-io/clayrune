@@ -13563,10 +13563,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             session['log_lines'].append(_af_log_line)
 
     resume_label = f" (resuming {resume_id})" if resume_id else ""
-    try:
-        _log(f"[dispatch] cmd: {' '.join(cmd)}")
-    except (UnicodeEncodeError, UnicodeDecodeError):
-        _log(f"[dispatch] cmd: {' '.join(cmd).encode('ascii', 'replace').decode()}")
+    _log(f"[dispatch] Claude session {session_id}: mode={session['mode']}")
     # MC-959: the child is already Popen'd and registered in agent_sessions
     # above — a failure here (the project record save can still hit a
     # transient Windows file lock even after write_json_atomic's retry) must
