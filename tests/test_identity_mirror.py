@@ -89,6 +89,30 @@ def test_mirror_absent_returns_none(isolated_vault):
     assert identity_mirror.read() is None
 
 
+@pytest.mark.parametrize('key_error', ['missing', 'empty', 'unreadable'])
+def test_read_never_creates_or_replaces_mirror_key(isolated_vault, monkeypatch, key_error):
+    identity_mirror.write({name: name for name in identity_mirror.FIELDS})
+    key = identity_mirror._key_path()
+    if key_error == 'missing':
+        key.unlink()
+    elif key_error == 'empty':
+        key.write_text('', encoding='utf-8')
+    else:
+        read_text = Path.read_text
+
+        def fail_key_read(path, *args, **kwargs):
+            if path == key:
+                raise PermissionError('transient read failure')
+            return read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, 'read_text', fail_key_read)
+
+    writes = []
+    monkeypatch.setattr(identity_mirror, '_write_private_text', lambda *args: writes.append(args[0]))
+    assert identity_mirror.read() is None
+    assert not writes
+
+
 def test_mirror_write_read_round_trip(isolated_vault):
     fields = {
         "device_pub": "pub", "device_id": "id", "username": "ron",
