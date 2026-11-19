@@ -155,7 +155,7 @@ const STATES = {
     headline: 'Agent mail is on', tone: 'good',
     rows: { service_queue: 'Unknown (no current answer', local_queue: '2 messages (40 bytes, oldest 2 min old)' } },
   pull_disabled_revoking: { ...pull('active', { state: 'disabled', enabled: false, revocations_pending: 2, revocation_pending: true }),
-    headline: 'Disabled', tone: 'warn', rows: { remote: 'Revocation pending at the service', revocations: '2 waiting' } },
+    headline: 'Disabled here, revocation pending', tone: 'warn', rows: { remote: 'Revocation pending at the service', revocations: '2 waiting' } },
   pull_malformed: { status: 200, body: { protocol: 'pull', signup: { state: 'active' } }, headline: 'Could not read agent mail status',
     tone: 'bad', noRows: true },
   pull_hostile: { ...pull('active', { owner: '<img src=x onerror=window.__pwned=1>@evil.test',

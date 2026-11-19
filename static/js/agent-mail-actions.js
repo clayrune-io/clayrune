@@ -90,7 +90,7 @@
   };
   const block = (key, title, hint, inner) => `
     <div class="am-act" data-am-control="${esc(key)}">
-      <div class="am-act-title">${esc(title)}</div>
+      ${title ? `<div class="am-act-title">${esc(title)}</div>` : ''}
       ${hint ? `<div class="am-act-hint">${esc(hint)}</div>` : ''}
       <div class="am-act-body">${inner}</div>
     </div>`;
@@ -125,8 +125,8 @@
     if (c === 'enable') return block(c, 'Turn agent mail on',
       pull ? 'Needs no unattended agent session to be running.'
         : 'Needs the checklist above to be ready and no unattended agent session to be running.', btn('enable', ' am-primary'));
-    if (c === 'retry-revocations') return block(c, 'Revocation waiting',
-      'The mail service has not yet confirmed a revocation. Retry asks it again.', btn('retry-revocations'));
+    if (c === 'retry-revocations') return block(c, pull ? '' : 'Revocation waiting',
+      pull ? '' : 'The mail service has not yet confirmed a revocation. Retry asks it again.', btn('retry-revocations'));
     if (c === 'disable') return block(c, 'Turn agent mail off',
       'Switches mail off on this computer and asks the service to revoke it. Always available, even while agent sessions run.',
       btn('disable', ' am-danger'));
@@ -158,6 +158,11 @@
     const slot = host.querySelector('#agent-mail-setup-slot');
     if (slot && window.AgentMailSetup) window.AgentMailSetup.mount(slot, { context: 'settings' });
     else if (slot) slot.innerHTML = '<div class="am-act-hint">Setup is not available.</div>';
+    if (p.protocol === 'pull' && p.controls.some((c) => c === 'disable' || c === 'retry-revocations')) {
+      const win = host.closest('.mc-settings-window');
+      // Fresh status can grow the floating panel below its original anchor.
+      if (win && win.getBoundingClientRect().bottom > window.innerHeight) window._positionSettingsModal(win);
+    }
   }
 
   document.addEventListener('click', (ev) => {

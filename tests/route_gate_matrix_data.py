@@ -51,7 +51,7 @@ ROWS = (
      'is_unattended_caller then _require_human_passcode (before write_json_atomic)',
      ''),
     ('POST', '/api/agent-mail/enrollment/<action>', 'passcode',
-     '_require_human_passcode before all actions, including pull Disable; human_required additionally covers the positive lifecycle actions',
+     '_require_human_passcode before all actions, including pull Disable and Retry revocation; human_required additionally covers the positive lifecycle actions',
      ''),
     ('POST', '/api/agent-mail/holds/<event_id>/<action>', 'passcode',
      'is_unattended_caller then _require_human_passcode (before release_hold / reject_event)',

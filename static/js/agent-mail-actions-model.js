@@ -167,7 +167,7 @@
   // A pull POST answers HTTP 200 even when it holds a refusal: judge the view, not the status.
   function pullOutcome(action, r) {
     const done = (tone, text, c) => ({ tone, text, blockers: [], code: c });
-    if (action === 'disable') {
+    if (action === 'disable' || action === 'retry-revocations') {
       const v = r.body;
       if (v.state === 'disabled' && v.enabled === false) {
         if (v.revocation_pending === true) return done('warn', 'Agent mail is off on this computer. Service revocation is pending.', 'revocation_pending');
@@ -198,7 +198,11 @@
     if (status === 200 && isPull(body)) {
       const p = pullPlan(body.signup);
       const s = isObj(body.pull_status) ? body.pull_status : {};
-      if (s.state === 'disabled' && s.enabled === false) return { ...p, state: 'disabled', controls: [], text: '' };
+      if (s.state === 'disabled' && s.enabled === false) {
+        const controls = int(s.revocations_pending) > 0 ? ['retry-revocations'] : [];
+        return { ...p, state: 'disabled', controls, text: '' };
+      }
+      if (s.state === 'held' && s.enabled === false && int(s.revocations_pending) > 0) p.controls.push('retry-revocations');
       if (p.state === 'active' || s.can_disable === true) p.controls.push('disable');
       return p;
     }

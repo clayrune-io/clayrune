@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-18] - Agent mail: retry a pending service revocation (MC-1179 MB18)
+
+- **Retry revocation** in the agent-mail controls replays due revocations after a fresh passcode check. It retains the original denial operation and keeps local mail off.
+
 ## [2026-11-18] - Agent mail: turn off pull mail from Settings (MC-1179 MB18)
 
 - **Settings > Connectivity > Agent mail > Controls** offers **Disable agent mail** for active pull mail. The dashboard passcode confirms the action and local mail stops before the service revocation attempt. The result shows whether the service confirmed revocation.

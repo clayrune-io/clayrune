@@ -420,7 +420,7 @@ try {
       const pg = (o) => ({ protocol: 'pull', pull_status: {}, signup: sv(o) });     // GET answer
       const pp = (o) => ({ protocol: 'pull', ...sv(o) });                          // POST answer (flat)
       const pending = (v) => pg({ state: 'pending', verification_state: v });
-      const FORBID = ['review', 'confirm', 'verify', 'proof', 'retry-revocations'];
+      const FORBID = ['review', 'confirm', 'verify', 'proof'];
       const noLegacy = () => page.evaluate((f) => ({
         buttons: f.filter((a) => !!document.querySelector('#agent-mail-actions [data-am-action="' + a + '"]')),
         code: !!document.querySelector('#agent-mail-actions [data-am-input="code"]') }), FORBID);
@@ -474,6 +474,16 @@ try {
         check(posts.length === 3 && posts[2].action === 'disable' && posts[2].body.passcode === PASS && /^[a-f0-9]{32}$/.test(posts[2].body.op_id),
           `${tag}: Disable POSTs the typed passcode and a fresh operation id`, `${tag}: wrong Disable request`);
         check(o.tone === 'warn' && o.text.includes('Service revocation is pending'), `${tag}: reports local off and confirmation pending`, `${tag}: ${JSON.stringify(o)}`);
+        check(same(await controls(), ['retry-revocations']), `${tag}: a pending revocation offers Retry revocation`, `${tag}: pending revocation controls ${JSON.stringify(await controls())}`);
+        const revoked = { ...off, revocation_pending: false, revocations_pending: 0 };
+        replies['retry-revocations'] = { status: 200, body: { protocol: 'pull', ...revoked }, next: { ...pg({ state: 'held', reason: 'stale_generation' }), pull_status: revoked } };
+        await page.click('#agent-mail-actions [data-am-action="retry-revocations"]');
+        await prompt();
+        o = await outcome('retry-revocations');
+        check(posts.length === 4 && posts[3].action === 'retry-revocations' && posts[3].body.passcode === PASS && same(strip(posts[3].body), {}),
+          `${tag}: retry POSTs with the typed passcode only`, `${tag}: wrong retry request`);
+        check(o.tone === 'good' && o.text.includes('confirmed revocation') && same(await controls(), []),
+          `${tag}: confirmed revocation clears Retry`, `${tag}: ${JSON.stringify(o)} controls ${JSON.stringify(await controls())}`);
       }
 
       // a 200 that carries a held view is a failure and never announces success

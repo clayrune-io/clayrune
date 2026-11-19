@@ -27,7 +27,7 @@ const view = (o) => ({ status: 200, body: { protocol: 'pull', pull_status: {}, s
   state: 'pending', reason: '', enabled: false, install_id: 'i', flow_id: 'f', address: 'm1@clayrune.io',
   expires_ms: 1, verification_state: null, ...o } } });
 const controls = (o) => M.plan(view(o)).controls;
-const FORBIDDEN = ['review', 'confirm', 'verify', 'proof', 'retry-revocations'];
+const FORBIDDEN = ['review', 'confirm', 'verify', 'proof'];
 
 console.log('plan: signup states');
 check(same(controls({ state: 'not_enrolled' }), ['setup']), 'not_enrolled -> setup');
@@ -51,7 +51,12 @@ const heldPending = M.plan(view({ state: 'pending', reason: 'seal_missing' }));
 check(heldPending.state === 'held' && heldPending.controls.length === 0, 'reason on a pending view holds it (no check/enable)');
 const every = ['not_enrolled', 'preparing', 'start_pending', 'pending', 'verified', 'enable_pending', 'active', 'expired', 'cancelled', 'held']
   .flatMap((s) => controls({ state: s, enabled: s === 'active', reason: s === 'held' ? 'vault_locked' : '' }));
-check(!every.some((c) => FORBIDDEN.includes(c)), 'no review/confirm/verify/proof/retry-revocations for these pull states');
+check(!every.some((c) => FORBIDDEN.includes(c)), 'no review/confirm/verify/proof for these pull states');
+const off = view({ state: 'held', reason: 'stale_generation' });
+off.body.pull_status = { state: 'disabled', enabled: false, revocations_pending: 1 };
+check(same(M.plan(off).controls, ['retry-revocations']), 'disabled with a pending fence -> Retry revocation');
+off.body.pull_status.revocations_pending = 0;
+check(same(M.plan(off).controls, []), 'disabled with confirmed revocation -> no action');
 
 console.log('plan: malformed fails closed');
 const closed = (r, msg) => { const p = M.plan(r); check(p.state === 'error' && p.controls.length === 0 && !!p.text, msg); };

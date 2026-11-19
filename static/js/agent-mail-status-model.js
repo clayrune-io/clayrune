@@ -160,8 +160,10 @@
     } else if (state !== 'unknown') {
       remote = revoking > 0 ? 'Revocation pending at the service' : state === 'deleted' ? 'Deleted' : 'Disabled';
       tone = revoking > 0 ? 'warn' : 'neutral';
-      headline = { disabled: 'Disabled', frozen: 'Frozen', deleted: 'Deleted' }[state];
-      detail = 'Mail is off on this computer' + (revoking > 0 ? '. The service has not yet confirmed the revocation (' + revoking + ' waiting); it will be retried.' : '.');
+      headline = { disabled: revoking ? 'Disabled here, revocation pending' : 'Disabled', frozen: 'Frozen', deleted: 'Deleted' }[state];
+      detail = 'Mail is off on this computer.';
+      if (revoking > 0) detail += ' The service has not yet confirmed the revocation (' + revoking + ' waiting).'
+        + (state === 'disabled' ? ' Use Retry revocation in Controls.' : '');
     }
 
     const rows = [row('local', 'On this computer', enabled === true ? 'On' : enabled === false ? 'Off' : 'Unknown', enabled ? 'good' : 'neutral'),
