@@ -18,6 +18,7 @@ from uuid import uuid4
 
 from mc import execution_lifecycle as lifecycle
 from mc.conversation_store import ConversationStore, ConversationUnavailable
+from mc.core import _log
 
 
 def _freeze(value: Any) -> Any:
@@ -146,6 +147,7 @@ class AuthorizedRuntimeLifecycleBridge:
                     # Match route callback isolation; never turn an already
                     # launched process into a reported spawn failure.
                     session.setdefault('_lifecycle_errors', []).append(str(exc))
+                    _log(f'[runtime-lifecycle] queued {kind} callback failed: {exc}')
         return launched[0]
 
     def on_init(self, event: Any, session: dict) -> None:
