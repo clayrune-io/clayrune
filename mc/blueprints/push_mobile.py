@@ -1306,7 +1306,10 @@ def api_diag_viewport():
     cl = request.content_length
     if cl is not None and cl > _VIEWPORT_DIAG_MAX_BODY:
         return jsonify({'ok': False, 'error': 'payload_too_large'}), 413
-    raw = request.get_data(as_text=False) or b''  # cached (default): get_json below reuses it
+    bound = _VIEWPORT_DIAG_MAX_BODY + 1
+    app_limit = request.max_content_length
+    request.max_content_length = bound if app_limit is None else min(bound, app_limit)
+    raw = request.get_data(as_text=False) or b''  # get_json reuses the cached bytes
     if len(raw) > _VIEWPORT_DIAG_MAX_BODY:
         return jsonify({'ok': False, 'error': 'payload_too_large'}), 413
     body = request.get_json(force=True, silent=True) or {}

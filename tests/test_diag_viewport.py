@@ -83,6 +83,19 @@ def test_oversized_body_rejected_413(client):
     assert r.get_json()['ok'] is False
 
 
+def test_viewport_stops_reading_an_oversized_stream_without_content_length(client):
+    from io import BytesIO
+
+    cap = push_mobile._VIEWPORT_DIAG_MAX_BODY
+    incoming = BytesIO(b'x' * (cap * 10))
+    reply = client.post('/api/diag/viewport', environ_overrides={
+        'wsgi.input': incoming, 'wsgi.input_terminated': True, 'CONTENT_LENGTH': '',
+    })
+
+    assert reply.status_code == 413
+    assert incoming.tell() <= cap + 1
+
+
 def test_non_dict_json_body_is_a_clean_400(client):
     # A bare JSON array or scalar (malformed client) can't be merged into a
     # row — reject cleanly, never a 500 from unpacking assumptions downstream.
