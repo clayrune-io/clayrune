@@ -127,12 +127,17 @@ def parse_otpauth_uri(uri: str) -> dict:
     if ':' in label:
         label_issuer, account = label.split(':', 1)
         issuer = issuer or label_issuer
+    try:
+        digits = int((q.get('digits') or ['6'])[0])
+        period = int((q.get('period') or ['30'])[0])
+    except ValueError as exc:
+        raise TotpError('otpauth digits and period must be integers') from exc
     return {
         'secret': normalize_secret(secret),
         'issuer': issuer.strip(),
         'account': account.strip(),
-        'digits': int((q.get('digits') or ['6'])[0]),
-        'period': int((q.get('period') or ['30'])[0]),
+        'digits': digits,
+        'period': period,
         'algorithm': ((q.get('algorithm') or ['SHA1'])[0]).upper(),
     }
 
