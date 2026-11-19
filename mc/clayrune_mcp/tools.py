@@ -25,6 +25,7 @@ would let a caller claim an identity (`session_id`, `project_id`,
 """
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import socket
@@ -108,6 +109,9 @@ class Gateway:
                 'retried and its outcome is unknown: it may or may not have been '
                 'applied. Check clayrune_delivery_status / clayrune_list_agents before '
                 'sending again.', {'outcome': 'unknown'})
+        except (http.client.RemoteDisconnected, ConnectionResetError):
+            raise ToolError('Clayrune disconnected before replying; outcome '
+                            'unknown, not retried.', {'outcome': 'unknown'})
         except urllib.error.URLError as e:
             if isinstance(e.reason, (socket.timeout, TimeoutError)):
                 raise ToolError('no response from Clayrune before the timeout; outcome '
