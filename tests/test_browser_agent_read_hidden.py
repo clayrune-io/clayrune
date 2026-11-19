@@ -29,6 +29,27 @@ PAGE = ('<!doctype html><title>Feed</title><body><p id=v></p><p>hello from the h
 
 # ── wiring (no Chromium) ─────────────────────────────────────────────────────
 
+def test_hidden_tab_close_failure_is_logged_and_connection_closes(monkeypatch):
+    from types import SimpleNamespace
+    from mc import browser_hidden_read
+
+    logs, closed = [], []
+
+    def fail(*args, **kwargs):
+        raise OSError('tab close failed')
+
+    reader = browser_hidden_read.HiddenTabReader('project', 'profile')
+    reader._browser = SimpleNamespace(call=fail, close=lambda: closed.append(True))
+    reader._target_id = 'tab'
+    monkeypatch.setattr(browser_hidden_read, '_log',
+                        lambda message, **kw: logs.append(message), raising=False)
+
+    reader.close()
+
+    assert closed == [True]
+    assert logs == ['[browser-agent-read] could not close the hidden tab: OSError']
+
+
 def _pane_session(env, **extra):
     """A live pane session holding profile `li`, as the pane registers it."""
     s = {'session_id': 'pane1', 'status': 'running', 'profile': 'li', 'port': 1, 'cdp': None,
