@@ -1992,7 +1992,8 @@ def _enumerate_restore_point_entries(paths: dict, project: dict) -> tuple[list[_
     return entries, warnings
 
 
-def _create_restore_point_for(project: dict, *, label: Optional[str] = None, pin: bool = False) -> dict:
+def _create_restore_point_for(project: dict, *, label: Optional[str] = None, pin: bool = False,
+                              protect_snap_id: Optional[str] = None) -> dict:
     """Does the actual snapshot for whatever project dict it's handed —
     split out from create_restore_point() so rollback()'s auto-snapshot can
     call it without requiring the project to be a currently REGISTERED one
@@ -2050,7 +2051,7 @@ def _create_restore_point_for(project: dict, *, label: Optional[str] = None, pin
     }
     write_json_atomic(root / 'manifest.json', manifest, indent=2, ensure_ascii=False)
 
-    pruned = _enforce_retention(project['id'])
+    pruned = _enforce_retention(project['id'], protect_snap_id=protect_snap_id)
     return {'snap_id': snap_id, 'path': str(root), 'manifest': manifest,
            'files_written': written, 'warnings': manifest['warnings'], 'pruned': pruned}
 
@@ -2099,15 +2100,19 @@ def list_restore_points(project_id: str) -> list[dict]:
     return sorted(out, key=lambda r: r.get('snap_id') or '', reverse=True)
 
 
-def _enforce_retention(project_id: str, keep: int = RETENTION_KEEP) -> list[str]:
+def _enforce_retention(project_id: str, keep: int = RETENTION_KEEP, *,
+                       protect_snap_id: Optional[str] = None) -> list[str]:
     """Keep the last N unpinned points; every pinned point is exempt from the
     count entirely (spec §4.3: 'keep the last N=10 per project + any the
     user pins'). list_restore_points() is already newest-first, so the
-    excess is simply whatever falls past index `keep`."""
+    excess is simply whatever falls past index `keep`. A rollback's target
+    can survive one prune so the undo point and original both remain usable."""
     points = [p for p in list_restore_points(project_id) if 'error' not in p]
     unpinned = [p for p in points if not p.get('pinned')]
     pruned: list[str] = []
     for p in unpinned[keep:]:
+        if p['snap_id'] == protect_snap_id:
+            continue
         try:
             delete_restore_point(project_id, p['snap_id'])
             pruned.append(p['snap_id'])
@@ -2270,7 +2275,8 @@ def rollback(project_id: str, snap_id: str, *, restore_memory_index: bool = Fals
         return report
 
     pre_rollback = _create_restore_point_for(
-        {'id': project_id, 'project_path': pp}, label=f'pre-rollback-{snap_id}')
+        {'id': project_id, 'project_path': pp}, label=f'pre-rollback-{snap_id}',
+        protect_snap_id=snap_id)
     report['pre_rollback_snapshot'] = pre_rollback['snap_id']
 
     known_ids_manifest = {'projects': [{'id': project_id}]}

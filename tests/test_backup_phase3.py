@@ -236,6 +236,7 @@ def test_rollback_creates_a_pre_rollback_snapshot(fake_install):
     new_ids = after_ids - before_ids
     assert report['pre_rollback_snapshot'] in new_ids
 
+
     # And the pre-rollback snapshot really does carry the mutated (v2) state
     # — proving rollback is itself reversible.
     pre_manifest = bk._load_restore_point_manifest(bk._paths(), 'proj_x', report['pre_rollback_snapshot'])
@@ -243,6 +244,17 @@ def test_rollback_creates_a_pre_rollback_snapshot(fake_install):
     assert (pre_root / 'memory' / 'MEMORY.md').read_text(encoding='utf-8') == \
         '# memory v2 (superseded stuff removed)\n'
     assert pre_manifest['project_id'] == 'proj_x'
+
+
+def test_rollback_keeps_its_oldest_target_during_retention(fake_install):
+    points = [bk.create_restore_point('proj_x') for _ in range(bk.RETENTION_KEEP)]
+    oldest = points[0]['snap_id']
+
+    result = bk.rollback('proj_x', oldest)
+
+    remaining = {point['snap_id'] for point in bk.list_restore_points('proj_x')}
+    assert len(remaining) == bk.RETENTION_KEEP + 1
+    assert {oldest, result['pre_rollback_snapshot']} <= remaining
 
 
 def test_rollback_reports_cannot_reverse_as_structured_data(fake_install):
