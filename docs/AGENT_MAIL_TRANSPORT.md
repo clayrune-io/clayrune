@@ -1,10 +1,10 @@
-# Agent mail transport, local receiver and laundering (MC-1166 units 2/4/5)
+# Agent mail transport, local receiver and reply extraction (MC-1166 units 2/4/5)
 
 Branch candidate only. No deployment, account call, enrollment, credentials,
 real mail, merge, push, restart or live enablement is part of this unit.
 Parent requirements: [AGENT_MAIL_SPEC.md](AGENT_MAIL_SPEC.md). Dave resolved D7's
 wire choice as **B, separate mail-only Ed25519 identities**, on 2026-11-09.
-This document is the shared contract for the receiver, laundering and enrollment.
+This document is the shared contract for the receiver, reply extraction and enrollment.
 
 ## Signing contract v1
 
@@ -225,7 +225,7 @@ reason `empty_body`, body NULL and length zero before acknowledging custody.
 Owner status can read its reason through the existing event metadata APIs; the
 owner UI remains unit 7. The hold persists across restart, blocks later submission
 in that conversation, and follows existing expiry/revocation/retention rules.
-It cannot be released into laundering because no content exists; owner rejection
+It cannot be released for extraction because no content exists; owner rejection
 or eventual expiry can unblock the queue. No model receives this variant. Missing
 or invalid incoming Message-IDs retain the existing Worker-only hold policy.
 
@@ -292,7 +292,7 @@ digest mismatch and expired events refuse custody. The permitted event lifetime
 cannot exceed the local configured queue TTL (provisional default 30 days).
 Worker events with missing identifiers stay held at the Worker; they cannot be
 promoted through this receiver. Plain text, including command-shaped text, enters
-only the unlaundered `local_received` inbox state. This unit never submits it to
+only the `local_received` inbox state before extraction. This unit never submits it to
 a model, transcript, tool, pending question or follow-up.
 
 After crypto, one `BEGIN IMMEDIATE` transaction rechecks current consent,
@@ -325,7 +325,7 @@ Synthetic coverage lives in `tests/test_agent_mail_ingress.py`: actual Worker
 MIME/auth/strip output and Worker signing into Python custody, signature/body
 tampering, timestamp boundaries, replay/reopen, concurrent receivers and
 revocation, queue full, corrupt schemas, migration rollback and lost receipts.
-Units 5/6 own laundering, injection screening, lifecycle wake and exact-session
+Units 5/6 own reply extraction, lifecycle wake and exact-session
 submission. Unit 7 owns human enrollment, route proof, key/consent lifecycle,
 outbound wiring and owner-facing status/recovery/deletion. Service pin/thread
 metadata retention/deletion and cleanup scheduling must be wired there; no
@@ -335,21 +335,24 @@ ingress provenance and all live pilot gates remain.
 
 ## Recorded-event extraction adapter (unit 5)
 
-`mc/agent_mail_launder.py` exposes `MailLaunder(store, enabled=False)` as a
+`mc/agent_mail_reply_extraction.py` exposes `MailReplyExtraction(store, enabled=False)` as a
 trusted Python integration seam, with no new route, scheduler or live setting.
 Only literal `enabled=True` allows `process_next()` to claim one already recorded
 event. Its return contains only event id, state and reason; ready text remains
 inside the dedicated inbox. No wake, provider submission, question consumption,
 outbound send or enrollment is performed. Units 6/7 own that integration.
 
-Since 2026-11-15 there is no screening and no model call on this path: a reply that
-reached local custody already passed the Worker's per-email reply-token and
-verified-owner (sender/DMARC) checks, so it is the owner. `mc/agent_mail_extract.py`
+Since 2026-11-15 agent-mail accepts the Worker's per-email reply-token and
+verified-owner (sender/DMARC) checks as owner authentication. The local event
+omits the sender address. `mc/agent_mail_extract.py`
 deterministically cuts at the first quote header ("On ... wrote:", Outlook "Original
 Message"/"From:" block, a `____` rule), drops `>` lines, strips invisible characters
 and truncates oversize text; the only hold is an empty reply. The stored envelope is
 `{version, event_id, reply_text}` and wake delivers it under a plain
 "email reply from the project owner" header with the authority of a chat message.
+Extraction does not screen instructions or call a model. Existing store names
+`laundering` and `laundered` represent the extraction lease and extracted envelope.
+The Gmail/IMAP decision digest still uses `mc/mail_launder.py`.
 
 The deadline paragraphs below describe the retired model-based extraction. The shared
 transform deadline machinery they document is still used by other callers.
@@ -422,7 +425,7 @@ be supplied absolutely when running from a worktree):
 
 ```text
 python tools/test-run.py --project mission_control --port 5199 -- python -m pytest -o addopts= tests/test_agent_mail_launder.py tests/test_mail_launder.py tests/test_agent_mail_store.py tests/test_agent_mail_ingress.py tests/test_agent_mail_held.py tests/test_agent_mail_deadline_review.py tests/test_transform_deadline.py -q --tb=short
-python tools/test-run.py --project mission_control --port 5199 -- pyright mc/agent_runtime.py mc/transform_deadline.py mc/agent_mail_extract.py mc/agent_mail_launder.py mc/mail_launder.py
+python tools/test-run.py --project mission_control --port 5199 -- pyright mc/agent_runtime.py mc/transform_deadline.py mc/agent_mail_extract.py mc/agent_mail_reply_extraction.py mc/mail_launder.py
 ```
 
 From `workers/agent-mail`, use the installation's absolute launcher path with
@@ -675,7 +678,7 @@ domain configuration, provider ingress headers, receiver through the actual tunn
 proof, durable local follow-up or completed resumed turn. Unit 7 must wire consent,
 deletion and key lifecycle; unit 4 supplies synthetic-tested custody/consent while
 recovery-triggered remote reconciliation remains an integration requirement;
-units 5/6 own laundering and exact-session submission. Privacy publication,
+units 5/6 own reply extraction and exact-session submission. Privacy publication,
 destination verification, DNS/DKIM, Cloudflare deployment, real mail and a pilot
 remain separately human-gated. Disabled template is configuration documentation,
 not evidence any account or live configuration was changed.

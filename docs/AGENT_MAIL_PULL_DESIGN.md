@@ -99,7 +99,7 @@ inside durable enqueue. Keep only bounded stripped text or a content-free hold,
 never attachments/raw MIME/hidden HTML. Real provider fixtures remain a launch
 gate; a WebSocket does not repair unverified sender provenance.
 
-After local custody, reuse `agent_mail_launder`, `agent_mail_extract`,
+After local custody, reuse `agent_mail_reply_extraction`, `agent_mail_extract`,
 `agent_mail_wake`, `agent_mail_target`, `agent_mail_continuation` and
 `agent_mail_pipe`. The existing follow-up route is the only execution path.
 Hold on missing native history, explicit closure/deletion, wrong project or
@@ -477,7 +477,7 @@ manifest rows explicitly show the P3 alternative. SQL history is kept immutable.
 | `mc/agent_mail_factory.py` | 291 | Edit | Keep checked shared store/marker; replace CP composition with signup/client/receiver. |
 | `mc/agent_mail_ingress.py` | 189 | Edit | Move durable custody, thread mapping and dedupe into private pull receiver; retire public HTTP wrapper. |
 | `mc/agent_mail_ingress_schema.py` | 56 | Edit | Keep transport mappings/receipts history; new ack schema separate, remove route dependency from live readers. |
-| `mc/agent_mail_launder.py` | 99 | Keep | Recorded-event extraction/claim safety and visible holds. |
+| `mc/agent_mail_reply_extraction.py` | 99 at design snapshot | Keep | Recorded-event extraction, claim safety and visible holds. |
 | `mc/agent_mail_lifecycle_fence.py` | 97 | Edit | Keep cancellation-only lost-vault capability; bind new signup flow, no CP semantics. |
 | `mc/agent_mail_lifecycle_steps.py` | 185 | Delete | Ownership lease renewal, proof push/activation retries; replace with pull recovery. |
 | `mc/agent_mail_manifest_fetch.py` | 139 | Keep | Same-origin bounded root-verified service discovery; not inherently obsolete; P3-B deletes. |
@@ -490,7 +490,7 @@ manifest rows explicitly show the P3 alternative. SQL history is kept immutable.
 | `mc/agent_mail_questions.py` | 68 | Keep | Immutable question/revision matching and consumption. |
 | `mc/agent_mail_recovery.py` | 226 | Edit | Keep independent bounded passes; replace proof/renew/push replay with pull/ack/revoke. |
 | `mc/agent_mail_remote.py` | 75 | Delete | Old unavailable CP/lifecycle selectors; replacement adapters fail closed in their own modules. |
-| `mc/agent_mail_screen.py` | 53 | Keep | Conservative stripped-text screen. |
+| `mc/agent_mail_screen.py` | 53 at design snapshot | Retired | The 2026-11-15 owner ruling removed instruction screening from agent-mail. |
 | `mc/agent_mail_service_client.py` | 338 | Edit | Keep HTTPS bounds/no redirects/response verification; replace lifecycle routes and evidence cache. |
 | `mc/agent_mail_service_manifest.py` | 120 | Keep | Root signature/origin/sequence trust independent of CP; P3-B deletes. |
 | `mc/agent_mail_signing.py` | 88 | Edit | Keep Ed25519 primitives; separate pull frame scopes from tunnel path transcripts. |

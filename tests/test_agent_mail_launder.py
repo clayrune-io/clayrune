@@ -4,7 +4,7 @@ import sqlite3
 import pytest
 
 from mc.agent_mail_extract import extract_reply
-from mc.agent_mail_launder import MailLaunder
+from mc.agent_mail_reply_extraction import MailReplyExtraction
 from mc.agent_mail_store import (BLOCKED, EXPIRED, LAUNDERING, LOCAL_RECEIVED, READY,
                                  RETRYABLE, REVOKED, MailStore, MailStoreConfig,
                                  MailStoreError)
@@ -94,7 +94,7 @@ def put(store, text=FRESH, n=1, token=TOKEN):
 
 
 def run(store):
-    return MailLaunder(store, enabled=True).process_next()
+    return MailReplyExtraction(store, enabled=True).process_next()
 
 
 def assert_hold(store, out, reason, event='e1'):
@@ -134,14 +134,14 @@ def test_store_oversize_body_and_empty_body_keep_their_existing_holds(store):
 
 def test_default_disabled_does_not_claim(store):
     put(store)
-    assert MailLaunder(store).process_next()['state'] == 'disabled'
+    assert MailReplyExtraction(store).process_next()['state'] == 'disabled'
     assert store.get_event('e1')['state'] == LOCAL_RECEIVED
 
 
 @pytest.mark.parametrize('enabled', [1, 'true', None])
 def test_only_literal_true_enables(store, enabled):
     put(store)
-    assert MailLaunder(store, enabled=enabled).process_next()['state'] == 'disabled'
+    assert MailReplyExtraction(store, enabled=enabled).process_next()['state'] == 'disabled'
 
 
 def test_empty_queue(store):
@@ -182,9 +182,9 @@ def test_expired_crashed_claim_retries_recorded_event_once_due(store, clock):
 @pytest.mark.parametrize('action', ['revoke', 'expiry', 'thread_expiry', 'lease'])
 def test_inflight_changes_prevent_ready(store, clock, monkeypatch, action):
     """The claim is re-checked under the write lock when the result is stored."""
-    from mc import agent_mail_launder
+    from mc import agent_mail_reply_extraction
     put(store)
-    real = agent_mail_launder.extract_reply
+    real = agent_mail_reply_extraction.extract_reply
 
     def during(*args, **kwargs):
         if action == 'revoke':
@@ -198,7 +198,7 @@ def test_inflight_changes_prevent_ready(store, clock, monkeypatch, action):
             clock.t += store.config.lease_seconds + 1
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(agent_mail_launder, 'extract_reply', during)
+    monkeypatch.setattr(agent_mail_reply_extraction, 'extract_reply', during)
     out = run(store)
     assert out['state'] == {'revoke': REVOKED, 'expiry': EXPIRED,
                              'thread_expiry': BLOCKED, 'lease': RETRYABLE}[action]

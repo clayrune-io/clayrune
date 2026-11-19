@@ -102,7 +102,9 @@ def test_lost_response_requires_new_human_action_and_exact_body_after_restart(h)
     h.activation_after = lambda: (_ for _ in ()).throw(OSError('sensitive request text'))
     result = h.client().enable()
     assert result['reason'] == 'connection_lost' and result['activation_pending']
-    assert h.client().status()['reason'] == 'connection_lost'
+    status = h.client().status()
+    assert status['state'] == 'enable_pending' and status['reason'] == ''
+    assert h.row()['reason'] == 'connection_lost'
     assert h.row()['state'] == 'enable_pending'
     assert h.row('mail_pull_accounts')['local_enabled'] == 0
     consent = h.row()['consent_epoch']
@@ -144,6 +146,7 @@ def test_attempt_cap_is_durable_and_no_hidden_network_retry(h):
         result = h.restart().enable()
         assert result['activation_attempts'] == attempt and result['reason'] == 'connection_lost'
         assert len(h.activation_calls) == attempt
+    assert h.client().status()['state'] == 'held'
     assert h.restart().enable()['reason'] == 'request_limit'
     assert len(h.activation_calls) == MAX_ATTEMPTS
     assert h.client().status()['reason'] == 'request_limit'

@@ -46,7 +46,7 @@ not a content migration protocol.
 | Local public push receiver | EXISTING `mc/blueprints/agent_mail_routes.py`; never used as pull ingress. |
 | Manifest trust | EXISTING `mc/agent_mail_manifest_fetch.py`, `agent_mail_service_manifest.py`, `agent_mail_enrollment_manifest.py`; Worker publisher and `tools/agent-mail-manifest-sign.py` exist. Fetcher's old comment saying publisher is unbuilt is stale; publisher source exists. |
 | Key/vault/fence | EXISTING `mc/agent_mail_enrollment_keys.py::IdentitySeal`, `mc/secrets_store.py::peek_passphrase_key`, `mc/agent_mail_lifecycle_fence.py`; adapt binding, do not expose seed or broaden fence authority. |
-| Local custody and continuation | EXISTING `agent_mail_store`, `agent_mail_ingress_schema`, `agent_mail_wake_schema`, `agent_mail_launder`, `agent_mail_extract`, `agent_mail_wake`, `agent_mail_target`, `agent_mail_continuation`, `agent_mail_pipe` under `mc/`; preserve their safety boundaries. |
+| Local custody and continuation | EXISTING `agent_mail_store`, `agent_mail_ingress_schema`, `agent_mail_wake_schema`, `agent_mail_reply_extraction`, `agent_mail_extract`, `agent_mail_wake`, `agent_mail_target`, `agent_mail_continuation`, `agent_mail_pipe` under `mc/`; preserve their safety boundaries. |
 | Existing execution route | `/api/project/<project_id>/agent/followup`, called internally by EXISTING `mc/agent_mail_wake.py`; never a service-selected URL or new execution route. |
 | Worker ingress and MIME gates | EXISTING `workers/agent-mail/ingress.js`, `auth.js`, `strip.js`, `canonical.js`, `mailbox.js`; reuse authentication/strip logic, change authority/queue adapter. |
 | Worker storage | EXISTING `schema.sql` and migrations `0001_enrollment.sql` through `0004_destinations.sql`; do not edit history or reinterpret their rows. |
@@ -1146,7 +1146,7 @@ writers; a client-side count then INSERT is not sufficient.
   history atomically before sending signed frame. Keep at most 64 offer history
   rows/event; prune oldest expired entries only. A pruned lease refuses a first
   ack; re-offer and re-ack the same local receipt under a retained lease, without
-  re-laundering or dispatch. Existing committed ack receipt is authoritative
+  repeating extraction or dispatch. Existing committed ack receipt is authoritative
   even if its old offer was compacted. Expired lease alone never destroys mail.
 - Ack: current active scope plus exact existing receipt OR valid unexpired event
   + retained offer history; compare all digests/local receipt. Insert receipt,
@@ -1900,7 +1900,7 @@ denial/retention/custody exceptions following the table are intentional.
 | 52 | `mc/agent_mail_status_view.py:pull_status` | Selected account/status/connection/flow; retain separately global revoke hold. |
 | 53 | `mc/agent_mail_supervisor.py:Supervisor._drive_client` | Selected epoch in owner scope, stop old client before replacement. |
 | 54 | `mc/agent_mail_supervisor.py:Supervisor._sample_client` | Old client observations cannot report current selected connected state. |
-| 55 | `mc/agent_mail_supervisor.py:_default_recovery` | Launder/wake callbacks receive the same checked selected execution gate. |
+| 55 | `mc/agent_mail_supervisor.py:_default_recovery` | Extraction and wake callbacks receive the same checked selected execution gate. |
 | 56 | `mc/agent_mail_store.py:MailStore.register` | Pull caller may not create/re-enable a retained registration through base helper. |
 | 57 | `mc/agent_mail_store.py:MailStore.enable_registration` | Pull enable uses exact selected verified g, never bypass consent/selector. |
 | 58 | `mc/agent_mail_store.py:MailStore.bind_thread` | New pull binding requires selected registration/g and active consent. |
@@ -1913,8 +1913,8 @@ denial/retention/custody exceptions following the table are intentional.
 | 65 | `mc/agent_mail_store.py:MailStore.complete_laundering` | Late extraction cannot make retained work ready. |
 | 66 | `mc/agent_mail_store.py:MailStore.retry_uncertain` | Human retry cannot restore retained admission or reset positive evidence. |
 | 67 | `mc/agent_mail_store.py:MailStore.release_hold` | Explicit release still refuses retained scope. |
-| 68 | `mc/agent_mail_launder.py:MailLaunder._live` | Selected scope at pre-extraction and finalization; late result stays inert. |
-| 69 | `mc/agent_mail_launder.py:MailLaunder.process_next` | Only selected claim may reach toolless extraction. |
+| 68 | `mc/agent_mail_reply_extraction.py:MailReplyExtraction._live` | Selected scope at pre-extraction and finalization; late result stays inert. |
+| 69 | `mc/agent_mail_reply_extraction.py:MailReplyExtraction.process_next` | Only the selected claim may reach deterministic quote extraction. |
 | 70 | `mc/agent_mail_wake.py:MailWake.bind` | Continuation snapshot only for selected active binding. |
 | 71 | `mc/agent_mail_wake.py:MailWake.process_next` | Claim/follow-up uses same selected scope throughout. |
 | 72 | `mc/agent_mail_wake.py:MailWake.consume_question` | Selected scope before consuming current question; no retained replay. |

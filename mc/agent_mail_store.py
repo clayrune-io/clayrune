@@ -535,7 +535,7 @@ class MailStore:
         for row in rows:
             self._move(db, row['event_id'], row['state'], REVOKED, reason=reason)
         # `submitted` was already handed over, so the row stays (its turn may
-        # still complete) but the raw and laundered bodies go now.
+        # still complete) but the raw body and extracted reply go now.
         count = len(rows) + self._purge_submitted_content(db, where, args, reason)
         from mc.agent_mail_wake_schema import cleanup
         cleanup(db, self.clock())
@@ -628,8 +628,7 @@ class MailStore:
                 hold = 'empty_body'
             if blen > cfg.max_body_bytes:
                 # The bound holds on every path, whatever else holds the event:
-                # an oversize body is never stored, so it can never reach
-                # laundering. Never a silent partial instruction either.
+                # Keep oversize ingress bodies out of reply extraction.
                 hold, kept = 'oversize_body', None
             state = BLOCKED if hold else LOCAL_RECEIVED
             db.execute(
@@ -686,7 +685,8 @@ class MailStore:
         * `submitting` past its lease -> `uncertain`: a provider write may have
           happened, so no auto-replay. A live lease is never touched, at
           startup or otherwise: another process may own it.
-        * `laundering` past its lease -> `retryable` (toolless; safe to redo).
+        * `laundering` is the on-disk state for deterministic reply extraction.
+          An expired extraction lease moves to `retryable`.
         * events of a revoked/stale registration or revoked thread -> `revoked`;
           `submitted` ones keep their state but lose their content.
         * events past their retention deadline -> visible `expired`; `submitted`
@@ -901,7 +901,7 @@ class MailStore:
                        submit_evidence=json.dumps(evidence, sort_keys=True, default=str))
 
     def release_hold(self, event_id: str) -> str:
-        """Owner/operator released a `blocked` hold. Resumes at laundering if no
+        """Owner/operator released a `blocked` hold. Resumes at extraction if no
         envelope exists yet, otherwise at submission. Returns the new state."""
         with self._tx() as db:
             row = db.execute('SELECT state,laundered,body FROM events WHERE event_id=?',

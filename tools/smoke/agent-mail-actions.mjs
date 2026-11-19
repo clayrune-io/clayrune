@@ -21,7 +21,7 @@
  *    blocked, and when the status itself cannot be read (503 / 500);
  *  - a closed prompt or a malformed code sends nothing;
  *  - pull signup (U4): pending -> Check verification (POST /resume) -> verified -> Enable -> active;
- *    link instructions shown, no code/proof/review/disable control; a HTTP-200 held view is
+ *    link instructions shown, no code/proof/review controls; a HTTP-200 held view is
  *    always a failure; 503 activation:'committed' shows the warn text; legacy panel unchanged;
  *  - no clipping, all controls scroll into view, and mobile targets >=40px;
  *    real-height screenshots under _scratch/7e3/ (no tall viewport workaround).
@@ -420,7 +420,7 @@ try {
       const pg = (o) => ({ protocol: 'pull', pull_status: {}, signup: sv(o) });     // GET answer
       const pp = (o) => ({ protocol: 'pull', ...sv(o) });                          // POST answer (flat)
       const pending = (v) => pg({ state: 'pending', verification_state: v });
-      const FORBID = ['review', 'confirm', 'verify', 'proof', 'disable', 'retry-revocations'];
+      const FORBID = ['review', 'confirm', 'verify', 'proof'];
       const noLegacy = () => page.evaluate((f) => ({
         buttons: f.filter((a) => !!document.querySelector('#agent-mail-actions [data-am-action="' + a + '"]')),
         code: !!document.querySelector('#agent-mail-actions [data-am-input="code"]') }), FORBID);
@@ -460,12 +460,30 @@ try {
         check(posts.length === 2 && posts[1].action === 'enable' && posts[1].body.passcode === PASS && same(strip(posts[1].body), {}),
           `${tag}: Enable POSTs /enable with the typed passcode`, `${tag}: posts ${JSON.stringify(posts)}`);
         check(o.tone === 'good' && o.text === 'Agent mail is enabled.', `${tag}: active answer announces success`, `${tag}: ${JSON.stringify(o)}`);
-        check(same(await controls(), []) && /Agent mail is on\./.test((await pullState()) || ''), `${tag}: active offers no signup control and says mail is on`,
+        check(same(await controls(), ['disable']) && /Agent mail is on\./.test((await pullState()) || ''), `${tag}: active offers Disable and says mail is on`,
           `${tag}: controls ${JSON.stringify(await controls())} text ${await pullState()}`);
         nl = await noLegacy();
         check(nl.buttons.length === 0 && !nl.code, `${tag}: still no legacy controls once active`, `${tag}: ${JSON.stringify(nl)}`);
         const h = await html();
         check(!/HOSTEDTOKEN|x7k2q9/.test(h), `${tag}: no install id, flow id or address in the panel`, `${tag}: leaked ${h.match(/HOSTEDTOKEN\d|x7k2q9/)}`);
+        const off = { state: 'disabled', enabled: false, revocation_pending: true, revocations_pending: 1 };
+        replies.disable = { status: 200, body: { protocol: 'pull', ...off }, next: { ...pg({ state: 'held', reason: 'stale_generation' }), pull_status: off } };
+        await page.click('#agent-mail-actions [data-am-action="disable"]');
+        await prompt();
+        o = await outcome('disable');
+        check(posts.length === 3 && posts[2].action === 'disable' && posts[2].body.passcode === PASS && /^[a-f0-9]{32}$/.test(posts[2].body.op_id),
+          `${tag}: Disable POSTs the typed passcode and a fresh operation id`, `${tag}: wrong Disable request`);
+        check(o.tone === 'warn' && o.text.includes('Service revocation is pending'), `${tag}: reports local off and confirmation pending`, `${tag}: ${JSON.stringify(o)}`);
+        check(same(await controls(), ['retry-revocations']), `${tag}: a pending revocation offers Retry revocation`, `${tag}: pending revocation controls ${JSON.stringify(await controls())}`);
+        const revoked = { ...off, revocation_pending: false, revocations_pending: 0 };
+        replies['retry-revocations'] = { status: 200, body: { protocol: 'pull', ...revoked }, next: { ...pg({ state: 'held', reason: 'stale_generation' }), pull_status: revoked } };
+        await page.click('#agent-mail-actions [data-am-action="retry-revocations"]');
+        await prompt();
+        o = await outcome('retry-revocations');
+        check(posts.length === 4 && posts[3].action === 'retry-revocations' && posts[3].body.passcode === PASS && same(strip(posts[3].body), {}),
+          `${tag}: retry POSTs with the typed passcode only`, `${tag}: wrong retry request`);
+        check(o.tone === 'good' && o.text.includes('confirmed revocation') && same(await controls(), []),
+          `${tag}: confirmed revocation clears Retry`, `${tag}: ${JSON.stringify(o)} controls ${JSON.stringify(await controls())}`);
       }
 
       // a 200 that carries a held view is a failure and never announces success
@@ -518,7 +536,7 @@ try {
         ['pending, failed', pending('failed'), ['check'], 'could not be sent'],
         ['verified', pg({ state: 'verified' }), ['enable'], 'stays off until you enable'],
         ['enable_pending', pg({ state: 'enable_pending' }), ['enable'], 'Enable again'],
-        ['active', pg({ state: 'active', enabled: true }), [], 'Agent mail is on'],
+        ['active', pg({ state: 'active', enabled: true }), ['disable'], 'Agent mail is on'],
         ['expired', pg({ state: 'expired', reason: 'flow_expired' }), [], '30-minute'],
         ['held', pg({ state: 'held', reason: 'store_corrupt' }), [], 'damaged'],
         ['malformed signup', { protocol: 'pull', signup: [] }, [], 'not understood'],

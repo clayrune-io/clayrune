@@ -1,6 +1,6 @@
 """Human local denial and bounded denial-only replay (MC-1166 W02).
 
-Unwired. Composition supplies the checked factory, explicit install and trusted
+Composition supplies the checked factory, explicit install and trusted
 human/passcode gate, plus stop() for its ALREADY owned client. No bootstrap,
 identity/seal mutation, positive lifecycle action or legacy Enrollment call.
 The store admission lock commits denial before stop or remote work. Original

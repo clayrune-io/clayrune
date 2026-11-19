@@ -5,7 +5,8 @@ Scope (Dave, 2026-11-13): get Ron's install sending one note and waking the
 exact session on the reply. Hardening for other users comes later.
 Architecture is unchanged from `docs/AGENT_MAIL_PULL_DESIGN.md`: no tunnel, the
 install pulls over one outbound WebSocket, outbound goes only to the verified
-owner, the reply is laundered without tools and wakes the originating session.
+owner, and the reply wakes the originating session. The 2026-11-15 owner ruling
+replaced model laundering with deterministic quote extraction before wake.
 
 ## 0. Finding that shapes the plan
 
@@ -93,7 +94,7 @@ this slice must close.
 | I4 | Install holds the socket: signed ticket → `/v1/pull/socket` → DO admits → pushes frames | `PullClient._ticket/_session` (`agent_mail_pull_client.py:258,571`); `PullSocketRoute` (`pull-socket-route.js`), `PullMailbox` (`pull-mailbox.js`) | EXISTS + WIRED, never run together → **U7** |
 | I5 | Durable local custody, then signed ack; only `ack_committed` retires | `PullReceiver.receive` (`agent_mail_pull_receiver.py:243`), `PullClient._committed` | EXISTS |
 | I6 | Supervisor owns client start/stop and runs recovery passes | `server.py:3827` → `agent_mail_supervisor.start_default` → `_drive_client` (`:205`) | EXISTS + WIRED (flag `agent_mail_supervisor_enabled`) |
-| I7 | Toolless laundering of the reply (haiku, no tools/MCP) | `Recovery._inbound` → `MailLaunder.process_next` (`agent_mail_launder.py:64`) → `extract_reply` (`agent_mail_extract.py:103`) → `mail_launder.claude_mail_transform` | EXISTS + WIRED (flag `agent_mail_ingress_enabled`) |
+| I7 | Deterministic quote extraction | `Recovery._inbound` → `MailReplyExtraction.process_next` → `agent_mail_extract.extract_reply` | EXISTS + WIRED (flag `agent_mail_ingress_enabled`) |
 | I8 | Resolve the bound continuation to the exact native session; refuse aliases or rollovers | `MailWake.process_next` (`agent_mail_wake.py:187`), `target.resolve` (`agent_mail_target.py:125`), `Continuation` | EXISTS + WIRED |
 | I9 | Inject the reply with `POST /api/project/<pid>/agent/followup {session_id}` | `MailWake.process_next` calls `agent_routes.agent_followup` in a request context (`agent_mail_wake.py:226-229`); 10 s ack (`agent_mail_pipe.py`) | EXISTS + WIRED |
 
@@ -110,7 +111,7 @@ in lines of source / test.
 | **W1** | `mc/agent_mail_factory.py` (edit `get()` only) | `MailFactory(reviewed_service=<lazy U1 build>)`. About 8 lines. | U1 merged | Yes (write now, merge after U1) | 8 / 40 |
 | **W2** | `mc/agent_mail_outbound_questions.py` (edit) | Default `factory` to `lambda: agent_mail_factory.get().outbound()`. Delivery stays gated by `agent_mail_outbound_enabled` exactly as now. About 5 lines. | none | **Yes** | 5 / 40 |
 | **W3** | `mc/blueprints/agent_mail_routes.py` (edit) | Register U3's blueprint beside the existing child blueprints (`:29-33`). About 3 lines. | U3 merged | Yes (merge after U3) | 3 / 20 |
-| **U7** | `tests/test_agent_mail_slice_e2e.py` (new) | Local interop proof, no network. Runs the real `worker.js` + `PullSocketMailbox` under Miniflare (already a devDependency) with D1 and all migrations, inline `node --input-type=module -e` as existing tests do. Provisions through U2's functions. Then: `PullClient` gets a ticket, opens the socket, gets one event injected through `email()` with a fixture message, custodies it and acks (D1 event retired). `Outbound.prepare/send` reaches `/v1/pull/send` against a fake `MAIL_SEND` that records the message: correct `to`, `Reply-To`, no other recipient. Launder and wake run with a stubbed extractor and a fake follow-up, asserting the exact `session_id`. | U1, U2 (W1 for the factory path) | After U1+U2 | 300 |
+| **U7** | `tests/test_agent_mail_slice_e2e.py` (new) | Local interop proof, no network. Runs the real `worker.js` + `PullSocketMailbox` under Miniflare (already a devDependency) with D1 and all migrations, inline `node --input-type=module -e` as existing tests do. Provisions through U2's functions. Then: `PullClient` gets a ticket, opens the socket, gets one event injected through `email()` with a fixture message, custodies it and acks (D1 event retired). `Outbound.prepare/send` reaches `/v1/pull/send` against a fake `MAIL_SEND` that records the message: correct `to`, `Reply-To`, no other recipient. Reply extraction and wake verify the exact `session_id`. | U1, U2 (W1 for the factory path) | After U1+U2 | 300 |
 
 **U8 branch candidate (2026-11-13):** accepted `/send` receipts return the Worker
 deadline and the install persists it to all three local rows atomically.
@@ -177,7 +178,7 @@ restarted (Dave has standing approval).
 3. **One reply back.** Ron replies from the owner Gmail with `pong 1`.
    Expect: the Worker `email()` returns `queued`; the event is pushed, held
    locally and acked (the D1 `pull_events` row moves to acked); the event is
-   laundered and then `turn_completed` in the local store.
+   extracted and then `turn_completed` in the local store.
 4. **Which session wakes: exactly T.** T gets one new turn beginning
    `[Owner mail reply; event <id>]`, then the untrusted-mail warning, then
    `pong 1`. No other session in any project receives a turn. If T's native

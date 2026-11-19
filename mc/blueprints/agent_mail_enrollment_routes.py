@@ -38,6 +38,7 @@ from mc.atomic_json import write_json_atomic
 from mc.blueprints.agent_mail_deployment_routes import validate_values
 from mc.blueprints.secrets_routes import _require_human_passcode
 from mc.core import _log
+from mc.blueprints.agent_mail_denial_actions import DENIAL_ACTIONS, denial_action
 
 FLAG = 'agent_mail_enrollment_enabled'
 BASE = '/api/agent-mail/enrollment'
@@ -77,8 +78,7 @@ def _empty_signup(phase: str, reason: str = '') -> dict[str, Any]:
 
 
 def _allow() -> bool:
-    # Handed to bootstrap/Signup only AFTER the route proved the human (passcode and
-    # no blocking session) for this one request; never a cached or factory-wide grant.
+    # Passed only after this request's passcode and applicable session check.
     return True
 
 
@@ -141,6 +141,8 @@ def create_blueprint(*, factory: Callable[[], Enrollment] | None = None,
 
     def pull_write(action: str, body: dict[str, Any]):
         mf = mail()
+        if action in DENIAL_ACTIONS:
+            return denial_action(mf, action, body, _allow)
         if action == 'start':
             owner, consent = body.get('owner'), body.get('consent_version')
             if (set(body) - {'passcode', 'owner', 'consent_version'} or not isinstance(owner, str)
@@ -190,9 +192,9 @@ def create_blueprint(*, factory: Callable[[], Enrollment] | None = None,
             refusal = _require_human_passcode(body)
             if refusal is not None:
                 return refusal
-            if action not in PULL_ACTIONS:
+            if action not in PULL_ACTIONS and action not in DENIAL_ACTIONS:
                 return jsonify({'error': 'not_found'}), 404
-            blockers = blocking_sessions()
+            blockers = blocking_sessions() if action in PULL_ACTIONS else []
             if blockers:
                 return jsonify({'error': 'human_required', 'blocking_sessions': blockers}), 403
             return pull_write(action, body)

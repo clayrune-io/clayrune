@@ -52,7 +52,13 @@ def project(row: dict[str, Any], view: dict[str, Any], reason: str) -> dict[str,
                 'reason': failure} if failure else view
     enabled = (row['account_state'] == 'active' and row['local_enabled'] == 1
                and row['state'] == 'completed' and row['meta']['activation_active_since_ms'] > 0)
-    reason = reason or row['reason']
+    stored_reason = row['reason']
+    if (stored_reason == 'connection_lost' and row['state'] == 'enable_pending'
+            and row['meta']['activation_attempts'] < MAX_ATTEMPTS):
+        # The owner can replay the same durable operation. Keep the failure in
+        # storage and on the failed POST, but project the available next action.
+        stored_reason = ''
+    reason = reason or stored_reason
     return {**view, 'state': 'held' if reason else 'active' if enabled else row['state'],
             'reason': reason, 'enabled': enabled and not reason,
             'activation_attempts': row['meta']['activation_attempts'],

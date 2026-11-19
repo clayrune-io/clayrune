@@ -225,7 +225,7 @@ def test_pull_actions_need_the_passcode_and_no_blocking_session(rig, monkeypatch
     assert not rig.root.exists() and not rig.config_path.exists() and not rig.h.calls
 
 
-@pytest.mark.parametrize('action', ['review', 'confirm', 'verify', 'owner', 'key', 'repin', 'proof', 'disable'])
+@pytest.mark.parametrize('action', ['review', 'confirm', 'verify', 'owner', 'key', 'repin', 'proof'])
 def test_legacy_only_actions_are_not_served_by_the_pull_composition(rig, action):
     assert rig.post(action).status_code == 404 and not rig.h.calls
 

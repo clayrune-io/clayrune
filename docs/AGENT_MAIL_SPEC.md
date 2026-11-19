@@ -4,14 +4,18 @@
 > See [AGENT_MAIL_PULL_DESIGN.md](AGENT_MAIL_PULL_DESIGN.md) for the proposed
 > replacement of tunnel/CP delivery and signup; the binding owner/address-change
 > abuse controls below remain in force.
+>
+> **2026-11-15 reply update:** Agent-mail uses deterministic quote extraction
+> after Worker authentication and delivers the result as an owner follow-up.
+> The separate Gmail/IMAP decision digest uses toolless laundering.
 
 Status: **Draft for Dave's decisions; not approved for implementation or deployment.**
 Author: Marlow. Date: 2026-11-08.
 
 This document records Ron's requirements and the existing implementation seams.
 Sections marked **Required** follow those requirements or preserve existing safety
-boundaries. **D1-D8 are open**: alternatives and recommendations are proposals,
-not selections. A builder must not silently select an alternative.
+boundaries. The alternatives table records the original draft. The decisions
+and dated updates record subsequent selections.
 
 ## Problem and intended user
 
@@ -59,9 +63,9 @@ replies, even if their subjects and character names match.
 - An unknown token, unauthenticated sender, revoked enrollment, deleted project,
   or unavailable original conversation must never fall back to an arbitrary live
   agent, the project's default character, or another installation.
-- Raw inbound content never enters a tool-bearing session. Reuse the toolless
-  laundering boundary in `mc/mail_launder.py`, preserve its failure-closed behavior,
-  and keep the resulting envelope labeled as untrusted content.
+- Agent-mail delivers the authenticated owner's extracted text to the original
+  chat with an email provenance header. Extraction trims recognized quotes and
+  invisible characters without a model call or instruction screen.
 - A verified email reply is a user communication channel, not a new authority
   source. It cannot bypass passcodes, human-only publish/credential gates,
   ownership restrictions, or the session's tool/execution policy.
@@ -87,9 +91,9 @@ on `646b94b5`. These are code observations, not live end-to-end mail verificatio
 | Existing component | What it does today | Required extension or constraint |
 | --- | --- | --- |
 | `mc/question_channel.py` | After an attendance grace window, emails parsed `mc:question` requests through `tools/night-review/send_mail.py`; polls the operator's IMAP inbox. | Reuse question rendering/attendance behavior, but add the registered-owner transport. Do not depend on operator Gmail credentials on stranger installs. |
-| `question_channel.handle_reply()` | Matches subject qid plus our outbound Message-ID in `In-Reply-To`/`References`; checks From as an unauthenticated extra filter. Option-bearing questions accept a matching first line; free-text questions deliberately remain open. | Preserve correlation checks. Add authenticated, laundered free text and notes through a shared reply adapter. A subject or 8-hex qid is not authentication. |
+| `question_channel.handle_reply()` | Matches subject qid plus our outbound Message-ID in `In-Reply-To`/`References`; checks From as an unauthenticated extra filter. Option-bearing questions accept a matching first line; free-text questions deliberately remain open. | Agent-mail authenticates and correlates replies through its own Worker and local custody checks. |
 | `_outbox`, `_delivered`, `_answered` | In-memory only. `_answered` can be marked before `_answer()` succeeds. | Durable thread, delivery and deduplication state must replace these as the authority for the new transport. Failed follow-up must not consume the reply. |
-| `mc/mail_launder.py` | `launder_mail_digest()` uses the verified Claude toolless transform seam; returns a warning-labeled decision digest, including `reply_text`, `decision` and `ambiguous_or_mixed`. Current prompt assumes Ron and a decision request. | Generalize extraction for each install's owner and arbitrary reply text without inventing approval. Preserve existing decision-digest callers. No raw fallback if the runtime is unavailable. |
+| `mc/mail_launder.py` | `launder_mail_digest()` uses the Claude toolless transform to produce a warning-labeled Gmail/IMAP decision digest containing `reply_text`, `decision` and `ambiguous_or_mixed`. | Preserve the existing decision-digest contract. Agent-mail uses its own deterministic extraction adapter. |
 | `mc/blueprints/agent_routes.py::agent_followup` | Handles ordinary follow-ups; resolves conversation ownership; revives missing Claude sessions from agent log. Non-Claude cold resume exists for Codex/Qwen/Gemini when a native session id was captured; other cases may start cold under the same MC id. | Add an internal exact-conversation constraint before any provider submission. A successful HTTP response, or the same MC id, does not establish preserved conversation history. |
 | Same route's delivery acknowledgments | Some Mode B writes support `_durable_delivery_ack`; Mode A may enqueue only in memory. Respawns/provider errors do not uniformly yield durable turn acceptance. | Reuse and extend this submission contract; do not claim an existing universal exactly-once/read receipt. |
 | `mc/delegation_delivery.py` and guarded submission in agent routes | SQLite-backed inbox/outbox, leases, durable state and explicit uncertain-delivery handling already exist for child notifications. | Reuse their durable-acceptance/uncertainty conventions and suitable helpers. Mail must have its own payload/state ownership, not masquerade as a delegation completion. |
@@ -297,6 +301,8 @@ selected database schema:
 
 `worker_pending -> local_received -> laundering -> ready -> submitting -> submitted -> turn_completed`
 
+`laundering` is the persisted state name for the quote extraction lease.
+
 Side states: `retryable`, `blocked`, `uncertain`, `rejected`, `expired`, `revoked`.
 `submitted` requires positive provider/turn acceptance evidence; `turn_completed`
 requires the corresponding lifecycle event. Completion does not claim the agent
@@ -309,31 +315,23 @@ be proved, require review instead of replaying automatically. This preserves the
 existing durable-delivery posture without promising impossible exactly-once
 effects for arbitrary agent actions. D4's retention rules must cover holds too.
 
-## Laundering and reply semantics
+## Quote extraction and reply semantics
 
-After ingress authentication and local custody, a toolless extractor sees bounded
-mail content and trusted thread metadata. Its schema must support `reply_text`,
-quote/forward separation, ambiguity and extraction failure for a note or free-text
-question. A general reply must not be forced into approved/declined: “use the
-second file and wait until Friday” is reply text, not a yes/no verdict.
+The Worker checks the per-email token, verified sender and DMARC. Local pull
+custody checks the Worker's signature, scope, authentication evidence and thread
+binding. The event carries the Worker's authentication verdict and omits the
+sender address.
 
-Retain the existing decision-digest contract for its callers. The adapter for
-this feature must remove Ron-specific assumptions, preserve the user's wording,
-and keep quoted/forwarded/HTML-hidden text out of actionable reply text. HTML is
-inert input; scripts, attachments and links are never executed or fetched.
-Unsupported content, oversize text and extraction truncation are explicit holds,
-not silent partial instructions. Laundering is a capability boundary, not proof
-that the extracted content is benign or authorized.
+`mc/agent_mail_extract.py` stops at the first recognized quote header, drops `>`
+lines, removes invisible characters and truncates to the configured reply byte
+limit. An empty extracted reply is held. The envelope contains `version`,
+`event_id` and `reply_text`. Wake adds an email provenance header and delivers
+the text with the authority of a typed owner message. There is no model call,
+instruction screening or ambiguity verdict on this path (`f4760778`, 2026-11-15).
+The Gmail/IMAP digest keeps its separate fail-closed toolless transform.
 
-If the extractor errors, times out, returns malformed output, cannot separate
-fresh text, or reports `ambiguous_or_mixed`, hold and expose the reason. Do not
-fall back to raw body/subject, mail MCP, IMAP, a different unverified runtime, or
-a first-line heuristic. Retry only a recorded event, with bounded model work.
-The existing implementation verifies toolless operation only for Claude; D8
-must be resolved before promising replies on a Codex/Gemini-only installation.
-
-For a note, deliver the extracted text and warning-labeled provenance as a normal
-follow-up. For a question, validate against the stored question/revision:
+For a note, deliver the extracted text as a normal follow-up. For a question,
+validate against the stored question/revision:
 
 - An unambiguous option response may consume only its own still-pending question.
   Multi-question/multi-select answers must retain question boundaries; never
@@ -423,7 +421,7 @@ Minimum logical records, independent of D4's physical storage choice:
 | Registration | Independent registration identity, assigned address, verified owner email/status, consent/disclosure version and time, installation/tunnel proof, enrollment generation, enable/revoke state; first/last service activity if D3 permits. Identified service data. |
 | Thread | Install/owner generations, opaque thread identity/token verifier, outbound Message-IDs, kind, expiry/revocation. Local authoritative project/session/conversation binding; send only routing metadata the Worker needs. |
 | Worker reply event | Immutable event id, registration/thread generation, trusted authentication evidence, bounded MIME/body content and digest, receipt/expiry, retry/custody state. Raw content is not ordinary application logging. |
-| Local inbox/receipt | Event id, authoritative binding, laundered envelope, extraction/version status, deduplication evidence, turn/submission receipts, retry/uncertainty/terminal state. |
+| Local inbox/receipt | Event id, authoritative binding, extracted reply envelope (stored as `laundered`), extraction/version status, deduplication evidence, turn/submission receipts, retry/uncertainty/terminal state. |
 | Activation aggregate | Counts with precise population/window and opt-in caveat; address, content and reply tokens excluded. Cross-dataset joining is D3, not implied. |
 
 Before enabling this feature for users, update the published privacy policy,
@@ -488,7 +486,7 @@ DECIDED WITHOUT RON; each is reversible until build starts.
 - **D7: A.** Separate per-install scoped mail credential. The dashboard
   session credential is not reused as a mail capability, which removes the
   conditional and the bypass risk.
-- **D8: A.** Claude-only labelled pilot; other providers verified before GA.
+- **D8: superseded on 2026-11-15.** Agent-mail reply extraction needs no model.
 
 **Scale ceiling for Ron:** Cloudflare limits page (updated 2026-10-30,
 re-checked 2026-11-08) caps verified destination addresses at 200 per
@@ -517,20 +515,15 @@ rolling day. Cloudflare verification precedes the Clayrune code. See the
    HTML part (HTML is converted to plain text only as a fallback when there is
    no text/plain part). Stripped parts are never stored, OCR'd or passed to a
    model. Images can carry injected text, so v1 treats them as a closed door.
-   Adding image or attachment support later requires its own review and must
-   route through the same toolless transform. It may never reach a tool-enabled agent.
-3. **Screen for commands and injection.** The toolless extraction step also
-   flags instruction-like content (tool or command syntax, "ignore previous",
-   requests to change permissions, run, install, send or approve). A flagged
-   reply is held visibly for the owner and is not delivered as actionable text.
-   An unflagged reply is still delivered as quoted, untrusted data, never as an
-   instruction. A mail reply can never grant an approval, unlock a human-only
-   gate or expand an agent's permissions.
+   Adding image or attachment support later requires its own review.
+3. **Deliver authenticated owner text.** The 2026-11-15 owner ruling replaced
+   model extraction and command screening with deterministic quote extraction.
+   A mail reply still cannot unlock a human-only gate or expand an agent's permissions.
 
 Tests: a non-owner sender, a spoofed From with failed DMARC, an image-only
-reply, an attachment carrying instructions, an HTML-hidden payload and a
-command-shaped plain-text reply. Each must be dropped or held with no body
-reaching the install's tools, transcripts or the agent context.
+reply, an attachment carrying instructions and an HTML-hidden payload. Verify
+that authenticated command-shaped plain text reaches the bound session and its
+human-only gates remain closed.
 
 ### Cloudflare capacity and deployment gates
 
@@ -577,7 +570,7 @@ Cloudflare deployment, enrollment, test mail, privacy publication, migration,
 live config change or tunnel provisioning is authorized by this document.
 
 After D1-D8 are resolved, use separate units for enrollment, durable thread/store,
-Worker transport, inbound authentication/parsing, local ingress, laundering
+Worker transport, inbound authentication/parsing, local ingress, extraction
 adapter and follow-up integration. Candidate source locations are new modules
 under `mc/`, a dedicated blueprint, a dedicated setup-step module and
 `workers/agent-mail/`; these are proposed locations, not existing files/APIs.
@@ -612,7 +605,7 @@ send email, create destinations, sign in, provision tunnels or spend cloud money
 | Multiple agents / threads | Two sessions with the same persona and subject receive only their own replies. Subject changes do not matter; valid token with wrong Message-ID fails. |
 | Options / late replies | Number/label/multi-question/multi-select answers retain question identity. Invalid or ambiguous choices do not become approvals. A late note/question reply cannot clear another pending question/plan gate. |
 | Sender spoofing | Forged From, substring mailbox matches, sender-injected auth results, DMARC failure, mismatched owner, untrusted ingress and guessed/expired/revoked tokens cannot wake a session. Accepted DMARC/DKIM/SPF combinations follow the resolved D6 policy. |
-| Laundering failure | Injection in quoted/HTML/forwarded text, malformed digest, timeout, unavailable runtime, mixed authorship and oversize content cause visible hold; no raw text or fallback fetch reaches tools/transcripts. |
+| Reply extraction | Recognized quoted history and invisible characters are trimmed, empty replies are held and replies respect the byte limit. Authenticated instructions in the retained text reach the original session. |
 | Restart durability | Restart after send, Worker receipt, local custody, extraction and before submission preserves thread correlation and reply; rejected events never mark a question answered. Corrupt stores do not reset silently. |
 | Offline / replay | With the machine/tunnel down, persist the reply; after recovery within retention, replay and run the same conversation without opening the dashboard. Repeated event delivery yields one accepted follow-up. Expiry is explicit. |
 | Lost acknowledgment | Crash after a possible provider write or lost HTTP ack does not blindly replay; available turn receipts reconcile, otherwise the event becomes uncertain and visible. A 2xx/queued result alone is insufficient. |

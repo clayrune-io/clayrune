@@ -1033,6 +1033,11 @@ tunnel and machine delivery proof are prerequisites; pending
 verification can be resumed after a restart. Passcode confirmation protects each
 mutation. A reply that passes the mail service's checks (this email's one-time token and your verified sender address) is treated as you typing in the chat.
 
+If **Enable agent mail** loses its connection, choose **Enable agent mail** again
+under **Controls** and re-enter your passcode. The button remains available after
+refresh while the original 30-minute signup window and three-attempt limit allow
+another try. It continues the same activation.
+
 The service on Cloudflare and email providers process sent notes/questions,
 including project name and conversation label. Incoming supported reply text
 passes through Cloudflare, then through
@@ -1065,11 +1070,13 @@ those actions still require your dashboard passcode. The notice clears on the
 next successful status refresh after review. If mail storage is unavailable,
 an already visible notice stays until status can be read again.
 
-To stop mail, choose **Disable** and confirm with your dashboard passcode. A
+To stop mail, open **Settings > Connectivity > Agent mail**, choose **Disable
+agent mail** under **Controls**, and confirm with your dashboard passcode. A
 successful local disable blocks new local sends and mail continuations at once.
 **Disabled here, revocation pending** means remote revocation still needs an
-acknowledgment; **Retry revocation** asks the service again. Disable is offered
-even if status cannot be read and while unattended agents run. If the disable
+acknowledgment. **Retry revocation** in **Controls** asks the service again once
+the next retry is due. It prompts for your passcode and keeps local mail off.
+Disable is offered even if status cannot be read and while unattended agents run. If the disable
 request itself fails, mail may still be on: read the outcome and retry.
 Turning mail off does not erase earlier messages or transcripts. Session/project
 deletion revokes its local bindings and cancels queued local mail work, retrying

@@ -3,6 +3,21 @@
 ## [2026-11-18] - macOS script installer creates a working Applications launcher (MC-1179 P86)
 
 - `~/Applications/Clayrune.command` now opens the launcher from the actual install directory, including custom paths with spaces or apostrophes. Re-running the script installer regenerates launchers created by earlier installs.
+## [2026-11-18] - Agent mail: retry Enable after a lost response (MC-1179 MB18)
+
+- **Enable agent mail** remains available after a connection loss while the original signup window and attempt budget allow it. The next passcode-confirmed click uses the same activation operation whether the service saw the first request or its response was lost. Tests for signup replacement remain pending the v2 identity migration.
+
+## [2026-11-18] - Agent mail: retry a pending service revocation (MC-1179 MB18)
+
+- **Retry revocation** in the agent-mail controls replays due revocations after a fresh passcode check. It retains the original denial operation and keeps local mail off.
+
+## [2026-11-18] - Agent mail: turn off pull mail from Settings (MC-1179 MB18)
+
+- **Settings > Connectivity > Agent mail > Controls** offers **Disable agent mail** for active pull mail. The dashboard passcode confirms the action and local mail stops before the service revocation attempt. The result shows whether the service confirmed revocation.
+
+## [2026-11-18] - Agent mail: name reply quote extraction accurately (MC-1179 MB5)
+
+- Renamed the internal reply extraction adapter and corrected the specs to describe deterministic quote trimming followed by delivery as an owner chat message. The Gmail/IMAP decision digest still uses a toolless transform.
 
 ## [2026-11-18] - Workflow canvas: connection drags start at the exact centre of unconnected port dots
 

@@ -8,7 +8,7 @@ import subprocess
 import pytest
 
 from mc.agent_mail_ingress import MailIngress
-from mc.agent_mail_launder import MailLaunder
+from mc.agent_mail_reply_extraction import MailReplyExtraction
 from mc.agent_mail_signing import IngressRefused
 from mc.agent_mail_store import BLOCKED, MailStore
 from tests.test_agent_mail_ingress import TOKEN, count, envelope, setup, signed, worker_clock
@@ -89,7 +89,7 @@ def test_real_worker_empty_hold_replay_and_local_custody(setup, worker_clock, mi
     assert (row['project_id'], row['session_id']) == ('project1', 'session1')
     reopened = MailStore(store.path, clock=setup[1])
     assert reopened.list_events()[0]['reason'] == 'empty_body'
-    assert MailLaunder(reopened, enabled=True).process_next()['state'] == 'idle'
+    assert MailReplyExtraction(reopened, enabled=True).process_next()['state'] == 'idle'
     assert reopened.claim_for_submission() is None
     with pytest.raises(ValueError, match='nothing to release'):
         reopened.release_hold(row['event_id'])
