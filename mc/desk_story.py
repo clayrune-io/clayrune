@@ -20,6 +20,11 @@ provider can enforce that boundary, otherwise an explicitly disclosed toolless
 transform. No shell, edits, MCP or skip-permissions. Task content remains stdin
 DATA behind the instruction.
 
+THE MODEL. A storyboard that belongs to a campaign piece (`owner` = `{kind: 'piece', id}`)
+runs on its campaign's engine pick; a standalone Studio item runs on its own (`engine`,
+sent beside `agent`). With neither, the agent's own engine, as before
+(`mc/desk_studio_engine.py`). A pick that cannot run is a 409 and nothing is called.
+
 THE AGENT. `agent` is the `scope:name` ref the "Your agent" box holds. Its
 persona body rides as the system prompt and its pinned provider / model / effort
 choose the engine, resolved the same way `character_routes._character_model_call`
@@ -44,6 +49,7 @@ from typing import Callable, Optional, Sequence
 from mc import characters as _chars
 from mc import desk_storyboard as _sb
 from mc import desk_product_context as _product
+from mc import desk_studio_engine as _studio_engine
 from mc.core import _log
 
 PieceError = _sb.PieceError
@@ -229,8 +235,10 @@ def generate(body, load_project: Callable[[str], Optional[dict]]) -> dict:
     if rec:
         who = rec.get('agent_name') or rec.get('display_name') or rec.get('name')
         persona = f'You are {who}. Your character:\n{rec["body"].strip()}\n\n{_PERSONA_TAIL}'
-    engine = _resolve_engine(project, rec)
-    effort = ((rec or {}).get('engine') or {}).get('effort') or ''
+    # The model: a piece's campaign pick, else this standalone item's own (`engine`).
+    camp = _studio_engine.owner_campaign(body.get('owner'))
+    item_pick = None if camp is not None else _studio_engine.check_save(body.get('engine'), project, body.get('agent'))
+    engine, effort = _studio_engine.apply(camp, item_pick, project, rec, _resolve_engine(project, rec))
     try:
         text = _call_model(engine.provider, prompt=system + _product.PRODUCT_INSTRUCTION, system_prompt=persona, model=engine.model,
                            effort=effort, stdin_text=json.dumps(payload, ensure_ascii=False), project=project)

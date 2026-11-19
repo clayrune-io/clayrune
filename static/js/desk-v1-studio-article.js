@@ -42,11 +42,12 @@
     return {
       id: o.id, kind: 'article', title: o.topic || '', projectId: o.project_id || '', campaignId: o.campaign_id || '',
       pieceId: o.piece_id || null, attached: !!o.attached, campaignTitle: o.campaign_title || '', rev: o.rev || 0,
-      status: 'draft', draft: { status: 'drafting', tabs: (o.tabs && o.tabs.length ? o.tabs : [DRAFT_TAB()]).map((t) => ({ id: t.id, label: t.label, body: t.body || '' })) },
+      engine: o.engine || null, status: 'draft', draft: { status: 'drafting', tabs: (o.tabs && o.tabs.length ? o.tabs : [DRAFT_TAB()]).map((t) => ({ id: t.id, label: t.label, body: t.body || '' })) },
     };
   }
   function _merge(a, o) {
     a.rev = o.rev;
+    a.engine = o.engine || null;
     a.pieceId = o.piece_id || null;
     a.attached = !!o.attached;
     a.campaignTitle = o.campaign_title || '';
@@ -107,6 +108,7 @@
   function _put(a) {
     return window.DeskV1Store.api('PUT', `/api/desk/studio/articles/${encodeURIComponent(a.id)}`, {
       rev: a.rev, topic: a.title, project_id: a.projectId || '', campaign_id: a.campaignId || '', tabs: a.draft.tabs,
+      engine: a.engine || null,
     }).then((out) => { _merge(a, out); _status('Saved'); return true; })
       .catch((e) => {
         const msg = e && e.message ? e.message : String(e);
@@ -283,6 +285,11 @@
         copies.forEach((copy) => { _merge(copy, server); copy.draft.tabs = server.tabs.map((t) => ({ ...t })); });
         if (_cur && _cur.a && _cur.a.id === a.id && _cur.el.isConnected) _paintWriter(_cur.el);
       },
+    });
+    // The model the conversation runs on: this article's own pick, or its campaign's (read-only).
+    if (window.DeskV1StudioEngine) window.DeskV1StudioEngine.mountArticle(el.querySelector('[data-sa-agent]'), a, {
+      save: () => _flush().then(() => _save(a)),
+      repaint: () => { if (_cur === mine && el.isConnected) _paintWriter(el); },
     });
   }
 

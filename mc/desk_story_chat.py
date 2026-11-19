@@ -46,6 +46,7 @@ from typing import Callable, Optional
 from mc import desk as _desk
 from mc import desk_story as _story
 from mc import desk_campaign_engine as _campaign_engine
+from mc import desk_studio_engine as _studio_engine
 from mc import desk_product_context as _product
 from mc import desk_storyboard as _sb
 from mc import desk_story_media as _media
@@ -315,7 +316,8 @@ def chat(body, load_project: Callable[[str], Optional[dict]]) -> dict:
     if rec:
         who = rec.get('agent_name') or rec.get('display_name') or rec['name']
         persona = f'You are {who}. Your character:\n{rec["body"].strip()}\n\n{_story._PERSONA_TAIL}'
-    engine, effort = _campaign_engine.apply(camp, project, rec, _story._resolve_engine(project, rec))
+    item_pick = None if camp is not None else _studio_engine.check_save(body.get('engine'), project, body.get('agent'))
+    engine, effort = _studio_engine.apply(camp, item_pick, project, rec, _story._resolve_engine(project, rec))
     try:
         with _media.turn_media(saved, raw_scenes, message, focus, engine.provider, project) as media:
             media.apply(payload)
