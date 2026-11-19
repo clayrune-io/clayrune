@@ -904,7 +904,8 @@ def _load_gc_cache(project: dict) -> dict:
     try:
         data = json.loads(p.read_text(encoding='utf-8'))
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except Exception as e:
+        _plog(f"[worktree] gc cache read failed for {p}: {e}")
         return {}
 
 
@@ -916,8 +917,8 @@ def _save_gc_cache(project: dict, cache: dict) -> None:
         p.parent.mkdir(parents=True, exist_ok=True)
         from mc.atomic_json import write_json_atomic
         write_json_atomic(p, cache)
-    except Exception:
-        pass  # cache is a pure optimization; losing it just costs a re-scan
+    except Exception as e:
+        _plog(f"[worktree] gc cache write failed for {p}: {e}")
 
 
 def _fingerprint(wt: Path) -> list | None:

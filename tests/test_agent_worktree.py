@@ -559,3 +559,23 @@ def test_gc_rechecks_clean_tree_when_external_refusal_clears(tmp_path, monkeypat
     monkeypatch.setattr(w, 'remove', remove)
     assert w.gc_stale(project, (), use_cache=True)['preserved'] == ['finished']
     assert w.gc_stale(project, (), use_cache=True)['removed'] == 1
+
+
+def test_gc_cache_logs_read_and_write_errors(tmp_path, monkeypatch):
+    from mc import atomic_json
+
+    cache = tmp_path / 'cache.json'
+    cache.write_text('{', encoding='utf-8')
+    logs = []
+    monkeypatch.setattr(w, '_gc_cache_path', lambda project: cache)
+    monkeypatch.setattr(w, '_plog', logs.append)
+
+    def locked(*a, **kwargs):
+        raise PermissionError('fixture write error')
+
+    monkeypatch.setattr(atomic_json, 'write_json_atomic', locked)
+    assert w._load_gc_cache({}) == {}
+    w._save_gc_cache({}, {})
+    assert [line.split(' failed')[0] for line in logs] == [
+        '[worktree] gc cache read', '[worktree] gc cache write',
+    ]
