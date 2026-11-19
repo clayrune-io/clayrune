@@ -25,6 +25,7 @@ import time
 from typing import Any, Callable, Optional, Tuple
 
 from mc.core import _log
+from mc.triggered_turns import user_turn_line
 
 STEER = 'steer'
 QUEUE = 'queue'
@@ -104,7 +105,7 @@ def queue_message(session: dict, message: str, user_label: str) -> None:
     """Hold `message` for the next turn. Same shape Mode A's /agent/followup
     queue uses: `pending_followups` plus a `> [queued]` chat line."""
     session.setdefault('pending_followups', []).append(message)
-    session['log_lines'].append(f"> [queued] {user_label}: {message}")
+    session['log_lines'].append(user_turn_line(f'[queued] {user_label}', message, framed=False))
     session.pop('_send_already_logged', None)
 
 

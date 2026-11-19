@@ -16,6 +16,15 @@ Display attribution only: the text the agent receives is unchanged.
 SCHEDULED_LABEL = '[scheduled run]'
 
 
+class UserTurnLine(str):
+    """A rendered user prompt that keeps its role in the live chat buffer."""
+
+
+def user_turn_line(label: str, text: str, *, framed: bool = True) -> UserTurnLine:
+    rendered = f'> {label}: {text}'
+    return UserTurnLine(f'\n{rendered}\n' if framed else rendered)
+
+
 def seed_label(user_label: str, trigger_type: str) -> str:
     """Label for the ``> <label>: <task>`` seed line of a dispatch."""
     return SCHEDULED_LABEL if trigger_type == 'schedule' else user_label

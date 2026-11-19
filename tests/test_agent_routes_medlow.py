@@ -326,12 +326,22 @@ def test_provider_list_reads_one_quota_log_tail(tmp_path, monkeypatch):
     assert reads == [path]
 
 
-def test_callback_fallback_keeps_marker_first_replies():
+def test_callback_fallback_keeps_marker_first_replies(monkeypatch):
     from mc.blueprints import agent_routes as routes
 
+    monkeypatch.setitem(routes.state.CONFIG, 'user_name', 'Example')
     for reply in ('[file:sample.txt]', '[Docs](example) explain it', '> A quotation'):
         session = {'log_lines': ['> Example: task', reply, '[exited with code 0]']}
         assert routes._last_reply_text(session) == reply
+
+
+def test_callback_fallback_preserves_quoted_final_line():
+    from mc.blueprints import agent_routes as routes
+
+    quote = '> Reason: the disk is full'
+    session = {'log_lines': ['> User: first task', 'earlier',
+                             '\n> User: follow up\n', quote, '[exited with code 0]']}
+    assert routes._last_reply_text(session) == quote
 
 
 def test_revive_parses_history_once_and_preserves_cutoff(monkeypatch):

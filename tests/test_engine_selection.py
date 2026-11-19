@@ -438,3 +438,30 @@ def test_native_dispatch_usage_writes_run_after_pending_publication(tmp_path, mo
         ('pending', True, False), ('baseline', False, True),
         ('running fact', False, True), ('launch', False, True),
     ]
+
+
+def test_callback_fallback_skips_the_long_dispatch_label_after_an_operator_rename(monkeypatch):
+    from threading import RLock
+    from types import SimpleNamespace
+    from mc.blueprints import agent_routes as ar
+
+    sessions = {}
+    manager = SimpleNamespace(lock=RLock(), session_ids=set(), ensure_guardian=lambda: None)
+    runtime = SimpleNamespace(name='codex', dispatch=lambda **kwargs: None)
+    monkeypatch.setattr(ar, 'agent_sessions', sessions)
+    monkeypatch.setattr(ar, 'get_manager', lambda _: manager)
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda _: runtime)
+    monkeypatch.setattr(ar, '_resolve_runtime_model', lambda *args: '')
+    monkeypatch.setattr(ar, '_build_agent_context', lambda *a, **k: 'context')
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_log_agent_activity', lambda *a: None)
+    label = 'A' * 42
+    monkeypatch.setitem(ar.state.CONFIG, 'user_name', label)
+    sid = ar._dispatch_via_runtime({'id': 'sample'}, 'test', provider_name='codex', incognito=True)
+    monkeypatch.setitem(ar.state.CONFIG, 'user_name', 'Renamed')
+    session = sessions[sid]
+    assert session['log_lines'][0] == f'> {label}: test'
+    assert ar._last_reply_text(session) == ''
+    quote = f'> {label}: an actual quotation'
+    session['log_lines'].append(quote)
+    assert ar._last_reply_text(session) == quote

@@ -7771,7 +7771,7 @@ def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_me
                 # unclosed/truncated one.
                 txt = _agent_runtime.strip_injected_preamble(m.get('text') or '')[:5000]
                 if txt and not _agent_runtime.is_nonuser_message(txt):
-                    lines.append(f"\n> {user_label}: {txt}\n")
+                    lines.append(_triggered_turns.user_turn_line(user_label, txt))
                     ts.append(m.get('timestamp') or None)
             elif role == 'assistant':
                 txt = (m.get('text') or '').strip()
@@ -8051,7 +8051,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
     # Skipped when the transcript was too large to resume directly (we started
     # fresh, so there's no coherent -r history to show anyway).
     history_lines, history_ts = ([], []) if _af_reason else _revive_history_lines(pp, claude_sid, user_label)
-    seed_lines = history_lines + [revive_note, f"\n> {user_label}: {message}\n"]
+    seed_lines = history_lines + [revive_note, _triggered_turns.user_turn_line(user_label, message)]
     # MC-954: the revive_note/new-message lines are genuinely happening NOW
     # (revival time), unlike the restored history above them which carries
     # its own real per-line dates.
@@ -9228,11 +9228,25 @@ def _last_reply_text(session):
     (test_a_raise_before_the_wake_still_wakes_the_workflow pins this).
     """
     collected = []
-    for line in reversed(session.get('log_lines') or []):
+    lines = session.get('log_lines') or []
+    # Reconstructed or older buffers can still contain plain rendered prompts.
+    user_label = state.CONFIG.get('user_name') or 'User'
+    labels = (user_label, 'User', _triggered_turns.SCHEDULED_LABEL, f'[queued] {user_label}')
+    prefixes = tuple(f'> {label}: ' for label in labels)
+    for i in range(len(lines) - 1, -1, -1):
+        line = lines[i]
         t = (line or '').strip()
+        # Older buffers always put an unframed dispatch seed in slot zero.
+        # Its label can predate the current configuration.
+        legacy_dispatch = i == 0 and t.startswith('> ') and ': ' in t.partition('\n')[0]
+        if (isinstance(line, _triggered_turns.UserTurnLine)
+                or legacy_dispatch
+                or (t.startswith(prefixes) and (
+                    (line.startswith('\n> ') and line.endswith('\n'))
+                    or t.startswith('> [queued] ')))):
+            break
         display_marker = t.startswith(('[file:', '[browser:', '[browser-attach:'))
         if (not t or t.startswith('---') and line.startswith('\n---')
-                or re.match(r'^>\s+\S[^:\n]{0,40}:\s', t)
                 or (_reply_line_kind.is_status_line(t) and not display_marker)):
             if collected:
                 break
@@ -10942,7 +10956,7 @@ def _auto_dispatch_followup_locked(session, message, p, pp, cmd, _sp_path):
     _register_process(proc, 'Agent followup (A)', 'agent',
                       session['session_id'], session['project_id'], message[:80])
     user_label = state.CONFIG.get('user_name') or 'User'
-    session['log_lines'].append(f"> {user_label}: {message}")
+    session['log_lines'].append(_triggered_turns.user_turn_line(user_label, message, framed=False))
 
     t = threading.Thread(target=_read_agent_stream, args=(proc, session), daemon=True)
     t.start()
@@ -11419,7 +11433,8 @@ def _dispatch_via_runtime(p, task, *, provider_name,
         session = {
             'status': 'running',
             'task': task,
-            'log_lines': TimestampedLines([f"> {_triggered_turns.seed_label(user_label, trigger_type)}: {_seed_task}"]),
+            'log_lines': TimestampedLines([_triggered_turns.user_turn_line(
+                _triggered_turns.seed_label(user_label, trigger_type), _seed_task, framed=False)]),
             '_native_context_pending': True,
             'started_at': now_iso(),
             'session_id': session_id,
@@ -13045,7 +13060,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         try:
             _seed_log_lines, _seed_log_ts = _transcript_buffer_lines_and_ts(
                 pp, resume_id, user_label, max_messages=300)
-            _seed_log_lines.append(f"\n> {_triggered_turns.seed_label(user_label, trigger_type)}: {_seed_task}\n")
+            _seed_log_lines.append(_triggered_turns.user_turn_line(
+                _triggered_turns.seed_label(user_label, trigger_type), _seed_task))
             _seed_log_ts.append(now_iso())  # this continuation prompt is happening now
         except Exception as e:
             _log(f"[dispatch] transcript preload failed for {resume_id[:12]}: {e}")
@@ -13054,7 +13070,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # it even after /agent/status overwrites the buffer with server log_lines.
         # Without this, the locally-seeded `> {task}` prefix gets wiped on the
         # first poll and the user only sees the agent's reply (no question).
-        _seed_log_lines.append(f"> {_triggered_turns.seed_label(user_label, trigger_type)}: {_seed_task}")
+        _seed_log_lines.append(_triggered_turns.user_turn_line(
+                _triggered_turns.seed_label(user_label, trigger_type), _seed_task, framed=False))
         _seed_log_ts.append(now_iso())
 
     # ── Auto-router + context build, OUTSIDE mgr.lock ───────────────────────
@@ -13908,7 +13925,7 @@ def agent_send(project_id):
                     if session is not None:
                         label = state.CONFIG.get('user_name') or 'User'
                         session['log_lines'][:0] = [
-                            f'\n> {label}: {text}\n' if role == 'user' else text
+                            _triggered_turns.user_turn_line(label, text) if role == 'user' else text
                             for role, text in turns]
                     return jsonify({'ok': True, 'session_id': sid, 'route': 'resume-native'})
                 except _resume_cwd.ResumeCwdMissing as e:
@@ -13975,7 +13992,7 @@ def agent_send(project_id):
         elif session and decision in ('interrupt', 'followup', 'steer'):
             user_label = state.CONFIG.get('user_name') or 'User'
             _midturn.note_user_message(session, message)  # MC-1088: latest user message
-            session['log_lines'].append(f"\n> {user_label}: {message}\n")
+            session['log_lines'].append(_triggered_turns.user_turn_line(user_label, message))
             session['_send_already_logged'] = True
             # Mark followup as in-flight under the same lock so the SSE generate()
             # loop sees the signal immediately. Without this, an eagerly-opened
@@ -14683,7 +14700,7 @@ def agent_followup(project_id):
         if session_provider != 'claude':
             user_label = state.CONFIG.get('user_name') or 'User'
             if not existing.pop('_send_already_logged', False):
-                existing['log_lines'].append(f"\n> {user_label}: {message}\n")
+                existing['log_lines'].append(_triggered_turns.user_turn_line(user_label, message))
             _start_new_turn(existing)
             existing['status'] = 'running'
             existing['last_status_change_time'] = _time.time()
@@ -14847,7 +14864,7 @@ def agent_followup(project_id):
 
                 user_label = state.CONFIG.get('user_name') or 'User'
                 if not existing.pop('_send_already_logged', False):
-                    existing['log_lines'].append(f"\n> {user_label}: {message}\n")
+                    existing['log_lines'].append(_triggered_turns.user_turn_line(user_label, message))
                 _start_new_turn(existing)
                 existing['status'] = 'running'
                 # MC-1002: the old process is about to be killed and the new
@@ -14926,7 +14943,7 @@ def agent_followup(project_id):
                     existing, message, mid_turn=existing.get('status') == 'running')
                 user_label = state.CONFIG.get('user_name') or 'User'
                 if not existing.pop('_send_already_logged', False):
-                    existing['log_lines'].append(f"\n> {user_label}: {message}\n")
+                    existing['log_lines'].append(_triggered_turns.user_turn_line(user_label, message))
                 _start_new_turn(existing)
                 existing['status'] = 'running'
                 existing['last_status_change_time'] = _time.time()
@@ -15042,7 +15059,7 @@ def agent_followup(project_id):
                 pending.append(message)
                 user_label = state.CONFIG.get('user_name') or 'User'
                 _midturn.note_user_message(existing, message, mid_turn=True)  # MC-1088
-                existing['log_lines'].append(f"> [queued] {user_label}: {message}")
+                existing['log_lines'].append(_triggered_turns.user_turn_line(f'[queued] {user_label}', message, framed=False))
                 _log_agent_activity(project_id, f"Agent follow-up queued: {message[:100]}")
                 return jsonify({'ok': True, 'queued': True, 'session_id': session_id})
 
@@ -15063,7 +15080,7 @@ def agent_followup(project_id):
             existing.pop('_dispatching_followup', None)
             user_label = state.CONFIG.get('user_name') or 'User'
             if not existing.pop('_send_already_logged', False):
-                existing['log_lines'].append(f"\n> {user_label}: {message}\n")
+                existing['log_lines'].append(_triggered_turns.user_turn_line(user_label, message))
             claude_sid = existing.get('claude_session_id')
 
     # Mode B per-turn model routing (process alive, auto_model_enabled=True)
@@ -15716,7 +15733,7 @@ def agent_interrupt(project_id, *, _internal=None):
             user_label = state.CONFIG.get('user_name') or 'User'
             if not session.pop('_send_already_logged', False):
                 session['log_lines'].append('[Got your message]')
-                session['log_lines'].append(f"\n> {user_label}: {message}\n")
+                session['log_lines'].append(_triggered_turns.user_turn_line(user_label, message))
             _start_new_turn(session)
             session.pop('pending_followups', None)
             try:
@@ -15832,7 +15849,7 @@ def agent_interrupt(project_id, *, _internal=None):
         # Immediately set status to running for the new prompt
         user_label = state.CONFIG.get('user_name') or 'User'
         if not is_midturn and not session.pop('_send_already_logged', False):
-            session['log_lines'].append(f"\n> {user_label}: {message}\n")
+            session['log_lines'].append(_triggered_turns.user_turn_line(user_label, message))
         session['status'] = 'running'
         session['last_status_change_time'] = _time.time()
         session['last_output_time'] = _time.time()
@@ -17012,7 +17029,7 @@ def reconstruct_dead_session(project_id, session_id):
             ts = []
             for role, text, turn_ts in turns:
                 if role == 'user':
-                    lines.append(f"\n> {user_label}: {text}\n")
+                    lines.append(_triggered_turns.user_turn_line(user_label, text))
                 else:
                     lines.append(text)
                 ts.append(turn_ts)
@@ -17044,7 +17061,7 @@ def reconstruct_dead_session(project_id, session_id):
     lines = []
     first_task = ' '.join(str(entries[0].get('task') or '').split())
     if first_task:
-        lines.append(f"\n> {user_label}: {first_task}\n")
+        lines.append(_triggered_turns.user_turn_line(user_label, first_task))
     for e in entries:
         summary = ' '.join(str(e.get('summary') or '').split())
         if summary:
