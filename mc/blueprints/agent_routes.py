@@ -646,10 +646,13 @@ def _kill_pid(pid, tree=False):
             if tree:
                 cmd.append('/T')
             cmd.extend(['/PID', str(pid)])
-            subprocess.run(cmd, capture_output=True, timeout=10,
-                           creationflags=_POPEN_FLAGS)
-            return True
-        except Exception:
+            result = subprocess.run(cmd, capture_output=True, timeout=10,
+                                    creationflags=_POPEN_FLAGS)
+            if result.returncode:
+                _log(f"[process] taskkill failed for PID {pid}: exit {result.returncode}")
+            return result.returncode == 0
+        except Exception as e:
+            _log(f"[process] taskkill failed for PID {pid}: {e}")
             return False
     else:
         if tree:

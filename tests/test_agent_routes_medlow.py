@@ -13,3 +13,12 @@ def test_corrupt_incognito_record_is_preserved(tmp_path, monkeypatch):
     assert routes._ensure_incognito_project()['_is_incognito_project']
     assert path.read_text(encoding='utf-8') == '{'
     assert any('project record read failed' in line for line in logs)
+
+
+def test_taskkill_refusal_reports_failure(monkeypatch):
+    from types import SimpleNamespace
+    from mc.blueprints import agent_routes as routes
+
+    monkeypatch.setattr(routes, 'sys', SimpleNamespace(platform='win32'))
+    monkeypatch.setattr(routes.subprocess, 'run', lambda *a, **k: SimpleNamespace(returncode=1))
+    assert routes._kill_pid(123, tree=True) is False
