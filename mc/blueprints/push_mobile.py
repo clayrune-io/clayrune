@@ -444,7 +444,9 @@ def _notify_push(title: str, body: str, *, url: str = '',
         'ts': int(_time.time()),
     }
     payload = json.dumps(payload_dict)
-    sent, failed, removed = 0, 0, []
+    sent, failed = 0, 0
+    delivered: dict[str, int] = {}
+    stale: set[str] = set()
     last_error = None
     for nonce, sub in list(subs.items()):
         if not isinstance(sub, dict):
@@ -465,11 +467,11 @@ def _notify_push(title: str, body: str, *, url: str = '',
         if sub_type == 'fcm':
             ok, err, drop = _push_send_fcm(sub, payload_dict)
             if ok:
-                sub['last_used_at'] = int(_time.time())
+                delivered[nonce] = int(_time.time())
                 sent += 1
             else:
                 if drop:
-                    removed.append(nonce)
+                    stale.add(nonce)
                 else:
                     failed += 1
                     last_error = err
@@ -495,13 +497,13 @@ def _notify_push(title: str, body: str, *, url: str = '',
                 ttl=300,
                 timeout=WEBPUSH_TIMEOUT_S,
             )
-            sub['last_used_at'] = int(_time.time())
+            delivered[nonce] = int(_time.time())
             sent += 1
         except WebPushException as e:
             resp = getattr(e, 'response', None)
             code = resp.status_code if resp is not None else 0
             if code in (404, 410):
-                removed.append(nonce)
+                stale.add(nonce)
             else:
                 failed += 1
                 detail = (resp.text[:200] if resp is not None and resp.text else str(e))
@@ -517,13 +519,33 @@ def _notify_push(title: str, body: str, *, url: str = '',
             _log(f"[push] delivery failed host={push_delivery_queue.endpoint_host(sub_info['endpoint'])}: "
                  f"{type(e).__name__}: "
                  f"{push_delivery_queue.redact(e, sub_info['endpoint'], _secrets)[:200]}", flush=True)
+    removed = 0
+    if delivered or stale:
+        with _push_state_lock:
+            current = _load_push_subscriptions()
+            changed = False
+            for nonce in delivered.keys() | stale:
+                sub = current.get(nonce)
+                if not isinstance(sub, dict) or any(
+                    sub.get(field) != subs[nonce].get(field)
+                    for field in ('type', 'endpoint', 'keys', 'token')
+                ):
+                    continue
+                if nonce in stale:
+                    del current[nonce]
+                    removed += 1
+                    changed = True
+                else:
+                    used_at = delivered[nonce]
+                    if used_at > (sub.get('last_used_at') or 0):
+                        sub['last_used_at'] = used_at
+                        changed = True
+            if changed:
+                _save_push_subscriptions(current)
     if removed:
-        for n in removed:
-            subs.pop(n, None)
-        _log(f"[push] removed {len(removed)} stale subscription(s)", flush=True)
-    _save_push_subscriptions(subs)
+        _log(f"[push] removed {removed} stale subscription(s)", flush=True)
     return {
-        'ok': True, 'sent': sent, 'failed': failed, 'removed': len(removed),
+        'ok': True, 'sent': sent, 'failed': failed, 'removed': removed,
         'last_error': last_error,
     }
 

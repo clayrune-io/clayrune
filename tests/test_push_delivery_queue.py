@@ -155,6 +155,44 @@ def test_a_stalled_endpoint_delays_later_pushes_not_the_caller(stub, fresh_queue
     assert _wait(lambda: len(stub.calls) == 2)
 
 
+@pytest.mark.parametrize('update', ['subscribe', 'unsubscribe', 'replace'])
+def test_delivery_keeps_concurrent_subscription_changes(stub, monkeypatch, update):
+    from copy import deepcopy
+
+    initial = {'endpoint': ENDPOINT, 'keys': dict(KEYS)}
+    persisted = {'n1': initial}
+    monkeypatch.setattr(pm, '_load_push_subscriptions', lambda: deepcopy(persisted))
+
+    def save(value):
+        persisted.clear()
+        persisted.update(deepcopy(value))
+
+    def webpush(**kwargs):
+        with pm._push_state_lock:
+            if update == 'subscribe':
+                persisted['n2'] = {'endpoint': 'https://push.example.test/new'}
+            elif update == 'unsubscribe':
+                del persisted['n1']
+            else:
+                persisted['n1'] = {'endpoint': 'https://push.example.test/replacement'}
+        if update == 'replace':
+            raise stub.WebPushException('gone', types.SimpleNamespace(status_code=410))
+
+    monkeypatch.setattr(pm, '_save_push_subscriptions', save)
+    monkeypatch.setattr(sys.modules['pywebpush'], 'webpush', webpush)
+
+    outcome = pm._notify_push('title', 'body')
+
+    if update == 'subscribe':
+        assert persisted['n2']['endpoint'].endswith('/new')
+        assert persisted['n1']['last_used_at'] > 0
+    elif update == 'unsubscribe':
+        assert persisted == {}
+    else:
+        assert persisted['n1']['endpoint'].endswith('/replacement')
+        assert outcome['removed'] == 0
+
+
 def test_webpush_gets_a_ten_second_timeout(stub, fresh_queue):
     fresh_queue()
     pm._handle_push_signal('p', 's', _result('done'))
