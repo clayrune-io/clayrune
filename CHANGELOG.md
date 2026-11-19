@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-18] - Agent mail: retry Enable after a lost response (MC-1179 MB18)
+
+- **Enable agent mail** remains available after a connection loss while the original signup window and attempt budget allow it. The next passcode-confirmed click uses the same activation operation whether the service saw the first request or its response was lost. Tests for signup replacement remain pending the v2 identity migration.
+
 ## [2026-11-18] - Agent mail: retry a pending service revocation (MC-1179 MB18)
 
 - **Retry revocation** in the agent-mail controls replays due revocations after a fresh passcode check. It retains the original denial operation and keeps local mail off.

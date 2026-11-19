@@ -1033,6 +1033,11 @@ tunnel and machine delivery proof are prerequisites; pending
 verification can be resumed after a restart. Passcode confirmation protects each
 mutation. A reply that passes the mail service's checks (this email's one-time token and your verified sender address) is treated as you typing in the chat.
 
+If **Enable agent mail** loses its connection, choose **Enable agent mail** again
+under **Controls** and re-enter your passcode. The button remains available after
+refresh while the original 30-minute signup window and three-attempt limit allow
+another try. It continues the same activation.
+
 The service on Cloudflare and email providers process sent notes/questions,
 including project name and conversation label. Incoming supported reply text
 passes through Cloudflare, then through
