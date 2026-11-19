@@ -10,7 +10,7 @@ or iframe-embedded client data blob, and checks challenge, RP ID hash and origin
 against the server-held ceremony record, never against anything the client
 sent as a claim.
 
-Registration only. The assertion verifier is slice 2.
+Assertion verification lives in mc.passkeys.assertion.
 """
 from __future__ import annotations
 
