@@ -704,6 +704,26 @@ def test_late_verification_promotes_to_verified_published(world):
     assert len(world.wire.posts) == 1
 
 
+def test_repeated_read_refusal_does_not_rewrite_the_receipt(world, monkeypatch):
+    campaign(world)
+    piece, vid = version(world)
+
+    def refuse(*args, **kwargs):
+        raise _publish.ReadConsentDenied('Read consent required')
+
+    monkeypatch.setattr(_publish, 'verify_post', refuse)
+    v = go(world, piece, vid)
+    assert v['receipt']['verify_error'] == 'Read consent required'
+    writes = []
+    monkeypatch.setattr(_desk, '_write_store', writes.append)
+    _tick.run_once(NOW + timedelta(minutes=1))
+    assert writes == []
+
+    monkeypatch.setattr(_publish, 'verify_post', lambda *args, **kwargs: True)
+    _tick.run_once(NOW + timedelta(minutes=2))
+    assert len(writes) == 1
+
+
 def test_verify_error_is_recorded_not_a_verdict(world, monkeypatch):
     campaign(world)
     piece, vid = version(world)

@@ -316,6 +316,8 @@ def _write_receipt(piece_id: str, version_id: str, receipt: dict) -> None:
         ver = next((v for v in (piece or {}).get('versions') or [] if v.get('id') == version_id), None)
         if ver is None or ver.get('state') != 'submitted':
             return
+        if ver.get('receipt') == receipt:
+            return
         ver['receipt'] = receipt
         _desk._write_store(store)
 
