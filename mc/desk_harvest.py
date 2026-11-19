@@ -135,7 +135,8 @@ def harvest_commits(project_id: str, project_path: str | Path,
     # %x1f is an ASCII unit separator — a commit subject can contain anything
     # else, including the pipes and tabs a naive delimiter would pick.
     fmt = '%H%x1f%aI%x1f%s%x1f%b%x1e'
-    args = ['log', f'--max-count={limit}', f'--pretty=format:{fmt}']
+    read_limit = limit + 1 if limit > 0 else limit
+    args = ['log', f'--max-count={read_limit}', f'--pretty=format:{fmt}']
     if since:
         # `since..HEAD` is empty (not an error) when the sha is an ancestor of
         # HEAD, and errors when the sha is unknown — e.g. after a rebase. The
@@ -144,17 +145,19 @@ def harvest_commits(project_id: str, project_path: str | Path,
         args.append(f'{since}..HEAD')
     out = _git(path, *args)
     if out is None and since:
-        out = _git(path, 'log', f'--max-count={limit}', f'--pretty=format:{fmt}')
+        out = _git(path, *args[:-1])
     if not out:
         return []
 
+    chunks = [chunk for chunk in out.split('\x1e') if chunk.strip()]
+    if limit > 0 and len(chunks) > limit:
+        _log(f'[desk] {project_id}: older commits skipped this harvest (cap {limit})')
+        chunks = chunks[:limit]
     known = _known_refs(project_id)
     made: list[dict] = []
     newest_sha = None
-    for chunk in out.split('\x1e'):
+    for chunk in chunks:
         chunk = chunk.strip('\n')
-        if not chunk.strip():
-            continue
         parts = chunk.split('\x1f')
         if len(parts) < 3:
             continue

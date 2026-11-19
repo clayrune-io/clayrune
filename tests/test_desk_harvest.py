@@ -121,6 +121,18 @@ def test_a_stale_watermark_sha_falls_back_rather_than_failing(store, repo):
     assert [m['summary'] for m in made] == ['feat: survived a rebase']
 
 
+def test_commit_cap_logs_only_when_there_is_older_history(store, repo, monkeypatch):
+    logged = []
+    monkeypatch.setattr(desk_harvest, '_log', logged.append)
+
+    assert len(desk_harvest.harvest_commits('at-cap', repo, limit=3)) == 2
+    assert logged == []
+    assert len(desk_harvest.harvest_commits('over-cap', repo, limit=2)) == 1
+    assert len(logged) == 1 and 'older commits skipped' in logged[0]
+    assert desk_harvest.harvest_commits('over-cap', repo, limit=2) == []
+    assert len(logged) == 1
+
+
 def test_missing_path_is_not_an_error(store, tmp_path):
     assert desk_harvest.harvest_commits('p', tmp_path / 'nope') == []
 
