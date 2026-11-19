@@ -133,6 +133,23 @@ def test_events_go_only_to_the_connection_that_owns_the_session():
         p2.recv()
 
 
+def test_nested_attach_response_can_precede_the_attach_event():
+    def script(msg, emit):
+        if msg['method'] == 'Target.attachToTarget':
+            _answer(msg, emit, {'sessionId': msg['params']['targetId']})
+
+    fc = FakeChromium(script)
+    try:
+        page = fc.transport.page_conn('root', timeout=1)
+        page.send(json.dumps({'id': 12, 'method': 'Target.attachToTarget',
+                              'params': {'targetId': 'nested', 'flatten': True}}))
+        assert json.loads(page.recv())['id'] == 12
+        fc.emit({'method': 'Page.screencastFrame', 'sessionId': 'nested', 'params': {}})
+        assert json.loads(page.recv())['sessionId'] == 'nested'
+    finally:
+        fc.eof()
+
+
 def test_browser_level_auto_attach_events_go_to_the_connection_that_enabled_it():
     def script(msg, emit):
         _answer(msg, emit, {'sessionId': 'X1'} if msg['method'] == 'Target.attachToTarget' else {})
@@ -147,6 +164,32 @@ def test_browser_level_auto_attach_events_go_to_the_connection_that_enabled_it()
     assert json.loads(guard.recv())['params']['sessionId'] == 'A1'
     with pytest.raises(websocket.WebSocketTimeoutException):
         other.recv()
+
+
+def test_failed_attach_does_not_own_the_next_auto_attached_target():
+    def script(msg, emit):
+        if msg['method'] == 'Target.attachToTarget':
+            emit({'id': msg['id'], 'error': {'message': 'target unavailable'}})
+        else:
+            _answer(msg, emit)
+
+    fc = FakeChromium(script)
+    guard = fc.transport.browser_conn(timeout=1)
+    requester = fc.transport.browser_conn(timeout=1)
+    try:
+        guard.send(json.dumps({'id': 1, 'method': 'Target.setAutoAttach',
+                               'params': {'autoAttach': True, 'flatten': True}}))
+        assert json.loads(guard.recv())['id'] == 1
+        requester.send(json.dumps({'id': 1, 'method': 'Target.attachToTarget',
+                                   'params': {'targetId': 'target', 'flatten': True}}))
+        assert 'error' in json.loads(requester.recv())
+
+        fc.emit({'method': 'Target.attachedToTarget',
+                 'params': {'sessionId': 'auto', 'targetInfo': {'targetId': 'target'}}})
+
+        assert json.loads(guard.recv())['params']['sessionId'] == 'auto'
+    finally:
+        fc.eof()
 
 
 def test_an_explicit_attach_event_goes_to_the_requester_not_the_auto_attach_holder():

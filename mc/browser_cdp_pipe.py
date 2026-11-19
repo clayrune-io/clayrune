@@ -109,7 +109,7 @@ class PipeTransport:
         self._routes = {}                       # global id -> (conn | queue, original id)
         self._owner = {}                        # sessionId -> PipeConn (None = internal)
         self._conns = []
-        self._pending_attach = []               # (targetId, requester) for explicit attaches
+        self._pending_attach = {}               # global id -> (targetId, requester)
         self._auto_holder = None                # conn that set browser-level auto-attach
         self._silent = set()                    # sessions attached internally: their attach event goes nowhere
         self.closed = False
@@ -185,7 +185,7 @@ class PipeTransport:
         method, params, sid = msg.get('method'), msg.get('params') or {}, msg.get('sessionId')
         with self._lock:
             if method == 'Target.attachToTarget' and not sid:
-                self._pending_attach.append((params.get('targetId'), conn))
+                self._pending_attach[gid] = (params.get('targetId'), conn)
             elif method == 'Target.setAutoAttach' and not sid and params.get('autoAttach'):
                 self._auto_holder = conn
         try:
@@ -193,6 +193,7 @@ class PipeTransport:
         except PipeClosed:
             with self._lock:
                 self._routes.pop(gid, None)
+                self._pending_attach.pop(gid, None)
             raise
 
     def request(self, method, params=None, session_id=None, timeout=5):
@@ -204,7 +205,7 @@ class PipeTransport:
             gid = self._next_id
             self._routes[gid] = (q, 0)
             if method == 'Target.attachToTarget' and not session_id:
-                self._pending_attach.append(((params or {}).get('targetId'), None))
+                self._pending_attach[gid] = ((params or {}).get('targetId'), None)
         msg = {'id': gid, 'method': method, 'params': params or {}}
         if session_id:
             msg['sessionId'] = session_id
@@ -217,6 +218,7 @@ class PipeTransport:
         finally:
             with self._lock:
                 self._routes.pop(gid, None)
+                self._pending_attach.pop(gid, None)
         if r is None:
             raise PipeClosed('pipe closed while waiting for ' + method)
         if 'error' in r:
@@ -256,12 +258,13 @@ class PipeTransport:
     def _dispatch_response(self, msg, sid):
         with self._lock:
             route = self._routes.pop(msg['id'], None)
+            self._pending_attach.pop(msg['id'], None)
         if route is None:
             return
         who, orig = route
         if isinstance(who, queue.Queue):
-            who.put(msg)
             self._note_attach_result(msg, None)
+            who.put(msg)
             return
         self._note_attach_result(msg, who)
         out = dict(msg)
@@ -279,10 +282,6 @@ class PipeTransport:
                 self._owner[new_sid] = requester
                 if requester is None:
                     self._silent.add(new_sid)     # the attach event has not arrived yet
-                for i, (_t, who) in enumerate(self._pending_attach):
-                    if who is requester:
-                        del self._pending_attach[i]
-                        break
                 if requester is not None:
                     requester.top_sessions.append(new_sid)
 
@@ -300,10 +299,10 @@ class PipeTransport:
                 self._owner[new_sid] = owner
             else:
                 owner = None
-                for i, (tid, who) in enumerate(self._pending_attach):
+                for command_id, (tid, who) in self._pending_attach.items():
                     if tid == target_id:
                         owner = who
-                        del self._pending_attach[i]
+                        del self._pending_attach[command_id]
                         break
                 else:
                     owner = self._auto_holder         # browser-level auto-attach
