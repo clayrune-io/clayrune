@@ -28,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time as _time
+from html import escape
 from pathlib import Path
 
 from flask import Blueprint, Response, jsonify, redirect, request
@@ -1194,7 +1195,7 @@ def mc_callback():
     except Exception as e:
         return _mc_callback_html(
             "Remote access isn't fully wired yet",
-            f"<p>Couldn't reach the enrollment module ({e}).</p>",
+            f"<p>Couldn't reach the enrollment module ({escape(str(e))}).</p>",
             status=500, accent="#ef4444",
         )
 
@@ -1202,7 +1203,7 @@ def mc_callback():
 
     if result.get("ok"):
         identity = result["identity"]
-        host = identity.hostname
+        host = escape(str(identity.hostname))
         return _mc_callback_html(
             "You're connected!",
             f"<p>Your Clayrune dashboard is reachable from anywhere at:</p>"
@@ -1211,9 +1212,11 @@ def mc_callback():
             f"https://{host}</p>",
         )
 
+    message = escape(str(result.get('message', 'Unknown error')))
+    error = escape(str(result.get('error', 'unknown')))
     return _mc_callback_html(
         "Sign-in didn't complete",
-        f"<p>{result.get('message', 'Unknown error')}</p>"
-        f"<p style='font-size:12px;color:#9ca3af'>Code: {result.get('error', 'unknown')}</p>",
+        f"<p>{message}</p>"
+        f"<p style='font-size:12px;color:#9ca3af'>Code: {error}</p>",
         status=400, accent="#ef4444",
     )

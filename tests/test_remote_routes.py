@@ -68,6 +68,22 @@ def test_failed_enrollment_mailer_reports_exit_status(client, monkeypatch):
     assert all('alert sent' not in message for message in logs)
 
 
+def test_enrollment_callback_renders_provider_message_as_text(client, monkeypatch):
+    from mc.blueprints import remote_routes as rr
+    from mc_remote import enrollment
+
+    monkeypatch.setattr(rr, '_get_remote_provider', object)
+    monkeypatch.setattr(enrollment, 'complete', lambda _: {
+        'ok': False, 'message': 'Device <name> & region', 'error': 'bad <label>',
+    })
+
+    reply = client.get('/api/mc-callback')
+
+    assert reply.status_code == 400
+    assert b'Device &lt;name&gt; &amp; region' in reply.data
+    assert b'bad &lt;label&gt;' in reply.data
+
+
 class TestRemoteStatus:
     def test_status_always_200_with_provider_key(self, client):
         # provider: null (open-source build) or a provider dict (mc_remote
