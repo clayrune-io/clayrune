@@ -119,6 +119,18 @@ def test_plan_not_eligible_and_no_tokens_leak(tmp_path):
     assert 'SECRET' not in json.dumps(plan.detect(creds(tmp_path, 'max', 'default_claude_max_5x')))
 
 
+def test_unreadable_plan_metadata_is_logged_without_contents(tmp_path, capsys):
+    from mc import api_credits_plan
+
+    path = tmp_path / 'plan.json'
+    path.write_text('unparseable private data', encoding='utf-8')
+
+    assert api_credits_plan.detect(path)['status'] == 'unknown'
+    logs = capsys.readouterr().out
+    assert 'plan metadata could not be read: JSONDecodeError' in logs
+    assert 'unparseable private data' not in logs
+
+
 def test_plan_missing_or_broken_file_is_unknown(tmp_path):
     assert plan.detect(tmp_path / 'nope.json')['status'] == 'unknown'
     bad = tmp_path / 'bad.json'
