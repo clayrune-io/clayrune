@@ -61,3 +61,19 @@ def test_auth_probe_timeout_clears_stale_success(monkeypatch):
     assert result['ok'] is False
     assert result['reason'] == 'unknown'
     assert result['last_probe_at'] > 0
+
+
+def test_session_scan_survives_a_dispatch_mid_iteration(monkeypatch):
+    from mc.blueprints import agent_routes as routes
+
+    class DispatchingSession(dict):
+        def get(self, key, default=None):
+            sessions.setdefault('new-dispatch', {})
+            return super().get(key, default)
+
+    sessions = {
+        'first': DispatchingSession(project_id='other'),
+        'second': {'project_id': 'sample', 'claude_session_id': 'chat', 'context_tokens': 12},
+    }
+    monkeypatch.setattr(routes, 'agent_sessions', sessions)
+    assert routes._live_context_tokens('sample', 'chat') == 12

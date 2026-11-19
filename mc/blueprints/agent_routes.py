@@ -5731,7 +5731,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     if convos:
         live_by_csid = {}
         try:
-            for s in agent_sessions.values():
+            for s in list(agent_sessions.values()):
                 if s.get('project_id') != project['id']:
                     continue
                 csid = s.get('claude_session_id', '')
@@ -7071,7 +7071,7 @@ def get_session_trigger_type():
     if not csid:
         return jsonify({'found': False, 'error': 'claude_session_id required'}), 400
     fue = bool(state.CONFIG.get('fence_unattended_enabled', True))
-    for s in agent_sessions.values():
+    for s in list(agent_sessions.values()):
         if s.get('claude_session_id') == csid:
             body = {'found': True, 'trigger_type': s.get('trigger_type') or 'manual',
                     'fence_unattended_enabled': fue}
@@ -11985,7 +11985,7 @@ def _gemini_session_log_turns(project_id, native_id):
     LIE): a shorter-than-expected handoff must be disclosed, not silently
     substituted for the real thing.
     """
-    live = next((s for s in agent_sessions.values()
+    live = next((s for s in list(agent_sessions.values())
                 if s.get('project_id') == project_id
                 and (s.get('provider') or '').lower() == 'gemini'
                 and s.get('provider_session_id') == native_id), None)
@@ -12120,7 +12120,7 @@ def _live_context_tokens(project_id, claude_sid):
     """
     if not claude_sid:
         return None
-    for s in agent_sessions.values():
+    for s in list(agent_sessions.values()):
         if s.get('project_id') == project_id and s.get('claude_session_id') == claude_sid:
             return s.get('context_tokens')
     return None
@@ -12134,7 +12134,7 @@ def _live_session_rolled_from(project_id, claude_sid):
     """
     if not claude_sid:
         return None
-    for s in agent_sessions.values():
+    for s in list(agent_sessions.values()):
         if s.get('project_id') == project_id and s.get('claude_session_id') == claude_sid:
             return s.get('_rolled_from')
     return None
@@ -12171,7 +12171,7 @@ def _clear_live_context_tokens(project_id, claude_sid):
     `_live_context_tokens`'s own lookup."""
     if not claude_sid:
         return
-    for s in agent_sessions.values():
+    for s in list(agent_sessions.values()):
         if s.get('project_id') == project_id and s.get('claude_session_id') == claude_sid:
             _mark_context_rolled(s, claude_sid)
 
@@ -12342,7 +12342,7 @@ def _in_flight_children(project_id, session_id):
     `_notify_session` still resolves after the fresh process starts.
     """
     out = []
-    for s in agent_sessions.values():
+    for s in list(agent_sessions.values()):
         if s.get('project_id') != project_id:
             continue
         if (s.get('_notify_session') or '').strip() != session_id:
@@ -12930,7 +12930,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         _af_rolled_from = _live_session_rolled_from(project_id, resume_id)
         _af_reason, _af_detail = _auto_fresh_trigger(
             pp, resume_id, _live_context_tokens(project_id, resume_id),
-            session_or_character=next((s for s in agent_sessions.values()
+            session_or_character=next((s for s in list(agent_sessions.values())
                 if s.get('project_id') == project_id
                 and s.get('claude_session_id') == resume_id), character_meta))
         if not _af_reason and _fragile_resume_target(pp, 'claude', resume_id, _af_rolled_from):
@@ -13838,7 +13838,7 @@ def agent_send(project_id):
         if recorded_id != native_id or not _agent_runtime._codex_same_path(cwd, pp):
             return jsonify({'error': 'original conversation not found'}), 404
         with get_manager(project_id).lock:
-            owner = next((sid for sid, s in agent_sessions.items()
+            owner = next((sid for sid, s in list(agent_sessions.items())
                           if s.get('project_id') == project_id
                           and s.get('provider') == 'codex'
                           and s.get('provider_session_id') == native_id), None)
@@ -16339,7 +16339,7 @@ def agent_status(project_id):
             _live_by_csid.setdefault(_ls['claude_session_id'], []).append(_lsid)
     # MC-1063: child reports queued for a session in this project, one read.
     _reports_waiting = _delegation_waiting.waiting_by_parent(project_id)
-    for sid, s in agent_sessions.items():
+    for sid, s in list(agent_sessions.items()):
         if s['project_id'] == project_id:
             # Filter log_lines and its parallel per-line timestamp array
             # (MC-954) in lock-step — a plain list-comp on log_lines alone
@@ -17032,7 +17032,7 @@ def reconstruct_from_transcript(project_id, claude_session_id):
     # it fabricated a "STOPPED / send a message to resume" tab while the agent
     # kept working. If the csid maps to a live session, tell the client to open
     # THAT tab instead. The sibling /session/<id>/reconstruct has the same guard.
-    for _sid, _sess in agent_sessions.items():
+    for _sid, _sess in list(agent_sessions.items()):
         if _sess.get('claude_session_id') == claude_session_id:
             return jsonify({'error': 'session is live', 'session_id': _sid}), 409
     user_label = state.CONFIG.get('user_name') or 'User'
@@ -17105,7 +17105,7 @@ def delete_conversation(project_id, claude_session_id):
         p = load_project(project_id)
         if not p:
             return jsonify({'error': 'project not found'}), 404
-        for live_session in agent_sessions.values():
+        for live_session in list(agent_sessions.values()):
             if (live_session.get('project_id') == project_id and
                     live_session.get('claude_session_id') == claude_session_id):
                 return jsonify({'error': 'conversation is live'}), 409
@@ -17119,7 +17119,7 @@ def delete_conversation(project_id, claude_session_id):
         # The route receives native Claude identity; delivery uses MC identity.
         # Revoke every matching alias before the transcript rename.
         aliases = {claude_session_id}
-        for session in agent_sessions.values():
+        for session in list(agent_sessions.values()):
             if session.get('project_id') == project_id and (session.get('claude_session_id') == claude_session_id or session.get('session_id') == claude_session_id):
                 aliases.update(filter(None, (session.get('session_id'), session.get('claude_session_id'))))
         for entry in _load_agent_log(project_id):
@@ -17595,7 +17595,7 @@ def _recent_codex_conversation_rows(project_id, p, limit, by_sid=None):
             log_by_psid[psid] = e
 
     live_by_psid = {}
-    for s in agent_sessions.values():
+    for s in list(agent_sessions.values()):
         if s.get('project_id') != project_id:
             continue
         psid = s.get('provider_session_id', '')
@@ -17957,7 +17957,7 @@ def get_project_conversations(project_id):
     # running conversation's transcript must survive the mtime cut even if
     # `limit` other transcripts were touched more recently (ws001/D6).
     live_by_csid = {}
-    for s in agent_sessions.values():
+    for s in list(agent_sessions.values()):
         if s.get('project_id') != project_id:
             continue
         csid = s.get('claude_session_id', '')
@@ -18254,7 +18254,7 @@ def get_project_plans(project_id):
         # Live sessions first (may not be in the log yet). Every plan the
         # session registered, not just the most recent — a session that wrote
         # three of them used to surface one and silently drop the rest.
-        for sid, s in agent_sessions.items():
+        for sid, s in list(agent_sessions.items()):
             if s.get('project_id') != project_id:
                 continue
             for pf in _session_plan_files(s):
@@ -18414,7 +18414,7 @@ def get_project_documents(project_id):
             'deletable': True,
         })
 
-    for sid, s in agent_sessions.items():
+    for sid, s in list(agent_sessions.items()):
         if s.get('project_id') != project_id:
             continue
         for pf in _session_plan_files(s):
@@ -18570,7 +18570,7 @@ def api_usage():
         _accumulate(p, _entry_usage(entry), entry.get('cost_usd'), _provider_emits_cost(p))
 
     # Include running sessions that haven't been logged yet
-    for s in agent_sessions.values():
+    for s in list(agent_sessions.values()):
         if since and s.get('started_at', '') < since:
             continue
         csid = s.get('claude_session_id') or ''
