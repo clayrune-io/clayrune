@@ -1711,21 +1711,33 @@ def maybe_set_sole_provider_default(config: dict, config_path: Path) -> bool:
     if len(installed) != 1:
         return False
     name = installed[0].name
-    config['default_provider'] = name
-    try:
-        with open(config_path, encoding='utf-8') as f:
-            on_disk = json.load(f)
-    except Exception:
-        on_disk = dict(config)
-    on_disk['default_provider'] = name
     from mc.core import _atomic_write_text, _log
-    try:
-        _atomic_write_text(config_path, json.dumps(on_disk, indent=2, ensure_ascii=False))
-    except Exception as e:
-        _log(f'[providers] failed to persist sole-provider default {name!r}: {e}', flush=True)
-        return False
-    _log(f'[providers] auto-picked sole installed provider as default_provider: {name}', flush=True)
-    return True
+    from mc.provider_preferences import serialized_write
+
+    @serialized_write
+    def persist() -> bool:
+        if (config.get('default_provider') or '').strip():
+            return False
+        if 'setup_completed' in config and not config.get('setup_completed'):
+            return False
+        try:
+            try:
+                with open(config_path, encoding='utf-8') as f:
+                    on_disk = json.load(f)
+            except FileNotFoundError:
+                on_disk = dict(config)
+            if (on_disk.get('default_provider') or '').strip():
+                return False
+            on_disk['default_provider'] = name
+            _atomic_write_text(config_path, json.dumps(on_disk, indent=2, ensure_ascii=False))
+        except Exception as exc:
+            _log(f'[providers] failed to persist sole-provider default {name!r}: {exc}')
+            return False
+        config['default_provider'] = name
+        _log(f'[providers] auto-picked sole installed provider as default_provider: {name}')
+        return True
+
+    return persist()
 
 
 def claude_oneshot_available() -> bool:
