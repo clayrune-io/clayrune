@@ -1826,14 +1826,10 @@ def mark_transcript_incognito(claude_session_id: str) -> None:
     path = _incognito_registry_path()
     with _incognito_registry_lock:
         try:
-            data: Dict[str, Any] = {}
-            if path.exists():
-                try:
-                    loaded = json.loads(path.read_text(encoding='utf-8'))
-                    if isinstance(loaded, dict):
-                        data = loaded
-                except Exception:
-                    data = {}  # corrupt file — rebuild rather than lose the new mark
+            data = _load_incognito_registry()
+            if data is None:
+                _log('[incognito] incognito registry is unreadable; leaving it in place')
+                return
             if claude_session_id in data:
                 return
             data[claude_session_id] = now_iso()
@@ -1853,10 +1849,10 @@ def _load_incognito_registry() -> Optional[Dict[str, str]]:
     `is_transcript_incognito`.
     """
     path = _incognito_registry_path()
-    if not path.exists():
-        return {}
     try:
         data = json.loads(path.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return {}
     except Exception:
         return None  # unreadable — fail closed
     return data if isinstance(data, dict) else None  # corrupt shape — fail closed

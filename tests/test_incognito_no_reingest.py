@@ -17,7 +17,24 @@ the `/api/search/global` route), not reimplementations of them.
 import importlib
 import json
 
+import pytest
+
 from mc import agent_runtime
+
+
+@pytest.mark.parametrize('data', [b'{broken', b'[]'])
+def test_new_incognito_mark_preserves_unreadable_registry(monkeypatch, tmp_path, data, capsys):
+    registry = tmp_path / 'incognito_sessions.json'
+    registry.write_bytes(data)
+    monkeypatch.setattr(agent_runtime, '_incognito_registry_path', lambda: registry)
+
+    assert agent_runtime.is_transcript_incognito('previous-session')
+    agent_runtime.mark_transcript_incognito('new-session')
+
+    assert registry.read_bytes() == data
+    assert agent_runtime.is_transcript_incognito('previous-session')
+    assert agent_runtime.is_transcript_incognito('new-session')
+    assert 'incognito registry is unreadable' in capsys.readouterr().out
 
 
 def _server(tmp_data_dir):
