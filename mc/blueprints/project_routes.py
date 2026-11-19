@@ -1354,21 +1354,8 @@ def add_backlog_item(project_id):
     if error:
         return jsonify({'error': error}), 400
 
-    p = load_project(project_id)
-    if p is None:
-        return jsonify({'error': 'not found'}), 404
-
-    backlog = p.setdefault('backlog', [])
-    # Number the existing items first, so the new one takes the next free slot
-    # rather than colliding with a backfill that hasn't happened yet.
-    _ensure_backlog_numbers(p)
-    seq = int(p.get('backlog_seq') or 0) + 1
-    p['backlog_seq'] = seq
-
     item = {
         'id': str(uuid.uuid4())[:8],
-        'num': seq,
-        'key': _format_backlog_key(p.get('backlog_key'), seq),
         'text': data['text'].strip(),
         'priority': data.get('priority', 'normal'),
         'status': 'open',
@@ -1384,9 +1371,18 @@ def add_backlog_item(project_id):
     if proposer is not None:
         _backlog_proposals.stamp_proposed(item, proposer)
 
-    backlog.insert(0, item)
-    p['last_updated'] = now_iso()
-    save_project(project_id, p)
+    def _append(p):
+        # Backfill old numbers and allocate the next one under the same lock.
+        _ensure_backlog_numbers(p)
+        seq = int(p.get('backlog_seq') or 0) + 1
+        p['backlog_seq'] = item['num'] = seq
+        item['key'] = _format_backlog_key(p.get('backlog_key'), seq)
+        p.setdefault('backlog', []).insert(0, item)
+        p['last_updated'] = now_iso()
+        return True
+
+    if not mutate_project(project_id, _append):
+        return jsonify({'error': 'not found'}), 404
     return jsonify({'ok': True, 'item': item})
 
 
