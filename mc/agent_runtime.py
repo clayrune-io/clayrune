@@ -3858,18 +3858,10 @@ def _inject_gemini_env(env: Dict[str, str], mcp_config_json: str = '') -> Dict[s
 class GeminiRuntime(AgentRuntime):
     """Driver for Google's `gemini` CLI.
 
-    Mode A only (synthetic per-turn). Each `dispatch()` / `write_followup()`
-    spawns a fresh `gemini` process. Output is streamed line-by-line into
-    `session['log_lines']`. Gemini's `--output-format stream-json` is used
-    when available; falls back to plain-text otherwise.
-
-    Followup uses `--checkpoint` for cross-turn continuity if the CLI
-    version supports it; otherwise the runtime prepends a one-line summary
-    of the prior turn to the new prompt as context.
-
-    Tools/MCP/Skills are NOT injected — Gemini's tool model differs from
-    claude's. The prototype validates the end-to-end loop on text-only
-    turns; advanced features ride on a follow-up PR.
+    Each Mode A turn starts a fresh process and reads structured
+    `stream-json` output. Non-JSON lines are retained for exit diagnostics.
+    Follow-ups use `--resume` when the native session id is known.
+    `--allowed-mcp-server-names` scopes project MCP servers.
     """
 
     name = 'gemini'
