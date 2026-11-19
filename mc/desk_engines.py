@@ -1726,15 +1726,27 @@ def submit(d: dict, *, unattended: bool = False, _skip_limit: bool = False, _pre
     return _public_job(settle(accepted)), False
 
 
+_polling: set[str] = set()
+
+
 def poll(job_id: str, *, unattended: bool = False) -> dict | None:
     """Advance one job by asking its engine once; download output on ready.
     Free. A terminal job is returned untouched, with no vendor call."""
     with _lock:
         job = _read_store()['jobs'].get(job_id)
-    if job is None:
-        return None
-    if job['status'] in ('ready', 'failed'):
-        return _public_job(job)
+        if job is None:
+            return None
+        if job['status'] in ('ready', 'failed') or job_id in _polling:
+            return _public_job(job)
+        _polling.add(job_id)
+    try:
+        return _poll_job(job_id, job, unattended=unattended)
+    finally:
+        with _lock:
+            _polling.discard(job_id)
+
+
+def _poll_job(job_id: str, job: dict, *, unattended: bool) -> dict:
     eng = ENGINES[job['engine_id']]
     model = get_model(job['engine_id'], job['model_id'])
     if model is None:      # a model dropped from the registry after submit

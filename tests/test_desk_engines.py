@@ -22,9 +22,11 @@ vault is replaced by four patched `secrets_store` functions. Pinned:
     and write their output under data/uploads/desk/generated/.
 """
 import base64
+from concurrent.futures import ThreadPoolExecutor
 import json
 import sys
 from pathlib import Path
+from threading import Event
 
 import pytest
 from flask import Flask
@@ -698,6 +700,37 @@ def test_veo_output_save_failure_is_terminal_and_keeps_the_cost(client, vendor, 
     assert eng._read_store()['jobs'][jid]['engine_ref'] == original_ref
     assert client.get(path).get_json()['job'] == failed
     assert len(vendor.to('googleapis.com/dl', 'GET')) == 1
+
+
+def test_concurrent_polls_download_and_save_an_output_once(client, vendor, monkeypatch):
+    _campaign(_own(10))
+    jid = _veo_submit(client, vendor)
+    vendor.on('GET', '/operations/op1', vendor.json(200, {'done': True, 'response': {'generateVideoResponse': {
+        'generatedSamples': [{'video': {'uri': 'https://generativelanguage.googleapis.com/dl'}}]}}}))
+    vendor.on('GET', 'googleapis.com/dl', (200, {'content-type': 'video/mp4'}, b'VEO'))
+
+    entered, release = Event(), Event()
+    save = eng._save_outputs
+    saves = []
+
+    def slow_first_save(*args):
+        saves.append(True)
+        if len(saves) == 1:
+            entered.set()
+            assert release.wait(timeout=5)
+        return save(*args)
+
+    monkeypatch.setattr(eng, '_save_outputs', slow_first_save)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(eng.poll, jid)
+        try:
+            assert entered.wait(timeout=5)
+            concurrent = eng.poll(jid)
+        finally:
+            release.set()
+        assert first.result(timeout=5)['status'] == 'ready'
+    assert concurrent['status'] == 'rendering'
+    assert len(vendor.to('googleapis.com/dl', 'GET')) == len(saves) == 1
 
 
 def test_veo_references_and_first_frame_use_bytes_base64_not_inline_data(client, vendor, uploads):
