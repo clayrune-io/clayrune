@@ -8,9 +8,11 @@ file as every other Desk store, outside DATA_DIR (the LOAD-BEARING rule in
 CLAUDE.md), so it is not a project record.
 
 SHAPE. `{id, topic, project_id, campaign_id, piece_id, tabs:[{id,label,body}], rev,
-created_at, updated_at}`. `topic` is the free text the user typed and the title
+created_at, updated_at, engine?}`. `topic` is the free text the user typed and the title
 the article carries. `project_id` is any Clayrune project (optional);
-`campaign_id` an existing campaign it is meant for (optional). The id is minted
+`campaign_id` an existing campaign it is meant for (optional). `engine` is the article's own model pick
+(`{provider?, model?, effort?}`, mc/desk_studio_engine.py), used by its conversation
+when it is not for a campaign; absent means the agent's default. The id is minted
 by the page, as a Studio video's is. `piece_id` is set only by `attach`: the
 campaign piece this draft became.
 
@@ -36,6 +38,7 @@ from datetime import datetime, timezone
 
 from mc import desk as _desk
 from mc import desk_pieces as _pieces
+from mc import desk_studio_engine as _studio_engine
 from mc.core import _log, now_iso
 
 PieceError = _pieces.PieceError
@@ -76,6 +79,7 @@ def _out(store: dict, art: dict) -> dict:
         'piece_id': piece['id'] if piece else None, 'attached': bool(piece),
         'campaign_title': ((camp.get('plan') or {}).get('title') or camp.get('title') or '') if piece else '',
         'tabs': [dict(t) for t in art.get('tabs') or []], 'rev': int(art.get('rev') or 0),
+        'engine': _studio_engine.pick_of(art),
         'created_at': art.get('created_at'), 'updated_at': art.get('updated_at'),
     }
 
@@ -104,6 +108,11 @@ def _clean_tabs(raw, problems: list[str]) -> list[dict]:
         seen.add(tid)
         out.append({'id': tid, 'label': label.strip(), 'body': body})
     return out
+
+
+def _stored_article(store: dict, article_id: str) -> dict:
+    art = _articles(store).get(article_id)
+    return art if isinstance(art, dict) else {}
 
 
 def _check_project(project_id, load_project) -> str | None:
@@ -150,7 +159,8 @@ def get_article(article_id: str) -> dict:
 def put_article(article_id: str, body, load_project=None) -> dict:
     """Create (rev 0) or replace. `body` = `{rev, topic, project_id?, campaign_id?, tabs?}`.
     An omitted `tabs` keeps the stored ones (one empty `Draft` tab for a new article);
-    an omitted `project_id` / `campaign_id` is kept, an empty one clears it."""
+    an omitted `project_id` / `campaign_id` / `engine` is kept, an empty one (`null`) clears it.
+    An `engine` the live catalog does not offer is a 400 and nothing is saved."""
     _check_id(article_id)
     if not isinstance(body, dict):
         raise PieceError('body must be a JSON object')
@@ -167,6 +177,14 @@ def put_article(article_id: str, body, load_project=None) -> dict:
     if problems:
         raise PieceError('the article is not valid', 400, problems)
     project_id = _check_project(body['project_id'], load_project) if 'project_id' in body else ...
+    engine = ...
+    if 'engine' in body:
+        with _desk._store_lock:
+            stored = _stored_article(_desk._read_store(), article_id)
+        pid = project_id if project_id is not ... else stored.get('project_id')
+        project = load_project(pid) if (load_project and pid) else None
+        engine = _studio_engine.check_save(body['engine'], project, _studio_engine.agent_ref_of_project(pid),
+                                           _studio_engine.pick_of(stored))
     with _desk._store_lock:
         store = _desk._read_store()
         campaign_id = _check_campaign(store, body['campaign_id']) if 'campaign_id' in body else ...
@@ -187,6 +205,11 @@ def put_article(article_id: str, body, load_project=None) -> dict:
             new['project_id'] = project_id
         if campaign_id is not ...:
             new['campaign_id'] = campaign_id
+        if engine is not ...:
+            if engine:
+                new['engine'] = engine
+            else:
+                new.pop('engine', None)
         new['rev'] = current + 1
         new['updated_at'] = now
         arts[article_id] = new

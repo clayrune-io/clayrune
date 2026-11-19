@@ -148,6 +148,8 @@
       };
       const agent = bridge.agentRef();
       if (agent) body.agent = agent;
+      const engine = bridge.engine && bridge.engine();
+      if (engine) body.engine = engine;
       const pid = bridge.projectId();
       if (pid) body.project_id = pid;
       st.pending = { text, scene };

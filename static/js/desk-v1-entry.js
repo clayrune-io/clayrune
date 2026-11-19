@@ -72,7 +72,7 @@ const MODULES = [
   'desk-v1-campaign-chat', 'desk-v1-dispatch', 'desk-v1-studio-timebar',
   'desk-v1-studio-timeline', 'desk-v1-studio-insert', 'desk-v1-studio-preview',
   'desk-v1-studio-export', 'desk-v1-studio', 'desk-v1-studio-clips',
-  'desk-v1-studio-title', 'desk-v1-video-open', 'desk-v1-studio-capture',
+  'desk-v1-studio-title', 'desk-v1-studio-engine', 'desk-v1-video-open', 'desk-v1-studio-capture',
   'desk-v1-conversations', 'desk-v1-engagement', 'desk-v1-results',
   'desk-v1-channel-impact', 'desk-v1-retro',
 ];

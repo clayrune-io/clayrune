@@ -85,6 +85,11 @@
     const body = Object.assign({ story: ctx.detail.story || '' }, extra);
     const agent = bridge.agentRef();
     if (agent) body.agent = agent;
+    // The model: a campaign piece runs on its campaign's pick (the server finds it from
+    // the owner), a standalone item on its own.
+    body.owner = bridge.owner();
+    const engine = bridge.engine && bridge.engine();
+    if (engine) body.engine = engine;
     const pid = bridge.projectId();
     if (pid) body.project_id = pid;
     return window.DeskV1Store.api('POST', '/api/desk/storyboard/generate', body);

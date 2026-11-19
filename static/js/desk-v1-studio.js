@@ -538,7 +538,7 @@
             <option value=""${ctx.fam.agent ? '' : ' selected'}>Default${defName ? ' · ' + esc(defName) : ''}</option>${(_globalAgents || []).map((a) =>
               `<option value="${esc(a.ref)}"${a.ref === ctx.fam.agent ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}
           </select>` : '';
-    return `<div class="desk-v1-sb-agent-head" data-sb-agent-head>${avatar}<strong>${esc(agentName)}</strong></div>${picker}
+    return `<div class="desk-v1-sb-agent-head" data-sb-agent-head>${avatar}<strong>${esc(agentName)}</strong></div>${picker}${window.DeskV1StudioEngine ? window.DeskV1StudioEngine.hostHTML() : ''}
           ${window.DeskV1StoryChat.html(agentName, _isLive())}`;
   }
 
@@ -892,16 +892,23 @@
     if ((ref || null) === prev) return;
     _registerItem(ctx.fam);
     const name = ref ? (_pickedAgent({ agent: ref }) || {}).name || ref : 'the default agent';
-    DeskV1Kit.commandBus.run({
+    // An effort-only model pick the new agent's provider does not offer is dropped with the agent change.
+    const prevPick = ctx.fam.engine || null;
+    const pending = window.DeskV1HowModel ? window.DeskV1HowModel.reconcile(prevPick, ctx.camp.projectId, ref || null) : Promise.resolve({ pick: prevPick, note: '' });
+    pending.then(({ pick, note }) => DeskV1Kit.commandBus.run({
       label: `Picked ${name} as the agent`,
-      do: () => { ctx.fam.agent = ref || null; _paintAgentBox(); },
-      undo: () => { ctx.fam.agent = prev; _paintAgentBox(); },
-    });
+      do: () => { ctx.fam.agent = ref || null; if (pick) ctx.fam.engine = pick; else delete ctx.fam.engine; _paintAgentBox(); if (note) DeskV1Kit.toast(note); },
+      undo: () => { ctx.fam.agent = prev; if (prevPick) ctx.fam.engine = prevPick; else delete ctx.fam.engine; _paintAgentBox(); },
+    }));
   }
 
   function _wireAgentBox(box, ctx) {
     const pick = box.querySelector('[data-sb-agent-pick]');
     if (pick) pick.onchange = () => _pickAgent(pick.value);
+    if (window.DeskV1StudioEngine) window.DeskV1StudioEngine.mountVideo(box, ctx, {
+      standalone: !!_sb.standalone, register: () => _registerItem(ctx.fam), repaint: _paintAgentBox,
+      agentRef: () => { const a = _sbAgent(ctx); return a && a.name ? a.ref : null; },
+    });
     if (_isLive()) window.DeskV1StoryChat.wire(box, _storyBridge());
   }
 
@@ -922,6 +929,7 @@
       projectId: () => { const c = _sbCtx(); return (c && c.camp.projectId) || ''; },
       agentRef: () => { const c = _sbCtx(); const a = c && _sbAgent(c); return a && a.name ? a.ref : null; },
       agentName: () => { const c = _sbCtx(); return (c && _sbAgent(c).name) || 'your agent'; },
+      engine: () => (window.DeskV1StudioEngine ? window.DeskV1StudioEngine.videoPick(_sbCtx(), mine.standalone) : null),
       selected: () => (_sb === mine ? mine.selected : null),
       stopEditing: () => { if (_sb === mine) mine.editing = null; },
       repaint: () => _paintScenes(),

@@ -14,6 +14,7 @@ from typing import Callable, Optional
 from mc import desk as _desk
 from mc import desk_studio_articles as _arts
 from mc import desk_story as _story
+from mc import desk_studio_engine as _studio_engine
 from mc import desk_product_context as _product
 from mc.desk_pieces import MAX_BODY
 from mc.core import _log, now_iso
@@ -63,7 +64,9 @@ def chat(article_id: str, body, load_project: Callable[[str], Optional[dict]]) -
     if not isinstance(body.get('body'), str):
         raise PieceError('send the current draft text', 400)
     with _desk._store_lock:
-        art = copy.deepcopy(_article(_desk._read_store(), article_id))
+        store = _desk._read_store()
+        art = copy.deepcopy(_article(store, article_id))
+        camp = copy.deepcopy(_studio_engine.article_campaign(store, art))
     tab = next((t for t in art['tabs'] if t['id'] == body.get('tab_id')), None)
     if tab is None:
         raise PieceError('that draft tab no longer exists', 409)
@@ -71,13 +74,15 @@ def chat(article_id: str, body, load_project: Callable[[str], Optional[dict]]) -
     project = load_project(pid) if pid else None
     if pid and not project:
         raise PieceError('the article project no longer exists', 404)
-    ref = (_desk.get_presence(pid) or {}).get('desk_agent') if pid else None
+    ref = _studio_engine.agent_ref_of_project(pid)
     if pid and not ref:
         raise PieceError("set this project's default planner first", 409)
     rec = _story._agent(ref, project)
     who = (rec.get('agent_name') or rec.get('display_name') or rec['name']) if rec else 'Studio agent'
     persona = (f'You are {who}. Your character:\n{rec["body"].strip()}\n\n{_story._PERSONA_TAIL}' if rec else '')
-    engine = _story._resolve_engine(project, rec)
+    # The model: its campaign's pick when the article is for / in a campaign, else its own.
+    engine, effort = _studio_engine.apply(camp, _studio_engine.pick_of(art), project, rec,
+                                          _story._resolve_engine(project, rec))
     thread = art.get('chat') or []
     latest = next((t['proposal'] for t in reversed(thread) if isinstance(t.get('proposal'), dict)
                    and t['proposal']['tab_id'] == tab['id']), None)
@@ -90,7 +95,7 @@ def chat(article_id: str, body, load_project: Callable[[str], Optional[dict]]) -
         payload['product'] = product
     try:
         raw = _story._call_model(engine.provider, prompt=_INSTRUCTION + _product.PRODUCT_INSTRUCTION, system_prompt=persona,
-                                 model=engine.model, effort=((rec or {}).get('engine') or {}).get('effort') or '',
+                                 model=engine.model, effort=effort,
                                  stdin_text=json.dumps(payload, ensure_ascii=False), project=project)
     except Exception as e:
         _log(f'[desk] article chat failed: {e}', flush=True)

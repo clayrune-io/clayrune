@@ -16,7 +16,7 @@ step aside for an explicit override at `/agent/dispatch`).
 from __future__ import annotations
 
 import sys
-from typing import Callable, Optional
+from typing import Callable, NamedTuple, Optional
 
 from mc.core import _log
 from mc.desk_pieces import PieceError
@@ -30,6 +30,18 @@ _BLOCKING_AUTH = ('not_logged_in', 'invalid_api_key', 'not_installed', 'oauth_re
 class EngineError(PieceError):
     """A refusal with the HTTP status the route should answer (400 a bad pick on
     save, 409 a pick that cannot run now)."""
+
+
+class Whose(NamedTuple):
+    """What owns a pick, for the words of a refusal. The validate / apply logic is the
+    same for a campaign and for a standalone Studio item (`mc/desk_studio_engine.py`);
+    only who is named, and where the user goes to change it, differ."""
+    noun: str
+    where: str
+
+
+CAMPAIGN = Whose('campaign', "on the campaign's Brief")
+ITEM = Whose('item', 'in the agent box beside it')
 
 
 # -- the live catalog ------------------------------------------------------------------
@@ -64,12 +76,16 @@ def _clean(raw) -> Optional[dict]:
     return out
 
 
+def stored_pick(raw) -> Optional[dict]:
+    """The pick held in `raw` (`{provider?, model?, effort?}`), or None for "agent
+    default". Reads only; whether the pick still holds is `apply`'s check."""
+    return _clean(raw) or None
+
+
 def pick_of(camp: Optional[dict]) -> Optional[dict]:
-    """The campaign's stored pick (`{provider?, model?, effort?}`), or None for
-    "agent default". Reads only; whether the pick still holds is `resolve`'s check."""
+    """The campaign's stored pick, or None for "agent default"."""
     how = (camp or {}).get('how')
-    picked = _clean(how.get('engine')) if isinstance(how, dict) else None
-    return picked or None
+    return stored_pick(how.get('engine')) if isinstance(how, dict) else None
 
 
 # -- save-time validation --------------------------------------------------------------
@@ -203,10 +219,10 @@ def availability_error(provider: str, model: str = '') -> str:
     return ''
 
 
-def _refuse(pick: dict, provider: str, why: str) -> EngineError:
+def _refuse(pick: dict, provider: str, why: str, whose: Whose = CAMPAIGN) -> EngineError:
     what = ' / '.join(pick[k] for k in KEYS if pick.get(k)) or provider
-    return EngineError(f'this campaign is set to run on {what}, which cannot run now: {why}. '
-                       'Nothing was run on another engine. Change the campaign\'s model, or try again when it is back.', 409)
+    return EngineError(f'this {whose.noun} is set to run on {what}, which cannot run now: {why}. '
+                       f"Nothing was run on another engine. Change the {whose.noun}'s model, or try again when it is back.", 409)
 
 
 # -- use-time resolution ---------------------------------------------------------------
@@ -224,12 +240,18 @@ def for_piece(store: dict, piece_id: str) -> Optional[dict]:
 
 
 def apply(camp: Optional[dict], project: Optional[dict], rec: Optional[dict], default_engine, *, available: bool = True):
-    """(engine, effort) for one Desk call. With no pick on the campaign this returns
-    `default_engine` and the agent's own effort, i.e. exactly what the caller did
-    before. With a pick it resolves through `engine_selection.resolve_engine` with the
-    pick as the explicit override, and raises EngineError if the pick no longer holds."""
+    """(engine, effort) for one Desk call on a campaign. See `apply_pick`."""
+    return apply_pick(pick_of(camp), project, rec, default_engine, available=available)
+
+
+def apply_pick(pick: Optional[dict], project: Optional[dict], rec: Optional[dict], default_engine, *,
+               available: bool = True, whose: Whose = CAMPAIGN):
+    """(engine, effort) for one Desk call. With no pick this returns `default_engine`
+    and the agent's own effort, i.e. exactly what the caller did before. With a pick
+    it resolves through `engine_selection.resolve_engine` with the pick as the
+    explicit override, and raises EngineError if the pick no longer holds. `whose`
+    names the owner of the pick (a campaign, or a Studio item) in the refusals."""
     own_effort = ((rec or {}).get('engine') or {}).get('effort') or ''
-    pick = pick_of(camp)
     if not pick:
         return default_engine, own_effort
     from mc import engine_selection, state
@@ -249,13 +271,13 @@ def apply(camp: Optional[dict], project: Optional[dict], rec: Optional[dict], de
             model_override=pick.get('model') or None, effort_override=effort,
             character=char, legacy_default='claude')
     except EngineError as e:
-        raise EngineError(f'this campaign\'s engine pick no longer holds: {e}. Nothing was run; '
-                          'choose the model again on the campaign\'s Brief.', 409)
+        raise EngineError(f"this {whose.noun}'s engine pick no longer holds: {e}. Nothing was run; "
+                          f'choose the model again {whose.where}.', 409)
     except (engine_selection.EngineSelectionError, ValueError) as e:
-        raise EngineError(f'this campaign\'s engine pick cannot be used: {e}. Nothing was run on another engine.', 409)
+        raise EngineError(f"this {whose.noun}'s engine pick cannot be used: {e}. Nothing was run on another engine.", 409)
     why = availability_error(engine.provider, engine.model) if available else ''
     if why:
-        raise _refuse(pick, engine.provider, why)
+        raise _refuse(pick, engine.provider, why, whose)
     return engine, engine.effort
 
 

@@ -229,13 +229,23 @@
     const prevRef = (camp.how && camp.how.agent) || null;
     if (nextRef === prevRef) return;
     const render = () => { if (typeof window.deskV1Render === 'function') window.deskV1Render(); };
-    window.DeskV1Store.write({
-      label: `Set campaign agent to ${picked ? picked.name : nextRef}`,
-      apply: () => { camp.how.agent = nextRef; render(); },
-      unapply: () => { camp.how.agent = prevRef; },
-      repaint: render,
-      request: () => window.deskV1PatchCampaign(camp, ['plan', 'how']),
-      undoRequest: () => window.deskV1PatchCampaign(camp, ['plan', 'how']),
+    const prevEngine = camp.how.engine ? Object.assign({}, camp.how.engine) : null;
+    // An effort-only model pick is checked against the agent's provider: drop an
+    // effort the new agent's provider does not offer in the SAME save (and say so),
+    // instead of letting the agent change come back as a 400.
+    const reconciled = window.DeskV1HowModel && camp.how.engine
+      ? window.DeskV1HowModel.reconcile(prevEngine, camp.projectId, nextRef) : Promise.resolve({ pick: prevEngine, note: '' });
+    reconciled.then(({ pick, note }) => {
+      const put = (v) => { if (v && Object.keys(v).length) camp.how.engine = v; else delete camp.how.engine; };
+      window.DeskV1Store.write({
+        label: `Set campaign agent to ${picked ? picked.name : nextRef}`,
+        apply: () => { camp.how.agent = nextRef; put(pick); render(); },
+        unapply: () => { camp.how.agent = prevRef; put(prevEngine); },
+        repaint: render,
+        request: () => window.deskV1PatchCampaign(camp, ['plan', 'how']),
+        undoRequest: () => window.deskV1PatchCampaign(camp, ['plan', 'how']),
+      });
+      if (note && window.DeskV1Kit) window.DeskV1Kit.toast(note);
     });
   }
 
