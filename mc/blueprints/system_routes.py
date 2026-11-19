@@ -1941,26 +1941,22 @@ def _perform_server_restart_async(audit_entry):
     os._exit(2) past an absolute deadline no matter what.
     """
     def _do_restart():
-        # Watchdog: under any circumstance, terminate within 10s of being
-        # asked to restart. Daemon thread won't be joined; os._exit is a hard
-        # SIGKILL-equivalent that bypasses atexit hooks but that's the point.
+        restart_time = state._LAST_RESTART_TIME
+        # Bound teardown once the replacement has spawned.
         def _watchdog():
             _time.sleep(10.0)
             try: _log("[restart] watchdog tripped — forcing termination")
             except Exception: pass
             os._exit(2)
-        threading.Thread(target=_watchdog, daemon=True).start()
-
         _time.sleep(0.4)  # let the HTTP 202 actually reach the client
 
         # (1) Spawn the new instance FIRST. Even if everything below hangs,
         # the user already has a fresh server starting up. The new instance's
         # port-conflict bypass will wait for the old socket to free.
-        spawned = False
-        # Pre-hydration guarded keys only: see provider_env_scope.relaunch_env.
-        new_env = relaunch_env()
-        new_env['MC_RESTART_FROM_PID'] = str(os.getpid())
         try:
+            # Pre-hydration guarded keys only: see provider_env_scope.relaunch_env.
+            new_env = relaunch_env()
+            new_env['MC_RESTART_FROM_PID'] = str(os.getpid())
             popen_kwargs = {
                 'env': new_env,
                 'cwd': os.getcwd(),
@@ -1999,18 +1995,22 @@ def _perform_server_restart_async(audit_entry):
                 popen_kwargs['stdin'] = subprocess.DEVNULL
                 _redirect_restart_child_output(popen_kwargs)
             spawn_replacement([sys.executable] + sys.argv, **popen_kwargs)
-            spawned = True
-            _log("[restart] spawned new server process")
         except Exception as e:
             _log(f"[restart] failed to spawn new instance: {e}")
+            if state._LAST_RESTART_TIME == restart_time:
+                state._LAST_RESTART_TIME = 0
+            return
+
+        _log("[restart] spawned new server process")
+        threading.Thread(target=_watchdog, daemon=True).start()
 
         # (2) Best-effort graceful stop, bounded by a wall-clock timeout.
         # Run in its own thread so a deadlock cannot prevent the os._exit
         # below. Whether or not it finishes, we proceed.
         stop_done = threading.Event()
         def _bounded_stop():
-            # MC-1150 P4: spare adoptable agents only if a replacement server started.
-            try: _stop_all_sessions_for_restart(spare_adoptable=spawned)
+            # MC-1150 P4: the replacement can adopt eligible agents.
+            try: _stop_all_sessions_for_restart(spare_adoptable=True)
             except Exception as e:
                 try: _log(f"[restart] stop-all failed: {e}")
                 except Exception: pass
@@ -2030,9 +2030,9 @@ def _perform_server_restart_async(audit_entry):
         # Brief settle so the new process can claim the port if the OS is
         # quick about it; the new instance is allowed to wait longer.
         _time.sleep(0.25)
-        try: _log(f"[restart] exiting old process (spawned={spawned})")
+        try: _log("[restart] exiting old process")
         except Exception: pass
-        os._exit(0 if spawned else 1)
+        os._exit(0)
 
     threading.Thread(target=_do_restart, daemon=True).start()
 

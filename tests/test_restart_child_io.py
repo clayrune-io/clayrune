@@ -46,7 +46,7 @@ def _capture_restart_popen(monkeypatch, tmp_path, platform):
     monkeypatch.setattr(sr.threading, 'Thread', _InlineThread)
     monkeypatch.setattr(sr._time, 'sleep', lambda *_: None)
     monkeypatch.setattr(sr.os, '_exit', lambda *_: None)
-    monkeypatch.setattr(sr, '_stop_all_sessions_for_restart', lambda: None)
+    monkeypatch.setattr(sr, '_stop_all_sessions_for_restart', lambda **_: None)
     monkeypatch.setattr(sr, '_append_restart_log', lambda *_: None)
     sr._perform_server_restart_async({})
     return seen['kw']
@@ -73,6 +73,28 @@ def test_posix_restart_discards_rather_than_inherits_when_no_log(monkeypatch, tm
     (tmp_path / 'data').write_text('not a dir')  # makedirs(data/logs) fails
     kw = _capture_restart_popen(monkeypatch, tmp_path, 'linux')
     assert kw['stdout'] == subprocess.DEVNULL and kw['stdin'] == subprocess.DEVNULL
+
+
+def test_restart_spawn_failure_leaves_server_and_sessions_running(monkeypatch, tmp_path):
+    stops, exits = [], []
+
+    def refused_spawn(*args, **kwargs):
+        raise OSError('replacement refused')
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sr.sys, 'platform', 'linux')
+    monkeypatch.setattr(sr, 'spawn_replacement', refused_spawn)
+    monkeypatch.setattr(sr.threading, 'Thread', _InlineThread)
+    monkeypatch.setattr(sr._time, 'sleep', lambda *_: None)
+    monkeypatch.setattr(sr.os, '_exit', exits.append)
+    monkeypatch.setattr(sr, '_stop_all_sessions_for_restart', lambda **kw: stops.append(kw))
+    monkeypatch.setattr(sr, '_append_restart_log', lambda *_: None)
+    monkeypatch.setattr(sr.state, '_LAST_RESTART_TIME', 123.0)
+
+    sr._perform_server_restart_async({})
+
+    assert stops == exits == []
+    assert sr.state._LAST_RESTART_TIME == 0
 
 
 @pytest.mark.skipif(sys.platform == 'win32', reason='pty is POSIX-only')
