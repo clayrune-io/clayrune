@@ -343,7 +343,7 @@ def build_index(project) -> dict:
         if root is None or path is None or _is_incognito(project):
             return stats
         docs_root = root / DOCS_SUBDIR
-        if not docs_root.is_dir():
+        if not docs_root.is_dir() and not path.is_file():
             return stats
         with _lock_for(str(path)):
             conn = _connect(path)
