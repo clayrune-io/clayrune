@@ -353,3 +353,52 @@ def test_provider_env_save_preserves_unreadable_store(ar_env, monkeypatch):
     assert response.status_code == 500
     assert ar.PROVIDER_ENV_PATH.read_text(encoding='utf-8') == old
     assert KEY not in os.environ
+
+
+def test_provider_env_hydrates_valid_rows_and_refuses_to_overwrite_malformed_store(ar_env, monkeypatch):
+    import os
+
+    ar, server = ar_env
+    old = json.dumps({'gemini': None, 'goose': {KEY: 'fixture'}})
+    ar.PROVIDER_ENV_PATH.write_text(old, encoding='utf-8')
+    monkeypatch.delenv(KEY, raising=False)
+    ar._hydrate_provider_env_into_os()
+    assert os.environ[KEY] == 'fixture'
+    assert KEY not in launch_marker.launch_env('manual')
+    with server.app.test_request_context(json={'key': KEY, 'value': 'new-fixture'}):
+        response = server.app.make_response(ar.agent_provider_set_env('claude'))
+    assert response.status_code == 500
+    assert ar.PROVIDER_ENV_PATH.read_text(encoding='utf-8') == old
+
+
+@pytest.mark.skipif(__import__('os').name != 'nt', reason='Windows ACL inheritance')
+def test_provider_env_windows_staging_acl_is_private_before_write_and_after_replace(ar_env, monkeypatch):
+    from mc import atomic_json
+
+    ar, _ = ar_env
+    target = ar.PROVIDER_ENV_PATH
+    ar._save_provider_env_file({'goose': {KEY: 'fixture-old'}})
+    real_fdopen = atomic_json.os.fdopen
+    checked = []
+
+    def acl(path):
+        return subprocess.run(['icacls', str(path)], capture_output=True, text=True,
+                              check=True, timeout=10).stdout
+
+    probe = target.with_name('inheritance-probe')
+    probe.touch()
+    assert '(I)' in acl(probe), 'test directory must give new files an inherited ACL'
+
+    def check_before_write(fd, *args, **kwargs):
+        stage, = target.parent.glob(f'.{target.name}.*.tmp*')
+        checked.append((stage, stage.stat().st_size, acl(stage)))
+        return real_fdopen(fd, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(atomic_json.os, 'fdopen', check_before_write)
+        ar._save_provider_env_file({'goose': {KEY: 'fixture-new'}})
+    (stage, size, staging_acl), = checked
+    assert size == 0 and not stage.exists()
+    assert '(I)' not in staging_acl
+    assert '(I)' not in acl(target)
+    assert json.loads(target.read_text(encoding='utf-8')) == {'goose': {KEY: 'fixture-new'}}

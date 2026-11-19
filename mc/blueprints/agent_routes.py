@@ -107,7 +107,7 @@ from mc.pending_delivery_http import delivery_response
 from mc import workflows as _workflows  # leaf module (no Flask import); see _notify_workflow_step
 from mc import state as _mc_state  # readers write _mc_state._LAST_SYSTEM_STATUS verbatim
 from mc.atomic_json import read_text_with_retry, write_json_atomic
-from mc.core import _harden_secret_perms, _log, now_iso, time_ago, TimestampedLines
+from mc.core import _log, now_iso, time_ago, TimestampedLines
 from mc.state import (
     _backlog_sync_lock,
     _claude_auth_lock,
@@ -2557,31 +2557,36 @@ def agent_providers():
 # _provider_env_lock moved to mc/state.py (Phase 0).
 
 
-def _load_provider_env_file() -> Dict[str, Dict[str, str]]:
+def _load_provider_env_file(*, strict: bool = True) -> Dict[str, Dict[str, str]]:
     try:
         data = json.loads(PROVIDER_ENV_PATH.read_text(encoding='utf-8'))
     except FileNotFoundError:
         return {}
-    if not isinstance(data, dict) or any(not isinstance(v, dict) for v in data.values()):
+    if not isinstance(data, dict) or (strict and any(not isinstance(v, dict) for v in data.values())):
         raise ValueError('provider environment must be an object of provider objects')
     return data
 
 
 def _save_provider_env_file(data: Dict[str, Dict[str, str]]) -> None:
+    from mc.secrets_store import protect_empty_secret_file
+
     PROVIDER_ENV_PATH.parent.mkdir(parents=True, exist_ok=True)
-    write_json_atomic(PROVIDER_ENV_PATH, data, indent=2, ensure_ascii=False)
-    _harden_secret_perms(PROVIDER_ENV_PATH)
+    write_json_atomic(PROVIDER_ENV_PATH, data, indent=2, ensure_ascii=False,
+                      prepare_temp=protect_empty_secret_file)
 
 
 def _hydrate_provider_env_into_os() -> None:
     """Inject persisted provider env vars into os.environ so child agent
     processes inherit them. Shell-set vars win — we only fill blanks."""
     try:
-        data = _load_provider_env_file()
+        data = _load_provider_env_file(strict=False)
     except (OSError, ValueError) as e:
         _log(f"[provider-env] read failed during startup: {type(e).__name__}")
         return
     for _provider, kv in data.items():
+        if not isinstance(kv, dict):
+            _log('[provider-env] skipped a malformed provider row during startup')
+            continue
         for k, v in kv.items():
             if k and v is not None:
                 # Recorded for every provider even when the shell wins below:
