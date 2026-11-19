@@ -143,3 +143,32 @@ def test_no_log_when_it_is_a_noop(tmp_path, monkeypatch):
     agent_runtime.maybe_set_sole_provider_default(config, cfg_path)
 
     assert calls == []
+
+
+def test_failed_write_keeps_live_and_persisted_defaults_in_sync(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent_runtime, 'installed_runtimes', lambda: [_rt('codex')])
+    config = {'default_provider': ''}
+    cfg_path = _config_path(tmp_path, config)
+
+    def refuse(*args, **kwargs):
+        raise OSError('read-only config')
+
+    monkeypatch.setattr('mc.core._atomic_write_text', refuse)
+    assert agent_runtime.maybe_set_sole_provider_default(config, cfg_path) is False
+    assert config['default_provider'] == ''
+    assert json.loads(cfg_path.read_text(encoding='utf-8')) == config
+
+
+def test_automatic_pick_respects_a_choice_saved_while_probing(tmp_path, monkeypatch):
+    config = {'default_provider': ''}
+    cfg_path = _config_path(tmp_path, config)
+
+    def probe():
+        cfg_path.write_text(json.dumps({'default_provider': 'gemini'}), encoding='utf-8')
+        config['default_provider'] = 'gemini'
+        return [_rt('codex')]
+
+    monkeypatch.setattr(agent_runtime, 'installed_runtimes', probe)
+    assert agent_runtime.maybe_set_sole_provider_default(config, cfg_path) is False
+    assert config['default_provider'] == 'gemini'
+    assert json.loads(cfg_path.read_text(encoding='utf-8')) == config

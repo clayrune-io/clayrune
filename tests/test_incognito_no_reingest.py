@@ -17,7 +17,57 @@ the `/api/search/global` route), not reimplementations of them.
 import importlib
 import json
 
+import pytest
+
 from mc import agent_runtime
+
+
+@pytest.mark.parametrize('data', [b'{broken', b'[]', b'[' * 2000 + b']' * 2000])
+def test_new_incognito_mark_preserves_unreadable_registry(monkeypatch, tmp_path, data, capsys):
+    registry = tmp_path / 'incognito_sessions.json'
+    registry.write_bytes(data)
+    monkeypatch.setattr(agent_runtime, '_incognito_registry_path', lambda: registry)
+
+    assert agent_runtime.is_transcript_incognito('previous-session')
+    agent_runtime.mark_transcript_incognito('new-session')
+
+    assert registry.read_bytes() == data
+    assert agent_runtime.is_transcript_incognito('previous-session')
+    assert agent_runtime.is_transcript_incognito('new-session')
+    assert 'incognito registry is unreadable' in capsys.readouterr().out
+    registry.write_text('{}', encoding='utf-8')
+    assert agent_runtime.is_transcript_incognito('new-session')
+    assert 'new-session' in json.loads(registry.read_bytes())
+
+
+def test_pending_incognito_mark_survives_a_transient_registry_read_failure(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    registry = tmp_path / 'incognito_sessions.json'
+    original = '{"previous-session": "original timestamp"}'
+    registry.write_text(original, encoding='utf-8')
+    monkeypatch.setattr(agent_runtime, '_incognito_registry_path', lambda: registry)
+    read_text = Path.read_text
+    registry_reads = 0
+
+    def fail_once(path, *args, **kwargs):
+        nonlocal registry_reads
+        if path == registry:
+            registry_reads += 1
+            if registry_reads == 1:
+                raise PermissionError('temporary sharing violation')
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', fail_once)
+    agent_runtime.mark_transcript_incognito('new-private-session')
+    assert registry.read_bytes() == original.encode()
+    # This check must see the pending mark even though the disk has recovered.
+    assert agent_runtime.is_transcript_incognito('new-private-session')
+    assert not agent_runtime.is_transcript_incognito('ordinary-session')
+    stored = json.loads(registry.read_bytes())
+    assert stored['previous-session'] == 'original timestamp'
+    assert 'new-private-session' in stored
+    assert agent_runtime.is_transcript_incognito('new-private-session')
 
 
 def _server(tmp_data_dir):

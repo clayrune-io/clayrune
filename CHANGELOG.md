@@ -51,6 +51,13 @@
 - R44 follow-up. Rollover retains children with server jobs still open after their provider turn ends.
 - R40 follow-up. Native dispatch publishes its pending row and session in order, then records usage outside the project lock.
 - R34 follow-up. Callback fallback preserves quoted replies and skips the actual user prompts, including after an operator rename.
+## [2026-11-18] - Runtime core reliability (MC-1179 pass 01)
+
+- Replacing a turn no longer makes the superseded process report a crash. Gemini retains buffered reply text while preventing the superseded reader from applying control blocks or reporting an exit. Claude's stop hook records the stop before killing the process tree. Windows process checks recognize an exited child even while another handle to it is open, and bind diagnostics identify only listeners on the requested port (X1, G2, S4, A6, S7).
+- Claude retries failed transcript scans and rebuilds the previous Documents cache, which could store false empty results. Session and subagent scans preserve their working sets. An unreadable incognito registry stays in place. New privacy marks stay active in memory and are saved when reads recover. Aider releases newly generated prompt files after the process exits or fails to start (A3, A9, A4, X2).
+- Mode A skips malformed provider events and keeps reading the next reply, including when a shell command cannot be rendered in a tool preview. Gemini skips malformed tool events and handles malformed quota responses. Codex skips malformed items, Qwen accepts string errors, Kiro retains notification session IDs, and Goose keeps non-text blocks out of the reply. Readers retain five characters between chunks to detect streamed control fences, and failed control hooks report their own errors (MA2, G4, X8, Q3, G7, MA4, A7).
+- Background model preferences use the existing tier resolver and recover from invalid stored values. Codex's picker and launch checks share one model-cache parse. Concurrent text transforms retain their own error details. Startup restores deferred waits and picks the sole provider after acquiring the port, and the provider choice takes effect after it is saved (P1, X10, A5, S8, A10).
+- Broken log output cannot interrupt work. Lifecycle callback errors reach the server log and uncertain launches retain their original exception. The disabled bridge names its prerequisites. Removed retired Gemini prompt filters and updated the Gemini runtime and Claude lookup descriptions (C2, L2, L8, L1, G6, G8, A8).
 
 ## [2026-11-18] - Workflow canvas: connection drags start at the exact centre of unconnected port dots
 

@@ -54,6 +54,8 @@ def _log(*args, level='info', **kw):
                               for a in args), **kw)
         except Exception:
             pass
+    except (OSError, ValueError):
+        pass
 
 
 def _atomic_write_text(path, text, encoding='utf-8'):

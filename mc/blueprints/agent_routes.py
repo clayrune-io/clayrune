@@ -622,21 +622,7 @@ def _followup_cwd_for(session, project, project_path, message=None):
 
 
 def _pid_is_alive(pid):
-    """Check if a PID is alive. Works reliably on both Windows and Unix."""
-    if sys.platform == 'win32':
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if handle:
-            kernel32.CloseHandle(handle)
-            return True
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
+    return _agent_runtime._pid_is_alive(pid)
 
 
 def _kill_pid(pid, tree=False):
@@ -10814,6 +10800,7 @@ def _persist_runtime_start_failure(session, attempt=None):
 _RUNTIME_CALLBACKS = _delegation_settlement.runtime_callbacks({
     'on_process_exit': _runtime_log_completion,
     'on_init': _runtime_note_init,
+    'turn_lock': lambda project_id: get_manager(project_id).lock,
 })
 
 
@@ -11617,6 +11604,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             session['status'] = 'error'
             session['process_alive'] = False
             session.setdefault('_lifecycle_errors', []).append(str(e))
+            _log(f'[runtime-lifecycle] bridge preparation failed: {e}')
             session['log_lines'].append(f'[{provider_name} dispatch failed: {e}]')
             session['last_status_change_time'] = _time.time()
             _persist_runtime_start_failure(session)
@@ -11631,6 +11619,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                         prior_init(event, bridged_session)
                     except Exception as exc:
                         bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
+                        _log(f'[runtime-lifecycle] prior init callback failed: {exc}')
                 try:
                     payload = getattr(event, 'payload', {}) or {}
                     native_id = payload.get('session_id') or payload.get('thread_id')
@@ -11641,18 +11630,21 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                     bridge.on_init(event, bridged_session)
                 except Exception as exc:
                     bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
+                    _log(f'[runtime-lifecycle] native bind failed: {exc}')
             def _bridge_exit(event, bridged_session):
                 if prior_exit:
                     try:
                         prior_exit(event, bridged_session)
                     except Exception as exc:
                         bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
+                        _log(f'[runtime-lifecycle] prior exit callback failed: {exc}')
                 try:
                     native_id = bridged_session.get('provider_session_id')
                     native_source = runtime.transcript_path(_run_cwd, native_id) if native_id else None
                     bridge.on_exit(event, bridged_session, native_source)
                 except Exception as exc:
                     bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
+                    _log(f'[runtime-lifecycle] terminal write failed: {exc}')
             callbacks.update(on_init=_bridge_init, on_process_exit=_bridge_exit)
 
     runtime_task = _bridge_images_for_blind_model(

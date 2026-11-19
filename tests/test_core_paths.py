@@ -10,6 +10,15 @@ import pytest
 from mc import core
 
 
+@pytest.mark.parametrize('error', [OSError('broken pipe'), ValueError('closed stream')])
+def test_log_ignores_unavailable_output(error):
+    class UnavailableOutput:
+        def write(self, text):
+            raise error
+
+    core._log('completion', file=UnavailableOutput())
+
+
 def _resolved_pair(monkeypatch, candidate, base, platform='nt'):
     """Supply actual resolve() output spellings without touching a network share."""
     paths = iter((candidate, base))

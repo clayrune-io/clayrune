@@ -180,6 +180,25 @@ def test_server_followup_hook_passes_launch_env():
     assert _popen_sites.gates.get('_claude_followup_hook', 0) >= 1
 
 
+def test_runtime_stop_marks_session_before_process_exit(monkeypatch):
+    from types import SimpleNamespace
+    import server
+
+    sent = []
+    proc = SimpleNamespace(pid=101, poll=lambda: None, kill=lambda: sent.append('kill'))
+    session = {'proc': proc, 'status': 'running', 'process_alive': True, 'log_lines': []}
+    monkeypatch.setattr(server, 'agent_sessions', {'s': session})
+
+    def kill_tree(pid, *, tree):
+        sent.append((pid, tree, session['status'], session['process_alive']))
+
+    monkeypatch.setattr(server, '_kill_pid', kill_tree)
+    monkeypatch.setattr(server, '_unregister_process', lambda pid: sent.append(('unregister', pid)))
+    server._claude_stop_hook(SimpleNamespace(mc_session_id='s'))
+
+    assert sent == [(101, True, 'stopped', False), 'kill', ('unregister', 101)]
+
+
 # ── real spawn paths ──────────────────────────────────────────────────────
 
 class _Stdin:

@@ -7,6 +7,8 @@ use a fake `subprocess.run`; no Gemini CLI is launched, so the real CLI's
 failure output is NOT exercised here.
 """
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import pytest
 
@@ -78,3 +80,26 @@ def test_failed_transform_raises_transform_failure_with_the_reason(monkeypatch):
     with pytest.raises(ar.TransformFailure) as ei:
         ar.run_text_transform('gemini', prompt='p')
     assert 'auth expired' in str(ei.value.detail)
+
+
+def test_shared_runtime_keeps_concurrent_transform_errors_separate(monkeypatch):
+    rt = _gemini(monkeypatch, _cp(1, '', 'first transform failed'))
+    first_set = Event()
+    allow_first_read = Event()
+
+    def first_transform():
+        assert rt.oneshot(prompt='first') is None
+        first_set.set()
+        assert allow_first_read.wait(5)
+        return rt.last_error
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(first_transform)
+        try:
+            assert first_set.wait(5)
+            monkeypatch.setattr(ar.subprocess, 'run', lambda *a, **kw: _cp(1, '', 'second failed'))
+            assert rt.oneshot(prompt='second') is None
+            assert 'second failed' in rt.last_error
+        finally:
+            allow_first_read.set()
+        assert 'first transform failed' in future.result()

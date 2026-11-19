@@ -46,6 +46,28 @@ def _drive(lines):
     return session
 
 
+def test_gemini_chat_scan_skips_a_file_removed_during_read(tmp_path, monkeypatch):
+    from mc.agent_runtime import gemini_chat_files
+
+    chat_dir = tmp_path / '.gemini' / 'tmp' / 'project' / 'chats'
+    chat_dir.mkdir(parents=True)
+    native = 'abcd1234-sid'
+    stale = chat_dir / 'session-1-abcd1234.jsonl'
+    remaining = chat_dir / 'session-2-abcd1234.jsonl'
+    for file in (stale, remaining):
+        file.write_text(json.dumps({'sessionId': native}) + '\n', encoding='utf-8')
+
+    stat = Path.stat
+
+    def fail_if_stale(path, *args, **kwargs):
+        if path == stale:
+            raise FileNotFoundError(path)
+        return stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'stat', fail_if_stale)
+    assert gemini_chat_files(native, home=str(tmp_path)) == [remaining]
+
+
 class TestGeminiUsageWiring:
     def test_turn_end_stores_usage_on_the_session(self):
         stats = {'total_tokens': 34302, 'input_tokens': 34295, 'output_tokens': 7}

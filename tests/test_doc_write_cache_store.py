@@ -99,6 +99,42 @@ def test_without_persistence_a_restart_reparses_everything(env, monkeypatch):
     assert len(calls) == 4
 
 
+def test_document_scan_retries_an_unchanged_transcript_after_read_failure(env, monkeypatch, capsys):
+    source = _transcript(env, 'retry', 'docs/Retry.md')
+    from builtins import open as real_open
+
+    def fail_once(path, *args, **kwargs):
+        if path == source:
+            raise PermissionError('sharing violation')
+        return real_open(path, *args, **kwargs)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(art, 'open', fail_once, raising=False)
+        assert not env.rt.list_written_markdown(str(env.project))
+        assert str(source) not in art._DOC_WRITE_CACHE
+        assert 'sharing violation' in capsys.readouterr().out
+
+    assert len(env.rt.list_written_markdown(str(env.project))) == 1
+
+
+def test_document_scan_recovers_a_hit_cached_as_empty_by_legacy_version(env):
+    source = _transcript(env, 'legacy', 'docs/Legacy.md')
+    st = source.stat()
+    env.file.parent.mkdir()
+    env.file.write_text(json.dumps({
+        'version': 1, 'entries': {str(source): [st.st_mtime, st.st_size, []]},
+    }), encoding='utf-8')
+    assert len(env.rt.list_written_markdown(str(env.project))) == 1
+
+
+def test_malformed_assistant_envelope_does_not_hide_later_documents(env):
+    source = _transcript(env, 'mixed', 'docs/Mixed.md')
+    malformed = json.dumps({'type': 'assistant', 'message': None, 'file_path': 'x'})
+    source.write_text(malformed + '\n' + source.read_text(encoding='utf-8'),
+                      encoding='utf-8')
+    assert len(env.rt.list_written_markdown(str(env.project))) == 1
+
+
 def test_scan_does_not_write_on_the_request_path(env):
     _transcript(env, 's0', 'docs/D0.md')
     env.rt.list_written_markdown(str(env.project))
@@ -129,7 +165,8 @@ def test_a_fully_warm_pass_schedules_no_write(env):
 
 @pytest.mark.parametrize('payload', [
     '{not json', '', '[]', '{"version": 999, "entries": {}}',
-    '{"version": 1, "entries": []}', '{"version": 1}',
+    json.dumps({'version': store.SCHEMA_VERSION, 'entries': []}),
+    json.dumps({'version': store.SCHEMA_VERSION}),
 ])
 def test_corrupt_or_foreign_file_falls_back_to_a_full_scan(env, monkeypatch, capsys, payload):
     _transcript(env, 's0', 'docs/D0.md')
@@ -147,7 +184,7 @@ def test_malformed_entries_are_dropped_individually(env):
     good = _transcript(env, 's0', 'docs/D0.md')
     st = good.stat()
     env.file.parent.mkdir(parents=True, exist_ok=True)
-    env.file.write_text(json.dumps({'version': 1, 'entries': {
+    env.file.write_text(json.dumps({'version': store.SCHEMA_VERSION, 'entries': {
         str(good): [st.st_mtime, st.st_size, [{'path': 'x.md', 'ts': 't', 'tool': 'Write', 'session_id': 's0'}]],
         'bad1': 'nope', 'bad2': [1, 2], 'bad3': [1, 2, 'notalist'],
     }}), encoding='utf-8')

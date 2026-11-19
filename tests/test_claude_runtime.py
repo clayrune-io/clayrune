@@ -1030,6 +1030,36 @@ def test_apply_mc_tool_blocks_malformed_is_safe():
     assert any('malformed' in line for line in session['log_lines'])
 
 
+def test_decoded_question_remains_pending_if_the_mail_hook_fails(monkeypatch, capsys):
+    from mc import agent_mail_outbound_questions, agent_runtime
+
+    def fail(session):
+        raise OSError('mail store unavailable')
+
+    monkeypatch.setattr(agent_mail_outbound_questions, 'parsed', fail)
+    session = {'log_lines': []}
+    result = agent_runtime.apply_mc_tool_blocks(
+        session, '```mc:question\n{"questions":[{"question":"Continue?"}]}\n```')
+    assert result['paused'] and session['pending_questions']
+    assert not any('malformed block' in line for line in session['log_lines'])
+    assert 'question delivery hook failed: mail store unavailable' in capsys.readouterr().out
+
+
+def test_decoded_todo_reports_sync_failure(monkeypatch, capsys):
+    from mc import agent_runtime
+
+    def fail(*args):
+        raise OSError('backlog store unavailable')
+
+    monkeypatch.setitem(agent_runtime._MC_TOOL_HOOKS, 'sync_todos', fail)
+    session = {'log_lines': []}
+    result = agent_runtime.apply_mc_tool_blocks(
+        session, '```mc:todo\n{"todos":[{"content":"Check"}]}\n```')
+    assert result['blocks_found']
+    assert not any('malformed block' in line for line in session['log_lines'])
+    assert 'todo sync hook failed: backlog store unavailable' in capsys.readouterr().out
+
+
 def test_apply_mc_tool_blocks_no_blocks():
     from mc.agent_runtime import GeminiRuntime
     rt = GeminiRuntime()
@@ -1496,6 +1526,42 @@ def test_list_sessions_caches_rows_and_invalidates_on_append(tmp_path, monkeypat
             {'type': 'user', 'message': {'role': 'user', 'content': 'Two'}}) + '\n')
     after = rt.list_sessions(project_path, limit=10)
     assert after[0]['last_user'] == 'Two' and after[0]['turns'] == 2
+
+
+@pytest.mark.parametrize('subagents', [False, True])
+def test_transcript_cache_keeps_an_oversized_working_set(tmp_path, monkeypatch, subagents):
+    from mc import agent_runtime as runtime
+
+    rt = runtime.ClaudeRuntime()
+    home = tmp_path / 'claude_projects'
+    project = str(tmp_path / 'project')
+    folder = home / rt._encode_project_path(project)
+    folder.mkdir(parents=True)
+    monkeypatch.setattr(runtime, '_CLAUDE_HOME', home)
+    monkeypatch.setattr(runtime, '_load_incognito_registry', lambda: {})
+
+    if subagents:
+        (folder / 'parent.jsonl').touch()
+        folder = folder / 'parent' / 'subagents'
+        folder.mkdir(parents=True)
+        cache_name = '_SUBAGENT_SCAN_CACHE'
+        scan = lambda: rt.list_running_subagents(project, 'parent')
+    else:
+        cache_name = '_SESSION_ROW_CACHE'
+        scan = lambda: rt.list_sessions(project, limit=10)
+    monkeypatch.setattr(runtime, cache_name, {})
+    monkeypatch.setattr(runtime, cache_name + '_MAX', 4)
+    for index in range(6):
+        (folder / f'agent-{index}.jsonl').write_text(
+            '{"type":"user","message":{"role":"user","content":"Task"}}\n',
+            encoding='utf-8',
+        )
+
+    first = scan()
+    assert len(first) == 6
+    assert len(getattr(runtime, cache_name)) == 6
+    monkeypatch.setattr(rt, 'parse_event', lambda *args: pytest.fail('warm file reopened'))
+    assert scan() == first
 
 
 def test_list_sessions_deduplicates_across_variants(tmp_path, monkeypatch):

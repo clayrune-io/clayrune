@@ -113,6 +113,21 @@ def test_preview_and_execution_share_resolution_without_execution(monkeypatch):
     assert cfg == before
 
 
+@pytest.mark.parametrize('scoped', [
+    {'claude': {'scribe_model': 42}}, {'claude': {'scribe_model': 'tier:unknown'}},
+    {'claude': ['scribe_model']}, ['claude'],
+])
+def test_invalid_background_preferences_use_automatic_model(scoped):
+    assert pp.background_model(
+        {'provider_defaults': scoped}, 'claude', 'scribe_model', default='haiku',
+    ) == 'haiku'
+
+
+def test_removed_runtime_does_not_break_background_tier():
+    config = {'provider_defaults': {'removed': {'scribe_model': 'tier:fast'}}}
+    assert pp.background_model(config, 'removed', 'scribe_model') == ''
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     from mc.blueprints import settings_routes as settings

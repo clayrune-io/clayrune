@@ -17,7 +17,8 @@ from typing import Any, Callable, Mapping, Protocol, Optional
 from uuid import uuid4
 
 from mc import execution_lifecycle as lifecycle
-from mc.conversation_store import ConversationStore, ConversationUnavailable
+from mc.conversation_store import ConversationStore, ConversationUnavailable, LaunchUncertain
+from mc.core import _log
 
 
 def _freeze(value: Any) -> Any:
@@ -111,24 +112,32 @@ class AuthorizedRuntimeLifecycleBridge:
                 return spawn()
             raise RuntimeError('launch before lifecycle preparation')
         launched: list[Any] = []
+        spawn_error: Exception | None = None
 
         def _owned_spawn() -> str:
-            handle = spawn()
-            launched.append(handle)
-            process_reference = getattr(handle, 'mc_session_id', None)
-            if not isinstance(process_reference, str) or not process_reference:
-                raise TypeError('runtime launch must return an identified session handle')
-            return process_reference
+            nonlocal spawn_error
+            try:
+                handle = spawn()
+                launched.append(handle)
+                process_reference = getattr(handle, 'mc_session_id', None)
+                if not isinstance(process_reference, str) or not process_reference:
+                    raise TypeError('runtime launch must return an identified session handle')
+                return process_reference
+            except Exception as exc:
+                spawn_error = exc
+                raise
 
         with self._callback_lock:
             self._launch_pending = True
         try:
             state = self.owner.launch(self.prepared, authorize=self.authorize,
                                       spawn=_owned_spawn)
-        except BaseException:
+        except BaseException as exc:
             with self._callback_lock:
                 self._launch_pending = False
                 self._pending_callbacks.clear()
+            if isinstance(exc, LaunchUncertain) and spawn_error is not None:
+                raise exc from spawn_error
             raise
         with self._callback_lock:
             attempt = next(a for a in state.attempts
@@ -146,6 +155,7 @@ class AuthorizedRuntimeLifecycleBridge:
                     # Match route callback isolation; never turn an already
                     # launched process into a reported spawn failure.
                     session.setdefault('_lifecycle_errors', []).append(str(exc))
+                    _log(f'[runtime-lifecycle] queued {kind} callback failed: {exc}')
         return launched[0]
 
     def on_init(self, event: Any, session: dict) -> None:

@@ -338,6 +338,59 @@ class TestGeminiProbeLiveQuota:
         assert result['invalid_key'] is True
         assert result['quota_status'] == 'unknown'
 
+    def test_quota_status_survives_malformed_violations(self, monkeypatch):
+        import io
+        import urllib.error
+
+        payload = {'error': {'details': [{
+            '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+            'violations': ['malformed'],
+        }]}}
+
+        def fail(*args, **kwargs):
+            raise urllib.error.HTTPError(
+                'https://example.invalid', 429, 'quota', {},
+                io.BytesIO(json.dumps(payload).encode('utf-8')),
+            )
+
+        monkeypatch.setattr(agent_runtime.urllib.request, 'urlopen', fail)
+        result = self.rt._probe_live_quota('fake-key')
+        assert result['quota_status'] == 'exceeded'
+        assert result['tier'] == 'unknown'
+
+    def test_string_error_does_not_end_the_reader(self):
+        from types import SimpleNamespace
+
+        proc = SimpleNamespace(wait=lambda: 0, stdout=iter((
+            '{"type":"result","status":"error","error":"failed"}',
+            '{"type":"message","role":"assistant","content":"later output"}',
+        )))
+        session = {'proc': proc, 'status': 'running', 'log_lines': []}
+        handle = agent_runtime.SessionHandle(
+            mc_session_id='s', provider='gemini', mode='A', project_path='.',
+            project_id='p', session_dict=session,
+        )
+        self.rt._read_stream(proc, handle)
+        assert session['log_lines'] == ['[gemini error] failed', 'later output']
+
+    @pytest.mark.parametrize('event', ['tool_use', 'tool_result'])
+    def test_malformed_gemini_tool_id_does_not_end_stream(self, event):
+        from types import SimpleNamespace
+        from typing import Any
+
+        proc: Any = SimpleNamespace(wait=lambda: 0, stdout=iter((
+            json.dumps({'type': event, 'tool_name': 'read_file', 'tool_id': ['invalid']}),
+            '{"type":"message","role":"assistant","content":"later output"}',
+        )))
+        session = {'proc': proc, 'status': 'running', 'log_lines': []}
+        handle = agent_runtime.SessionHandle(
+            mc_session_id='s', provider='gemini', mode='A', project_path='.',
+            project_id='p', session_dict=session,
+        )
+        self.rt._read_stream(proc, handle)
+        assert session['log_lines'] == ['later output']
+        assert session['status'] == 'completed'
+
     def test_network_failure_is_unreachable_not_invalid(self):
         """A DNS/timeout failure must not be reported as an invalid key — that
         would tell the user to redo something that was never the problem."""
@@ -1147,6 +1200,19 @@ class TestCodexRuntime:
 # 0.23.4). build_command/parse_event fixtures below are the real events
 # captured from that machine, not invented shapes.
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize('message', [None, {'content': None}, {'content': 'invalid'}])
+def test_qwen_ignores_malformed_assistant_envelopes(message):
+    rt = agent_runtime.QwenRuntime()
+    assert rt.parse_event(json.dumps({'type': 'assistant', 'message': message})) is None
+
+
+def test_qwen_handles_string_result_error():
+    rt = agent_runtime.QwenRuntime()
+    event = rt.parse_event('{"type":"result","is_error":true,"error":"failure"}')
+    assert event.type is EventType.ERROR
+    assert event.payload['text'] == 'failure'
 
 
 class TestQwenRuntime:
@@ -2262,6 +2328,76 @@ class TestKiroRuntime:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.parametrize('provider', ['opencode', 'goose', 'aider', 'kiro'])
+def test_exited_mode_a_reader_is_detached_before_followup(provider, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from typing import Any
+
+    ar = agent_runtime
+    rt = ar.get_runtime(provider)
+    old: Any = SimpleNamespace(pid=123, wait=lambda: 1, stdout=iter(()))
+    session = {'proc': old, 'status': 'running', 'process_alive': True, 'log_lines': []}
+    exits = []
+    handle = ar.SessionHandle(
+        mc_session_id='s', provider=provider, mode='A', project_id='p',
+        project_path=str(tmp_path), session_dict=session,
+        meta={'callbacks': {'on_process_exit': lambda *args: exits.append(args)}},
+    )
+
+    def poll():
+        ar._mode_a_reader(old, handle, rt)
+        return 1
+
+    def stop_before_spawn(*args, **kwargs):
+        raise RuntimeError('stop before test spawn')
+
+    old.poll = poll
+    monkeypatch.setattr(ar.vendor_fence, 'check_launch', lambda *args: None)
+    monkeypatch.setattr(rt, 'build_command', stop_before_spawn)
+    with pytest.raises(RuntimeError, match='stop before test spawn'):
+        rt.write_followup(handle, 'new turn')
+    assert exits == []
+    assert session['status'] == 'running'
+    assert session['process_alive']
+    assert session['log_lines'] == []
+
+
+def test_mode_a_question_and_exit_share_turn_ownership(tmp_path, monkeypatch):
+    from threading import RLock
+    from types import SimpleNamespace
+    from typing import Any
+
+    ar = agent_runtime
+    rt = ar.OpenCodeRuntime()
+    control = '```mc:question\n{"questions":[{"question":"Continue?"}]}\n```'
+    proc: Any = SimpleNamespace(wait=lambda: 0, stdout=iter((json.dumps({
+        'type': 'text', 'part': {'text': control},
+    }),)))
+    session = {'proc': proc, 'status': 'running', 'log_lines': []}
+    lock = RLock()
+    owns_lock = getattr(lock, '_is_owned')
+    observed = []
+    apply = ar.apply_mc_tool_blocks
+
+    def scan(*args):
+        observed.append(('question', owns_lock()))
+        return apply(*args)
+
+    handle = ar.SessionHandle(
+        mc_session_id='s', provider='opencode', mode='A', project_id='p',
+        project_path=str(tmp_path), session_dict=session,
+        meta={'callbacks': {
+            'turn_lock': lambda project_id: lock,
+            'on_process_exit': lambda *args: observed.append(('exit', owns_lock())),
+        }},
+    )
+    monkeypatch.setattr(ar, 'apply_mc_tool_blocks', scan)
+    ar._mode_a_reader(proc, handle, rt)
+    assert observed == [('question', True), ('exit', True)]
+    assert session['waiting_for_question']
+    assert session['status'] == 'idle'
+
+
 @pytest.mark.parametrize('provider_name', [
     'gemini', 'codex', 'opencode', 'goose', 'aider', 'kiro',
 ])
@@ -2273,6 +2409,34 @@ def test_capabilities_name_matches_runtime_name(provider_name):
     )
 
 
+@pytest.mark.parametrize('provider', ['opencode', 'goose', 'aider', 'kiro'])
+def test_replaced_mode_a_turn_loses_ownership_before_kill(provider, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    rt = agent_runtime.get_runtime(provider)
+    old = SimpleNamespace(pid=123, poll=lambda: None, wait=lambda: 1, stdout=iter(()))
+    session = {'proc': old, 'status': 'running', 'log_lines': []}
+    exits = []
+    handle = agent_runtime.SessionHandle(
+        mc_session_id='s', provider=provider, mode='A', project_id='p',
+        project_path=str(tmp_path), session_dict=session,
+        meta={'callbacks': {'on_process_exit': lambda *args: exits.append(args)}},
+    )
+    monkeypatch.setattr(agent_runtime.vendor_fence, 'check_launch', lambda *args: None)
+
+    def finish_old_reader(pid):
+        assert pid == old.pid
+        agent_runtime._mode_a_reader(old, handle, rt)
+        raise RuntimeError('stop before test spawn')
+
+    monkeypatch.setattr(agent_runtime, '_kill_pid', finish_old_reader)
+    with pytest.raises(RuntimeError, match='stop before test spawn'):
+        rt.write_followup(handle, 'new turn')
+    assert exits == []
+    assert session['status'] == 'running'
+    assert session['log_lines'] == []
+
+
 @pytest.mark.parametrize('provider_name', [
     'gemini', 'codex', 'opencode', 'goose', 'aider', 'kiro',
 ])
@@ -2280,6 +2444,30 @@ def test_parse_event_empty_returns_none(provider_name):
     rt = agent_runtime.get_runtime(provider_name)
     assert rt.parse_event('') is None
     assert rt.parse_event('\n') is None
+
+
+@pytest.mark.parametrize('event_type', ['item.started', 'item.updated', 'item.completed'])
+def test_codex_ignores_nonobject_items(event_type):
+    assert CodexRuntime().parse_event(json.dumps({'type': event_type, 'item': 'oops'})) is None
+
+
+@pytest.mark.parametrize('event_type', ['error', 'turn.failed'])
+def test_codex_parses_string_errors(event_type):
+    event = CodexRuntime().parse_event(json.dumps({'type': event_type, 'error': 'boom'}))
+    assert event.type is EventType.ERROR
+    assert event.payload['text'] == 'boom'
+
+
+def test_kiro_preserves_session_id_from_notification_parameters():
+    event = KiroRuntime().parse_event('{"method":"session/new","params":{"session_id":"native"}}')
+    assert event.type is EventType.INIT
+    assert event.session_id == event.payload['session_id'] == 'native'
+
+
+def test_goose_does_not_convert_thinking_blocks_to_chat_text():
+    event = GooseRuntime().parse_event(
+        '{"type":"assistant","content":[{"type":"thinking","thinking":"hm"}]}')
+    assert event is None
 
 
 @pytest.mark.parametrize('provider_name', [
@@ -2601,27 +2789,42 @@ def test_codex_catalog_reads_the_live_cache_ordered_by_priority(monkeypatch, tmp
     ]
 
 
-def test_codex_catalog_caches_by_file_mtime(monkeypatch, tmp_path):
-    """A second call must not re-read the file while mtime is unchanged, and
-    must pick up an edit once mtime moves."""
+def test_codex_catalog_reloads_when_size_changes_at_the_same_mtime(monkeypatch, tmp_path):
     from conftest import stub_codex_models_cache
     path = stub_codex_models_cache(monkeypatch, tmp_path)
     codex = agent_runtime.get_runtime('codex')
     first = codex.model_choices()
     assert first[0] == ('gpt-6-astra', 'GPT-6 Astra')
 
-    # Same mtime: edit the bytes but don't touch the clock — must still see
-    # the cached (stale) result.
+    # The launch validator must see a shorter replacement even if the
+    # filesystem reports the same mtime.
     stat = path.stat()
     new_models = [{'slug': 'gpt-7-nova', 'display_name': 'GPT-7-Nova',
                    'visibility': 'list', 'priority': 1}]
     path.write_text(json.dumps({'models': new_models}), encoding='utf-8')
-    os.utime(path, (stat.st_atime, stat.st_mtime))
-    assert codex.model_choices() == first
-
-    # New mtime: must reparse.
-    os.utime(path, (stat.st_atime, stat.st_mtime + 5))
+    os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     assert codex.model_choices() == [('gpt-7-nova', 'GPT-7 Nova')]
+
+
+def test_codex_catalog_and_launch_share_one_cache_parse(monkeypatch, tmp_path):
+    from conftest import stub_codex_models_cache
+
+    path = stub_codex_models_cache(monkeypatch, tmp_path)
+    reads = []
+    real_load = json.load
+
+    def load(stream):
+        if Path(stream.name) == path:
+            reads.append(stream.name)
+        return real_load(stream)
+
+    monkeypatch.setattr(json, 'load', load)
+    codex = CodexRuntime()
+    listed = codex.model_choices()
+    assert codex.discover_models() == listed
+    assert ('codex-auto-review', 'Codex Auto Review') not in listed
+    assert 'codex-auto-review' in codex._cache_slugs()
+    assert len(reads) == 1
 
 
 @pytest.mark.parametrize('missing,models', [
@@ -2898,6 +3101,9 @@ class TestAiderArgvSafety:
 
         def fake_mode_a_dispatch(runtime, cmd, full_prompt, *args, **kwargs):
             captured['cmd'] = cmd
+            msg_file = Path(cmd[cmd.index('--message-file') + 1])
+            captured['message'] = msg_file.read_text(encoding='utf-8')
+            kwargs['cleanup']()
             return object()
 
         monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', fake_mode_a_dispatch)
@@ -2908,7 +3114,8 @@ class TestAiderArgvSafety:
         assert '--message-file' in cmd
         msg_file = cmd[cmd.index('--message-file') + 1]
         assert not any(BIG_PROMPT in part for part in cmd)
-        assert Path(msg_file).read_text(encoding='utf-8') == BIG_PROMPT
+        assert captured['message'] == BIG_PROMPT
+        assert not Path(msg_file).exists()
 
     def test_write_followup_big_message_goes_via_message_file(self, monkeypatch):
         import subprocess as sp
@@ -2917,14 +3124,21 @@ class TestAiderArgvSafety:
 
         def fake_popen(cmd, **kwargs):
             captured['cmd'] = cmd
+            msg_file = Path(cmd[cmd.index('--message-file') + 1])
+            captured['message'] = msg_file.read_text(encoding='utf-8')
             class P:
+                stdout = iter(('done\n',))
                 def poll(self):
+                    return 0
+                def wait(self):
                     return 0
             return P()
 
         monkeypatch.setattr(sp, 'Popen', fake_popen)
         monkeypatch.setattr(agent_runtime.threading, 'Thread',
-                            lambda *a, **k: type('T', (), {'start': lambda self: None})())
+                            lambda target, args, **k: type('T', (), {
+                                'start': lambda self: target(*args),
+                            })())
 
         handle = agent_runtime.SessionHandle(
             mc_session_id='t1', provider='aider', mode='A',
@@ -2936,7 +3150,8 @@ class TestAiderArgvSafety:
         assert '--message' not in cmd
         assert '--message-file' in cmd
         msg_file = cmd[cmd.index('--message-file') + 1]
-        assert BIG_PROMPT in Path(msg_file).read_text(encoding='utf-8')
+        assert BIG_PROMPT in captured['message']
+        assert not Path(msg_file).exists()
 
     def test_oneshot_big_prompt_goes_via_message_file(self, monkeypatch):
         captured = {}
@@ -2953,6 +3168,40 @@ class TestAiderArgvSafety:
         cmd = captured['cmd']
         assert '--message-file' in cmd
         assert not any(BIG_PROMPT in part for part in cmd)
+
+    @pytest.mark.parametrize('fails_to_spawn', [False, True])
+    def test_oneshot_releases_prompt_files_after_run(self, tmp_path, monkeypatch, fails_to_spawn):
+        import tempfile
+
+        monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path))
+        files = []
+
+        def fake_run(cmd, **kwargs):
+            for flag, expected in (('--read', 'system context'), ('--message-file', 'task')):
+                path = Path(cmd[cmd.index(flag) + 1])
+                files.append(path)
+                assert path.read_text(encoding='utf-8') == expected
+            if fails_to_spawn:
+                raise OSError('spawn failed')
+            return subprocess.CompletedProcess(cmd, 0, stdout='done')
+
+        monkeypatch.setattr(agent_runtime.subprocess, 'run', fake_run)
+        self.rt.oneshot(prompt='task', system_prompt='system context')
+        assert len(files) == 2 and not any(path.exists() for path in files)
+
+    def test_dispatch_releases_prompt_files_after_spawn_failure(self, tmp_path, monkeypatch):
+        import tempfile
+
+        monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path))
+
+        def fail_spawn(*args, **kwargs):
+            assert list(tmp_path.rglob('*.md'))
+            raise OSError('spawn failed')
+
+        monkeypatch.setattr(agent_runtime, 'spawn_engine_proc', fail_spawn)
+        with pytest.raises(OSError, match='spawn failed'):
+            self.rt.dispatch(project_path=str(tmp_path), task='task', system_prompt='system context')
+        assert not list(tmp_path.iterdir())
 
 
 class TestKiroArgvSafety:

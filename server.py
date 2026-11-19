@@ -702,12 +702,6 @@ from mc import state as _mc_state
 
 _mc_state.CONFIG = CONFIG  # live alias: mc.core._log reads log_level through this
 
-# MC-1010: auto-pick the sole installed provider CLI as default_provider for
-# an install that never chose one — server-side, so it never goes through the
-# human-gated PUT /api/config route. No-op once a default is set or when
-# installed-CLI count isn't exactly 1. See agent_runtime.maybe_set_sole_provider_default.
-_agent_runtime.maybe_set_sole_provider_default(CONFIG, CONFIG_PATH)
-
 from mc.core import (  # noqa: E402
     _LOG_LEVELS,
     _atomic_write_text,
@@ -1077,6 +1071,8 @@ _run_structured_condense = memory._run_structured_condense
 _dispatch_condense = memory._dispatch_condense
 
 from mc.runtime_lifecycle_service import RuntimeLifecycleService
+# Keep the bridge disabled until dispatch supplies real launch authorization
+# and a native source format for each supported provider.
 _runtime_lifecycle_service = RuntimeLifecycleService(
     db_path=(DATA_DIR.parent / 'conversation_lifecycle.sqlite3').resolve(),
     enabled=False,
@@ -2782,10 +2778,11 @@ def _check_port_conflict():
                 ['netstat', '-ano'], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
             pids = set()
             for line in result.stdout.splitlines():
-                if f':{PORT}' in line and 'LISTENING' in line:
-                    parts = line.split()
-                    if parts:
-                        pids.add(parts[-1])
+                fields = line.split()
+                if (len(fields) == 5 and fields[0] == 'TCP'
+                        and fields[1].rpartition(':')[2] == str(PORT)
+                        and fields[3] == 'LISTENING' and fields[4].isdigit()):
+                    pids.add(fields[4])
             my_pid = str(os.getpid())
             other_pids = sorted(pids - {my_pid})
             # Identify each holder by image name + parent PID. Helps tell
@@ -2801,10 +2798,10 @@ def _check_port_conflict():
                         # CSV: "image","pid","sessionname","session#","memusage"
                         image = line.split(',')[0].strip().strip('"')
                         pid_details[pid] = image
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as exc:
+                    _log(f'[port-conflict] tasklist lookup for PID {pid} failed: {exc}')
+        except Exception as exc:
+            _log(f'[port-conflict] netstat lookup failed: {exc}')
 
     msg_lines = [
         "",
@@ -3212,7 +3209,6 @@ from mc import limit_resume as _limit_resume  # noqa: E402
 from mc import limit_resume_dispatch as _limit_resume_dispatch  # noqa: E402
 _limit_resume.wire(_DATA_ROOT / 'data' / 'limit_resume.json')
 app.register_blueprint(_limit_resume_dispatch.bp)
-_limit_resume_dispatch.restore_waits(_bp_agent)
 
 # ── Daily update-check ping (mc/update_ping.py) ─────────────────────────────
 # State beside data/, never in data/projects/. version_fn reads the build
@@ -3511,16 +3507,17 @@ def _claude_interrupt_hook(handle):
     if not session:
         return
     proc = session.get('proc')
+    session['status'] = 'stopped'
+    session['last_status_change_time'] = _time.time()
+    session['process_alive'] = False
     if proc:
         try:
             if proc.poll() is None:
                 _kill_pid(proc.pid, tree=True)
                 proc.kill()
-        except Exception:
-            pass
-    session['status'] = 'stopped'
-    session['last_status_change_time'] = _time.time()
-    session['process_alive'] = False
+            _unregister_process(proc.pid)
+        except Exception as exc:
+            _log(f'[runtime:claude] stop hook process cleanup failed: {exc}')
     session['log_lines'].append('[interrupted via runtime hook]')
 
 
@@ -3704,6 +3701,11 @@ def boot(check_port=True):
     # box, so a second boot on another port must not overwrite this one's file.
     _secrets_store_boot.ensure_exec_token(PORT)
     _vault_restart_handover.consume_inherited_key()
+    # Both operations can persist state. Run them only after the instance
+    # owns the port and before scheduler/adoption reads the restored state.
+    _boot_phase('sole provider default',
+                lambda: _agent_runtime.maybe_set_sole_provider_default(CONFIG, CONFIG_PATH))
+    _boot_phase('restore deferred waits', lambda: _limit_resume_dispatch.restore_waits(_bp_agent))
     # Reap child process trees orphaned by a prior MC instance that exited
     # (restart/crash) without killing them. Reads the PID ledger the prior
     # instance persisted; identity-guarded so it can't friendly-fire. Must run

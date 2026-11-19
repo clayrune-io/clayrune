@@ -43,6 +43,8 @@ from typing import (
 from mc.pending_delivery import complete_or_defer
 from mc.terminal_delivery import TerminalDeliveryGate
 from mc.delivery_attempt import DeliveryAttempt
+from mc import incognito_registry as _incognito_registry
+from mc import runtime_turn_ownership as _runtime_turn_ownership
 from mc import vendor_fence
 from mc import test_run_detection as _test_run_detection
 from mc.core import TimestampedLines, _log
@@ -776,27 +778,35 @@ def apply_mc_tool_blocks(session: Dict[str, Any],
                 })
                 session['waiting_for_question'] = True
                 paused = True
-                from mc.agent_mail_outbound_questions import parsed as _mail_question_parsed
-                _mail_question_parsed(session)
             except Exception as e:
                 session.setdefault('log_lines', TimestampedLines()).append(
                     f'[mc:question ignored — malformed block: {e}]')
+            else:
+                try:
+                    from mc.agent_mail_outbound_questions import parsed as _mail_question_parsed
+                    _mail_question_parsed(session)
+                except Exception as exc:
+                    _log(f'[mc-tool] question delivery hook failed: {exc}')
         elif tool_type == 'todo':
             try:
                 data = json.loads(body, strict=False)
                 todos = data.get('todos') if isinstance(data, dict) else data
                 if not isinstance(todos, list):
                     raise ValueError('no todos[]')
-                hook = _MC_TOOL_HOOKS.get('sync_todos')
-                if hook and todos:
-                    n = hook(session.get('project_id'),
-                             session.get('session_id'), todos)
-                    if n:
-                        session.setdefault('log_lines', TimestampedLines()).append(
-                            f'[backlog: synced {n} item(s) from mc:todo]')
             except Exception as e:
                 session.setdefault('log_lines', TimestampedLines()).append(
                     f'[mc:todo ignored — malformed block: {e}]')
+                continue
+            hook = _MC_TOOL_HOOKS.get('sync_todos')
+            if hook and todos:
+                try:
+                    n = hook(session.get('project_id'), session.get('session_id'), todos)
+                except Exception as exc:
+                    _log(f'[mc-tool] todo sync hook failed: {exc}')
+                else:
+                    if n:
+                        session.setdefault('log_lines', TimestampedLines()).append(
+                            f'[backlog: synced {n} item(s) from mc:todo]')
         # 'plan' is recognised by the scanner but intentionally not wired:
         # MC runs agents headless, where plan-mode approval hangs — the
         # Claude system prompt itself tells agents not to use plan mode
@@ -971,6 +981,18 @@ def _collect_trailing_reply_text(lines: Optional[List[str]]) -> str:
 class AgentRuntime(ABC):
     name: str = ''
     display_name: str = ''
+
+    def __init__(self) -> None:
+        self._transform_state = threading.local()
+
+    @property
+    def last_error(self) -> str:
+        """Failure detail for the latest transform on the calling thread."""
+        return self._transform_state.last_error if hasattr(self._transform_state, 'last_error') else ''
+
+    @last_error.setter
+    def last_error(self, detail: str) -> None:
+        self._transform_state.last_error = detail
 
     # ── Model catalog (per provider) ─────────────────────────────────────────
     # [(id, label), ...] offered by the new-chat composer's Model picker for
@@ -1699,21 +1721,33 @@ def maybe_set_sole_provider_default(config: dict, config_path: Path) -> bool:
     if len(installed) != 1:
         return False
     name = installed[0].name
-    config['default_provider'] = name
-    try:
-        with open(config_path, encoding='utf-8') as f:
-            on_disk = json.load(f)
-    except Exception:
-        on_disk = dict(config)
-    on_disk['default_provider'] = name
     from mc.core import _atomic_write_text, _log
-    try:
-        _atomic_write_text(config_path, json.dumps(on_disk, indent=2, ensure_ascii=False))
-    except Exception as e:
-        _log(f'[providers] failed to persist sole-provider default {name!r}: {e}', flush=True)
-        return False
-    _log(f'[providers] auto-picked sole installed provider as default_provider: {name}', flush=True)
-    return True
+    from mc.provider_preferences import serialized_write
+
+    @serialized_write
+    def persist() -> bool:
+        if (config.get('default_provider') or '').strip():
+            return False
+        if 'setup_completed' in config and not config.get('setup_completed'):
+            return False
+        try:
+            try:
+                with open(config_path, encoding='utf-8') as f:
+                    on_disk = json.load(f)
+            except FileNotFoundError:
+                on_disk = dict(config)
+            if (on_disk.get('default_provider') or '').strip():
+                return False
+            on_disk['default_provider'] = name
+            _atomic_write_text(config_path, json.dumps(on_disk, indent=2, ensure_ascii=False))
+        except Exception as exc:
+            _log(f'[providers] failed to persist sole-provider default {name!r}: {exc}')
+            return False
+        config['default_provider'] = name
+        _log(f'[providers] auto-picked sole installed provider as default_provider: {name}')
+        return True
+
+    return persist()
 
 
 def claude_oneshot_available() -> bool:
@@ -1733,8 +1767,8 @@ def claude_oneshot_available() -> bool:
     Checked so callers can skip with a log line instead of spawning a doomed
     `claude -p` subprocess on every cycle (Scribe/condense run per session,
     Distiller runs on a schedule) for an install that will never have Claude.
-    Both checks below are cheap: resolve_binary() is a cached path lookup and
-    ClaudeRuntime.auth_status() reads a cached dict — neither spawns anything.
+    The availability check resolves the CLI path and reads cached auth status.
+    It does not launch the CLI.
     """
     if not claude_installed():
         return False
@@ -1804,9 +1838,6 @@ _CLAUDE_HOME = Path.home() / '.claude' / 'projects'
 # first time a dispatch marked incognito learns its csid (`_note_claude_sid`).
 # Every transcript-reading path in this module keys off `is_transcript_incognito`
 # instead of re-deriving the answer.
-_incognito_registry_lock = threading.RLock()
-
-
 def _incognito_registry_path() -> Path:
     from mc.secrets_store import clayrune_home  # local import: keep this module leaf-level
     return clayrune_home() / 'incognito_sessions.json'
@@ -1820,27 +1851,8 @@ def mark_transcript_incognito(claude_session_id: str) -> None:
     logged: a marker that silently failed to write is indistinguishable from
     "not incognito" to every reader below, which is the exact leak this closes.
     """
-    if not claude_session_id:
-        return
-    from mc.core import _atomic_write_text, _log, now_iso
-    path = _incognito_registry_path()
-    with _incognito_registry_lock:
-        try:
-            data: Dict[str, Any] = {}
-            if path.exists():
-                try:
-                    loaded = json.loads(path.read_text(encoding='utf-8'))
-                    if isinstance(loaded, dict):
-                        data = loaded
-                except Exception:
-                    data = {}  # corrupt file — rebuild rather than lose the new mark
-            if claude_session_id in data:
-                return
-            data[claude_session_id] = now_iso()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False))
-        except Exception as e:
-            _log(f"[incognito] failed to durably mark {claude_session_id[:12]}: {e}")
+    if claude_session_id:
+        _incognito_registry.mark(_incognito_registry_path(), claude_session_id)
 
 
 def _load_incognito_registry() -> Optional[Dict[str, str]]:
@@ -1852,14 +1864,7 @@ def _load_incognito_registry() -> Optional[Dict[str, str]]:
     read/parsed. `None` is a fail-closed SENTINEL, not "empty": see
     `is_transcript_incognito`.
     """
-    path = _incognito_registry_path()
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding='utf-8'))
-    except Exception:
-        return None  # unreadable — fail closed
-    return data if isinstance(data, dict) else None  # corrupt shape — fail closed
+    return _incognito_registry.load(_incognito_registry_path())
 
 
 def is_transcript_incognito(claude_session_id: str) -> bool:
@@ -2078,10 +2083,6 @@ class ClaudeRuntime(AgentRuntime):
         if 'haiku' in low:
             return 'fast'
         return ''
-
-    # Why the last oneshot() returned None (rc + stderr tail / timeout / spawn
-    # failure). Callers raise/log it instead of an anonymous "call failed".
-    last_error = ''
 
     # Valid --effort levels accepted by the CLI (`claude --effort <level>`).
     EFFORT_LEVELS = ('low', 'medium', 'high', 'xhigh', 'max')
@@ -2312,8 +2313,12 @@ class ClaudeRuntime(AgentRuntime):
         session_id = msg.get('session_id')
 
         if msg_type == 'assistant':
+            message = msg.get('message')
+            content = message.get('content') if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                return None
             blocks: List[Dict[str, Any]] = []
-            for block in msg.get('message', {}).get('content', []):
+            for block in content:
                 if not isinstance(block, dict):
                     continue
                 bt = block.get('type', '')
@@ -2445,6 +2450,8 @@ class ClaudeRuntime(AgentRuntime):
 
         if msg_type == 'user':
             msg_content = msg.get('message', {}) or {}
+            if not isinstance(msg_content, dict):
+                return None
             return AgentEvent(
                 type=EventType.USER_MESSAGE, provider='claude',
                 session_id=session_id, mc_session_id=mc_session_id,
@@ -2688,14 +2695,17 @@ class ClaudeRuntime(AgentRuntime):
             files = files[:limit]
 
         results: List[Dict[str, Any]] = []
+        touched: set[str] = set()
         for i, (f, mtime) in enumerate(files):
             if exclude_transforms and i >= n_must and len(results) >= max(limit, n_must):
                 break
             row = self._session_row(f, mtime)
+            touched.add(str(f))
             if (exclude_transforms and row.get('transform')
                     and f.stem not in must_include_csids):
                 continue
             results.append(row)
+        _trim_scan_cache(_SESSION_ROW_CACHE, _SESSION_ROW_CACHE_MAX, touched)
         return results
 
     def _session_row(self, f, mtime) -> Dict[str, Any]:
@@ -2725,6 +2735,7 @@ class ClaudeRuntime(AgentRuntime):
         # entry per assistant text block, text[:5000]) — how a legacy
         # rollover transcript is linked back to the one it continued.
         last_turn = ''
+        scan_complete = False
         try:
             with open(f, 'r', encoding='utf-8', errors='replace') as fh:
                 for raw_line in fh:
@@ -2772,8 +2783,9 @@ class ClaudeRuntime(AgentRuntime):
                     if not first_user:
                         first_user = clean
                     last_user = clean
-        except Exception:
-            pass
+            scan_complete = True
+        except Exception as exc:
+            _log(f'[session-scan] failed to read {f.name}: {exc}')
         row = {
             'session_id': f.stem,
             'mtime': mtime,
@@ -2788,13 +2800,8 @@ class ClaudeRuntime(AgentRuntime):
         if _lin:
             row['handoff'] = {'provider': _lin[0], 'native_id': _lin[1],
                               'body_tail': lineage_tail(_lin[2])}
-        if len(_SESSION_ROW_CACHE) >= _SESSION_ROW_CACHE_MAX:
-            # Crude but adequate: this is a read-through cache of derived
-            # data, so dropping the oldest insertions costs a re-parse, not
-            # correctness. Bounded so a long-lived server with thousands of
-            # transcripts can't grow it without limit.
-            for k in list(_SESSION_ROW_CACHE)[:_SESSION_ROW_CACHE_MAX // 4]:
-                _SESSION_ROW_CACHE.pop(k, None)
+        if not scan_complete:
+            return row
         _SESSION_ROW_CACHE[ckey] = (mtime, fsize, row)
         return dict(row)
 
@@ -2859,7 +2866,6 @@ class ClaudeRuntime(AgentRuntime):
             if cached and cached[0] == mtime and cached[1] == fsize:
                 hits = cached[2]
             else:
-                reparsed = True
                 hits = []
                 try:
                     with open(f, 'r', encoding='utf-8', errors='replace') as fh:
@@ -2883,14 +2889,18 @@ class ClaudeRuntime(AgentRuntime):
                                 name = block.get('name', '')
                                 if name not in ('Write', 'Edit'):
                                     continue
-                                inp = block.get('input') or {}
+                                inp = block.get('input')
+                                if not isinstance(inp, dict):
+                                    continue
                                 fp = str(inp.get('file_path') or '')
                                 if fp.lower().endswith('.md'):
                                     hits.append({'path': fp, 'ts': ts, 'tool': name,
                                                 'session_id': f.stem})
-                except Exception:
-                    hits = []
-                _DOC_WRITE_CACHE[ckey] = (mtime, fsize, hits)
+                except Exception as exc:
+                    _log(f'[document-scan] failed to read {f.name}: {exc}')
+                else:
+                    _DOC_WRITE_CACHE[ckey] = (mtime, fsize, hits)
+                    reparsed = True
             for h in hits:
                 prev = by_path.get(h['path'])
                 if not prev or (h.get('ts') or '') >= (prev.get('ts') or ''):
@@ -2949,6 +2959,7 @@ class ClaudeRuntime(AgentRuntime):
         except OSError:
             return out
 
+        touched: set[str] = set()
         for sf in files:
             try:
                 st = sf.stat()
@@ -2956,6 +2967,7 @@ class ClaudeRuntime(AgentRuntime):
             except OSError:
                 continue
             ckey = str(sf)
+            touched.add(ckey)
             cached = _SUBAGENT_SCAN_CACHE.get(ckey)
             if cached and cached[0] == mtime and cached[1] == fsize:
                 out.append(dict(cached[2]))
@@ -2966,6 +2978,7 @@ class ClaudeRuntime(AgentRuntime):
             last_ts = ''
             tool_count = 0
             label = ''
+            scan_complete = False
             try:
                 with open(sf, 'r', encoding='utf-8', errors='replace') as fh:
                     for raw_line in fh:
@@ -2991,8 +3004,9 @@ class ClaudeRuntime(AgentRuntime):
                                     str(x.get('text', '')) for x in c
                                     if isinstance(x, dict))
                             label = label_from_user_text(c)
-            except Exception:
-                pass
+                scan_complete = True
+            except Exception as exc:
+                _log(f'[subagent-scan] failed to read {sf.name}: {exc}')
 
             row = {
                 'agent_id': agent_id,
@@ -3002,11 +3016,11 @@ class ClaudeRuntime(AgentRuntime):
                 'label': label,
                 'path': str(sf),
             }
-            if len(_SUBAGENT_SCAN_CACHE) >= _SUBAGENT_SCAN_CACHE_MAX:
-                for k in list(_SUBAGENT_SCAN_CACHE)[:_SUBAGENT_SCAN_CACHE_MAX // 4]:
-                    _SUBAGENT_SCAN_CACHE.pop(k, None)
-            _SUBAGENT_SCAN_CACHE[ckey] = (mtime, fsize, row)
             out.append(dict(row))
+            if not scan_complete:
+                continue
+            _SUBAGENT_SCAN_CACHE[ckey] = (mtime, fsize, row)
+        _trim_scan_cache(_SUBAGENT_SCAN_CACHE, _SUBAGENT_SCAN_CACHE_MAX, touched)
         return out
 
     def parse_transcript_file(self, path: Path,
@@ -3668,14 +3682,17 @@ def _npm_global_bin_dirs() -> List[Path]:
 
 
 def _pid_is_alive(pid: int) -> bool:
+    """Probe liveness even when another owner retains an exited child's handle."""
     if sys.platform == 'win32':
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(0x1000, False, pid)
-        if handle:
-            kernel32.CloseHandle(handle)
-            return True
-        return False
+        import _winapi
+        try:
+            handle = _winapi.OpenProcess(_winapi.SYNCHRONIZE, False, pid)
+            try:
+                return _winapi.WaitForSingleObject(handle, 0) == _winapi.WAIT_TIMEOUT
+            finally:
+                _winapi.CloseHandle(handle)
+        except OSError:
+            return False
     try:
         os.kill(pid, 0)
         return True
@@ -3851,18 +3868,10 @@ def _inject_gemini_env(env: Dict[str, str], mcp_config_json: str = '') -> Dict[s
 class GeminiRuntime(AgentRuntime):
     """Driver for Google's `gemini` CLI.
 
-    Mode A only (synthetic per-turn). Each `dispatch()` / `write_followup()`
-    spawns a fresh `gemini` process. Output is streamed line-by-line into
-    `session['log_lines']`. Gemini's `--output-format stream-json` is used
-    when available; falls back to plain-text otherwise.
-
-    Followup uses `--checkpoint` for cross-turn continuity if the CLI
-    version supports it; otherwise the runtime prepends a one-line summary
-    of the prior turn to the new prompt as context.
-
-    Tools/MCP/Skills are NOT injected — Gemini's tool model differs from
-    claude's. The prototype validates the end-to-end loop on text-only
-    turns; advanced features ride on a follow-up PR.
+    Each Mode A turn starts a fresh process and reads structured
+    `stream-json` output. Non-JSON lines are retained for exit diagnostics.
+    Follow-ups use `--resume` when the native session id is known.
+    `--allowed-mcp-server-names` scopes project MCP servers.
     """
 
     name = 'gemini'
@@ -4024,6 +4033,7 @@ class GeminiRuntime(AgentRuntime):
         return identity, readiness, certification
 
     def __init__(self) -> None:
+        super().__init__()
         self._auth_cache: dict = {
             'ok': True,
             'status': 'unknown',
@@ -4252,9 +4262,10 @@ class GeminiRuntime(AgentRuntime):
             # exhausted your daily quota on this model" was silently dropped:
             # explain_exit_error() had nothing to pattern-match against and
             # fell back to a generic "exited with code N" guess.
-            err = msg.get('error') or {}
-            err_text = err.get('message') or msg.get('message') or 'Gemini reported an error with no message'
-            _exhausted = _allowance_state.detect('gemini', msg)
+            err = msg.get('error')
+            detail = err.get('message') if isinstance(err, dict) else err
+            err_text = str(detail or msg.get('message') or 'Gemini reported an error with no message')
+            _exhausted = _allowance_state.detect('gemini', {**msg, 'error': {'message': err_text}})
             if _exhausted:
                 return AgentEvent(
                     type=EventType.ALLOWANCE_EXHAUSTED, provider='gemini',
@@ -4505,24 +4516,29 @@ class GeminiRuntime(AgentRuntime):
             raw = b''
             try:
                 raw = e.read()
-            except Exception:
-                pass
+            except Exception as exc:
+                _log(f'[gemini] failed to read quota error response: {exc}')
             try:
                 parsed = json.loads(raw.decode('utf-8', 'replace')) if raw else {}
             except Exception:
                 parsed = {}
             err = (parsed.get('error') or {}) if isinstance(parsed, dict) else {}
+            if not isinstance(err, dict):
+                err = {}
             status = err.get('status') or ''
-            message = err.get('message') or f'HTTP {e.code}'
+            message = str(err.get('message') or f'HTTP {e.code}')
             if e.code == 429 or status == 'RESOURCE_EXHAUSTED':
                 quota_id = quota_value = None
-                for d in (err.get('details') or []):
+                details = err.get('details')
+                for d in (details if isinstance(details, list) else ()):
                     if isinstance(d, dict) and str(d.get('@type', '')).endswith('QuotaFailure'):
-                        viol = (d.get('violations') or [{}])[0]
-                        quota_id = viol.get('quotaId')
-                        quota_value = viol.get('quotaValue')
+                        violations = d.get('violations')
+                        if isinstance(violations, list) and violations and isinstance(violations[0], dict):
+                            viol = violations[0]
+                            quota_id = viol.get('quotaId')
+                            quota_value = viol.get('quotaValue')
                         break
-                tier = 'free' if quota_id and 'freetier' in quota_id.lower() else 'unknown'
+                tier = 'free' if isinstance(quota_id, str) and 'freetier' in quota_id.lower() else 'unknown'
                 return {'reachable': True, 'ok': False, 'quota_status': 'exceeded', 'tier': tier,
                         'quota_id': quota_id, 'quota_value': quota_value,
                         'invalid_key': False, 'error_text': message}
@@ -4713,66 +4729,9 @@ class GeminiRuntime(AgentRuntime):
 
     # ── Dispatch ──────────────────────────────────────────────────────────────
 
-    # Claude-Code-only instructions that confuse a weaker model — each names
-    # a tool (EnterPlanMode / ExitPlanMode / AskUserQuestion) Gemini lacks.
-    # Matched as line prefixes; each capability is a single line in the
-    # assembled --- SYSTEM --- block.
-    _CLAUDE_ONLY_PREFIXES = (
-        'IMPORTANT — Plan Mode:',
-        'Questions: When you need to ask the user',
-    )
-
     def _slim_system_prompt(self, system_prompt: str) -> str:
-        """Trim the generic (Claude-Code-shaped) system prompt to what
-        actually helps Gemini.
-
-        The full prompt has two problems for Gemini:
-          * Bloat — the ~100-endpoint CLAYRUNE API REFERENCE block is large
-            and rarely needed; Gemini can discover endpoints by curling the
-            server. Anthropic's prompt cache made that block free for
-            Claude; for Gemini it is dead weight on every call.
-          * Claude-only noise — instructions naming EnterPlanMode /
-            ExitPlanMode / AskUserQuestion refer to tools Gemini does not
-            have, and a stale project-level "Current task:" line has been
-            observed to derail it onto unrelated work.
-
-        Each transformation is independent and a no-op when its anchor is
-        absent, so a future change to the prompt format degrades gracefully
-        (less slimming) rather than corrupting the prompt.
-        """
-        if not system_prompt:
-            return system_prompt
-        text = system_prompt
-
-        # 1. Collapse the API REFERENCE block to a one-line pointer. It runs
-        #    from its header to the next recognizable section start.
-        m = re.search(r'\n*--- CLAYRUNE API REFERENCE ---\n', text)
-        if m:
-            after = text[m.end():]
-            nxt = re.search(
-                r'\n(--- [^\n]+ ---\n|Recent activity:|Recent conversations|Current task:)',
-                after)
-            tail = after[nxt.start():] if nxt else ''
-            pm = re.search(r'localhost:(\d+)', text)
-            host = (f"http://localhost:{pm.group(1)}" if pm
-                    else "the Clayrune server")
-            text = (text[:m.start()].rstrip()
-                    + "\n\n--- CLAYRUNE API ---\n"
-                    + f"Clayrune's HTTP API is on {host}. To discover "
-                    + "endpoints, curl GET / or grep server.py for @app.route."
-                    + (('\n' + tail) if tail else ''))
-
-        # 2. Drop Claude-only tool instructions (each is a single line).
-        text = '\n'.join(
-            ln for ln in text.split('\n')
-            if not any(ln.lstrip().startswith(p)
-                       for p in self._CLAUDE_ONLY_PREFIXES))
-
-        # 3. Drop the stale project-level "Current task:" line — it is NOT
-        #    the dispatched task (that is appended after a --- separator).
-        text = re.sub(r'(?m)^Current task:.*$', '', text)
-
-        return text.strip()
+        """Drop the stale project-level task before the dispatched task is appended."""
+        return re.sub(r'(?m)^Current task:.*$', '', system_prompt).strip()
 
     def dispatch(self, *,
                  project_path: str,
@@ -4974,10 +4933,12 @@ class GeminiRuntime(AgentRuntime):
         # chat — it streams faster than a turn-end cleanup could remove it.
         turn_text_parts: List[str] = []
         _mc_suppressing = False
+        mc_fence_tail = ''
         # Empty-turn detection (mc/empty_turn.py) — same rule as _mode_a_reader.
         tool_calls = 0
         turn_error_seen = False
-        _empty_turn.begin_turn(session)
+        if session.get('proc') is proc:
+            _empty_turn.begin_turn(session)
         # The CURRENT contiguous text run (deltas since the last non-text
         # event). Written to `log_lines` as ONE element when the run ends,
         # never one element per delta. Every consumer of `log_lines` treats
@@ -5027,153 +4988,158 @@ class GeminiRuntime(AgentRuntime):
                         del tail_buf[:-40]
                     continue
 
-                _test_run_detection.observe(session, 'gemini', line, proc)
-                ev = self.parse_event(line, handle.mc_session_id)
-                if not (ev and ev.type == EventType.ASSISTANT_TEXT):
-                    # Any other event ends the text run: write it out first
-                    # so it lands before the tool/error/status line.
-                    _flush_run()
-                if ev and ev.type == EventType.ASSISTANT_TEXT:
-                    _txt = ev.payload.get('text', line)
-                    turn_text_parts.append(_txt)
-                    if not _mc_suppressing and '```mc:' in ''.join(turn_text_parts):
-                        # An MC Tool Protocol block has started: suppress the
-                        # raw block (and anything after it) from the chat. It
-                        # is parsed and acted on at turn end. Keep the part of
-                        # this run before the fence (the fence can straddle
-                        # deltas, so cut the joined run, not just _txt).
-                        _mc_suppressing = True
-                        run_text = ''.join(pending_run) + _txt
-                        cut = run_text.find('```mc:')
-                        pending_run[:] = [run_text[:cut] if cut >= 0 else ''.join(pending_run)]
+                try:
+                    _test_run_detection.observe(session, 'gemini', line, proc)
+                    ev = self.parse_event(line, handle.mc_session_id)
+                    if not (ev and ev.type == EventType.ASSISTANT_TEXT):
+                        # Any other event ends the text run: write it out first
+                        # so it lands before the tool/error/status line.
                         _flush_run()
-                    if not _mc_suppressing:
-                        pending_run.append(_txt)
+                    if ev and ev.type == EventType.ASSISTANT_TEXT:
+                        _txt = ev.payload.get('text', line)
+                        fence_window = mc_fence_tail + _txt
+                        turn_text_parts.append(_txt)
+                        mc_fence_tail = fence_window[-5:]
+                        if not _mc_suppressing and '```mc:' in fence_window:
+                            # An MC Tool Protocol block has started: suppress the
+                            # raw block (and anything after it) from the chat. It
+                            # is parsed and acted on at turn end. Keep the part of
+                            # this run before the fence (the fence can straddle
+                            # deltas, so cut the joined run, not just _txt).
+                            _mc_suppressing = True
+                            run_text = ''.join(pending_run) + _txt
+                            cut = run_text.find('```mc:')
+                            pending_run[:] = [run_text[:cut] if cut >= 0 else ''.join(pending_run)]
+                            _flush_run()
+                        if not _mc_suppressing:
+                            pending_run.append(_txt)
+                            session['last_output_time'] = _time.time()
+                            _cb('on_assistant_text', ev)
+                    elif ev and ev.type == EventType.WARN:
+                        turn_error_seen = True  # the CLI's own stated reason is on screen
+                        # `{"type":"error","severity":...}` stream events: safety
+                        # blocks, loop detection, "Agent execution blocked" (a
+                        # hook denial), max turns. parse_event returned None for
+                        # them, so the CLI's own reason vanished from the chat.
+                        session['log_lines'].append(
+                            f"[gemini {ev.payload.get('severity') or 'warning'}] "
+                            f"{ev.payload.get('text', '')}")
                         session['last_output_time'] = _time.time()
-                        _cb('on_assistant_text', ev)
-                elif ev and ev.type == EventType.WARN:
-                    turn_error_seen = True  # the CLI's own stated reason is on screen
-                    # `{"type":"error","severity":...}` stream events: safety
-                    # blocks, loop detection, "Agent execution blocked" (a
-                    # hook denial), max turns. parse_event returned None for
-                    # them, so the CLI's own reason vanished from the chat.
-                    session['log_lines'].append(
-                        f"[gemini {ev.payload.get('severity') or 'warning'}] "
-                        f"{ev.payload.get('text', '')}")
-                    session['last_output_time'] = _time.time()
-                elif ev and ev.type == EventType.TOOL_USE:
-                    tool_calls += 1
-                    blocks = ev.payload.get('blocks', [])
-                    name = blocks[0].get('name', '') if blocks else ''
-                    tid = blocks[0].get('tool_use_id') if blocks else None
-                    # Per-session tool_id → tool_name map. tool_result events
-                    # carry only tool_id, so we cache the name here for the
-                    # reader's TOOL_RESULT branch to look up. Bounded to the
-                    # last 64 tool calls so a marathon session can't grow it
-                    # unboundedly.
-                    if tid and name:
-                        tmap = session.setdefault('_gemini_tool_names', {})
-                        tmap[tid] = name
-                        if len(tmap) > 64:
-                            for k in list(tmap.keys())[:-64]:
-                                tmap.pop(k, None)
-                    # Canonical `[tool: ...]` prefix — the frontend keys
-                    # tool-line styling, the show/hide "Tool call lines"
-                    # toggle and the activity ticker off that exact prefix.
-                    # A provider-specific prefix bypasses all three (e.g. the
-                    # toggle could not hide Gemini's tool lines).
-                    session['log_lines'].append(
-                        f"[tool: {name}]" if name else "[tool: call]")
-                    session['last_output_time'] = _time.time()
-                elif ev and ev.type == EventType.TOOL_RESULT:
-                    tid = ev.payload.get('tool_id') or ''
-                    tmap = session.get('_gemini_tool_names') or {}
-                    nm = tmap.get(tid) or ev.payload.get('name') or 'tool'
-                    st = ev.payload.get('status') or ''
-                    session['log_lines'].append(
-                        f"[tool: {nm} result{(' — ' + st) if st else ''}]")
-                    session['last_output_time'] = _time.time()
-                elif ev and ev.type == EventType.TURN_END:
-                    # W4/MC-947 (2026-09-18): the payload always carried real
-                    # token counts (parse_event's TURN_END branch reads
-                    # `msg.get('stats')`, live-confirmed shape
-                    # `{"total_tokens":N,"input_tokens":N,"output_tokens":N,
-                    # ...}`) but nothing stored it — `emits_usage=False` was
-                    # an honest description of THIS bug, not of the CLI.
-                    # Mirrors `_mode_a_reader`'s own TURN_END branch (same
-                    # straight-overwrite-per-turn convention every other
-                    # Mode-A provider uses; Gemini respawns a process per
-                    # turn same as they do). `cost_usd`/`num_turns` stay
-                    # unset — parse_event hard-codes them None because the
-                    # CLI genuinely never emits either (emits_cost/
-                    # emits_num_turns are correctly False, unaffected).
-                    _usage = ev.payload.get('usage')
-                    if isinstance(_usage, dict):
-                        session['usage'] = _usage
-                        # NOT normalize_context_tokens(_usage): the CLI's
-                        # `stats` SUM every API request this process made
-                        # (gemini-cli 0.59 uiTelemetry.processApiResponse:
-                        # `tokens.prompt += usage.input_token_count`), so a
-                        # turn with one tool call re-sends the prompt twice
-                        # and reports ~2x the context actually held. Live
-                        # 2026-09-19: the guardrail turn read 80,253 against
-                        # a no-tool turn's 18,666. Context is the LAST
-                        # request's prompt, from the CLI's per-request record.
-                        _ctx = gemini_turn_context_tokens(
-                            session.get('provider_session_id') or ev.session_id or '',
-                            _usage)
-                        if _ctx is not None:
-                            session['context_tokens'] = _ctx
-                    _allowance_state.clear_exhaustion('gemini')
-                    session.pop('_limit_resume_exhaustion', None)
-                    _cb('on_turn_end', ev)
-                elif ev and ev.type == EventType.ALLOWANCE_EXHAUSTED:
-                    # Mirrors _mode_a_reader's own branch — a terminal
-                    # failure is never content (Fenn #4).
-                    _allowance_state.record_exhaustion('gemini', **ev.payload)
-                    from mc.limit_resume import observe as _observe_reset_wait
-                    _observe_reset_wait(session, ev.payload)
-                    session['log_lines'].append(
-                        f"[gemini] {_allowance_state.refusal_message('gemini')}")
-                    session['last_output_time'] = _time.time()
-                    session['_allowance_exhausted'] = True
-                    turn_error_seen = True
-                elif ev and ev.type == EventType.ERROR:
-                    turn_error_seen = True
-                    # The CLI's own reason (quota, auth, network — see
-                    # parse_event's 'result'+status=='error' branch) surfaced
-                    # into the visible transcript AND the tail explain_exit_error
-                    # scans below, instead of being dropped on the floor the way
-                    # a bare TURN_END would (usage/cost only, no error field).
-                    session['log_lines'].append(
-                        f"[gemini error] {ev.payload.get('text', '')}")
-                    session['last_output_time'] = _time.time()
-                elif ev and ev.type == EventType.INIT:
-                    # Capture Gemini's own session id so followups resume THIS
-                    # exact session by id (--resume <id>) — never `latest`,
-                    # which grabs whatever gemini session is newest in the
-                    # project dir and, after prior runs, is a stale unrelated
-                    # conversation that gets continued by mistake.
-                    #
-                    # Stashed under the GENERIC `provider_session_id` key (W4,
-                    # MC-947) — not a gemini-private `_gemini_session_id` —
-                    # because that is the field `_runtime_note_init`
-                    # (agent_routes.py) backfills onto the durable agent_log
-                    # row, and the one `_revive_non_claude_from_agent_log`
-                    # reads back on a cold dispatch after a server restart.
-                    # The private key never reached either: a finished Gemini
-                    # chat's own session id lived ONLY in the volatile
-                    # in-memory session dict, so `_COLD_RESUMABLE_PROVIDERS`
-                    # had to exclude gemini outright (see its own comment,
-                    # now updated) — there was nothing durable to resume BY.
-                    if ev.session_id:
-                        session['provider_session_id'] = ev.session_id
-                    native_model = ev.payload.get('model')
-                    if isinstance(native_model, str) and native_model:
-                        session['observed_model'] = native_model
-                    _cb('on_init', ev)
-                # USER_MESSAGE (the prompt echo) and unrecognized envelopes
-                # (ev is None) are consumed silently — no agent output.
+                    elif ev and ev.type == EventType.TOOL_USE:
+                        blocks = ev.payload.get('blocks', [])
+                        name = blocks[0].get('name', '') if blocks else ''
+                        tid = blocks[0].get('tool_use_id') if blocks else None
+                        # Per-session tool_id → tool_name map. tool_result events
+                        # carry only tool_id, so we cache the name here for the
+                        # reader's TOOL_RESULT branch to look up. Bounded to the
+                        # last 64 tool calls so a marathon session can't grow it
+                        # unboundedly.
+                        if tid and name:
+                            tmap = session.setdefault('_gemini_tool_names', {})
+                            tmap[tid] = name
+                            if len(tmap) > 64:
+                                for k in list(tmap.keys())[:-64]:
+                                    tmap.pop(k, None)
+                        # Canonical `[tool: ...]` prefix — the frontend keys
+                        # tool-line styling, the show/hide "Tool call lines"
+                        # toggle and the activity ticker off that exact prefix.
+                        # A provider-specific prefix bypasses all three (e.g. the
+                        # toggle could not hide Gemini's tool lines).
+                        session['log_lines'].append(
+                            f"[tool: {name}]" if name else "[tool: call]")
+                        tool_calls += 1
+                        session['last_output_time'] = _time.time()
+                    elif ev and ev.type == EventType.TOOL_RESULT:
+                        tid = ev.payload.get('tool_id') or ''
+                        tmap = session.get('_gemini_tool_names') or {}
+                        nm = tmap.get(tid) or ev.payload.get('name') or 'tool'
+                        st = ev.payload.get('status') or ''
+                        session['log_lines'].append(
+                            f"[tool: {nm} result{(' — ' + st) if st else ''}]")
+                        session['last_output_time'] = _time.time()
+                    elif ev and ev.type == EventType.TURN_END:
+                        # W4/MC-947 (2026-09-18): the payload always carried real
+                        # token counts (parse_event's TURN_END branch reads
+                        # `msg.get('stats')`, live-confirmed shape
+                        # `{"total_tokens":N,"input_tokens":N,"output_tokens":N,
+                        # ...}`) but nothing stored it — `emits_usage=False` was
+                        # an honest description of THIS bug, not of the CLI.
+                        # Mirrors `_mode_a_reader`'s own TURN_END branch (same
+                        # straight-overwrite-per-turn convention every other
+                        # Mode-A provider uses; Gemini respawns a process per
+                        # turn same as they do). `cost_usd`/`num_turns` stay
+                        # unset — parse_event hard-codes them None because the
+                        # CLI genuinely never emits either (emits_cost/
+                        # emits_num_turns are correctly False, unaffected).
+                        _usage = ev.payload.get('usage')
+                        if isinstance(_usage, dict):
+                            session['usage'] = _usage
+                            # NOT normalize_context_tokens(_usage): the CLI's
+                            # `stats` SUM every API request this process made
+                            # (gemini-cli 0.59 uiTelemetry.processApiResponse:
+                            # `tokens.prompt += usage.input_token_count`), so a
+                            # turn with one tool call re-sends the prompt twice
+                            # and reports ~2x the context actually held. Live
+                            # 2026-09-19: the guardrail turn read 80,253 against
+                            # a no-tool turn's 18,666. Context is the LAST
+                            # request's prompt, from the CLI's per-request record.
+                            _ctx = gemini_turn_context_tokens(
+                                session.get('provider_session_id') or ev.session_id or '',
+                                _usage)
+                            if _ctx is not None:
+                                session['context_tokens'] = _ctx
+                        _allowance_state.clear_exhaustion('gemini')
+                        session.pop('_limit_resume_exhaustion', None)
+                        _cb('on_turn_end', ev)
+                    elif ev and ev.type == EventType.ALLOWANCE_EXHAUSTED:
+                        # Mirrors _mode_a_reader's own branch — a terminal
+                        # failure is never content (Fenn #4).
+                        _allowance_state.record_exhaustion('gemini', **ev.payload)
+                        from mc.limit_resume import observe as _observe_reset_wait
+                        _observe_reset_wait(session, ev.payload)
+                        session['log_lines'].append(
+                            f"[gemini] {_allowance_state.refusal_message('gemini')}")
+                        session['last_output_time'] = _time.time()
+                        session['_allowance_exhausted'] = True
+                        turn_error_seen = True
+                    elif ev and ev.type == EventType.ERROR:
+                        turn_error_seen = True
+                        # The CLI's own reason (quota, auth, network — see
+                        # parse_event's 'result'+status=='error' branch) surfaced
+                        # into the visible transcript AND the tail explain_exit_error
+                        # scans below, instead of being dropped on the floor the way
+                        # a bare TURN_END would (usage/cost only, no error field).
+                        session['log_lines'].append(
+                            f"[gemini error] {ev.payload.get('text', '')}")
+                        session['last_output_time'] = _time.time()
+                    elif ev and ev.type == EventType.INIT:
+                        # Capture Gemini's own session id so followups resume THIS
+                        # exact session by id (--resume <id>) — never `latest`,
+                        # which grabs whatever gemini session is newest in the
+                        # project dir and, after prior runs, is a stale unrelated
+                        # conversation that gets continued by mistake.
+                        #
+                        # Stashed under the GENERIC `provider_session_id` key (W4,
+                        # MC-947) — not a gemini-private `_gemini_session_id` —
+                        # because that is the field `_runtime_note_init`
+                        # (agent_routes.py) backfills onto the durable agent_log
+                        # row, and the one `_revive_non_claude_from_agent_log`
+                        # reads back on a cold dispatch after a server restart.
+                        # The private key never reached either: a finished Gemini
+                        # chat's own session id lived ONLY in the volatile
+                        # in-memory session dict, so `_COLD_RESUMABLE_PROVIDERS`
+                        # had to exclude gemini outright (see its own comment,
+                        # now updated) — there was nothing durable to resume BY.
+                        if ev.session_id:
+                            session['provider_session_id'] = ev.session_id
+                        native_model = ev.payload.get('model')
+                        if isinstance(native_model, str) and native_model:
+                            session['observed_model'] = native_model
+                        _cb('on_init', ev)
+                    # USER_MESSAGE (the prompt echo) and unrecognized envelopes
+                    # (ev is None) are consumed silently — no agent output.
+                except Exception as exc:
+                    _log(f'[gemini] failed to handle stream event: {exc}')
         except Exception as e:
             if session.get('proc') is proc:
                 session['log_lines'].append(f"[stream error: {e}]")
@@ -5182,80 +5148,73 @@ class GeminiRuntime(AgentRuntime):
                 rc = proc.wait()
             except Exception:
                 rc = -1
-            # MC Tool Protocol: scan this turn's text for mc: blocks (e.g. an
-            # emulated AskUserQuestion) and apply them before deciding status.
-            # A question pauses the turn in 'idle' awaiting the user's reply.
-            mc_res = {'blocks_found': False, 'paused': False}
-            try:
-                _flush_run()  # a run cut off by EOF / a stream error still lands
-                turn_text = ''.join(turn_text_parts)
-                # Stamp only when THIS reader produced text and still owns the
-                # session: a reader that exits empty (crash, no output) or has
-                # been superseded by a respawn must not reset the clock.
-                if turn_text.strip() and session.get('proc') is proc:
-                    _turn_clock.note_reply(session)
-                mc_res = self.apply_mc_tool_blocks(session, turn_text)
-                if _mc_suppressing and not mc_res['blocks_found']:
-                    # A ```mc: fence appeared but no complete, valid block was
-                    # parsed (turn ended mid-block, or it was malformed) —
-                    # flush the suppressed text so it is not silently lost.
-                    leftover = turn_text.strip()
-                    if leftover:
-                        session['log_lines'].append(leftover)
-                if mc_res['paused']:
-                    session['log_lines'].append(
-                        '[Waiting for your answer — choose above to continue]')
-            except Exception as e:
-                session.setdefault('log_lines', TimestampedLines()).append(
-                    f'[mc-tool scan error: {e}]')
-            if session.get('proc') is proc:
-                # `_interrupted` → the user killed this turn; the non-zero rc
-                # is the kill, not a crash. Leave the status interrupt() set.
-                if session.get('status') == 'running' and not session.get('_interrupted'):
-                    if mc_res['paused']:
-                        session['status'] = 'idle'
-                    else:
-                        session['status'] = 'completed' if rc == 0 else 'error'
-                        if rc == 0 and not turn_error_seen:
-                            # See _mode_a_reader: backlog d37d0183.
-                            _empty_turn.mark(session, _empty_turn.empty_reason(
-                                visible_text=strip_mc_tool_blocks(''.join(turn_text_parts)),
-                                tool_calls=tool_calls, paused=False,
-                                had_control_blocks=mc_res['blocks_found']),
-                                set_error=True)
-                    session['last_status_change_time'] = _time.time()
-                    if not mc_res['paused'] and rc != 0:
-                        session['log_lines'].append(f"[gemini exited with code {rc}]")
-                        try:
-                            # Include the dropped non-JSON stderr tail —
-                            # gemini's real error text lands there, not in
-                            # the JSON event stream.
-                            tail = '\n'.join(
-                                (session.get('_gemini_stderr_tail') or [])[-30:]
-                                + session['log_lines'][-30:])
-                            hint = self.explain_exit_error(rc, tail)
-                        except Exception:
-                            hint = None
-                        if hint:
-                            session['log_lines'].append(f"[hint] {hint}")
-                session['process_alive'] = False
-                exit_ev = AgentEvent(
-                    type=EventType.PROCESS_EXIT,
-                    provider='gemini',
-                    session_id=None,
-                    mc_session_id=handle.mc_session_id,
-                    timestamp=_now_iso(),
-                    payload={'rc': rc},
-                )
-                _cb('on_process_exit', exit_ev)
+            with _runtime_turn_ownership.finalizing(handle):
+                # The old turn still owns prose it buffered before the handoff.
+                _flush_run()
+                # MC Tool Protocol: scan this turn's text for mc: blocks (e.g. an
+                # emulated AskUserQuestion) and apply them before deciding status.
+                # A question pauses the turn in 'idle' awaiting the user's reply.
+                mc_res = {'blocks_found': False, 'paused': False}
+                if session.get('proc') is proc:
+                    try:
+                        turn_text = ''.join(turn_text_parts)
+                        if turn_text.strip():
+                            _turn_clock.note_reply(session)
+                        mc_res = self.apply_mc_tool_blocks(session, turn_text)
+                        if _mc_suppressing and not mc_res['blocks_found'] and turn_text.strip():
+                            session['log_lines'].append(turn_text.strip())
+                        if mc_res['paused']:
+                            session['log_lines'].append(
+                                '[Waiting for your answer — choose above to continue]')
+                    except Exception as e:
+                        session.setdefault('log_lines', TimestampedLines()).append(
+                            f'[mc-tool scan error: {e}]')
+                if session.get('proc') is proc:
+                    # `_interrupted` → the user killed this turn; the non-zero rc
+                    # is the kill, not a crash. Leave the status interrupt() set.
+                    if session.get('status') == 'running' and not session.get('_interrupted'):
+                        if mc_res['paused']:
+                            session['status'] = 'idle'
+                        else:
+                            session['status'] = 'completed' if rc == 0 else 'error'
+                            if rc == 0 and not turn_error_seen:
+                                # See _mode_a_reader: backlog d37d0183.
+                                _empty_turn.mark(session, _empty_turn.empty_reason(
+                                    visible_text=strip_mc_tool_blocks(''.join(turn_text_parts)),
+                                    tool_calls=tool_calls, paused=False,
+                                    had_control_blocks=mc_res['blocks_found']),
+                                    set_error=True)
+                        session['last_status_change_time'] = _time.time()
+                        if not mc_res['paused'] and rc != 0:
+                            session['log_lines'].append(f"[gemini exited with code {rc}]")
+                            try:
+                                # Include the dropped non-JSON stderr tail —
+                                # gemini's real error text lands there, not in
+                                # the JSON event stream.
+                                tail = '\n'.join(
+                                    (session.get('_gemini_stderr_tail') or [])[-30:]
+                                    + session['log_lines'][-30:])
+                                hint = self.explain_exit_error(rc, tail)
+                            except Exception:
+                                hint = None
+                            if hint:
+                                session['log_lines'].append(f"[hint] {hint}")
+                    session['process_alive'] = False
+                    exit_ev = AgentEvent(
+                        type=EventType.PROCESS_EXIT,
+                        provider='gemini',
+                        session_id=None,
+                        mc_session_id=handle.mc_session_id,
+                        timestamp=_now_iso(),
+                        payload={'rc': rc},
+                    )
+                    _cb('on_process_exit', exit_ev)
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
         vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
-        old_proc = session.get('proc')
-        if old_proc and old_proc.poll() is None:
-            _kill_pid(old_proc.pid)
+        _runtime_turn_ownership.retire(handle, _kill_pid)
         session.pop('_interrupted', None)  # new turn — clear the prior kill flag
 
         bin_path = self.resolve_binary()
@@ -5612,7 +5571,8 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
                      callbacks: Optional[Dict[str, Callable]],
                      register_process: Optional[Callable],
                      prompt_via_stdin: bool = True,
-                     system_prompt: str = '') -> SessionHandle:
+                     system_prompt: str = '',
+                     cleanup: Optional[Callable[[], None]] = None) -> SessionHandle:
     """Spawn a Mode-A provider process and return a SessionHandle.
 
     `cmd` is the full command list. When `prompt_via_stdin` is True the prompt
@@ -5710,7 +5670,8 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
                                    session_dict, proc, runtime.name, attempt)
                    if _verify_delivery else None)
     t = threading.Thread(target=_mode_a_reader,
-                         args=(proc, handle, runtime),
+                         args=(proc, handle, runtime, cleanup) if cleanup is not None
+                         else (proc, handle, runtime),
                          daemon=True,
                          name=f'{runtime.name}-reader-{mc_session_id[:8]}')
     t.start()
@@ -5732,19 +5693,19 @@ def gemini_chat_files(provider_session_id: str,
     if not provider_session_id:
         return []
     root = Path(home or os.environ.get('GEMINI_CLI_HOME') or Path.home()) / '.gemini' / 'tmp'
-    out: List[Path] = []
+    out: List[Tuple[float, Path]] = []
     try:
         for f in root.glob(f'*/chats/session-*-{provider_session_id[:8]}.jsonl'):
             try:
                 with open(f, encoding='utf-8', errors='replace') as fh:
                     first = json.loads(fh.readline() or '{}')
+                if isinstance(first, dict) and first.get('sessionId') == provider_session_id:
+                    out.append((f.stat().st_mtime, f))
             except (OSError, ValueError):
                 continue
-            if isinstance(first, dict) and first.get('sessionId') == provider_session_id:
-                out.append(f)
     except OSError as e:
-        print(f'[runtime:gemini] chat file scan failed: {e}', flush=True)
-    return sorted(out, key=lambda x: x.stat().st_mtime)
+        _log(f'[runtime:gemini] chat file scan failed: {e}')
+    return [path for _, path in sorted(out, key=lambda entry: entry[0])]
 
 
 def gemini_chat_request_tokens(jsonl_text: str) -> List[Dict[str, Any]]:
@@ -6019,14 +5980,17 @@ def normalize_context_tokens(usage: Optional[Dict[str, Any]]) -> Optional[int]:
     """
     if not isinstance(usage, dict) or not usage:
         return None
-    total = (int(usage.get('input_tokens') or 0)
-             + int(usage.get('cache_read_input_tokens') or 0)
-             + int(usage.get('cache_creation_input_tokens') or 0))
+    try:
+        total = (int(usage.get('input_tokens') or 0)
+                 + int(usage.get('cache_read_input_tokens') or 0)
+                 + int(usage.get('cache_creation_input_tokens') or 0))
+    except (TypeError, ValueError, OverflowError):
+        total = 0
     if total > 0:
         return total
     for key in ('total_tokens', 'prompt_tokens'):
         v = usage.get(key)
-        if isinstance(v, (int, float)) and v > 0:
+        if isinstance(v, (int, float)) and 0 < v < float('inf'):
             return int(v)
     return None
 
@@ -6443,7 +6407,7 @@ def _format_tool_activity(name, inp):
         # deliberately Claude-compatible: read_file/glob/run_shell_command all
         # reuse Claude's own field names).
         fp = inp.get('file_path', '')
-        short = Path(fp).name if fp else '?'
+        short = Path(fp).name if isinstance(fp, str) and fp else '?'
         return f'[tool: {name}] {short}'
     if name in ('Bash', 'shell', 'run_shell_command'):
         # 'shell' is Codex's (and other OpenAI-style Mode-A CLIs') name for
@@ -6462,7 +6426,8 @@ def _format_tool_activity(name, inp):
         return f'[tool: WebSearch] {q}'
     if name == 'AskUserQuestion':
         qs = inp.get('questions', [])
-        preview = _tool_preview(qs[0].get('question', ''), 60) if qs else ''
+        question = qs[0] if isinstance(qs, list) and qs else None
+        preview = _tool_preview(question.get('question', ''), 60) if isinstance(question, dict) else ''
         return f'[tool: AskUserQuestion] {preview}'
     if name == 'TodoWrite':
         todos = inp.get('todos', []) or []
@@ -6478,7 +6443,8 @@ def _format_tool_activity(name, inp):
 
 
 def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
-                   runtime: 'AgentRuntime') -> None:
+                   runtime: 'AgentRuntime',
+                   cleanup: Optional[Callable[[], None]] = None) -> None:
     """Read Mode-A stdout, with an optional pre-format raw-record callback.
 
     ``callbacks['on_raw_record']`` is an explicit composition seam for a
@@ -6511,6 +6477,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
     # blocks once the process exits.
     turn_text_parts: List[str] = []
     _mc_suppressing = False
+    mc_fence_tail = ''
     proc_cost: Dict[str, float] = {}  # this proc's running total_cost_usd
     proc_turns: Dict[str, int] = {}   # turns this proc produced
     # Empty-turn detection (mc/empty_turn.py): this process is one turn, so a
@@ -6557,7 +6524,10 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 if isinstance(carry, dict) and carry:
                     stored_usage = dict(_usage)
                     for k, v in carry.items():
-                        stored_usage[k] = int(stored_usage.get(k) or 0) + int(v or 0)
+                        try:
+                            stored_usage[k] = int(stored_usage.get(k) or 0) + int(v or 0)
+                        except (TypeError, ValueError, OverflowError) as exc:
+                            _log(f'[runtime:codex] ignored malformed carried usage for {k}: {exc}')
             session['usage'] = stored_usage
         accumulate_result_cost(session, event.payload, proc_cost)
         accumulate_result_turns(session, event.payload, proc_turns)
@@ -6602,147 +6572,152 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 line = line[len(_CODEX_STDIN_BANNER):]
                 if not line:
                     continue
-            from mc.qwen_retry_wait import observe_line
-            if observe_line(session, line, _time.time()):
-                continue
-            ev = runtime.parse_event(line, handle.mc_session_id)
-            if ev is None:
-                # None means "this runtime declined to surface it". For a line
-                # that is valid protocol JSON that is a deliberate suppression
-                # (codex's turn.started, or an event type added in a CLI
-                # release we predate) — logging it verbatim put raw JSONL in
-                # the user's chat pane, whole command outputs and all.
-                # A line that is NOT JSON is genuine stray output (a warning,
-                # a stack trace) and must still be kept.
-                if not _is_protocol_json(line):
-                    other_output = True
-                    session['log_lines'].append(line)
-                    session['last_output_time'] = _time.time()
-            elif ev.type == EventType.ASSISTANT_TEXT:
-                _txt = ev.payload.get('text', line)
-                turn_text_parts.append(_txt)
-                if not _mc_suppressing and '```mc:' in ''.join(turn_text_parts):
-                    _mc_suppressing = True
-                if not _mc_suppressing:
-                    session['log_lines'].append(_txt)
-                    session['last_output_time'] = _time.time()
-                    _cb('on_assistant_text', ev)
-            elif ev.type == EventType.TOOL_USE:
-                tool_calls += 1
-                blocks = ev.payload.get('blocks', [])
-                tname = blocks[0].get('name', '') if blocks else ''
-                tinput = blocks[0].get('input', {}) if blocks else {}
-                if not isinstance(tinput, dict):
-                    tinput = {}
-                # Claude's own line format (`[tool: Name] preview`, no
-                # provider name) via the shared formatter above — see its
-                # docstring for why the bare `[{provider} tool: {name}]` this
-                # used to emit broke both the frontend's tool-line styling
-                # and Ron's transcript (six indistinguishable
-                # `[codex tool: shell]` lines with no command shown).
-                session['log_lines'].append(_format_tool_activity(tname, tinput))
-                session['last_output_time'] = _time.time()
-                # Codex workspace-write sandbox denial (UNATTENDED_AGENT_
-                # PERMISSIONS_AUDIT §4): a refused write does NOT fail the
-                # `codex exec` process (rc stays 0 — it's the INNER shell
-                # command that gets a nonzero exit, reported in codex's own
-                # text), so the rc!=0 -> explain_exit_error() hint below never
-                # fires for this case. Scanned here instead, gated to codex
-                # sessions we ourselves put in sandbox mode, so an unrelated
-                # "access denied" on another provider — or a manually-launched
-                # (bypassed) Codex session, which has no such boundary — is
-                # never mislabeled as the sandbox's doing.
-                if (runtime.name == 'codex' and tname == 'shell'
-                        and session.get('_codex_unattended_sandbox')):
-                    _exit_code = tinput.get('exit_code')
-                    _shell_output = blocks[0].get('output', '') if blocks else ''
-                    if (_exit_code not in (None, 0)
-                            and _CODEX_SANDBOX_DENIAL_RE.search(_shell_output or '')):
-                        session['log_lines'].append(
-                            "[hint] That command was refused by the unattended "
-                            "sandbox (-s workspace-write, confined to this "
-                            "session's own working directory) — not a codex "
-                            "failure. If this job legitimately needs to write "
-                            "outside its project folder, that needs an "
-                            "allowance for this job, not a retry.")
-            elif ev.type == EventType.INIT:
-                if ev.provider == 'claude':
-                    note_cli_init(proc_cost, {**ev.payload,
-                                              'session_id': ev.session_id})
-                native_id = ev.payload.get('session_id') or ev.payload.get('thread_id')
-                if native_id:
-                    session['provider_session_id'] = native_id
-                native_model = ev.payload.get('model')
-                if isinstance(native_model, str) and native_model:
-                    # Observation is not user consent. In particular Qwen's
-                    # resolved INIT model must not become the next respawn's
-                    # requested --model or override an explicit native default.
-                    session['observed_model'] = native_model
-                _cb('on_init', ev)
-            elif ev.type == EventType.TURN_END:
-                if terminal_gate is None:
-                    _finish_turn(ev)
-                else:
-                    terminal_gate.submit(lambda event=ev: _finish_turn(event))
-            elif ev.type == EventType.ALLOWANCE_EXHAUSTED:
-                # A terminal failure is never content (Fenn #4): this is the
-                # normalized allowance shape, never the vendor's raw quota
-                # text appended as if it were the model's own line.
-                _allowance_state.record_exhaustion(runtime.name, **ev.payload)
-                from mc.limit_resume import observe as _observe_reset_wait
-                _observe_reset_wait(session, ev.payload)
-                session['log_lines'].append(
-                    f"[{runtime.name}] {_allowance_state.refusal_message(runtime.name)}")
-                session['last_output_time'] = _time.time()
-                # A session that died on allowance must read that way, not as
-                # a generic 'error' (VENDOR_AGNOSTIC_PROGRAM §4 item 4) — the
-                # Floor/chat read this flag to render "Out of allowance"
-                # instead of a red Blocked/Error pill.
-                session['_allowance_exhausted'] = True
-                turn_error_seen = True
-            elif ev.type == EventType.WARN:
-                # Advisory, not a failure: the run continues past it, so it
-                # must not carry the word "error" (a healthy codex turn read
-                # as a failed one -- see _CODEX_NOTICE_PATTERNS). Mirrors the
-                # Gemini reader's own WARN branch, which this one lacked.
-                _severity = ev.payload.get('severity') or 'notice'
-                _wtext = ev.payload.get('text', line)
-                _label = f"[{runtime.name} {_severity}] "
-                if (runtime.name == 'codex' and _severity == 'notice'
-                        and _CODEX_HOOK_TRUST_RE.search(str(_wtext or ''))):
-                    # Hook-trust bypass notice: fires every turn (required by
-                    # guardrail_hooks.py:318). Raw capture above keeps the
-                    # signal every occurrence; only the repeat CHAT line is
-                    # muted, once per mc_session_id, in-process (see
-                    # _CODEX_HOOK_TRUST_NOTICE_SHOWN, DATA_DIR pollution rule).
-                    if handle.mc_session_id in _CODEX_HOOK_TRUST_NOTICE_SHOWN:
-                        _wtext = None
-                    else:
-                        _CODEX_HOOK_TRUST_NOTICE_SHOWN.add(handle.mc_session_id)
-                        _wtext = ('Codex hook-trust review bypassed so Clayrune '
-                                   'guardrail hooks can run (expected).')
-                if _wtext is not None:
-                    session['log_lines'].append(_label + _flatten_error_text(_wtext))
-                    session['last_output_time'] = _time.time()
-            elif ev.type in (EventType.ERROR, EventType.AUTH_ERROR):
-                turn_error_seen = True
-                session['log_lines'].append(
-                    f"[{runtime.name} error] "
-                    f"{_flatten_error_text(ev.payload.get('text', line))}")
-                session['last_output_time'] = _time.time()
-                if runtime.name == 'codex' and ev.payload.get('model_rejected'):
-                    # Read back in `finally` below: this turn gets ONE labelled
-                    # retry without -m (CodexRuntime.retry_without_model).
-                    session['_codex_model_refused'] = ev.payload['model_rejected']
-            else:
-                if ev.type == EventType.TOOL_RESULT:
+            try:
+                from mc.qwen_retry_wait import observe_line
+                if observe_line(session, line, _time.time()):
+                    continue
+                ev = runtime.parse_event(line, handle.mc_session_id)
+                if ev is None:
+                    # None means "this runtime declined to surface it". For a line
+                    # that is valid protocol JSON that is a deliberate suppression
+                    # (codex's turn.started, or an event type added in a CLI
+                    # release we predate) — logging it verbatim put raw JSONL in
+                    # the user's chat pane, whole command outputs and all.
+                    # A line that is NOT JSON is genuine stray output (a warning,
+                    # a stack trace) and must still be kept.
+                    if not _is_protocol_json(line):
+                        other_output = True
+                        session['log_lines'].append(line)
+                        session['last_output_time'] = _time.time()
+                elif ev.type == EventType.ASSISTANT_TEXT:
+                    _txt = ev.payload.get('text', line)
+                    fence_window = mc_fence_tail + _txt
+                    turn_text_parts.append(_txt)
+                    mc_fence_tail = fence_window[-5:]
+                    if not _mc_suppressing and '```mc:' in fence_window:
+                        _mc_suppressing = True
+                    if not _mc_suppressing:
+                        session['log_lines'].append(_txt)
+                        session['last_output_time'] = _time.time()
+                        _cb('on_assistant_text', ev)
+                elif ev.type == EventType.TOOL_USE:
+                    blocks = ev.payload.get('blocks', [])
+                    tname = blocks[0].get('name', '') if blocks else ''
+                    tinput = blocks[0].get('input', {}) if blocks else {}
+                    if not isinstance(tinput, dict):
+                        tinput = {}
+                    # Claude's own line format (`[tool: Name] preview`, no
+                    # provider name) via the shared formatter above — see its
+                    # docstring for why the bare `[{provider} tool: {name}]` this
+                    # used to emit broke both the frontend's tool-line styling
+                    # and Ron's transcript (six indistinguishable
+                    # `[codex tool: shell]` lines with no command shown).
+                    session['log_lines'].append(_format_tool_activity(tname, tinput))
                     tool_calls += 1
-                raw_text = (ev.payload.get('text') or
-                            (json.dumps(ev.payload) if ev.payload else line))
-                if raw_text:
-                    other_output = True
-                    session['log_lines'].append(raw_text)
                     session['last_output_time'] = _time.time()
+                    # Codex workspace-write sandbox denial (UNATTENDED_AGENT_
+                    # PERMISSIONS_AUDIT §4): a refused write does NOT fail the
+                    # `codex exec` process (rc stays 0 — it's the INNER shell
+                    # command that gets a nonzero exit, reported in codex's own
+                    # text), so the rc!=0 -> explain_exit_error() hint below never
+                    # fires for this case. Scanned here instead, gated to codex
+                    # sessions we ourselves put in sandbox mode, so an unrelated
+                    # "access denied" on another provider — or a manually-launched
+                    # (bypassed) Codex session, which has no such boundary — is
+                    # never mislabeled as the sandbox's doing.
+                    if (runtime.name == 'codex' and tname == 'shell'
+                            and session.get('_codex_unattended_sandbox')):
+                        _exit_code = tinput.get('exit_code')
+                        _shell_output = blocks[0].get('output', '') if blocks else ''
+                        if (_exit_code not in (None, 0)
+                                and _CODEX_SANDBOX_DENIAL_RE.search(_shell_output or '')):
+                            session['log_lines'].append(
+                                "[hint] That command was refused by the unattended "
+                                "sandbox (-s workspace-write, confined to this "
+                                "session's own working directory) — not a codex "
+                                "failure. If this job legitimately needs to write "
+                                "outside its project folder, that needs an "
+                                "allowance for this job, not a retry.")
+                elif ev.type == EventType.INIT:
+                    if ev.provider == 'claude':
+                        note_cli_init(proc_cost, {**ev.payload,
+                                                  'session_id': ev.session_id})
+                    native_id = ev.payload.get('session_id') or ev.payload.get('thread_id')
+                    if native_id:
+                        session['provider_session_id'] = native_id
+                    native_model = ev.payload.get('model')
+                    if isinstance(native_model, str) and native_model:
+                        # Observation is not user consent. In particular Qwen's
+                        # resolved INIT model must not become the next respawn's
+                        # requested --model or override an explicit native default.
+                        session['observed_model'] = native_model
+                    _cb('on_init', ev)
+                elif ev.type == EventType.TURN_END:
+                    if terminal_gate is None:
+                        _finish_turn(ev)
+                    else:
+                        terminal_gate.submit(lambda event=ev: _finish_turn(event))
+                elif ev.type == EventType.ALLOWANCE_EXHAUSTED:
+                    # A terminal failure is never content (Fenn #4): this is the
+                    # normalized allowance shape, never the vendor's raw quota
+                    # text appended as if it were the model's own line.
+                    _allowance_state.record_exhaustion(runtime.name, **ev.payload)
+                    from mc.limit_resume import observe as _observe_reset_wait
+                    _observe_reset_wait(session, ev.payload)
+                    session['log_lines'].append(
+                        f"[{runtime.name}] {_allowance_state.refusal_message(runtime.name)}")
+                    session['last_output_time'] = _time.time()
+                    # A session that died on allowance must read that way, not as
+                    # a generic 'error' (VENDOR_AGNOSTIC_PROGRAM §4 item 4) — the
+                    # Floor/chat read this flag to render "Out of allowance"
+                    # instead of a red Blocked/Error pill.
+                    session['_allowance_exhausted'] = True
+                    turn_error_seen = True
+                elif ev.type == EventType.WARN:
+                    # Advisory, not a failure: the run continues past it, so it
+                    # must not carry the word "error" (a healthy codex turn read
+                    # as a failed one -- see _CODEX_NOTICE_PATTERNS). Mirrors the
+                    # Gemini reader's own WARN branch, which this one lacked.
+                    _severity = ev.payload.get('severity') or 'notice'
+                    _wtext = ev.payload.get('text', line)
+                    _label = f"[{runtime.name} {_severity}] "
+                    if (runtime.name == 'codex' and _severity == 'notice'
+                            and _CODEX_HOOK_TRUST_RE.search(str(_wtext or ''))):
+                        # Hook-trust bypass notice: fires every turn (required by
+                        # guardrail_hooks.py:318). Raw capture above keeps the
+                        # signal every occurrence; only the repeat CHAT line is
+                        # muted, once per mc_session_id, in-process (see
+                        # _CODEX_HOOK_TRUST_NOTICE_SHOWN, DATA_DIR pollution rule).
+                        if handle.mc_session_id in _CODEX_HOOK_TRUST_NOTICE_SHOWN:
+                            _wtext = None
+                        else:
+                            _CODEX_HOOK_TRUST_NOTICE_SHOWN.add(handle.mc_session_id)
+                            _wtext = ('Codex hook-trust review bypassed so Clayrune '
+                                       'guardrail hooks can run (expected).')
+                    if _wtext is not None:
+                        session['log_lines'].append(_label + _flatten_error_text(_wtext))
+                        session['last_output_time'] = _time.time()
+                elif ev.type in (EventType.ERROR, EventType.AUTH_ERROR):
+                    turn_error_seen = True
+                    session['log_lines'].append(
+                        f"[{runtime.name} error] "
+                        f"{_flatten_error_text(ev.payload.get('text', line))}")
+                    session['last_output_time'] = _time.time()
+                    if runtime.name == 'codex' and ev.payload.get('model_rejected'):
+                        # Read back in `finally` below: this turn gets ONE labelled
+                        # retry without -m (CodexRuntime.retry_without_model).
+                        session['_codex_model_refused'] = ev.payload['model_rejected']
+                else:
+                    if ev.type == EventType.TOOL_RESULT:
+                        tool_calls += 1
+                    raw_text = (ev.payload.get('text') or
+                                (json.dumps(ev.payload) if ev.payload else line))
+                    if raw_text:
+                        other_output = True
+                        session['log_lines'].append(raw_text)
+                        session['last_output_time'] = _time.time()
+            except Exception as exc:
+                _log(f'[runtime:{runtime.name}] failed to handle stream event: {exc}')
     except Exception as e:
         if session.get('proc') is proc:
             session['log_lines'].append(f"[stream error: {e}]")
@@ -6751,6 +6726,9 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             rc = proc.wait()
         except Exception:
             rc = -1
+        if cleanup is not None:
+            cleanup()
+
         def _finish_terminal():
             nonlocal capture_failed
             if session.get('proc') is not proc:
@@ -6859,10 +6837,14 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 )
                 _cb('on_process_exit', exit_ev)
 
+        def _finish_owned_terminal():
+            with _runtime_turn_ownership.finalizing(handle):
+                _finish_terminal()
+
         if terminal_gate is None:
-            _finish_terminal()
+            _finish_owned_terminal()
         else:
-            terminal_gate.submit(_finish_terminal)
+            terminal_gate.submit(_finish_owned_terminal)
 
 
 def _mode_a_interrupt(handle: SessionHandle) -> None:
@@ -7368,12 +7350,16 @@ class QwenRuntime(AgentRuntime):
             # — same split CodexRuntime's own 0.133-schema branch makes.
             text_parts: List[str] = []
             tool_blocks: List[Dict[str, Any]] = []
-            for block in msg.get('message', {}).get('content', []):
+            message = msg.get('message')
+            content = message.get('content') if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                return None
+            for block in content:
                 if not isinstance(block, dict):
                     continue
                 bt = block.get('type', '')
-                if bt == 'text':
-                    text_parts.append(block.get('text', ''))
+                if bt == 'text' and isinstance(block.get('text'), str):
+                    text_parts.append(block['text'])
                 elif bt == 'tool_use':
                     tool_blocks.append({
                         'type': 'tool_use',
@@ -7425,10 +7411,14 @@ class QwenRuntime(AgentRuntime):
 
         if msg_type == 'result':
             if msg.get('is_error'):
-                err = msg.get('error') or {}
-                err_text = (err.get('message') or msg.get('result')
+                err = msg.get('error')
+                detail = err.get('message') if isinstance(err, dict) else err
+                err_text = (detail or msg.get('result')
                            or 'Qwen Code reported an error with no message')
-                _exhausted = _allowance_state.detect('qwen', msg)
+                allowance_event = msg if isinstance(err, dict) else {
+                    **msg, 'error': {'message': str(err_text)},
+                }
+                _exhausted = _allowance_state.detect('qwen', allowance_event)
                 if _exhausted:
                     return AgentEvent(
                         type=EventType.ALLOWANCE_EXHAUSTED, provider='qwen',
@@ -8352,11 +8342,8 @@ class CodexRuntime(AgentRuntime):
     # see model_supported() override below).
     _LEGACY_MODEL_IDS = frozenset({'gpt-5.4', 'gpt-5.4-mini'})
 
-    # Per-file mtime cache for model_choices(), keyed by path so switching
-    # (or monkeypatching, in tests) the cache path never serves another
-    # path's stale entry. Class-level: the catalog is process-global, not
-    # per-instance.
-    _model_cache: Dict[str, Tuple[float, List[Tuple[str, str]]]] = {}
+    # The model picker and launch validator share the CLI's cache by path.
+    _model_cache: dict[str, tuple[tuple[int, int, int], list]] = {}
     _model_cache_missing_logged: set = set()
 
     # codex has no gemini-style `-latest` / claude-style bare-alias handle —
@@ -8413,70 +8400,55 @@ class CodexRuntime(AgentRuntime):
             return display_name
         return '-'.join(parts[:2]) + ' ' + ' '.join(parts[2:])
 
-    def model_choices(self) -> List[Tuple[str, str]]:
-        """Live Codex model catalog, read from the CLI's own cache file so the
-        picker stops drifting behind hand-maintained MODEL_CHOICES. Falls
-        back to the static list on any missing/unreadable/malformed file."""
-        from mc.core import _log
+    def _read_model_cache(self) -> Optional[list]:
         path = self._model_cache_path()
-        try:
-            mtime = path.stat().st_mtime
-        except OSError as e:
-            # No Codex CLI (or never run) is a normal install state, and this
-            # runs on every picker render and cross-provider mismatch check —
-            # log once per path, not once per call.
-            if str(path) not in CodexRuntime._model_cache_missing_logged:
-                CodexRuntime._model_cache_missing_logged.add(str(path))
-                _log(f"[codex] models cache unavailable ({path}): {e}; using static catalog")
-            return list(self.MODEL_CHOICES)
         key = str(path)
-        cached = CodexRuntime._model_cache.get(key)
-        if cached is not None and cached[0] == mtime:
-            return list(cached[1])
         try:
+            st = path.stat()
+            identity = (st.st_mtime_ns, st.st_size, st.st_ino)
+            cached = self._model_cache.get(key)
+            if cached is not None and cached[0] == identity:
+                return cached[1]
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             entries = data.get('models') if isinstance(data, dict) else None
             if not isinstance(entries, list):
                 raise ValueError('models field missing or not a list')
-            listed = [m for m in entries
-                      if isinstance(m, dict) and m.get('visibility') == 'list'
-                      and m.get('slug')]
-            listed.sort(key=lambda m: m.get('priority', 0))
-            choices = [
-                (str(m['slug']), self._label_from_display_name(str(m.get('display_name') or m['slug'])))
-                for m in listed
-            ]
-            if not choices:
-                raise ValueError('no list-visibility models in cache')
-        except Exception as e:
-            _log(f"[codex] models cache read/parse failed ({path}): {e}")
-            return list(self.MODEL_CHOICES)
-        CodexRuntime._model_cache[key] = (mtime, choices)
-        return list(choices)
+        except FileNotFoundError as exc:
+            if key not in self._model_cache_missing_logged:
+                self._model_cache_missing_logged.add(key)
+                _log(f'[codex] models cache unavailable ({path}): {exc}')
+            return None
+        except Exception as exc:
+            _log(f'[codex] models cache read/parse failed ({path}): {exc}')
+            return None
+        self._model_cache[key] = (identity, entries)
+        return entries
+
+    def model_choices(self) -> List[Tuple[str, str]]:
+        """Return the CLI's live catalog, falling back to the static list."""
+        return self.discover_models() or list(self.MODEL_CHOICES)
 
     def discover_models(self) -> Optional[List[Tuple[str, str]]]:
         """Live cache only -- None on anything model_choices() would have
         fallen back from (missing/unreadable/malformed file), never the
         static MODEL_CHOICES guess. See AgentRuntime.discover_models()."""
-        path = self._model_cache_path()
-        try:
-            with open(path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            entries = data.get('models') if isinstance(data, dict) else None
-            if not isinstance(entries, list):
-                return None
-            listed = [m for m in entries
-                      if isinstance(m, dict) and m.get('visibility') == 'list'
-                      and m.get('slug')]
-            listed.sort(key=lambda m: m.get('priority', 0))
-            choices = [
-                (str(m['slug']), self._label_from_display_name(str(m.get('display_name') or m['slug'])))
-                for m in listed
-            ]
-            return choices or None
-        except Exception:
+        entries = self._read_model_cache()
+        if entries is None:
             return None
+        listed = [m for m in entries
+                  if isinstance(m, dict) and m.get('visibility') == 'list'
+                  and m.get('slug')]
+        try:
+            listed.sort(key=lambda m: m.get('priority', 0))
+        except TypeError as exc:
+            _log(f'[codex] models cache contains incompatible priorities: {exc}')
+            return None
+        choices = [
+            (str(m['slug']), self._label_from_display_name(str(m.get('display_name') or m['slug'])))
+            for m in listed
+        ]
+        return choices or None
 
     _bin_cache: Optional[str] = None
     _npx_fallback: bool = False
@@ -8778,8 +8750,8 @@ class CodexRuntime(AgentRuntime):
             # Only the shell call is worth surfacing early — it is what the
             # user watches while it runs. Everything else would double up with
             # the item.completed event.
-            item = msg.get('item') or {}
-            if item.get('type') == 'command_execution':
+            item = msg.get('item')
+            if isinstance(item, dict) and item.get('type') == 'command_execution':
                 return AgentEvent(
                     type=EventType.TOOL_USE, provider='codex',
                     session_id=session_id, mc_session_id=mc_session_id,
@@ -8793,7 +8765,9 @@ class CodexRuntime(AgentRuntime):
                 )
             return None
         if etype == 'item.completed':
-            item = msg.get('item') or {}
+            item = msg.get('item')
+            if not isinstance(item, dict):
+                return None
             item_type = item.get('type', '')
             # ── codex 0.151 schema ──────────────────────────────────────
             if item_type in ('agent_message', 'assistant_message'):
@@ -8967,9 +8941,9 @@ class CodexRuntime(AgentRuntime):
                     session_id=session_id, mc_session_id=mc_session_id,
                     timestamp=_now_iso(), payload=_exhausted, raw=msg,
                 )
-            err_msg = (msg.get('message') or
-                       (msg.get('error') or {}).get('message', '') or
-                       str(msg))
+            error = msg.get('error')
+            detail = error.get('message') if isinstance(error, dict) else error
+            err_msg = str(msg.get('message') or detail or msg)
             if etype == 'error' and codex_error_is_notice(err_msg):
                 return AgentEvent(
                     type=EventType.WARN, provider='codex',
@@ -9554,15 +9528,9 @@ class CodexRuntime(AgentRuntime):
         visibility -- hidden entries are still servable), None when the file
         is missing/unreadable/empty. That file is fetched per account by the
         CLI itself, so it is the one authority we do not second-guess."""
-        try:
-            with open(self._model_cache_path(), 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            entries = data.get('models') if isinstance(data, dict) else None
-            slugs = {str(m['slug']) for m in (entries or [])
-                     if isinstance(m, dict) and m.get('slug')}
-            return slugs or None
-        except Exception:
-            return None
+        slugs = {str(m['slug']) for m in self._read_model_cache() or []
+                 if isinstance(m, dict) and m.get('slug')}
+        return slugs or None
 
     def _gate_model(self, model: str) -> Tuple[str, str]:
         """(model to pass, warning) -- never hand `-m` a slug the installed
@@ -10153,6 +10121,7 @@ class OpenCodeRuntime(AgentRuntime):
     _ANNOUNCED_CAP = 512
 
     def __init__(self) -> None:
+        super().__init__()
         self._announced: Dict[str, str] = {}
         self._announced_lock = threading.Lock()
 
@@ -10480,9 +10449,7 @@ class OpenCodeRuntime(AgentRuntime):
                        attachments: Optional[List[str]] = None) -> None:
         vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
-        old_proc = session.get('proc')
-        if old_proc and old_proc.poll() is None:
-            _kill_pid(old_proc.pid)
+        _runtime_turn_ownership.retire(handle, _kill_pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
         # Mode A respawns the CLI per turn — --model must be re-stated
@@ -10676,8 +10643,8 @@ class GooseRuntime(AgentRuntime):
                 if not isinstance(block, dict):
                     continue
                 btype = block.get('type', '')
-                if btype == 'text':
-                    texts.append(block.get('text', ''))
+                if btype == 'text' and isinstance(block.get('text'), str):
+                    texts.append(block['text'])
                 elif btype == 'tool_use':
                     tool_blocks.append({'type': 'tool_use',
                                        'name': block.get('name', ''),
@@ -10688,7 +10655,7 @@ class GooseRuntime(AgentRuntime):
                                   session_id=session_id, mc_session_id=mc_session_id,
                                   timestamp=_now_iso(),
                                   payload={'blocks': tool_blocks}, raw=msg)
-            text = '\n'.join(texts).strip() or str(msg.get('content', ''))
+            text = content if isinstance(content, str) else '\n'.join(texts).strip()
             return (AgentEvent(type=EventType.ASSISTANT_TEXT, provider='goose',
                                session_id=session_id, mc_session_id=mc_session_id,
                                timestamp=_now_iso(), payload={'text': text}, raw=msg)
@@ -10843,9 +10810,7 @@ class GooseRuntime(AgentRuntime):
                        attachments: Optional[List[str]] = None) -> None:
         vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
-        old_proc = session.get('proc')
-        if old_proc and old_proc.poll() is None:
-            _kill_pid(old_proc.pid)
+        _runtime_turn_ownership.retire(handle, _kill_pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
         # Restate model and the selected MCP set on every respawn. The composed
@@ -11116,77 +11081,50 @@ class AiderRuntime(AgentRuntime):
             raise CLINotInstalledError("aider not installed — run: pip install aider-chat")
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
         cmd = self.build_command(model=model)
-        import tempfile
-        if system_prompt:
-            tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
-                                              prefix='mc_aider_ctx_',
-                                              delete=False, encoding='utf-8')
-            tmp.write(system_prompt)
-            tmp.close()
-            cmd.extend(['--read', tmp.name])
-        # aider has no stdin form for the message, but does have a file form
-        # (`--message-file`/`-f`) — use that instead of `--message TEXT` so a
-        # long task never sits on argv, same reasoning as --read above.
-        msg_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
-                                              prefix='mc_aider_msg_',
-                                              delete=False, encoding='utf-8')
-        msg_tmp.write(task)
-        msg_tmp.close()
-        cmd.extend(['--message-file', msg_tmp.name])
-        return _mode_a_dispatch(
-            self, cmd, task, project_path, project_id, task,
-            mc_sid, session_dict, incognito, env_extra, callbacks,
-            register_process, prompt_via_stdin=False,
-            system_prompt=system_prompt,
-        )
+        from mc.aider_prompt_files import prepare
+        cleanup = prepare(cmd, task, system_prompt)
+        try:
+            return _mode_a_dispatch(
+                self, cmd, task, project_path, project_id, task,
+                mc_sid, session_dict, incognito, env_extra, callbacks,
+                register_process, prompt_via_stdin=False,
+                system_prompt=system_prompt, cleanup=cleanup,
+            )
+        except BaseException:
+            cleanup()
+            raise
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
         vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
-        old_proc = session.get('proc')
-        if old_proc and old_proc.poll() is None:
-            _kill_pid(old_proc.pid)
+        _runtime_turn_ownership.retire(handle, _kill_pid)
         # Re-state --model: aider is respawned per turn and the flag is not
         # sticky, so without this the chat drops to aider's default model.
         cmd = self.build_command(model=self.session_model(handle))
-        # Re-inject the dispatch-time system context via --read (aider keeps
-        # --read files in context). The dispatch temp file isn't reused across
-        # turns, so write a fresh one from the stashed _system_prompt.
-        import tempfile
-        sys_prompt = (session.get('_system_prompt') or '').strip()
-        if sys_prompt:
-            tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
-                                              prefix='mc_aider_ctx_',
-                                              delete=False, encoding='utf-8')
-            tmp.write(sys_prompt)
-            tmp.close()
-            cmd.extend(['--read', tmp.name])
         log_lines = session.get('log_lines') or []
         tail = '\n'.join(log_lines[-20:])[-3000:].strip()
         msg = (f"[Prior turn excerpt for context only — do not re-execute]\n"
                f"{tail}\n\n---\n\n{message}") if tail else message
-        # --message-file, not --message: msg can carry a full turn's tail plus
-        # the new message, same argv-length risk as dispatch()'s task.
-        msg_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
-                                              prefix='mc_aider_msg_',
-                                              delete=False, encoding='utf-8')
-        msg_tmp.write(msg)
-        msg_tmp.close()
-        cmd.extend(['--message-file', msg_tmp.name])
-        mc_sid = handle.mc_session_id
-        env = os.environ.copy()
-        vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
-        cmd = vendor_fence.prepare_command(self.name, session, cmd, handle.project_path, env)
-        proc = spawn_engine_proc(
-            cmd, session_id=mc_sid, engine=self.name, cwd=handle.project_path, env=env)
-        session['proc'] = proc
-        session['status'] = 'running'
-        session['process_alive'] = True
-        session['last_output_time'] = _time.time()
-        session['last_status_change_time'] = _time.time()
-        threading.Thread(target=_mode_a_reader, args=(proc, handle, self),
-                         daemon=True, name=f'aider-reader-{mc_sid[:8]}').start()
+        from mc.aider_prompt_files import prepare
+        cleanup = prepare(cmd, msg, (session.get('_system_prompt') or '').strip())
+        try:
+            mc_sid = handle.mc_session_id
+            env = os.environ.copy()
+            vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
+            cmd = vendor_fence.prepare_command(self.name, session, cmd, handle.project_path, env)
+            proc = spawn_engine_proc(
+                cmd, session_id=mc_sid, engine=self.name, cwd=handle.project_path, env=env)
+            session['proc'] = proc
+            session['status'] = 'running'
+            session['process_alive'] = True
+            session['last_output_time'] = _time.time()
+            session['last_status_change_time'] = _time.time()
+            threading.Thread(target=_mode_a_reader, args=(proc, handle, self, cleanup),
+                             daemon=True, name=f'aider-reader-{mc_sid[:8]}').start()
+        except BaseException:
+            cleanup()
+            raise
 
     def interrupt(self, handle: SessionHandle) -> None:
         _mode_a_interrupt(handle)
@@ -11202,22 +11140,11 @@ class AiderRuntime(AgentRuntime):
         if not bin_path:
             return None
         cmd = self.build_command(model=model)
-        import tempfile
-        if system_prompt:
-            tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
-                                              prefix='mc_aider_ctx_',
-                                              delete=False, encoding='utf-8')
-            tmp.write(system_prompt)
-            if stdin_text:
-                tmp.write(f"\n\n---\n\n{stdin_text}")
-            tmp.close()
-            cmd.extend(['--read', tmp.name])
-        msg_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
-                                              prefix='mc_aider_msg_',
-                                              delete=False, encoding='utf-8')
-        msg_tmp.write(prompt)
-        msg_tmp.close()
-        cmd.extend(['--message-file', msg_tmp.name])
+        from mc.aider_prompt_files import prepare
+        context = system_prompt
+        if context and stdin_text:
+            context += f"\n\n---\n\n{stdin_text}"
+        cleanup = prepare(cmd, prompt, context)
         try:
             r = subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -11227,6 +11154,8 @@ class AiderRuntime(AgentRuntime):
             )
         except Exception:
             return None
+        finally:
+            cleanup()
         return OneshotResult(text=(r.stdout or '').strip())
 
     def explain_exit_error(self, rc: int, log_tail: str) -> Optional[str]:
@@ -11338,8 +11267,10 @@ class KiroRuntime(AgentRuntime):
         error = msg.get('error')
         result = msg.get('result')
         method = msg.get('method', '')
-        params = msg.get('params') or {}
-        session_id = params.get('session_id') or (result or {}).get('session_id') if isinstance(result, dict) else None
+        raw_params = msg.get('params')
+        params = raw_params if isinstance(raw_params, dict) else {}
+        result_session = result.get('session_id') if isinstance(result, dict) else None
+        session_id = params.get('session_id') or result_session
 
         if error:
             err_msg = (error.get('message', str(error))
@@ -11356,7 +11287,7 @@ class KiroRuntime(AgentRuntime):
                                payload={'text': str(text)}, raw=msg)
                     if text else None)
         if method in ('session/new', 'session/load'):
-            sid = (result or {}).get('session_id') or session_id if isinstance(result, dict) else session_id
+            sid = result_session or session_id
             return AgentEvent(type=EventType.INIT, provider='kiro',
                               session_id=sid, mc_session_id=mc_session_id,
                               timestamp=_now_iso(),
@@ -11489,9 +11420,7 @@ class KiroRuntime(AgentRuntime):
                        attachments: Optional[List[str]] = None) -> None:
         vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
-        old_proc = session.get('proc')
-        if old_proc and old_proc.poll() is None:
-            _kill_pid(old_proc.pid)
+        _runtime_turn_ownership.retire(handle, _kill_pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
         cmd = self.build_command()

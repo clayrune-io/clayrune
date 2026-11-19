@@ -204,7 +204,7 @@ def test_invalid_incognito_is_not_coerced_before_bridge_validation(env):
     assert not runtime.calls
 
 
-def test_bridge_callback_failures_are_isolated_and_globals_unchanged(env):
+def test_bridge_callback_failures_are_isolated_and_globals_unchanged(env, capsys):
     ar, runtime, sessions, tmp = env
     seen = []
     global_callbacks = ar._RUNTIME_CALLBACKS
@@ -239,6 +239,9 @@ def test_bridge_callback_failures_are_isolated_and_globals_unchanged(env):
         injected_callbacks['on_process_exit'](None, session)
         assert seen == ['prior-init', 'prior-exit']
         assert session['_lifecycle_errors'] == ['bridge-init', 'bridge-exit']
+        output = capsys.readouterr().out
+        assert '[runtime-lifecycle] native bind failed: bridge-init' in output
+        assert '[runtime-lifecycle] terminal write failed: bridge-exit' in output
         assert ar._RUNTIME_CALLBACKS is global_callbacks
         assert ar._RUNTIME_CALLBACKS['on_init'] is recording_init
         assert ar._RUNTIME_CALLBACKS['on_process_exit'] is recording_exit

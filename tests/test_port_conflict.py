@@ -23,6 +23,7 @@ from __future__ import annotations
 import importlib
 import json
 import socket
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -425,3 +426,25 @@ def test_bind_loopback_probe_uses_loopback_and_is_not_blocked_by_wildcard_free_p
     srv.PORT = 0
     srv._check_port_conflict()
     assert seen and seen[0] == '127.0.0.1', seen
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows netstat diagnostics')
+def test_banner_uses_exact_local_listening_port(srv, monkeypatch, logged):
+    from subprocess import CompletedProcess
+
+    with _Listener() as listener:
+        srv.PORT = listener.port
+        rows = (
+            f'TCP 0.0.0.0:{srv.PORT} 0.0.0.0:0 LISTENING 111',
+            f'TCP [::]:{srv.PORT} [::]:0 LISTENING 112',
+            f'TCP 0.0.0.0:{srv.PORT}0 0.0.0.0:0 LISTENING 113',
+            f'TCP 0.0.0.0:80 127.0.0.1:{srv.PORT} LISTENING 114',
+        )
+        def run(args, **kwargs):
+            return CompletedProcess(args, 0, stdout='\n'.join(rows) if args[0] == 'netstat' else '')
+
+        monkeypatch.setattr(srv.subprocess, 'run', run)
+        with pytest.raises(SystemExit):
+            srv._check_port_conflict()
+    holders = next(line for msg in logged for line in msg.splitlines() if 'Held by PID(s)' in line)
+    assert holders.strip() == 'Held by PID(s): 111, 112'
