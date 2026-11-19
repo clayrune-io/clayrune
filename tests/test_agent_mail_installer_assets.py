@@ -116,3 +116,16 @@ def test_mac_analysis_uses_the_checked_entrypoint_and_manifests():
     options = {kw.arg: kw.value for kw in call.keywords}
     assert isinstance(options['datas'], ast.Name) and options['datas'].id == 'datas'
     assert isinstance(options['hiddenimports'], ast.Name) and options['hiddenimports'].id == 'hidden'
+
+
+@pytest.mark.parametrize('path', [
+    *sorted((ROOT / 'data/skills/builtin').glob('*/SKILL.md')),
+    ROOT / 'mc/desk_connect/mcp_catalogue.json',
+], ids=lambda path: str(path.relative_to(ROOT)))
+def test_mac_datas_includes_builtin_skills_and_mcp_catalogue(path, mac_data):
+    relative = path.relative_to(ROOT)
+    assert any(
+        path.is_relative_to(src) and Path(dest) / path.relative_to(src) == relative
+        if src.is_dir() else path == src and Path(dest) / src.name == relative
+        for src, dest in mac_data
+    )

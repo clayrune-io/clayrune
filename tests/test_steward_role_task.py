@@ -210,8 +210,11 @@ def test_skill_is_an_entry_to_packaged_canonical_resource(staged):
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id == 'R':
                 if all(isinstance(a, ast.Constant) for a in call.args):
                     entries.append((tuple(a.value for a in call.args), ast.literal_eval(destination)))
-    assert (('data', 'skills', 'builtin', 'mc-steward'), 'data/skills/builtin/mc-steward') in entries
-    assert (staged / SKILL / 'CYCLE_DIRECTIVE.md').is_file()
+    directive = SKILL / 'CYCLE_DIRECTIVE.md'
+    assert any(directive.is_relative_to(Path(*source))
+               and Path(destination) / directive.relative_to(Path(*source)) == directive
+               for source, destination in entries)
+    assert (staged / directive).is_file()
 
 
 def test_builtin_checksum_preserves_local_edits_without_replacing_contract(staged, tmp_path, monkeypatch):

@@ -101,8 +101,8 @@ datas = [
     # startup (character_routes._install_builtin_characters). Leave it out
     # and a fresh frozen install never gets the base agent.
     (R('data', 'agents', 'builtin'), 'data/agents/builtin'),
-    # Canonical cycle text must be available without native skill discovery.
-    (R('data', 'skills', 'builtin', 'mc-steward'), 'data/skills/builtin/mc-steward'),
+    # Shipped skills are installed on startup, including canonical cycle text.
+    (R('data', 'skills', 'builtin'), 'data/skills/builtin'),
     # server.py's _install_guardrail_hooks_on_boot loads this by FILE PATH
     # (importlib.util.spec_from_file_location against _APP_DIR), not as a
     # `mc.*` package import PyInstaller's Analysis would discover on its own —
@@ -122,6 +122,7 @@ datas = [
     # app's Connect-by-address recognises no service (the loader fails closed). Neither was
     # listed before slice P1 (docs/DESK_SERVICE_PROFILES_SPEC.md).
     (R('mc', 'desk_connect', 'registry.json'), 'mc/desk_connect'),
+    (R('mc', 'desk_connect', 'mcp_catalogue.json'), 'mc/desk_connect'),
     (R('mc', 'desk_connect', 'profiles'), 'mc/desk_connect/profiles'),
 ]
 
