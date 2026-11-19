@@ -239,6 +239,24 @@ def test_mode_a_recovery_rechecks_owner_after_context_build(tmp_path, monkeypatc
     assert not session.get('_resume_recovery_attempted')
 
 
+def test_handoff_keeps_native_and_streaming_children_with_server_jobs(monkeypatch):
+    from mc.blueprints import agent_routes as routes
+
+    jobs = {'native', 'streaming'}
+    sessions = {
+        sid: {'session_id': sid, 'project_id': 'sample', 'status': status,
+              '_notify_session': 'parent', 'log_lines': []}
+        for sid, status in [('native', 'completed'), ('streaming', 'idle'), ('finished', 'completed')]
+    }
+    monkeypatch.setattr(routes, 'agent_sessions', sessions)
+    monkeypatch.setattr(routes._agent_jobs, 'open_job_count', lambda sid: int(sid in jobs))
+    monkeypatch.setattr(routes._agent_jobs, 'describe_open_jobs', lambda sid: 'test job')
+    assert all(routes._hold_notify_for_agent_jobs(sessions[sid]) for sid in jobs)
+    assert {child['session_id'] for child in routes._in_flight_children('sample', 'parent')} == jobs
+    jobs.clear()
+    assert routes._in_flight_children('sample', 'parent') == []
+
+
 def test_process_registration_logs_project_lookup_failure(monkeypatch):
     from types import SimpleNamespace
     from mc.blueprints import agent_routes as routes

@@ -11,6 +11,7 @@
 - R1 follow-up. Provider settings are staged with private permissions. Startup loads valid provider rows even when a neighboring row is corrupt.
 - R49 follow-up. Follow-up and interrupt report unresolved launches as unknown and a missing Gemini binary as a refusal.
 - R27 follow-up. Resume recovery rechecks the process and turn under the project lock before claiming a fresh launch.
+- R44 follow-up. Rollover retains children with server jobs still open after their provider turn ends.
 
 ## [2026-11-18] - Workflow canvas: connection drags start at the exact centre of unconnected port dots
 

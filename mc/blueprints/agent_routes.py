@@ -9518,6 +9518,11 @@ _JOB_DEFERRED_KEY = '_notify_deferred_job_since'
 _JOB_INTERIM_KEY = '_notify_job_interim_sent'
 
 
+def _open_agent_job_count(session):
+    sid = session.get('session_id', '')
+    return _agent_jobs.open_job_count(sid) if sid else 0
+
+
 def _hold_notify_for_agent_jobs(session):
     """True when the spawner callback must wait for a still-running agent
     job instead of firing now. Call sites: both places `_log_agent_completion`
@@ -9525,7 +9530,7 @@ def _hold_notify_for_agent_jobs(session):
     body and the exception-safety backstop in the wrapper) — see
     `_notify_spawner_unless_jobs_open`, which both actually call."""
     sid = session.get('session_id', '')
-    n = _agent_jobs.open_job_count(sid) if sid else 0
+    n = _open_agent_job_count(session)
     if n <= 0:
         session.pop(_JOB_DEFERRED_KEY, None)
         return False
@@ -12378,7 +12383,8 @@ def _in_flight_children(project_id, session_id):
         if (s.get('_notify_session') or '').strip() != session_id:
             continue
         status = s.get('status')
-        if status != 'running' and not (status == 'idle' and _bg_tasks.held_tasks(s)):
+        if not (status == 'running' or (status == 'idle' and _bg_tasks.held_tasks(s))
+                or _open_agent_job_count(s) > 0):
             continue
         out.append({'session_id': s.get('session_id', ''),
                     'task': (s.get('task') or '')[:200],
