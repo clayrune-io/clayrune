@@ -4917,6 +4917,7 @@ class GeminiRuntime(AgentRuntime):
         # chat — it streams faster than a turn-end cleanup could remove it.
         turn_text_parts: List[str] = []
         _mc_suppressing = False
+        mc_fence_tail = ''
         # Empty-turn detection (mc/empty_turn.py) — same rule as _mode_a_reader.
         tool_calls = 0
         turn_error_seen = False
@@ -4979,7 +4980,9 @@ class GeminiRuntime(AgentRuntime):
                 if ev and ev.type == EventType.ASSISTANT_TEXT:
                     _txt = ev.payload.get('text', line)
                     turn_text_parts.append(_txt)
-                    if not _mc_suppressing and '```mc:' in ''.join(turn_text_parts):
+                    fence_window = mc_fence_tail + _txt
+                    mc_fence_tail = fence_window[-5:]
+                    if not _mc_suppressing and '```mc:' in fence_window:
                         # An MC Tool Protocol block has started: suppress the
                         # raw block (and anything after it) from the chat. It
                         # is parsed and acted on at turn end. Keep the part of
