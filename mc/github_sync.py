@@ -23,7 +23,7 @@ import subprocess
 import threading
 import uuid
 
-from mc.core import record_backlog_status_change
+from mc.core import _log, record_backlog_status_change
 
 # ── Injected helpers (set by register()) ─────────────────────────────────────
 
@@ -428,8 +428,9 @@ def _push_items(project: dict, repo: str) -> int:
                 # single save is what structurally prevents the runaway.
                 try:
                     _save_project(project_id, project)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _log(f"[github-sync] {project_id}: could not save link to issue #{new_num}: {exc}",
+                         flush=True)
 
                 priority = item.get('priority', 'normal')
                 if priority != 'normal':
