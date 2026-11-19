@@ -49,6 +49,24 @@ def _snapshot(**overrides):
     return body
 
 
+def test_presence_heartbeat_prunes_only_expired_entries(client, monkeypatch):
+    from types import SimpleNamespace
+
+    now = 1000
+    presence = {('proj', 'expired'): now - push_mobile.PRESENCE_FRESH_SEC,
+                ('proj', 'fresh'): now - 1}
+    monkeypatch.setattr(push_mobile, '_presence_state', presence)
+    monkeypatch.setattr(push_mobile, '_time', SimpleNamespace(time=lambda: now))
+
+    reply = client.post('/api/presence', json={'watching': [
+        {'project_id': 'proj', 'session_id': 'new'},
+    ]})
+
+    assert reply.status_code == 200
+    assert reply.get_json()['touched'] == 1
+    assert presence == {('proj', 'fresh'): now - 1, ('proj', 'new'): now}
+
+
 def test_post_writes_one_line_outside_data_projects(client, tmp_path):
     r = client.post('/api/diag/viewport', json=_snapshot())
     assert r.status_code == 200

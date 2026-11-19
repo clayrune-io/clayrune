@@ -1338,6 +1338,10 @@ def api_presence():
     """
     body = request.get_json(silent=True) or {}
     watching = body.get('watching') or []
+    cutoff = _time.time() - PRESENCE_FRESH_SEC
+    with _presence_lock:
+        for key in [key for key, seen in _presence_state.items() if seen <= cutoff]:
+            del _presence_state[key]
     n = 0
     if isinstance(watching, list):
         for w in watching:
