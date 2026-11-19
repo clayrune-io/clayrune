@@ -2436,6 +2436,7 @@ def agent_providers():
         in_use = _providers_in_use()
     except Exception:
         in_use = {default_name}
+    quota_by_provider = _quota_failures_by_provider()
     for rt in _agent_runtime.available_runtimes():
         try:
             h = rt.health_check()
@@ -2502,15 +2503,6 @@ def agent_providers():
                       for mid, label in rt.model_choices()]
         except Exception:
             models = []
-        # MC-934: recent quota/rate-limit failures per model, read from
-        # clayrune.log (MC-935's [runtime-error] lines) — the composer's
-        # Model picker uses this to warn on a model that has already choked,
-        # instead of the user finding out after a doomed dispatch. A pure
-        # local file read, not a probe — safe on every list load.
-        try:
-            quota_warnings = _recent_quota_failures(rt.name)
-        except Exception:
-            quota_warnings = {}
         # Same test agent_auth_login_remote applies at click time: a captured-URL
         # login (auth_login_argv) or, failing that, a real PTY. The unified
         # provider row shows "Sign in remotely" only where this is true.
@@ -2538,7 +2530,7 @@ def agent_providers():
             'auth_status': h.auth_state.status if h.auth_state else 'unknown',
             'auth_error_text': h.auth_state.error_text if h.auth_state else None,
             'capabilities': caps_dict,
-            'quota_warnings': quota_warnings,
+            'quota_warnings': quota_by_provider.get(rt.name, {}),
             **({'selected_model': sel_model,
                 'selected_model_image_input': rt.image_input_for(sel_model)}
                if sel_model and sel_provider in ('', rt.name) else {}),
@@ -12492,9 +12484,11 @@ _QUOTA_ERROR_HINTS = ('quota', 'rate limit', 'resource_exhausted', '429')
 
 
 def _recent_quota_failures(provider: str, tail_bytes: int = 512_000) -> Dict[str, dict]:
-    """Most recent quota/rate-limit `[runtime-error]` per model for `provider`,
-    read straight from clayrune.log — no new bookkeeping file (per the MC-934
-    brief: MC-935 already put this on disk).
+    return _quota_failures_by_provider(tail_bytes).get(provider, {})
+
+
+def _quota_failures_by_provider(tail_bytes: int = 512_000) -> Dict[str, Dict[str, dict]]:
+    """Most recent quota/rate-limit `[runtime-error]` per provider and model.
 
     Reads at most `tail_bytes` from the END of the file. This log accumulates
     for the life of the install (over 1M lines seen in production) and this
@@ -12502,7 +12496,7 @@ def _recent_quota_failures(provider: str, tail_bytes: int = 512_000) -> Dict[str
     a failure that has scrolled out of the tail window silently stops being
     reported, the same trade any `tail -c` makes.
 
-    Returns {model_id: {'ts': iso_str, 'detail': str}}, last occurrence wins
+    Returns {provider: {model_id: {'ts': iso_str, 'detail': str}}}, last occurrence wins
     (lines are in file order, so scanning forward and overwriting lands on
     the most recent one without needing to reverse the chunk).
     """
@@ -12513,20 +12507,19 @@ def _recent_quota_failures(provider: str, tail_bytes: int = 512_000) -> Dict[str
         size = path.stat().st_size
         with open(path, 'rb') as f:
             f.seek(max(0, size - tail_bytes))
-            chunk = f.read()
-    except Exception:
+            chunk = f.read(tail_bytes)
+    except (OSError, TypeError) as e:
+        _log(f"[quota] could not read provider failures: {e}")
         return {}
-    out: Dict[str, dict] = {}
+    out: Dict[str, Dict[str, dict]] = {}
     for line in chunk.decode('utf-8', errors='replace').splitlines():
         m = _RUNTIME_ERROR_LINE_RE.match(line)
         if not m:
             continue
         prov, model, _sid, ts, detail = m.groups()
-        if prov != provider or not model:
+        if not model or not any(h in detail.lower() for h in _QUOTA_ERROR_HINTS):
             continue
-        if not any(h in detail.lower() for h in _QUOTA_ERROR_HINTS):
-            continue
-        out[model] = {'ts': ts, 'detail': detail[:300]}
+        out.setdefault(prov, {})[model] = {'ts': ts, 'detail': detail[:300]}
     return out
 
 

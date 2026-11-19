@@ -222,3 +222,39 @@ def test_skipped_merge_leaves_a_diagnostic(monkeypatch):
         {'session_id': 'sample', 'project_id': 'project', '_worktree_isolated': True},
         _cold_done=True)
     assert logs == ['[worktree] merge-back skipped for sample: unknown base ref master']
+
+
+def test_provider_list_reads_one_quota_log_tail(tmp_path, monkeypatch):
+    from flask import Flask
+    from types import SimpleNamespace
+    from mc.blueprints import agent_routes as routes
+
+    logs = tmp_path / 'logs'
+    logs.mkdir()
+    path = logs / 'clayrune.log'
+    path.write_text(''.join(
+        f'[runtime-error] provider={provider} model=model session=s1 '
+        f'ts=2026-09-02T10:00:00Z: quota exceeded\n'
+        for provider in ('codex', 'gemini')), encoding='utf-8')
+    health = SimpleNamespace(installed=False, binary_path=None, version=None, install_hint='',
+                             update_hint='', update_reason='', auth_state=None)
+    runtimes = [SimpleNamespace(name=name, display_name=name, health_check=lambda: health)
+                for name in ('codex', 'gemini')]
+    reads = []
+
+    def traced_open(file, mode):
+        reads.append(file)
+        return open(file, mode)
+
+    monkeypatch.setattr(routes, 'open', traced_open, raising=False)
+    monkeypatch.setattr(routes, 'DATA_DIR', tmp_path / 'projects')
+    monkeypatch.setattr(routes, '_merge_registry_path', lambda: None)
+    monkeypatch.setattr(routes, '_providers_in_use', set)
+    monkeypatch.setattr(routes._agent_runtime, 'maybe_set_sole_provider_default', lambda *a: None)
+    monkeypatch.setattr(routes._agent_runtime, 'available_runtimes', lambda: runtimes)
+    monkeypatch.setattr(routes._provider_preferences, 'runtime_metadata', lambda rt: {})
+    monkeypatch.setattr(routes._cli_update, 'provider_summary', lambda name: None)
+    with Flask(__name__).test_request_context():
+        rows = routes.agent_providers().get_json()['providers']
+    assert all('model' in row['quota_warnings'] for row in rows)
+    assert reads == [path]
