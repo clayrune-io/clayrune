@@ -23,7 +23,7 @@ async function run(browser, width) {
   const articles = {};
   const chats = {};
   const posts = [];
-  let refusal = false, release = null, defer = false;
+  let refusal = false, release = null, defer = false, dispatching = false;
   const context = await browser.newContext({ viewport: { width, height: 950 } });
   const page = await context.newPage();
   const errors = [];
@@ -72,6 +72,12 @@ async function run(browser, width) {
       { id: 'agent-' + posts.length, role: 'agent', agent: articles[id].project_id ? 'The Planner' : 'Studio agent',
         text: 'Here is a proposed opening. You can accept it or keep writing.',
         proposal: { status: 'proposed', tab_id: body.tab_id, label: 'Draft', before: body.body, body: replacement } }];
+    if (dispatching) {   // a typed turn that dispatched a child: the saved thread carries the user turn and the card
+      dispatching = false;
+      const card = { session_id: 'child-1', project_id: 'proj-x', agent: 'global:dave', status: 'dispatched' };
+      (chats[id] ||= []).push(turns[0], { id: 'dispatch-child-1', role: 'dispatch', agent: turns[1].agent, text: 'Build the HTML page', dispatch: card }, turns[1]);
+      return J({ turns, agent: { name: turns[1].agent }, thread: chats[id] });
+    }
     (chats[id] ||= []).push(...turns);
     return J({ turns, agent: { name: turns[1].agent } });
   });
@@ -185,10 +191,19 @@ async function run(browser, width) {
   await wait(() => /test newer revision/.test(document.querySelector('[data-article-chat-status]').textContent));
   assert.equal(await editor().textContent(), 'Another project, another draft.');
   assert.equal(await editor().getAttribute('contenteditable'), 'true');
+  // A dispatched child: its card (with the child-session link) shows in this thread, and its saved result is polled in.
+  dispatching = true;
+  await send('Have Dave build the page');
+  assert.equal(await page.locator('[data-dispatch-card="child-1"]').count(), 1);
+  assert.equal(await page.locator('[data-dispatch-card="child-1"] a').getAttribute('href'), '?project=proj-x&session=child-1');
+  chats[other].push({ id: 'result-1', role: 'dispatch_result', agent: 'Dave', text: 'Page built at docs/page.html',
+    dispatch: { session_id: 'child-1', project_id: 'proj-x', status: 'completed' } });
+  await wait(() => [...document.querySelectorAll('[data-dispatch-card]')].some((c) => /Page built at docs\/page.html/.test(c.textContent)));
+  assert.equal(await page.locator('[data-dispatch-card]').count(), 2);
   const realErrors = errors.filter((m) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(m));
   assert.deepEqual(realErrors, []);
   await context.close();
-  console.log(`PASS ${width}: context, proposals, Accept/Undo, stale edits, retry, draft isolation, pop-out, reload, layout`);
+  console.log(`PASS ${width}: context, proposals, dispatch cards, Accept/Undo, stale edits, retry, draft isolation, pop-out, reload, layout`);
 }
 
 const browser = await chromium.launch();
