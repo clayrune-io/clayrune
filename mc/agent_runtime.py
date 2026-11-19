@@ -6457,6 +6457,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
     # blocks once the process exits.
     turn_text_parts: List[str] = []
     _mc_suppressing = False
+    mc_fence_tail = ''
     proc_cost: Dict[str, float] = {}  # this proc's running total_cost_usd
     proc_turns: Dict[str, int] = {}   # turns this proc produced
     # Empty-turn detection (mc/empty_turn.py): this process is one turn, so a
@@ -6567,7 +6568,9 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             elif ev.type == EventType.ASSISTANT_TEXT:
                 _txt = ev.payload.get('text', line)
                 turn_text_parts.append(_txt)
-                if not _mc_suppressing and '```mc:' in ''.join(turn_text_parts):
+                fence_window = mc_fence_tail + _txt
+                mc_fence_tail = fence_window[-5:]
+                if not _mc_suppressing and '```mc:' in fence_window:
                     _mc_suppressing = True
                 if not _mc_suppressing:
                     session['log_lines'].append(_txt)
