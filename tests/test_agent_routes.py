@@ -1783,6 +1783,7 @@ def _dispatch_via_runtime_with_stub(monkeypatch, *, trigger_type,
     from mc.blueprints import agent_routes as ar
     stub = _StubCodexRuntime()
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: stub)
+    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda *a, **k: [])
     before = mc_state.CONFIG.get('codex_unattended_sandbox')
     mc_state.CONFIG['codex_unattended_sandbox'] = codex_unattended_sandbox_config
     try:
@@ -1892,6 +1893,7 @@ def test_dispatch_via_runtime_missing_cli_trips_circuit_breaker_once(monkeypatch
     from mc.blueprints import agent_routes as ar
     stub = _StubMissingCLIRuntime()
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: stub)
+    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda *a, **k: [])
     try:
         with pytest.raises(Exception):
             ar._dispatch_via_runtime(
@@ -1920,6 +1922,7 @@ def test_dispatch_route_missing_cli_returns_install_message_not_generic(client, 
     from mc.blueprints import agent_routes as ar
     stub = _StubMissingCLIRuntime()
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: stub)
+    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda *a, **k: [])
     monkeypatch.setattr(ar, 'load_project', lambda pid: {
         'id': 'proj-missing-cli-2', 'project_path': str(Path(__file__).parent)})
     resp = client.post('/api/project/proj-missing-cli-2/agent/dispatch',

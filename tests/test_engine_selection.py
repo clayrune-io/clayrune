@@ -370,3 +370,33 @@ def test_native_dispatch_refusal_does_not_publish_a_running_session(monkeypatch)
         ar._dispatch_via_runtime({'id': 'fixture'}, 'test', provider_name='codex',
                                  notify_session='parent')
     assert sessions == {} and manager.session_ids == set()
+
+
+def test_native_context_error_never_launches_unruled_session(monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    from types import SimpleNamespace
+    from threading import RLock
+
+    sessions = {}
+    launched = []
+    failed = []
+    runtime = SimpleNamespace(name='codex', dispatch=lambda **kwargs: launched.append(kwargs))
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda provider: runtime)
+    monkeypatch.setattr(ar, 'agent_sessions', sessions)
+    monkeypatch.setattr(ar, 'get_manager', lambda pid: SimpleNamespace(
+        lock=RLock(), session_ids=set(), ensure_guardian=lambda: None))
+    monkeypatch.setattr(ar, '_resolve_runtime_model', lambda *a: '')
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda *a, **kw: None)
+    monkeypatch.setattr(ar, '_persist_runtime_start_failure', failed.append)
+    monkeypatch.setattr(ar, '_log_agent_activity', lambda *a, **kw: None)
+
+    def fail(*a, **kwargs):
+        raise OSError('fixture context read failed')
+
+    monkeypatch.setattr(ar, '_build_agent_context', fail)
+    with pytest.raises(OSError, match='fixture context read failed'):
+        ar._dispatch_via_runtime({'id': 'fixture'}, 'test', provider_name='codex')
+    assert launched == []
+    session, = sessions.values()
+    assert session['status'] == 'error' and not session['process_alive']
+    assert failed == [session]

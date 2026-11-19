@@ -11500,8 +11500,14 @@ def _dispatch_via_runtime(p, task, *, provider_name,
         _native_followup_context.record_build(p, session, task, _prompt_fp)
     except Exception as e:
         _log(f"[runtime-dispatch] context build failed: {e}")
-        if role_context is not None:
-            raise
+        with mgr.lock:
+            if agent_sessions.get(session_id) is session:
+                session['status'] = 'error'
+                session['process_alive'] = False
+                session['last_status_change_time'] = _time.time()
+                session['log_lines'].append('[Dispatch failed: could not build agent context]')
+                _persist_runtime_start_failure(session)
+        raise
 
     # MC-935: the claude path logs its argv (`[dispatch] cmd: ...`) before
     # spawning; nothing on this path — the ONE dispatch entry point shared by
