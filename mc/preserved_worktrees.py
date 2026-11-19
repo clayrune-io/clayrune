@@ -525,12 +525,12 @@ def survey_cached(project: dict, is_live: Callable[[str], bool] | None = None,
     """`survey_project` behind a CACHE_TTL cache with one in-flight survey per
     (project, size) key. Adds `cached` and `age_s` to a copy of the result."""
     key = (project.get('id', ''), bool(include_size))
-    now = time.monotonic()
+    requested_at = now = time.monotonic()
 
     def _hit():
         with _cache_lock:
             ent = _cache.get(key)
-        if ent and not refresh and now - ent[0] < CACHE_TTL:
+        if ent and (not refresh or ent[0] > requested_at) and now - ent[0] < CACHE_TTL:
             return dict(ent[1], cached=True, age_s=round(now - ent[0], 1))
         return None
 

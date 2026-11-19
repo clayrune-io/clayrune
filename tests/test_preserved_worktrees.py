@@ -200,6 +200,26 @@ def test_size_is_opt_in(repo, project):
     assert s['size_complete'] is True
 
 
+def test_forced_refresh_consumes_a_result_completed_while_waiting(monkeypatch):
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+
+    project = {'id': 'refresh-race'}
+    clock = iter((1, 3, 4, 5, 6))
+    monkeypatch.setattr(pw, 'time', SimpleNamespace(monotonic=lambda: next(clock)))
+
+    @contextmanager
+    def flight(key):
+        with pw._cache_lock:
+            pw._cache[key] = (2, {'items': []})
+        yield
+
+    monkeypatch.setattr(pw, '_flight_lock', flight)
+    monkeypatch.setattr(pw, 'survey_project', lambda *a, **kw: pytest.fail('redundant survey'))
+
+    assert pw.survey_cached(project, refresh=True) == {'items': [], 'cached': True, 'age_s': 1}
+
+
 def test_cache_reuses_and_refresh_bypasses(repo, project):
     _commit(_add_wt(repo, '777777777777'))
     first = pw.survey_cached(project)
