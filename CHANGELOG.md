@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-18] - Agent routes and session lifecycle review fixes (MC-1179 pass 02)
+
+- Saved provider settings and incognito project records survive unreadable files (R1, R2, R3). Auth probe failures clear stale sign-in results, process termination reports Windows failures, and the guardian requires two fresh CPU samples from the same process before calling it idle (R4, R9, R13, R58).
+- Fresh and scheduled dispatches check artifact coverage, prompts use the configured operator name and session provider, and disabled memory push skips project reads (R10, R12, R19, R20). Claude dispatch logs omit prompt text (R46).
+- Session scans take a snapshot, superseded Mode A readers skip resume recovery, and rollover lists only children with work still pending (R22, R27, R29, R41, R44). Claude resumes retain their recorded provider across older conversation IDs and restore the visible tail in one parse (R31, R42). Interim report fallbacks keep links and display markers (R34).
+- Malformed request fields return a bad-request response, Claude transcript lookups validate IDs, and native dispatch refuses failed context builds or pending-log writes before spawning (R15, R39, R40, R55). Failed native follow-ups and interrupts report failure, and Claude stop and respawn close stdin outside the project lock (R49, R53).
+- Provider rows share one quota log read, the conversation list shares one history read, and worktree code statistics use one Git reachability walk (R7, R16, R57). Clean worktrees are retried after a cleanup refusal, skipped merges log their reason, and failed removal preserves the branch (R60, R61). Plan cleanup skips unchanged histories and server logs record failures in dispatch, search, documents, usage, router stats, and worktree cache I/O.
+
 ## [2026-11-18] - Workflow canvas: connection drags start at the exact centre of unconnected port dots
 
 - Decorative stop stubs now ignore pointer events, so their dashed line and cap cannot intercept a connection drag. This fixes outcome, otherwise and approval-option ports on the canvas and in the inspector without changing their appearance.
