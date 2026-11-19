@@ -922,10 +922,9 @@ def _save_gc_cache(project: dict, cache: dict) -> None:
 
 def _fingerprint(wt: Path) -> list | None:
     """Cheap (2-subprocess) snapshot of a worktree's mergeability: HEAD sha +
-    dirty flag. Unchanged fingerprint since the last gc pass means the
-    worktree's preserve/merge verdict cannot have changed either, so a repeat
-    pass can skip straight to re-recording it as preserved instead of paying
-    for the full merge_back + remove subprocess sequence again. Measured
+    dirty flag. Only a still-dirty worktree may be preserved from cache.
+    A clean worktree can become mergeable as the base or main checkout changes.
+    Measured
     2026-09-25 against the real 269-worktree registry: 9.12s for this cheap
     check vs 23.19s for the full merge_back+remove sequence on every one."""
     wts = str(wt)
@@ -964,12 +963,16 @@ def gc_stale(project: dict, live_session_ids, merge_first: bool = True,
     """
     live = set(live_session_ids or ())
     ids = list_worktrees(project)
+    existing_ids = set(ids)
     if only_session_ids is not None:
         allowed = set(only_session_ids)
         ids = [sid for sid in ids if sid in allowed]
     out = {'removed': 0, 'merged': 0, 'preserved': []}
-    cache = _load_gc_cache(project) if use_cache else {}
-    cache_dirty = False
+    stored = _load_gc_cache(project) if use_cache else {}
+    cache = {sid: fp for sid, fp in stored.items()
+             if isinstance(fp, list) and len(fp) == 2 and fp[1] is True
+             and sid in existing_ids}
+    cache_dirty = cache != stored
     for sid in ids:
         if sid in live:
             continue
@@ -981,6 +984,8 @@ def gc_stale(project: dict, live_session_ids, merge_first: bool = True,
             if fp is not None and fp == cache[sid]:
                 out['preserved'].append(sid)
                 continue
+            cache.pop(sid)
+            cache_dirty = True
         if merge_first:
             status, _ = merge_back(project, sid)
             if status == 'clean':
@@ -1003,12 +1008,10 @@ def gc_stale(project: dict, live_session_ids, merge_first: bool = True,
         else:
             out['preserved'].append(sid)
             _plog(f"[worktree] gc PRESERVED {sid[:12]} — {msg}")
-            # A deferral is transient (a process will exit); caching its
-            # fingerprint would pin the verdict until HEAD/dirty changed.
-            if use_cache and not msg.startswith('deferred:'):
+            if use_cache and msg == 'refused: worktree has unmerged or uncommitted work':
                 wt = worktree_path(project, sid)
                 fp = _fingerprint(wt) if wt is not None and wt.exists() else None
-                if fp is not None:
+                if fp is not None and fp[1] is True:
                     cache[sid] = fp
                     cache_dirty = True
     if use_cache and cache_dirty:

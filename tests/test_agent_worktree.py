@@ -540,3 +540,22 @@ def test_create_is_idempotent(project):
 def test_remove_of_missing_worktree_is_noop(project):
     ok, _ = w.remove(project, 'never_existed')
     assert ok
+
+
+def test_gc_rechecks_clean_tree_when_external_refusal_clears(tmp_path, monkeypatch):
+    project = {'id': 'sample', 'project_path': str(tmp_path)}
+    monkeypatch.setattr(w, 'list_worktrees', lambda project: ['finished'])
+    monkeypatch.setattr(w, 'worktree_path', lambda *args: tmp_path)
+    monkeypatch.setattr(w, '_fingerprint', lambda path: ['tip', False])
+    monkeypatch.setattr(w, 'merge_back', lambda *args: ('skipped', 'main is dirty'))
+    cache = {}
+    monkeypatch.setattr(w, '_load_gc_cache', lambda project: cache.copy())
+    monkeypatch.setattr(w, '_save_gc_cache', lambda project, data: cache.update(data))
+    removable = iter([False, True])
+
+    def remove(*args, **kwargs):
+        return next(removable), 'refused: worktree has unmerged or uncommitted work'
+
+    monkeypatch.setattr(w, 'remove', remove)
+    assert w.gc_stale(project, (), use_cache=True)['preserved'] == ['finished']
+    assert w.gc_stale(project, (), use_cache=True)['removed'] == 1
