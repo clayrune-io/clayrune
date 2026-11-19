@@ -540,3 +540,66 @@ def test_create_is_idempotent(project):
 def test_remove_of_missing_worktree_is_noop(project):
     ok, _ = w.remove(project, 'never_existed')
     assert ok
+
+
+def test_gc_rechecks_clean_tree_when_external_refusal_clears(tmp_path, monkeypatch):
+    project = {'id': 'sample', 'project_path': str(tmp_path)}
+    monkeypatch.setattr(w, 'list_worktrees', lambda project: ['finished'])
+    monkeypatch.setattr(w, 'worktree_path', lambda *args: tmp_path)
+    monkeypatch.setattr(w, '_fingerprint', lambda path: ['tip', False])
+    monkeypatch.setattr(w, 'merge_back', lambda *args: ('skipped', 'main is dirty'))
+    cache = {}
+    monkeypatch.setattr(w, '_load_gc_cache', lambda project: cache.copy())
+    monkeypatch.setattr(w, '_save_gc_cache', lambda project, data: cache.update(data))
+    removable = iter([False, True])
+
+    def remove(*args, **kwargs):
+        return next(removable), 'refused: worktree has unmerged or uncommitted work'
+
+    monkeypatch.setattr(w, 'remove', remove)
+    assert w.gc_stale(project, (), use_cache=True)['preserved'] == ['finished']
+    assert w.gc_stale(project, (), use_cache=True)['removed'] == 1
+
+
+def test_gc_cache_logs_read_and_write_errors(tmp_path, monkeypatch):
+    from mc import atomic_json
+
+    cache = tmp_path / 'cache.json'
+    cache.write_text('{', encoding='utf-8')
+    logs = []
+    monkeypatch.setattr(w, '_gc_cache_path', lambda project: cache)
+    monkeypatch.setattr(w, '_plog', logs.append)
+
+    def locked(*a, **kwargs):
+        raise PermissionError('fixture write error')
+
+    monkeypatch.setattr(atomic_json, 'write_json_atomic', locked)
+    assert w._load_gc_cache({}) == {}
+    w._save_gc_cache({}, {})
+    assert [line.split(' failed')[0] for line in logs] == [
+        '[worktree] gc cache read', '[worktree] gc cache write',
+    ]
+
+
+def test_remove_keeps_branch_when_fallback_cannot_delete(tmp_path, monkeypatch):
+    calls = []
+    project = {'id': 'sample', 'project_path': str(tmp_path)}
+    tree = tmp_path / 'tree'
+    tree.mkdir()
+    monkeypatch.setattr(w, 'worktree_path', lambda *args: tree)
+    monkeypatch.setattr(w, 'archive_scratch', lambda *args: (True, '', 0))
+    monkeypatch.setattr(w, 'prepare_delete', lambda *args: True)
+
+    def git_run(cwd, args, **kwargs):
+        calls.append(args)
+        return False, 'fixture git removal failed'
+
+    def refuse(path, ignore_errors=False):
+        if not ignore_errors:
+            raise PermissionError('fixture directory is locked')
+
+    monkeypatch.setattr(w._sync, 'git_run', git_run)
+    monkeypatch.setattr(w.shutil, 'rmtree', refuse)
+    ok, detail = w.remove(project, 'finished', delete_branch=True, force=True)
+    assert not ok and 'directory is locked' in detail
+    assert not any(args[0] == 'branch' for args in calls)

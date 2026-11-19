@@ -1677,6 +1677,20 @@ def _current_user_sid_and_name() -> tuple[str, str]:
         kernel32.CloseHandle(h_token)
 
 
+def protect_empty_secret_file(path: Path) -> None:
+    """Fail closed if a newly created staging file cannot be made private."""
+    if os.name != 'nt':
+        os.chmod(path, 0o600)
+        return
+    try:
+        sid, account = _current_user_sid_and_name()
+    except Exception as exc:
+        raise OSError('could not resolve the file owner SID') from exc
+    ok, detail = _icacls_grant_and_verify(path, sid, account)
+    if not ok:
+        raise OSError(f'could not secure staging file permissions: {detail}')
+
+
 def _icacls_grant_and_verify_once(path: Path, sid: str, account: str) -> tuple[bool, str]:
     """One attempt at :func:`_icacls_grant_and_verify` — see that function for
     the retry wrapper callers actually use. Never raises; returns (ok, detail).

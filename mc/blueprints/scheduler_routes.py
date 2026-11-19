@@ -74,6 +74,7 @@ from mc import engine_pace_dispatch as _engine_pace_dispatch  # usage reader for
 from mc import schedule_conditions as _schedule_conditions    # "spend leftover weekly allowance"
 from mc import schedule_skip_log as _skip_log                 # skipped ticks, shown in Runs
 from mc import schedule_delivery_failure as _delivery_failure
+from mc.triggered_turns import SCHEDULED_LABEL, user_turn_line
 from mc import steward_role_model as _role_model, steward_role_writes as _role_writes
 from mc import steward_role_dispatch as _role_dispatch
 from mc import steward_role_channel as _role_channel
@@ -1242,7 +1243,7 @@ def _scheduled_continue(p, project_id, session_id, task):
                 existing['status'] = 'running'
                 existing['last_status_change_time'] = _time.time()
                 existing['last_output_time'] = _time.time()
-                existing['log_lines'].append(f"\n> [scheduled run]: {task}\n")
+                existing['log_lines'].append(user_turn_line(SCHEDULED_LABEL, task))
                 # Pending publication skips its turn_start because this
                 # existing scheduler hook owns that usage checkpoint.
                 if _record_usage_breakdown_turn_started is not None:

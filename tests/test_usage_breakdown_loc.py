@@ -483,3 +483,21 @@ def test_amended_commit_is_not_double_counted(env, project):
     assert result['added'] == 5
     assert result['deleted'] == 1
     assert result['head_commits'] == amended_sha
+
+
+def test_code_delta_subtracts_baseline_in_one_history_walk(env, project, monkeypatch):
+    sid = 'single-walk'
+    ok, path = w.create(project, sid)
+    assert ok, path
+    git_run = ar._project_sync.git_run
+    calls = []
+
+    def traced(cwd, args, **kwargs):
+        if args[0] == 'rev-list':
+            calls.append(args)
+        return git_run(cwd, args, **kwargs)
+
+    monkeypatch.setattr(ar._project_sync, 'git_run', traced)
+    result = ar._compute_code_delta(_session(sid, project['id'], isolated=True))
+    assert result['status'] == 'ok', result
+    assert calls == [['rev-list', '--branches', 'HEAD', '--not', result['base_commit']]]

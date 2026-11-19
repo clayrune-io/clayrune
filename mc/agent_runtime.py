@@ -2518,7 +2518,7 @@ class ClaudeRuntime(AgentRuntime):
         to build the path without existence-checking should use
         _build_transcript_path() instead.
         """
-        if not session_id:
+        if not re.fullmatch(r'[A-Za-z0-9_-]+', session_id or ''):
             return None
         encodings = self._encoded_dir_candidates(project_path)
         if not encodings:
@@ -5263,7 +5263,7 @@ class GeminiRuntime(AgentRuntime):
             session['log_lines'].append("[gemini binary missing — cannot continue]")
             session['status'] = 'error'
             session['last_status_change_time'] = _time.time()
-            return
+            raise CLINotInstalledError("gemini CLI not installed — run: npm install -g @google/gemini-cli")
 
         # Stage 5 — native session resume. Resume THIS session by the id
         # captured from its init event (--resume <id>) — NEVER `latest`:

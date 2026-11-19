@@ -34,7 +34,7 @@ import os
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 # WinError 5 (Access is denied) / 32 (used by another process): an AV
 # scanner or the Windows Search indexer briefly holding an exclusive handle
@@ -120,11 +120,13 @@ def read_text_with_retry(path, encoding: str = 'utf-8',
     raise AssertionError('unreachable')  # pragma: no cover
 
 
-def write_json_atomic(path, obj: Any, encoding: str = 'utf-8', **dumps_kw) -> None:
+def write_json_atomic(path, obj: Any, encoding: str = 'utf-8', *,
+                      prepare_temp: Callable[[Path], None] | None = None, **dumps_kw) -> None:
     """Replace `path` with `obj` serialized as JSON, atomically.
 
     `dumps_kw` is passed straight to `json.dumps` (callers keep their
     existing `indent=2, ensure_ascii=False`).
+    `prepare_temp` may secure the empty staging file before any bytes are written.
 
     Serialization happens BEFORE the target is touched, so an object that
     cannot be serialized raises with the previous file still intact. That
@@ -150,6 +152,12 @@ def write_json_atomic(path, obj: Any, encoding: str = 'utf-8', **dumps_kw) -> No
                                prefix=f'.{path.name}.',
                                suffix=f'.tmp{os.getpid()}')
     try:
+        if prepare_temp is not None:
+            try:
+                prepare_temp(Path(tmp))
+            except BaseException:
+                os.close(fd)
+                raise
         with os.fdopen(fd, 'w', encoding=encoding, newline='') as f:
             f.write(text)
             f.flush()

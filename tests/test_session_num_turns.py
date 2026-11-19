@@ -134,7 +134,7 @@ def test_mode_a_reader_one_process_per_turn(tmp_data_dir):
 def _recover_calls(server, monkeypatch):
     calls = []
     monkeypatch.setattr(importlib.import_module('mc.blueprints.agent_routes'),
-                        '_auto_recover_failed_resume', lambda s: calls.append(s))
+                        '_auto_recover_failed_resume', lambda s, **kwargs: calls.append(s))
     return calls
 
 

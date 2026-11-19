@@ -347,3 +347,121 @@ def test_explicit_runtime_context_does_not_mutate_project_seed(monkeypatch, tmp_
     assert captured['context']['provider'] == 'codex'
     assert project['provider'] == 'claude'
     assert captured['dispatch']['system_prompt'] == 'shared-memory'
+
+
+def test_native_dispatch_refusal_does_not_publish_a_running_session(monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    from types import SimpleNamespace
+    from threading import RLock
+
+    sessions = {}
+    manager = SimpleNamespace(lock=RLock(), session_ids=set(), ensure_guardian=lambda: None)
+    monkeypatch.setattr(ar, 'agent_sessions', sessions)
+    monkeypatch.setattr(ar, 'get_manager', lambda pid: manager)
+    monkeypatch.setattr(ar, '_allocate_delegation_turn', lambda session: 1)
+    monkeypatch.setattr(ar, '_resolve_runtime_model', lambda *a: '')
+
+    def fail(*a, **kwargs):
+        assert kwargs['strict']
+        raise OSError('fixture log write failure')
+
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', fail)
+    with pytest.raises(OSError, match='fixture log write failure'):
+        ar._dispatch_via_runtime({'id': 'fixture'}, 'test', provider_name='codex',
+                                 notify_session='parent')
+    assert sessions == {} and manager.session_ids == set()
+
+
+def test_native_context_error_never_launches_unruled_session(monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    from types import SimpleNamespace
+    from threading import RLock
+
+    sessions = {}
+    launched = []
+    failed = []
+    runtime = SimpleNamespace(name='codex', dispatch=lambda **kwargs: launched.append(kwargs))
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda provider: runtime)
+    monkeypatch.setattr(ar, 'agent_sessions', sessions)
+    monkeypatch.setattr(ar, 'get_manager', lambda pid: SimpleNamespace(
+        lock=RLock(), session_ids=set(), ensure_guardian=lambda: None))
+    monkeypatch.setattr(ar, '_resolve_runtime_model', lambda *a: '')
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda *a, **kw: None)
+    monkeypatch.setattr(ar, '_persist_runtime_start_failure', failed.append)
+    monkeypatch.setattr(ar, '_log_agent_activity', lambda *a, **kw: None)
+
+    def fail(*a, **kwargs):
+        raise OSError('fixture context read failed')
+
+    monkeypatch.setattr(ar, '_build_agent_context', fail)
+    with pytest.raises(OSError, match='fixture context read failed'):
+        ar._dispatch_via_runtime({'id': 'fixture'}, 'test', provider_name='codex')
+    assert launched == []
+    session, = sessions.values()
+    assert session['status'] == 'error' and not session['process_alive']
+    assert failed == [session]
+
+
+def test_native_dispatch_usage_writes_run_after_pending_publication(tmp_path, monkeypatch):
+    from threading import RLock
+    from types import SimpleNamespace
+    from mc.blueprints import agent_routes as ar
+
+    manager = SimpleNamespace(lock=RLock(), session_ids=set(), ensure_guardian=lambda: None)
+    sessions = {}
+    entries = []
+    events = []
+    runtime = SimpleNamespace(name='codex', dispatch=lambda **kwargs: events.append(('launch', False, True)))
+    monkeypatch.setattr(ar, 'agent_sessions', sessions)
+    monkeypatch.setattr(ar, 'get_manager', lambda _: manager)
+    monkeypatch.setattr(ar, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda _: runtime)
+    monkeypatch.setattr(ar, '_resolve_runtime_model', lambda *args: '')
+    monkeypatch.setattr(ar, '_build_agent_context', lambda *a, **k: 'context')
+    monkeypatch.setattr(ar, '_log_agent_activity', lambda *a: None)
+
+    def write_pending(project_id, update):
+        events.append(('pending', manager.lock._is_owned(), bool(sessions)))
+        update(entries)
+
+    def write_usage(name):
+        events.append((name, manager.lock._is_owned(), bool(sessions)))
+        return True
+
+    monkeypatch.setattr(ar, '_update_agent_log', write_pending)
+    monkeypatch.setattr(ar, '_UsageBreakdownStore', lambda path: SimpleNamespace(
+        record_session_checkpoint=lambda **kwargs: write_usage('baseline'),
+        mark_session_running=lambda sid: write_usage('running fact')))
+    sid = ar._dispatch_via_runtime({'id': 'sample'}, 'test', provider_name='codex')
+    assert entries[0]['session_id'] == sid and sid in manager.session_ids
+    assert events == [
+        ('pending', True, False), ('baseline', False, True),
+        ('running fact', False, True), ('launch', False, True),
+    ]
+
+
+def test_callback_fallback_skips_the_long_dispatch_label_after_an_operator_rename(monkeypatch):
+    from threading import RLock
+    from types import SimpleNamespace
+    from mc.blueprints import agent_routes as ar
+
+    sessions = {}
+    manager = SimpleNamespace(lock=RLock(), session_ids=set(), ensure_guardian=lambda: None)
+    runtime = SimpleNamespace(name='codex', dispatch=lambda **kwargs: None)
+    monkeypatch.setattr(ar, 'agent_sessions', sessions)
+    monkeypatch.setattr(ar, 'get_manager', lambda _: manager)
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda _: runtime)
+    monkeypatch.setattr(ar, '_resolve_runtime_model', lambda *args: '')
+    monkeypatch.setattr(ar, '_build_agent_context', lambda *a, **k: 'context')
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_log_agent_activity', lambda *a: None)
+    label = 'A' * 42
+    monkeypatch.setitem(ar.state.CONFIG, 'user_name', label)
+    sid = ar._dispatch_via_runtime({'id': 'sample'}, 'test', provider_name='codex', incognito=True)
+    monkeypatch.setitem(ar.state.CONFIG, 'user_name', 'Renamed')
+    session = sessions[sid]
+    assert session['log_lines'][0] == f'> {label}: test'
+    assert ar._last_reply_text(session) == ''
+    quote = f'> {label}: an actual quotation'
+    session['log_lines'].append(quote)
+    assert ar._last_reply_text(session) == quote

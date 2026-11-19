@@ -1814,3 +1814,13 @@ def test_claude_installed_false_for_bare_relative_fallback(monkeypatch, tmp_path
     assert agent_runtime.claude_oneshot_available() is False
     monkeypatch.setattr(rt, 'resolve_binary', lambda: tmp_path / 'claude')
     assert agent_runtime.claude_installed() is True
+
+
+def test_transcript_lookup_rejects_non_identifier_before_resolving_paths(monkeypatch):
+    from mc.agent_runtime import ClaudeRuntime
+
+    runtime = ClaudeRuntime()
+    calls = []
+    monkeypatch.setattr(runtime, '_encoded_dir_candidates', lambda path: calls.append(path))
+    assert runtime.transcript_path('test-project', 'not an identifier') is None
+    assert calls == []

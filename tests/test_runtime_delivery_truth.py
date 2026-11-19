@@ -441,3 +441,121 @@ def test_delegation_parent_revive_fails_closed_on_a_failed_delivery(app_env, mon
     monkeypatch.setattr(ar, '_revive_from_agent_log', _boom)
     with pytest.raises(DeliveryUncertain):
         ar._revive_parent_for_delegation('p1', 'parent000001', 'child report', app_env['project'])
+
+
+@pytest.mark.parametrize('endpoint', ['followup', 'interrupt'])
+def test_plain_runtime_error_reports_failed_delivery(app_env, monkeypatch, endpoint):
+    ar = app_env['ar']
+    sid = 'native-failure'
+    app_env['sessions'][sid] = {
+        'session_id': sid, 'project_id': 'p1', 'provider': 'codex', 'mode': 'A',
+        'status': 'running' if endpoint == 'interrupt' else 'idle',
+        'log_lines': [], 'task': 'chat', 'proc': None,
+        'started_at': '2026-11-09T00:00:00Z', 'last_status_change_time': 0.0,
+        'last_output_time': 0.0, 'agent_model': '',
+    }
+
+    class FailingRuntime:
+        def write_followup(self, handle, message):
+            raise OSError('simulated pipe failure')
+
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: FailingRuntime())
+    monkeypatch.setattr(ar, '_allowance_refusal', lambda *a, **k: None)
+    monkeypatch.setattr(ar._native_followup_context, 'refresh_stash', lambda *a, **k: None)
+    monkeypatch.setattr(ar._native_followup_context, 'message_for_turn', lambda p, s, m: m)
+    monkeypatch.setattr(ar, '_mode_a_token_rollover', lambda *a, **k: a[-1])
+    monkeypatch.setattr(ar, '_clock_wrap', lambda p, s, m, orig: m)
+    monkeypatch.setattr(ar, '_bridge_images_for_blind_model', lambda m, *a, **k: m)
+    monkeypatch.setattr(ar, '_followup_cwd_for', lambda *a, **k: '.')
+    response = app_env['client'].post(f'/api/project/p1/agent/{endpoint}',
+                                      json={'session_id': sid, 'message': 'answer'})
+    body = response.get_json()
+    assert response.status_code == 502, body
+    assert body['ok'] is False and body['delivered'] is False
+    assert 'simulated pipe failure' in body['error']
+
+
+@pytest.mark.parametrize('endpoint', ['followup', 'interrupt'])
+@pytest.mark.parametrize('incognito', [False, True])
+def test_retry_cannot_launch_after_a_failed_native_context_build(app_env, monkeypatch, endpoint, incognito):
+    from types import SimpleNamespace
+
+    ar = app_env['ar']
+    calls = []
+    runtime = SimpleNamespace(name='codex', dispatch=lambda **kwargs: calls.append('dispatch'),
+                              write_followup=lambda *args: calls.append('followup'))
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda _: runtime)
+    monkeypatch.setattr(ar, '_resolve_runtime_model', lambda *a: '')
+    monkeypatch.setattr(ar.get_manager('p1'), 'ensure_guardian', lambda: None)
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_persist_runtime_start_failure', lambda *a: None)
+    monkeypatch.setattr(ar, '_advance_delegation_turn', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_write_usage_breakdown_turn_start_checkpoint', lambda *a: None)
+    monkeypatch.setattr(ar, '_allowance_refusal', lambda *a, **k: None)
+    monkeypatch.setattr(ar._native_followup_context, 'message_for_turn', lambda p, s, m: m)
+    monkeypatch.setattr(ar, '_clock_wrap', lambda p, s, m, orig: m)
+    monkeypatch.setattr(ar, '_bridge_images_for_blind_model', lambda m, *a, **k: m)
+
+    def unreadable(*args, **kwargs):
+        raise OSError('test context is unreadable')
+
+    monkeypatch.setattr(ar, '_build_agent_context', unreadable)
+    with pytest.raises(OSError, match='test context is unreadable'):
+        ar._dispatch_via_runtime(app_env['project'], 'first task', provider_name='codex',
+                                 incognito=incognito)
+    sid, = app_env['sessions']
+    reply = app_env['client'].post(f'/api/project/p1/agent/{endpoint}',
+                                   json={'session_id': sid, 'message': 'retry'})
+    assert not calls
+    assert not reply.get_json()['ok']
+
+
+@pytest.mark.parametrize('endpoint', ['followup', 'interrupt'])
+@pytest.mark.parametrize('outcome', ['unknown', 'missing'])
+def test_gemini_followup_reports_actual_launch_outcome(app_env, monkeypatch, endpoint, outcome):
+    from mc import agent_uncertain_launch
+
+    ar = app_env['ar']
+    sid = 'gemini-route'
+    app_env['sessions'][sid] = {
+        'session_id': sid, 'project_id': 'p1', 'provider': 'gemini', 'mode': 'A',
+        'status': 'running' if endpoint == 'interrupt' else 'idle',
+        'log_lines': [], 'task': 'chat', 'proc': None, 'agent_model': '',
+        'incognito': True, '_system_prompt': 'fixture setup',
+    }
+    runtime = art.GeminiRuntime()
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtime)
+    monkeypatch.setattr(runtime, 'resolve_binary', lambda: 'gemini' if outcome == 'unknown' else None)
+    monkeypatch.setattr(ar, '_allowance_refusal', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_mode_a_token_rollover', lambda *a, **k: a[-1])
+    monkeypatch.setattr(ar, '_clock_wrap', lambda p, s, m, orig: m)
+    monkeypatch.setattr(ar, '_bridge_images_for_blind_model', lambda m, *a, **k: m)
+    monkeypatch.setattr(agent_uncertain_launch, 'resolve', lambda *a, **k: False)
+
+    def spawn(*args, **kwargs):
+        assert outcome == 'unknown'
+        raise agent_uncertain_launch.fail_launch(None, sid, 'launch', 'shim teardown unconfirmed')
+
+    monkeypatch.setattr(art, 'spawn_engine_proc', spawn)
+    response = app_env['client'].post(f'/api/project/p1/agent/{endpoint}',
+                                      json={'session_id': sid, 'message': 'answer'})
+    body = response.get_json()
+    assert response.status_code == 502, body
+    assert body['ok'] is False
+    assert body['delivered'] is (None if outcome == 'unknown' else False), body
+
+
+@pytest.mark.parametrize(('route', 'body'), [
+    ('/api/project/p1/agent/dispatch', {'task': 12}),
+    ('/api/project/p1/agent/dispatch', {'task': 'example', 'resume_conversation_id': []}),
+    ('/api/project/p1/agent/followup', {'message': 12}),
+    ('/api/project/p1/agent/followup', {'message': 'example', 'session_id': ['sample']}),
+    ('/api/agent/provider/claude/env', {'key': 12, 'value': 'example'}),
+    ('/api/agent/gemini/auth-login-remote/code', {'code': 12}),
+    ('/api/plans/delete', {'paths': [12]}),
+    ('/api/project/p1/agent/sample/job', ['example']),
+])
+def test_malformed_agent_fields_return_bad_request(app_env, route, body):
+    app_env['sessions']['sample'] = {'project_id': 'p1'}
+    response = app_env['client'].post(route, json=body)
+    assert response.status_code == 400
