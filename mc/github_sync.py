@@ -163,7 +163,7 @@ def _merge_field(item, field, gh_val, base, project_id, num):
 
     Returns True if the local value changed.
 
-      gh unchanged vs base                  → keep local (may be pushed)
+      gh unchanged vs base                  → keep local (only status can be pushed)
       gh changed, local untouched vs base   → take gh
       gh changed, local also changed        → conflict: keep local, log
     """
