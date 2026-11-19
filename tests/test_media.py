@@ -49,6 +49,20 @@ def test_extracts_an_image_named_by_a_file_marker():
                                    {'kind': 'image', 'path': '/tmp/b.webp'}]
 
 
+@pytest.mark.parametrize('path', ['//server/share/shot.png', r'\\server\share\shot.png'])
+def test_network_media_is_never_statted(wired, monkeypatch, path):
+    from pathlib import Path
+
+    checked = []
+    monkeypatch.setattr(Path, 'is_file', lambda p: checked.append(str(p)) or True)
+
+    assert media.record_from_text('p', 's', f'[file:{path}]') == 0
+    index = media._index_path('p')
+    index.write_text(json.dumps({'kind': 'image', 'path': path}) + '\n', encoding='utf-8')
+    assert media.list_media('p')[0]['missing'] is True
+    assert checked == []
+
+
 def test_file_marker_image_is_recorded_when_on_disk(wired, img):
     a = img('marker.png')
     assert media.record_from_text('p', 's', f"[file:{a}|Label]") == 1

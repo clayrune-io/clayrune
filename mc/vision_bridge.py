@@ -33,6 +33,8 @@ import re
 import threading
 import time
 from pathlib import Path
+
+from mc.media_path_safety import has_network_or_device_prefix
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from mc import agent_runtime as _agent_runtime
@@ -213,6 +215,8 @@ def bridge_prompt(text: str, *, provider: str, model: str = '',
         desc, describer, why = None, '', ''
         if i >= MAX_IMAGES_PER_PROMPT:
             why = f'more than {MAX_IMAGES_PER_PROMPT} images in one message'
+        elif has_network_or_device_prefix(path):
+            why = 'the file path must refer to local media'
         elif roots and not any(_within(Path(path), r) for r in roots):
             why = 'the file is outside the uploads and project folders'
         else:
