@@ -161,3 +161,14 @@ def test_stop_session_hands_off_stdin_close(monkeypatch):
     routes._stop_session(session, 'example')
     assert calls == [proc]
     assert session['status'] == 'stopped'
+
+
+def test_prior_provider_finds_claude_lineage(monkeypatch):
+    from mc.blueprints import agent_routes as routes
+
+    monkeypatch.setattr(routes, 'agent_sessions', {})
+    monkeypatch.setattr(routes, '_load_agent_log', lambda pid: [{
+        'provider': 'claude', 'claude_session_id': 'current-chat',
+        'claude_session_ids': ['earlier-chat', 'current-chat'],
+    }])
+    assert routes._prior_conversation_provider('sample', 'earlier-chat') == 'claude'

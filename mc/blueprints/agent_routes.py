@@ -11945,7 +11945,8 @@ def _prior_conversation_provider(project_id, resume_id, explicit_provider=''):
         owner = (row.get('provider') or 'claude').lower()
         native_id = (row.get('claude_session_id') if owner == 'claude'
                      else row.get('provider_session_id'))
-        if native_id == resume_id:
+        if native_id == resume_id or (
+                owner == 'claude' and resume_id in (row.get('claude_session_ids') or ())):
             owners.add(owner)
     if explicit_provider:
         if owners and explicit_provider.lower() not in owners:
