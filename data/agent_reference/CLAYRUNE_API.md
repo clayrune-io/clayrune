@@ -65,6 +65,13 @@ prompt space in every future turn that touches its subject.
 
 - `GET /api/desk/connect/services` returns `{services:[{id,label,host,url}]}` for campaign destinations in the existing Connect registry: a profile has a `publish` purpose, or its id belongs to `mc.desk_accounts.ACCOUNT_PLATFORMS` (the workspace channel definition, including YouTube and Instagram). Generation/storage services without either qualification are excluded. Read-only public metadata; no lookup, vault access or setup actions. Where uses it for missing-account tiles; inclusion alone grants no publishing or reading capability.
 
+## Desk triage proposals
+
+| Verb | Path | Purpose |
+|---|---|---|
+| POST | `/api/desk/proposals/<proposal_id>/accept` | **Human-only.** Claims a proposed item before starting the writer and returns 202 with `{ok, session_id, platform}`. Concurrent requests share the dispatch result. After an interrupted claim, a retry returns the reserved session ID. A refused dispatch returns the proposal to `proposed` and records the dispatch error. |
+| POST | `/api/desk/proposals/<proposal_id>/dismiss` | Dismisses a proposal in `proposed` state. A proposal already claimed, accepted, or dismissed returns 409. |
+
 ## Desk saved connection Edit
 
 - `POST /api/desk/connect/custom/saved-draft` with `{scope, project_id?, server_name}` reads the saved MCP setup draft (credential names only). Human-only like the custom-connection list; no network, install or approval.

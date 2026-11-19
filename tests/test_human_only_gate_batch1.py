@@ -117,7 +117,7 @@ CASES = {
     'social approve': ('POST', '/api/project/p1/social/queue/i1/approve', _lookup_404(PR, 'load_project')),
     'social posted': ('POST', '/api/project/p1/social/queue/i1/posted', _lookup_404(PR, 'load_project')),
     'desk proposal accept': ('POST', '/api/desk/proposals/x1/accept',
-                             _lookup_404('mc.desk', 'get_proposal')),
+                             _lookup_404('mc.desk', '_read_store', {'proposals': {}})),
     'hivemind decision approve': ('POST', '/api/hivemind/h1/decisions/d1/approve', _lookup_404(HM, '_hm_load_manifest')),
     'hivemind finding review': ('POST', '/api/hivemind/h1/findings/f1/review', _lookup_404(HM, '_hm_load_manifest')),
     'hivemind intervene': ('POST', '/api/hivemind/h1/intervene', _lookup_404(HM, '_hm_load_manifest')),
