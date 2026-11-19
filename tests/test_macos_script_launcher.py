@@ -67,3 +67,18 @@ def test_applications_launcher_resolves_install(tmp_path, custom_dir):
 def test_in_install_launcher_resolves_install(tmp_path):
     launcher = _make_install(tmp_path / "Clayrune")
     _assert_launch(launcher, tmp_path)
+
+
+def test_setup_wrapper_reports_bootstrap_failure(tmp_path):
+    source = (INSTALLER / 'Clayrune-Setup.command').read_text(encoding='utf-8')
+    wrapper = tmp_path / 'setup.sh'
+    # Stub the downloader before the wrapper runs. The command is local and
+    # stands in for the downloaded shell script failing with an exit code.
+    wrapper.write_text("curl() { printf 'exit 7\\n'; }\n" + source,
+                       encoding='utf-8', newline='\n')
+    result = subprocess.run([SH, wrapper.as_posix()], cwd=tmp_path,
+                            stdin=subprocess.DEVNULL, capture_output=True,
+                            text=True, encoding='utf-8', timeout=10)
+    assert result.returncode == 7
+    assert 'Installer exited with error code 7.' in result.stdout
+    assert 'Press Enter to close' in result.stdout

@@ -113,8 +113,8 @@ internal static class ClayruneInstaller
         Console.WriteLine("Estimated time: 5-10 minutes.");
         Console.WriteLine("Disk space: about 500 MB.");
         Console.WriteLine();
-        Console.WriteLine("You can audit what runs by reading:");
-        Console.WriteLine("  https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install-prompt.md");
+        Console.WriteLine("You can audit the default bootstrap by reading:");
+        Console.WriteLine("  " + BootstrapConfig.Url);
         Console.WriteLine();
         Pause("Press Enter to begin (or close this window to cancel) . . .");
 

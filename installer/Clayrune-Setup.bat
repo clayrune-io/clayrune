@@ -37,7 +37,7 @@ echo Estimated time: 5-10 minutes.
 echo Disk space: about 500 MB.
 echo.
 echo You can audit what runs by reading:
-echo   https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install-prompt.md
+echo   https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install.ps1
 echo.
 pause
 
