@@ -4963,7 +4963,7 @@ def _clayrune_universal_capabilities(port: int | None = None) -> list[str]:
     ]
 
 
-def _skills_catalog_block(project, character_skills=None):
+def _skills_catalog_block(project, character_skills=None, *, provider=None):
     """Skill catalog for non-Claude agents (full-parity Stage 3).
 
     Claude Code auto-discovers skills from ~/.claude/skills/ and the project's
@@ -4973,7 +4973,7 @@ def _skills_catalog_block(project, character_skills=None):
     matches. Returns '' for Claude (native discovery) or when there are no
     skills. Best-effort: any failure yields '' — skills are never load-bearing.
     """
-    if (project.get('provider') or state.CONFIG.get('default_provider') or 'claude').lower() == 'claude':
+    if (provider or project.get('provider') or state.CONFIG.get('default_provider') or 'claude').lower() == 'claude':
         return ''
     try:
         skills = _skills.list_skills(project.get('project_path') or None,
@@ -5430,7 +5430,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
 
     # Stage 3 full-parity: non-Claude agents don't auto-discover skills —
     # inject the catalog so they can read + follow the relevant SKILL.md.
-    _skills_block = _skills_catalog_block(project, character_skills)
+    _skills_block = _skills_catalog_block(project, character_skills, provider=provider)
     if _skills_block:
         parts.append(_skills_block)
 

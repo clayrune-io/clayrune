@@ -52,7 +52,7 @@ def rig(client, agents_dir, monkeypatch, tmp_path):
     shared = tmp_path / 'shared.md'
     shared.write_text('SHARED-RULES', encoding='utf-8')
     monkeypatch.setattr(ar, 'SHARED_RULES_PATH', shared)
-    monkeypatch.setattr(ar, '_skills_catalog_block', lambda *a: 'SKILL-CATALOG')
+    monkeypatch.setattr(ar, '_skills_catalog_block', lambda *a, **k: 'SKILL-CATALOG')
     monkeypatch.setattr(ar, '_clayrune_universal_capabilities', lambda **k: ['UNIVERSAL-ONCE'])
     monkeypatch.setattr(ar, '_clayrune_api_pointer_card', lambda *a: 'POINTER-ONCE')
     monkeypatch.setattr(ar, '_get_memory_path', lambda p: None)
