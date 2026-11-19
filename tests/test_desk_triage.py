@@ -83,6 +83,15 @@ def test_triage_dispatches_posy_with_the_feed(client):
     assert 'YOU ARE NOT WRITING POSTS IN THIS PASS' in task
 
 
+@pytest.mark.parametrize('max_picks', ['many', [5]])
+def test_triage_rejects_a_malformed_pick_limit(client, max_picks):
+    _sig(client)
+    response = client.post('/api/desk/triage', json={'max_picks': max_picks})
+    assert response.status_code == 400
+    assert 'max_picks' in response.get_json()['error']
+    assert not client.dispatch_calls
+
+
 def test_the_brief_makes_discarding_the_successful_outcome(client):
     _sig(client)
     client.post('/api/desk/triage', json={})

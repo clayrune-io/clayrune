@@ -311,6 +311,14 @@ def test_there_is_no_publish_route(client):
 # store cannot: an unknown voice, a corpus too thin to characterise, and the
 # projects dir that computes the incognito exclusion.
 
+@pytest.mark.parametrize('sample', ['many', [50]])
+def test_seeding_rejects_a_malformed_sample_limit(client, monkeypatch, sample):
+    monkeypatch.setattr(desk_routes._seed, 'collect', lambda **kwargs: pytest.fail('no scan expected'))
+    response = client.post('/api/desk/voices/personal/seed', json={'sample': sample})
+    assert response.status_code == 400
+    assert 'sample' in response.get_json()['error']
+
+
 def test_seeding_an_unknown_voice_is_a_404(client):
     assert client.post('/api/desk/voices/nobody/seed', json={}).status_code == 404
 

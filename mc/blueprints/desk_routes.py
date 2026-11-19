@@ -355,8 +355,11 @@ def seed_voice(name):
         return jsonify({'error': str(e)}), 404
 
     try:
-        samples = _seed.collect(
-            PROJECTS_DIR, limit=max(50, min(600, int(d.get('sample') or 300))))
+        limit = max(50, min(600, int(d.get('sample') or 300)))
+    except (ValueError, TypeError, OverflowError):
+        return jsonify({'error': 'sample must be an integer'}), 400
+    try:
+        samples = _seed.collect(PROJECTS_DIR, limit=limit)
     except _seed.IncognitoBoundaryUnresolved as e:
         # No partial-credit mode. If we cannot tell which transcripts are
         # private, we read none of them and say so — the UI promises
@@ -1858,10 +1861,12 @@ def triage():
         return jsonify({'ok': True, 'nothing_to_triage': True,
                         'reason': 'every signal is already used or ruled on'}), 200
 
+    try:
+        max_picks = max(1, min(10, int(d.get('max_picks') or 5)))
+    except (ValueError, TypeError, OverflowError):
+        return jsonify({'error': 'max_picks must be an integer'}), 400
     camp = _running_campaign()
-    brief = _brief.build_triage_brief(
-        pool, voices=voices, campaign=camp,
-        max_picks=max(1, min(10, int(d.get('max_picks') or 5))))
+    brief = _brief.build_triage_brief(pool, voices=voices, campaign=camp, max_picks=max_picks)
 
     # Triage runs against a project only because dispatch needs one to live in.
     # Its subject is every project's feed, which is the point of the Desk.
