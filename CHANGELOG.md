@@ -1,5 +1,18 @@
 # Clayrune — Changelog
 
+## [2026-11-18] - MC-1179 pass 11 surface fixes
+
+- MCP previews skip malformed server entries (SFL1). MCP settings preserve empty arguments (SFL4), use the shared project loader (SFL5), log catalogue failures (SFL6), and clarify the Engram loadout rule (SFL7). A disconnected MCP reply reports an unknown delivery outcome (SFL10).
+- Credits keep an unreadable spend ledger intact and the gate closed (SF32). Vault-lock and plan-metadata read failures are logged without credential contents (SFL86, SFL87), and both session billing paths use one reserve check (SFL88). Malformed numbers in a TOTP URI return a parse error (SFL17).
+- Push delivery preserves subscription changes made during delivery (SF16), keeps unreadable VAPID keys for recovery (SFL31), reuses the loaded project name (SFL33), expires stale presence (SFL34), and bounds viewport diagnostic reads (SFL35).
+- Remote access reports mailer failures accurately (SFL23), escapes enrollment and device-page text (SFL24, SFL25), and reads the device identity once for the device list (SFL29).
+- Label repairs and edits share a lock, and the Floor documentation reflects both paths (SFL36, SFL37). Team overwrites preserve an omitted character name (SFL41). Settings protect unreadable domain data, remove redundant checks, and publish setup completion after a successful save (SFL43, SFL44, SFL45, SFL47). Update disclosure writes preserve unreadable configuration (SFL65), and engine preferences reject project sidecars (SFL106).
+- Terminal launch shares marker delivery and documents its host check (SFL48, SFL53). Failed input writes are logged (SFL51), and terminal delivery continues after an error callback fails (SFL64).
+- GitHub sync unlinks missing issues even when timestamps match, logs failed link saves, and documents which fields it pushes (SFL54, SFL55, SFL56). Code sync resolves abbreviated commit IDs for new dismissals (SFL58).
+- Chat media checks reject Windows network and device paths before filesystem access (SF26). Cached image descriptions avoid provider probes (SFL62), and raised vision errors stay with the request (SFL63). Browser picker calls have a deadline (SFL92), failed CDP attaches discard their pending request (SFL94), and failed hidden-tab cleanup is logged (SFL95).
+- Harness errors name the ignored-worktree prerequisite and unknown approved checks (SFL71, SFL76). Forced refreshes reuse a worktree survey completed during the wait, and measurement failures are logged (SFL80, SFL81). The test-run observer description now matches its activation flag (SFL77).
+- Habit reports skip incognito and serialize duplicate detection (SF36, SFL98). Docs search drops stale results after the docs directory goes away (SFL99), and failed slash-command cache writes are logged (SFL102).
+
 ## [2026-11-18] - Workflow canvas: connection drags start at the exact centre of unconnected port dots
 
 - Decorative stop stubs now ignore pointer events, so their dashed line and cap cannot intercept a connection drag. This fixes outcome, otherwise and approval-option ports on the canvas and in the inspector without changing their appearance.
