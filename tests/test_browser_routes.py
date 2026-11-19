@@ -85,6 +85,35 @@ def test_the_sweep_leaves_saved_profiles_alone(profiles):
     assert (named / 'reddit' / 'Cookies').exists()  # login: kept
 
 
+@pytest.mark.parametrize(('locked', 'expected'), [(True, 409), (False, 500)])
+def test_forget_profile_refuses_locked_or_failed_delete(profiles, monkeypatch, locked, expected):
+    from flask import Flask
+    from mc import browser_agent_read
+
+    _, named = profiles
+    profile = named / 'test-profile'
+    profile.mkdir()
+    cookies = profile / 'Cookies'
+    cookies.write_text('synthetic file', encoding='utf-8')
+    attempts, cleared = [], []
+
+    def fail_removal(path, *, ignore_errors=False):
+        attempts.append(path)
+        if not ignore_errors:
+            raise PermissionError('profile file busy')
+
+    monkeypatch.setattr(br, '_profile_dir_locked', lambda _path: locked)
+    monkeypatch.setattr(br.shutil, 'rmtree', fail_removal)
+    monkeypatch.setattr(browser_agent_read, 'clear_policy', cleared.append)
+    app = Flask(__name__)
+    with app.test_request_context():
+        response = app.make_response(br.browser_profile_delete.__wrapped__('test-profile'))
+
+    assert response.status_code == expected
+    assert len(attempts) == (0 if locked else 1)
+    assert cookies.is_file() and not cleared
+
+
 @pytest.mark.parametrize('bad', ['', '../escape', 'a/b', 'a\\b', 'x' * 65,
                                  '.hidden', 'a b', None])
 def test_bad_profile_names_are_refused(bad, profiles):

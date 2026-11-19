@@ -3994,8 +3994,14 @@ def browser_profile_delete(name):
         return jsonify({'error': f"profile '{name}' is open in session "
                                  f"{live.get('session_id')} — close it first",
                         'session_id': live.get('session_id')}), 409
+    if _profile_dir_locked(path):
+        return jsonify({'error': f"profile '{name}' is open in another browser"}), 409
     freed = _dir_size(path)
-    shutil.rmtree(path, ignore_errors=True)
+    try:
+        shutil.rmtree(path)
+    except OSError as exc:
+        print(f"[browser] could not forget profile '{name}': {exc}", flush=True)
+        return jsonify({'error': f"could not remove saved profile '{name}'"}), 500
     from mc import browser_agent_read
     browser_agent_read.clear_policy(name)
     print(f"[browser] forgot profile '{name}' "
