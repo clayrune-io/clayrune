@@ -116,3 +116,18 @@ def test_guardian_compares_only_fresh_samples_from_same_process(monkeypatch):
     assert not routes._proc_is_cpu_idle(session, second, 100)
     totals[2] = 1
     assert not routes._proc_is_cpu_idle(session, second, 110)
+
+
+def test_floor_identity_uses_configured_user_name(tmp_path, monkeypatch):
+    from mc.blueprints import agent_routes as routes
+
+    monkeypatch.setattr(routes, 'DATA_DIR', tmp_path / 'projects')
+    monkeypatch.setattr(routes, 'SHARED_RULES_PATH', tmp_path / 'rules')
+    monkeypatch.setattr(routes, '_get_memory_path', lambda p: tmp_path / 'memory')
+    monkeypatch.setattr(routes, '_get_archive_path', lambda p: tmp_path / 'archive')
+    monkeypatch.setattr(routes, '_load_agent_log', lambda p: [])
+    monkeypatch.setattr(routes, '_log', lambda *a, **k: None)
+    monkeypatch.setitem(routes.state.CONFIG, 'user_name', 'Example')
+    prompt = routes._build_agent_context(
+        {'id': 'sample'}, session_id='example-session', source='agent')
+    assert 'would tell Example at a glance' in prompt

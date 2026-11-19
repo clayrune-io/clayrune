@@ -5114,26 +5114,27 @@ def _roster_block(project, port, session_id=''):
             f" ({r.get('scope', 'global')}) [{eng}] —"
             f" {(r.get('description') or '').strip()[:100]}")
     pid = (project or {}).get('id') or ''
+    user_label = state.CONFIG.get('user_name') or 'the user'
     return (
-        "--- THE ROSTER (hired agent types, what Ron calls them, and what "
+        f"--- THE ROSTER (hired agent types, what {user_label} calls them, and what "
         "engine each one spends) ---\n"
         + "\n".join(lines)
         + "\n  The backticked name is the agent type; the other is what the type "
-          "calls itself, and it is the one Ron will say. The bracket is the "
+          f"calls itself, and it is the one {user_label} will say. The bracket is the "
           "ENGINE that type runs on — a pinned model, and its effort level "
           "where one is set. `project default` means the type pins nothing and "
           "inherits whatever this project is configured to use, so it costs "
           "whatever you cost.\n"
           "  Two ways to call one, and they differ in something that matters:\n"
           "  • The Task tool runs it IN THIS PROCESS. Fast, and invisible — it "
-          "never becomes a session, so it never appears on the Floor and Ron "
+          f"never becomes a session, so it never appears on the Floor and {user_label} "
           "cannot open it. Right for a quick helper whose answer you fold into "
           "your own.\n"
           f"  • curl -s -X POST http://localhost:{port}/api/project/{pid}"
           "/agent/dispatch -d '{\"task\":\"…\",\"character\":\"global:<type>\"}' "
-          "spawns a REAL session: its own figure on the Floor, its own chat Ron "
+          f"spawns a REAL session: its own figure on the Floor, its own chat {user_label} "
           "can open and argue with. Right for work that outlives your turn or "
-          "that he should be able to watch.\n"
+          f"that {user_label} should be able to watch.\n"
           "  The catch used to be that dispatch left you BLIND: unlike the Task "
           "tool, nothing woke you when the child finished, so 'I'll report back' "
           "was a promise with no trigger behind it. Add "
@@ -5274,7 +5275,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     if session_id and not incognito:
         parts.append(
             f"You appear on the Floor as a figure named {agent_name or 'unnamed'}. "
-            f"If a name or a one-emoji face would tell Ron at a glance what you "
+            f"If a name or a one-emoji face would tell {user_name or 'the user'} at a glance what you "
             f"are doing here, set it once: curl -s -X POST "
             f"http://localhost:{state.CONFIG.get('port', 5199)}/api/floor/figure/"
             f"{session_id}/name -H 'Content-Type: application/json' "
