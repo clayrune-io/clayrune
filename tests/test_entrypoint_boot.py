@@ -49,6 +49,18 @@ def test_server_exposes_a_reusable_boot():
     assert "check_port" in inspect.signature(server.boot).parameters
 
 
+def test_runtime_state_recovery_runs_only_inside_boot():
+    tree = ast.parse((REPO / 'server.py').read_text(encoding='utf-8'))
+    boot = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'boot')
+    called = {
+        node.func.attr: node for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr in ('restore_waits', 'maybe_set_sole_provider_default')
+    }
+    assert called.keys() == {'restore_waits', 'maybe_set_sole_provider_default'}
+    assert all(boot.lineno < node.lineno < boot.end_lineno for node in called.values())
+
+
 def test_app_py_calls_boot():
     """app.py must run the full startup path, not a hand-picked subset."""
     calls = [n.func.id for n in ast.walk(_app_py_tree())

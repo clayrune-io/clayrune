@@ -702,12 +702,6 @@ from mc import state as _mc_state
 
 _mc_state.CONFIG = CONFIG  # live alias: mc.core._log reads log_level through this
 
-# MC-1010: auto-pick the sole installed provider CLI as default_provider for
-# an install that never chose one — server-side, so it never goes through the
-# human-gated PUT /api/config route. No-op once a default is set or when
-# installed-CLI count isn't exactly 1. See agent_runtime.maybe_set_sole_provider_default.
-_agent_runtime.maybe_set_sole_provider_default(CONFIG, CONFIG_PATH)
-
 from mc.core import (  # noqa: E402
     _LOG_LEVELS,
     _atomic_write_text,
@@ -3214,7 +3208,6 @@ from mc import limit_resume as _limit_resume  # noqa: E402
 from mc import limit_resume_dispatch as _limit_resume_dispatch  # noqa: E402
 _limit_resume.wire(_DATA_ROOT / 'data' / 'limit_resume.json')
 app.register_blueprint(_limit_resume_dispatch.bp)
-_limit_resume_dispatch.restore_waits(_bp_agent)
 
 # ── Daily update-check ping (mc/update_ping.py) ─────────────────────────────
 # State beside data/, never in data/projects/. version_fn reads the build
@@ -3706,6 +3699,11 @@ def boot(check_port=True):
     # box, so a second boot on another port must not overwrite this one's file.
     _secrets_store_boot.ensure_exec_token(PORT)
     _vault_restart_handover.consume_inherited_key()
+    # Both operations can persist state. Run them only after the instance
+    # owns the port and before scheduler/adoption reads the restored state.
+    _boot_phase('sole provider default',
+                lambda: _agent_runtime.maybe_set_sole_provider_default(CONFIG, CONFIG_PATH))
+    _boot_phase('restore deferred waits', lambda: _limit_resume_dispatch.restore_waits(_bp_agent))
     # Reap child process trees orphaned by a prior MC instance that exited
     # (restart/crash) without killing them. Reads the PID ledger the prior
     # instance persisted; identity-guarded so it can't friendly-fire. Must run
