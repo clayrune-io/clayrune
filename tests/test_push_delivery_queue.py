@@ -203,6 +203,21 @@ def test_bad_vapid_file_keeps_the_original_bytes(monkeypatch, tmp_path, content)
     assert path.read_bytes() == content
 
 
+def test_turn_end_uses_one_project_read_for_the_inbox(monkeypatch, tmp_path):
+    reads = []
+    long_name = 'Long project name ' * 6
+    path = tmp_path / 'inbox.json'
+    monkeypatch.setattr(pm, 'PUSH_NOTIF_PATH', path)
+    monkeypatch.setattr(pm, 'load_project', lambda pid: reads.append(pid) or {'name': long_name})
+    monkeypatch.setattr(pm, '_is_being_watched', lambda *a: False)
+    monkeypatch.setattr(pm, '_push_queue', types.SimpleNamespace(submit=lambda fn: None))
+
+    pm._handle_push_signal('p', 's', _result('done'))
+
+    assert reads == ['p']
+    assert pm._load_notifications()[0]['project_name'] == long_name
+
+
 def test_webpush_gets_a_ten_second_timeout(stub, fresh_queue):
     fresh_queue()
     pm._handle_push_signal('p', 's', _result('done'))

@@ -284,13 +284,14 @@ def _prune_notifications(items: list) -> list:
 
 
 def _append_notification(*, title: str, body: str, url: str, kind: str,
-                         project_id: str, session_id: str) -> None:
+                         project_id: str, session_id: str, project_name: str | None = None) -> None:
     """Append one Inbox event. Best-effort — never raises to the caller."""
     if PUSH_NOTIF_PATH is None:
         return
     try:
-        p = load_project(project_id) if (load_project and project_id) else None
-        project_name = (p or {}).get('name') or project_id or 'Clayrune'
+        if project_name is None:
+            p = load_project(project_id) if (load_project and project_id) else None
+            project_name = (p or {}).get('name') or project_id or 'Clayrune'
         item = {
             'id': uuid.uuid4().hex,
             'ts': int(_time.time()),
@@ -558,7 +559,7 @@ def _notify_push(title: str, body: str, *, url: str = '',
 
 
 def _queue_push(title: str, body: str, *, url: str = '', project_id: str = '',
-                session_id: str = '', kind: str = 'agent') -> None:
+                session_id: str = '', kind: str = 'agent', project_name: str | None = None) -> None:
     """Hand one push to the delivery worker. The result of `_notify_push` is
     dropped, as it was when it was called inline (nothing read it).
 
@@ -567,7 +568,7 @@ def _queue_push(title: str, body: str, *, url: str = '', project_id: str = '',
     behind a stalled push service or vanish with a push the full queue drops.
     Only the network delivery is deferred."""
     _append_notification(title=title, body=body, url=url, kind=kind,
-                         project_id=project_id, session_id=session_id)
+                         project_id=project_id, session_id=session_id, project_name=project_name)
     _push_queue.submit(lambda: _notify_push(
         title, body, url=url, project_id=project_id, session_id=session_id,
         kind=kind, log_inbox=False))
@@ -623,7 +624,7 @@ def _handle_push_signal(project_id: str, session_id: str, msg: dict) -> None:
                     target = f'/?project={project_id}&session={session_id}'
                     _queue_push(title, text, url=target,
                                 project_id=project_id, session_id=session_id,
-                                kind='agent')
+                                kind='agent', project_name=p.get('name') or project_id or 'Clayrune')
         elif msg_type == 'result':
             p = load_project(project_id) or {}
             if not p.get('notify_push_enabled', True):
@@ -648,7 +649,7 @@ def _handle_push_signal(project_id: str, session_id: str, msg: dict) -> None:
                 body = 'Waiting for you'
             _queue_push(title, body, url=target,
                         project_id=project_id, session_id=session_id,
-                        kind='turn_complete')
+                        kind='turn_complete', project_name=p.get('name') or project_id or 'Clayrune')
     except Exception as e:
         _log(f"[push] _handle_push_signal error: {e}", flush=True)
 
