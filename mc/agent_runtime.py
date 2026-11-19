@@ -43,6 +43,7 @@ from typing import (
 from mc.pending_delivery import complete_or_defer
 from mc.terminal_delivery import TerminalDeliveryGate
 from mc.delivery_attempt import DeliveryAttempt
+from mc import incognito_registry as _incognito_registry
 from mc import vendor_fence
 from mc import test_run_detection as _test_run_detection
 from mc.core import TimestampedLines, _log
@@ -1836,9 +1837,6 @@ _CLAUDE_HOME = Path.home() / '.claude' / 'projects'
 # first time a dispatch marked incognito learns its csid (`_note_claude_sid`).
 # Every transcript-reading path in this module keys off `is_transcript_incognito`
 # instead of re-deriving the answer.
-_incognito_registry_lock = threading.RLock()
-
-
 def _incognito_registry_path() -> Path:
     from mc.secrets_store import clayrune_home  # local import: keep this module leaf-level
     return clayrune_home() / 'incognito_sessions.json'
@@ -1852,23 +1850,8 @@ def mark_transcript_incognito(claude_session_id: str) -> None:
     logged: a marker that silently failed to write is indistinguishable from
     "not incognito" to every reader below, which is the exact leak this closes.
     """
-    if not claude_session_id:
-        return
-    from mc.core import _atomic_write_text, _log, now_iso
-    path = _incognito_registry_path()
-    with _incognito_registry_lock:
-        try:
-            data = _load_incognito_registry()
-            if data is None:
-                _log('[incognito] incognito registry is unreadable; leaving it in place')
-                return
-            if claude_session_id in data:
-                return
-            data[claude_session_id] = now_iso()
-            path.parent.mkdir(parents=True, exist_ok=True)
-            _atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False))
-        except Exception as e:
-            _log(f"[incognito] failed to durably mark {claude_session_id[:12]}: {e}")
+    if claude_session_id:
+        _incognito_registry.mark(_incognito_registry_path(), claude_session_id)
 
 
 def _load_incognito_registry() -> Optional[Dict[str, str]]:
@@ -1880,14 +1863,7 @@ def _load_incognito_registry() -> Optional[Dict[str, str]]:
     read/parsed. `None` is a fail-closed SENTINEL, not "empty": see
     `is_transcript_incognito`.
     """
-    path = _incognito_registry_path()
-    try:
-        data = json.loads(path.read_text(encoding='utf-8'))
-    except FileNotFoundError:
-        return {}
-    except Exception:
-        return None  # unreadable — fail closed
-    return data if isinstance(data, dict) else None  # corrupt shape — fail closed
+    return _incognito_registry.load(_incognito_registry_path())
 
 
 def is_transcript_incognito(claude_session_id: str) -> bool:
