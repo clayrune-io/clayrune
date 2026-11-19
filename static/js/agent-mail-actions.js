@@ -176,6 +176,12 @@
       act('verify', { code });
     } else if (action === 'confirm') {
       if (review) act('confirm', { confirmation: review.raw });
+    } else if (action === 'disable' && (!last || last.status !== 200 || !last.body || !last.body.stage)) {
+      // A failed status read cannot tell us the protocol. Use the pull body;
+      // the legacy Disable adapter ignores extra fields.
+      const bytes = crypto.getRandomValues(new Uint8Array(16));
+      const op_id = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+      act('disable', { op_id });
     } else {
       act(action, {});
     }

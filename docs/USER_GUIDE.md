@@ -1065,7 +1065,8 @@ those actions still require your dashboard passcode. The notice clears on the
 next successful status refresh after review. If mail storage is unavailable,
 an already visible notice stays until status can be read again.
 
-To stop mail, choose **Disable** and confirm with your dashboard passcode. A
+To stop mail, open **Settings > Connectivity > Agent mail**, choose **Disable
+agent mail** under **Controls**, and confirm with your dashboard passcode. A
 successful local disable blocks new local sends and mail continuations at once.
 **Disabled here, revocation pending** means remote revocation still needs an
 acknowledgment; **Retry revocation** asks the service again. Disable is offered

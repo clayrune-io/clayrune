@@ -1,5 +1,9 @@
 # Clayrune — Changelog
 
+## [2026-11-18] - Agent mail: turn off pull mail from Settings (MC-1179 MB18)
+
+- **Settings > Connectivity > Agent mail > Controls** offers **Disable agent mail** for active pull mail. The dashboard passcode confirms the action and local mail stops before the service revocation attempt. The result shows whether the service confirmed revocation.
+
 ## [2026-11-18] - Agent mail: name reply quote extraction accurately (MC-1179 MB5)
 
 - Renamed the internal reply extraction adapter and corrected the specs to describe deterministic quote trimming followed by delivery as an owner chat message. The Gmail/IMAP decision digest still uses a toolless transform.

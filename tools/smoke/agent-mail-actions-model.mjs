@@ -3,7 +3,7 @@
  * Agent-mail actions model, PULL signup path (MC-1166 U3). Pure Node, no browser:
  * static/js/agent-mail-actions-model.js is evaluated against a stub `window`.
  * Pins: each Signup.status state maps to the right control, no legacy
- * review/verify/proof control or disable is ever offered for pull, a held view in an
+ * review/verify/proof control is offered for pull, a held view in an
  * HTTP-200 answer is a failure, malformed data fails closed (no controls), and the
  * legacy path is untouched.
  *
@@ -27,7 +27,7 @@ const view = (o) => ({ status: 200, body: { protocol: 'pull', pull_status: {}, s
   state: 'pending', reason: '', enabled: false, install_id: 'i', flow_id: 'f', address: 'm1@clayrune.io',
   expires_ms: 1, verification_state: null, ...o } } });
 const controls = (o) => M.plan(view(o)).controls;
-const FORBIDDEN = ['review', 'confirm', 'verify', 'proof', 'disable', 'retry-revocations'];
+const FORBIDDEN = ['review', 'confirm', 'verify', 'proof', 'retry-revocations'];
 
 console.log('plan: signup states');
 check(same(controls({ state: 'not_enrolled' }), ['setup']), 'not_enrolled -> setup');
@@ -41,7 +41,7 @@ check(/may or may not/.test(M.plan(view({ state: 'pending', verification_state: 
 check(/could not be sent/.test(M.plan(view({ state: 'pending', verification_state: 'failed' })).text), 'failed text says so');
 check(same(controls({ state: 'verified' }), ['enable']), 'verified -> enable');
 check(same(controls({ state: 'enable_pending' }), ['enable']), 'enable_pending -> enable (finish)');
-check(same(controls({ state: 'active', enabled: true }), []), 'active -> no signup action');
+check(same(controls({ state: 'active', enabled: true }), ['disable']), 'active -> Disable');
 const exp = M.plan(view({ state: 'expired', reason: 'flow_expired' }));
 check(exp.controls.length === 0 && /30-minute/.test(exp.text), 'expired -> no control, plain reason');
 check(controls({ state: 'cancelled' }).length === 0, 'cancelled -> no control');
@@ -51,7 +51,7 @@ const heldPending = M.plan(view({ state: 'pending', reason: 'seal_missing' }));
 check(heldPending.state === 'held' && heldPending.controls.length === 0, 'reason on a pending view holds it (no check/enable)');
 const every = ['not_enrolled', 'preparing', 'start_pending', 'pending', 'verified', 'enable_pending', 'active', 'expired', 'cancelled', 'held']
   .flatMap((s) => controls({ state: s, enabled: s === 'active', reason: s === 'held' ? 'vault_locked' : '' }));
-check(!every.some((c) => FORBIDDEN.includes(c)), 'no review/confirm/verify/proof/disable/retry-revocations for any pull state');
+check(!every.some((c) => FORBIDDEN.includes(c)), 'no review/confirm/verify/proof/retry-revocations for these pull states');
 
 console.log('plan: malformed fails closed');
 const closed = (r, msg) => { const p = M.plan(r); check(p.state === 'error' && p.controls.length === 0 && !!p.text, msg); };

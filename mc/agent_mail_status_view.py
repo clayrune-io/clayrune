@@ -282,7 +282,8 @@ def pull_status(factory: Any, *, supervisor: Any = None, signup: Any = None) -> 
         'vault': {'state': 'unknown'}, 'queue_count': None, 'queue_bytes': None,
         'invalid_message_id_holds': None, 'oldest_received_ms': None, 'oldest_expires_ms': None,
         'queue_age_ms': None, 'observed_ms': None, 'notice_state': None,
-        'revocation_pending': None, 'revocations_pending': None, 'local_queue': None,
+            'revocation_pending': None, 'revocations_pending': None, 'local_queue': None,
+            'can_disable': False,
         'flow': {'state': 'unknown'}, 'signup': signup_view, 'recovery': recovery}
     if factory is None:
         return out
@@ -347,6 +348,7 @@ def pull_status(factory: Any, *, supervisor: Any = None, signup: Any = None) -> 
             return out
         out.update(state=phase, reason=_reason(account['reason']), enabled=False, install_id=install,
                    generation=generation, owner_generation=account['owner_generation'], owner_verified=verified,
+                   can_disable=phase == 'active' and current['state'] == 'current' and not fenced,
                    owner=account['owner_address'] if verified else '',
                    address=account['address'] if phase != 'deleted' else '',
                    revocation_pending=bool(fences), revocations_pending=fences, vault={'state': vault})
@@ -369,7 +371,12 @@ def pull_status(factory: Any, *, supervisor: Any = None, signup: Any = None) -> 
         eligible = (phase == 'active' and account['local_enabled'] == 1 and current['state'] == 'current'
                     and reg is not None and reg['enabled'] == 1 and reg['generation'] == generation and not fenced
                     and (flow is None or flow['state'] == 'completed'))
-        if fenced or current['state'] != 'current':
+        if (phase == 'disabled' and account['local_enabled'] == 0 and current['state'] == 'fenced'
+                and (reg is None or reg['enabled'] == 0)):
+            out['connection'] = 'offline'
+            if account['reason'] == 'fence_token_missing':
+                out.update(state='held', connection='held', revocation_pending=True)
+        elif fenced or current['state'] != 'current':
             out.update(state='held', reason='fenced' if fenced or current['state'] == 'fenced'
                        else 'registration_inactive', connection='held')
         elif vault != 'ready':

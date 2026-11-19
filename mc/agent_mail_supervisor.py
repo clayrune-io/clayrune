@@ -370,17 +370,17 @@ class Supervisor:
             with self._lock:
                 self._client_snapshot = {'state': 'held', 'running': running, 'reason': 'status_failed'}
 
-    def stop(self, timeout: float = 5.0) -> None:
+    def stop(self, timeout: float = 5.0) -> bool:
         deadline = time.monotonic() + max(0.0, timeout)
         if not self._transition.acquire(timeout=max(0.0, deadline - time.monotonic())):
             self._failed('shutdown', 'thread_shutdown_pending')
-            return
+            return False
         try:
-            self._stop_until(deadline)
+            return self._stop_until(deadline)
         finally:
             self._transition.release()
 
-    def _stop_until(self, deadline: float) -> None:
+    def _stop_until(self, deadline: float) -> bool:
         with self._lock:
             thread = self._thread
             self._stop.set()
@@ -391,8 +391,10 @@ class Supervisor:
         with self._lock:
             if stopped and thread is self._thread and (thread is None or not thread.is_alive()):
                 self._thread = None
+                return True
             elif thread is not None and thread.is_alive():
                 self._failed('shutdown', 'thread_shutdown_pending')
+            return False
 
     # --- metadata for 7e ------------------------------------------------------
     def status(self) -> dict[str, Any]:

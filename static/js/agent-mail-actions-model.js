@@ -119,8 +119,7 @@
 
   // ── pull signup (MC-1166 U3) ─────────────────────────────────────────────
   // Explicit protocol discriminator: only `body.protocol === 'pull'` takes this path;
-  // legacy answers (no discriminator) keep using the code below unchanged. Pull has no
-  // review/code/proof step and no disable route, so none is ever offered. The view is
+  // legacy answers (no discriminator) keep using the code below. The signup view is
   // body.signup (Signup.status): anything unrecognised fails closed with NO controls,
   // so a malformed answer can never offer Enable.
   const isPull = (b) => isObj(b) && b.protocol === 'pull';
@@ -167,9 +166,17 @@
   }
   // A pull POST answers HTTP 200 even when it holds a refusal: judge the view, not the status.
   function pullOutcome(action, r) {
+    const done = (tone, text, c) => ({ tone, text, blockers: [], code: c });
+    if (action === 'disable') {
+      const v = r.body;
+      if (v.state === 'disabled' && v.enabled === false) {
+        if (v.revocation_pending === true) return done('warn', 'Agent mail is off on this computer. Service revocation is pending.', 'revocation_pending');
+        if (v.revocation_pending === false) return done('good', 'Agent mail is off and the mail service confirmed revocation.', 'ok');
+      }
+      return done('bad', pullWhy(code(v.reason)), code(v.reason) || 'unrecognised');
+    }
     // POST answers are FLAT ({protocol, ...Signup view}); a nested `signup` is the GET shape.
     const p = pullPlan('signup' in r.body ? null : r.body);
-    const done = (tone, text, c) => ({ tone, text, blockers: [], code: c });
     if (p.state === 'held') return done('bad', p.text, p.reason);
     if (p.state === 'error') return done('bad', p.text, 'unrecognised');
     // A flow that ran out or was cancelled is a dead end, not progress: never green.
@@ -188,7 +195,13 @@
     const status = input && input.status;
     const body = input && input.body;
     if (status === 404) return { state: 'off', controls: [] };
-    if (status === 200 && isPull(body)) return pullPlan(body.signup);
+    if (status === 200 && isPull(body)) {
+      const p = pullPlan(body.signup);
+      const s = isObj(body.pull_status) ? body.pull_status : {};
+      if (s.state === 'disabled' && s.enabled === false) return { ...p, state: 'disabled', controls: [], text: '' };
+      if (p.state === 'active' || s.can_disable === true) p.controls.push('disable');
+      return p;
+    }
     if (status !== 200 || !isObj(body) || !STAGES.includes(body.stage)) {
       return { state: status === 503 ? 'unavailable' : 'error', controls: ['disable'] };
     }
