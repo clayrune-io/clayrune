@@ -146,6 +146,22 @@ def test_unattended_session_logs_but_would_not_mint(env):
     assert row['origin'] == 'unattended' and row['would_mint'] is False
 
 
+@pytest.mark.parametrize('source', ['live', 'explicit', 'pseudo_project'])
+def test_incognito_message_does_not_reach_habit_logs(env, monkeypatch, source):
+    hr, mem, tmp_path = env
+    session = {**_session(), 'incognito': True, 'project_id': 'p1'}
+    if source == 'live':
+        monkeypatch.setitem(mem.state.agent_sessions, 'sid-1', session)
+    project_id = '_incognito' if source == 'pseudo_project' else 'p1'
+    logs = []
+    monkeypatch.setattr(hr, '_log', lambda message: logs.append(message))
+
+    assert hr.observe_user_message(project_id, 'sid-1', REAL_HABIT,
+                                   session=session if source == 'explicit' else None) is None
+    assert _rows(tmp_path, project_id) == []
+    assert not logs
+
+
 def test_agent_caller_message_is_skipped(env):
     hr, _, tmp = env
     assert hr.observe_user_message('p1', 'sid-1', REAL_HABIT, session=_session(),

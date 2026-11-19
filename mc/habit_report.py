@@ -124,13 +124,7 @@ def _log_dir():
 
 
 def _session_identity(project_id, session_id, session):
-    """(task, trigger_type, resolved session id) from the live session, else
-    from the project's agent_log row (a chat revived after a restart has no
-    live session when its next message lands)."""
-    if session is None and session_id:
-        s = state.agent_sessions.get(session_id)
-        if s and s.get('project_id') == project_id:
-            session = s
+    """Use the live session or look up its identity in the project's agent log."""
     if session is not None:
         return (session.get('task', '') or '', session.get('trigger_type', '') or '',
                 session.get('session_id') or session_id)
@@ -170,7 +164,13 @@ def observe_user_message(project_id, session_id, message, *, session=None,
     the operator's. Returns the logged row (for tests) or None. Never raises.
     """
     try:
-        if not human or not enabled():
+        if not human or project_id == '_incognito' or not enabled():
+            return None
+        if session is None and session_id:
+            live = state.agent_sessions.get(session_id)
+            if live and live.get('project_id') == project_id:
+                session = live
+        if session and session.get('incognito'):
             return None
         hit = classify(message)
         if hit is None:

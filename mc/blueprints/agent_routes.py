@@ -13873,7 +13873,8 @@ def agent_send(project_id):
     # A human typing into a scheduled/steward thread makes it a chat they own:
     # flag it so it keeps its place in the Chats list (display-only).
     _mark_human_joined(project_id, session_id)
-    _observe_habit_cue(project_id, session_id, message)
+    if not incognito:
+        _observe_habit_cue(project_id, session_id, message)
 
     # Decision under the lock — this is the ONLY place that picks the route.
     with get_manager(project_id).lock:
