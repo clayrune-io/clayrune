@@ -17189,7 +17189,8 @@ def api_recent_runs():
         pid = f.name[:-len(suffix)]
         try:
             log = json.loads(f.read_text(encoding='utf-8'))
-        except Exception:
+        except Exception as e:
+            _log(f"[recent-runs] could not read {f.name}: {e}")
             continue
         for entry in log:
             ts = entry.get('ts') or entry.get('started_at') or ''
@@ -18546,7 +18547,8 @@ def api_usage():
                         _seen_csids[csid] = (ts, entry, p)
                 else:
                     _no_csid.append((entry, p))
-        except Exception:
+        except Exception as e:
+            _log(f"[usage] could not read {f.name}: {e}")
             continue
 
     def _entry_usage(entry):

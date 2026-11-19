@@ -304,3 +304,21 @@ def test_plan_scrub_skips_unaffected_agent_logs(tmp_path, monkeypatch):
     with Flask(__name__).test_request_context(json={'paths': [plan]}):
         assert routes.delete_plans().get_json()['ok']
     assert writes == []
+
+
+def test_run_and_usage_listing_log_unreadable_history(tmp_path, monkeypatch):
+    from flask import Flask
+    from mc.blueprints import agent_routes as routes
+
+    path = tmp_path / 'fixture_agent_log.json'
+    path.write_text('{', encoding='utf-8')
+    logs = []
+    monkeypatch.setattr(routes, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(routes, '_log', logs.append)
+    monkeypatch.setattr(routes, 'load_projects', list)
+    monkeypatch.setattr(routes, 'agent_sessions', {})
+    with Flask(__name__).test_request_context():
+        assert routes.api_recent_runs().get_json()['count'] == 0
+        assert routes.api_usage().get_json()['total_sessions'] == 0
+    assert [line.split()[0] for line in logs] == ['[recent-runs]', '[usage]']
+    assert path.read_text(encoding='utf-8') == '{'
