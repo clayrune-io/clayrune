@@ -1390,8 +1390,10 @@ def add_backlog_item(project_id):
 @_role_writes.charter_write
 def update_backlog_item(project_id, item_id):
     data = request.get_json()
-    if not data:
+    if not isinstance(data, dict) or not data:
         return jsonify({'error': 'no data'}), 400
+    if 'text' in data and not isinstance(data['text'], str):
+        return jsonify({'error': 'text must be a string'}), 400
 
     error = validate_backlog_fields(data)
     if error:
@@ -1473,7 +1475,11 @@ def update_backlog_item(project_id, item_id):
     # Export first (tools/backlog-journal-export.py) — this drops the rest on the
     # floor and the project file is untracked, so there is nothing to recover from.
     if 'notes' in data and isinstance(data['notes'], list):
-        item['notes'] = data['notes'][-50:]
+        notes = data['notes']
+        if len(notes) > 50:
+            _log(f"[backlog] note cap on {project_id}/{item_id}: evicting "
+                 f"{len(notes) - 50} oldest note(s), unrecoverable", flush=True)
+        item['notes'] = notes[-50:]
 
     p['last_updated'] = now_iso()
     save_project(project_id, p)
@@ -1488,7 +1494,8 @@ def _append_note_to_backlog_item(project_id, item_id, text, agent_code='user'):
     with _backlog_sync_lock:
         try:
             p = load_project(project_id)
-        except Exception:
+        except Exception as exc:
+            _log(f"[backlog] reading {project_id} for note {item_id} failed: {exc}", flush=True)
             return False
         if p is None:
             return False
@@ -1520,7 +1527,8 @@ def _append_note_to_backlog_item(project_id, item_id, text, agent_code='user'):
                 p['last_updated'] = now_iso()
                 try:
                     save_project(project_id, p)
-                except Exception:
+                except Exception as exc:
+                    _log(f"[backlog] saving note {project_id}/{item_id} failed: {exc}", flush=True)
                     return False
                 return True
         return False
@@ -2469,8 +2477,8 @@ def _image_path_allowed(real: str) -> bool:
                 except Exception:
                     continue
                 allowed.append(pp)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log(f"[projects] loading image allowlist failed: {exc}", flush=True)
     rn = os.path.normcase(real)
     for a in allowed:
         try:
@@ -2607,8 +2615,8 @@ def serve_file():
             except Exception:
                 continue
             allowed_projects.append(pp)
-    except Exception:
-        pass
+    except Exception as exc:
+        _log(f"[projects] loading file allowlist failed: {exc}", flush=True)
     rn = os.path.normcase(real)
     ok = False
     matched_project = False
@@ -3002,6 +3010,6 @@ def get_grid_layout():
     if layout_path.exists():
         try:
             return jsonify(json.loads(layout_path.read_text(encoding='utf-8')))
-        except Exception:
-            pass
+        except Exception as exc:
+            _log(f"[projects] reading grid layout failed: {exc}", flush=True)
     return jsonify({'order': []})

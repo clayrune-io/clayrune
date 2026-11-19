@@ -638,6 +638,17 @@ def test_backlog_malformed_and_404(client):
     assert client.get('/api/project/nope/backlog').status_code == 404
 
 
+def test_backlog_patch_rejects_non_text_and_logs_trimmed_notes(client, capsys):
+    _seed(client, backlog=[{'id': 'item', 'text': 'before', 'status': 'open'}])
+    endpoint = '/api/project/tproj/backlog/item'
+    assert client.patch(endpoint, json={'text': 42}).status_code == 400
+    notes = [{'text': str(index)} for index in range(51)]
+    result = client.patch(endpoint, json={'notes': notes})
+    assert result.status_code == 200
+    assert result.get_json()['item']['notes'] == notes[1:]
+    assert '1 oldest note(s)' in capsys.readouterr().out
+
+
 def test_overlapping_backlog_adds_take_distinct_numbers(client, monkeypatch):
     from concurrent.futures import ThreadPoolExecutor
 
