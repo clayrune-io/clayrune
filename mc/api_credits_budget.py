@@ -360,6 +360,11 @@ def record(*, caller: str, model: str, usage: Dict[str, int], cost: Optional[flo
     with _lock:
         led = _load_ledger(strict=True) if event_id is not None else _try_load_ledger()
         if led is None:
+            if not estimated:
+                from mc import api_credits_pending as pending
+                pending.record(caller=caller, model=model, usage=usage, cost=cost,
+                               estimated=False, cycle_start=start.isoformat(),
+                               recorded_at=entry['ts'])
             return
         if event_id is not None:
             receipts = led.setdefault('pending_receipts', [])

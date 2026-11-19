@@ -75,6 +75,27 @@ def test_unreadable_ledger_cannot_be_replaced_by_status_write(damaged, writer):
     assert budget.status()['state'] == 'stopped'
 
 
+def test_billed_call_is_replayed_after_unreadable_ledger_is_restored():
+    model = 'claude-haiku-5-5'
+
+    def charge(cost: float):
+        budget.record(caller='offload:test', model=model, usage={}, cost=cost, estimated=False)
+
+    charge(8.50)
+    ledger = budget.ledger_path()
+    saved = ledger.read_bytes()
+    ledger.write_bytes(b'{')
+
+    charge(1.00)
+    assert ledger.read_bytes() == b'{'
+
+    ledger.write_bytes(saved)
+    assert budget.can_spend(model) == (False, 'stop_point_reached')
+    assert budget.spent_this_cycle() == pytest.approx(9.50)
+    assert budget.can_spend(model) == (False, 'stop_point_reached')
+    assert budget.spent_this_cycle() == pytest.approx(9.50)
+
+
 def test_cold_dispatch_uses_latest_sticky_choice():
     # Execute the exact selection statements from the dispatch function, without
     # its real process/context side effects. The log is newest first, as written
