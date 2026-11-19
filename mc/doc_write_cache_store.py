@@ -19,7 +19,7 @@ request.
 Writes are debounced onto a daemon timer thread. The request path only calls
 `mark_dirty()` (a lock + a timer start); it never serializes or touches disk.
 
-Format: {"version": 1, "entries": {"<transcript path>": [mtime, size, [hit, ...]]}}
+Format: {"version": 2, "entries": {"<transcript path>": [mtime, size, [hit, ...]]}}
 hit = {"path", "ts", "tool", "session_id"}, exactly what the scan produces.
 """
 from __future__ import annotations
@@ -29,7 +29,8 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-SCHEMA_VERSION = 1
+# Version 1 could persist a failed read as an empty scan result.
+SCHEMA_VERSION = 2
 DEBOUNCE_SECONDS = 3.0
 
 # Resolved lazily so tests (and HOME changes) can point it elsewhere.

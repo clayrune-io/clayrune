@@ -2316,8 +2316,12 @@ class ClaudeRuntime(AgentRuntime):
         session_id = msg.get('session_id')
 
         if msg_type == 'assistant':
+            message = msg.get('message')
+            content = message.get('content') if isinstance(message, dict) else None
+            if not isinstance(content, list):
+                return None
             blocks: List[Dict[str, Any]] = []
-            for block in msg.get('message', {}).get('content', []):
+            for block in content:
                 if not isinstance(block, dict):
                     continue
                 bt = block.get('type', '')
@@ -2449,6 +2453,8 @@ class ClaudeRuntime(AgentRuntime):
 
         if msg_type == 'user':
             msg_content = msg.get('message', {}) or {}
+            if not isinstance(msg_content, dict):
+                return None
             return AgentEvent(
                 type=EventType.USER_MESSAGE, provider='claude',
                 session_id=session_id, mc_session_id=mc_session_id,
@@ -2729,6 +2735,7 @@ class ClaudeRuntime(AgentRuntime):
         # entry per assistant text block, text[:5000]) — how a legacy
         # rollover transcript is linked back to the one it continued.
         last_turn = ''
+        scan_complete = False
         try:
             with open(f, 'r', encoding='utf-8', errors='replace') as fh:
                 for raw_line in fh:
@@ -2776,8 +2783,9 @@ class ClaudeRuntime(AgentRuntime):
                     if not first_user:
                         first_user = clean
                     last_user = clean
-        except Exception:
-            pass
+            scan_complete = True
+        except Exception as exc:
+            _log(f'[session-scan] failed to read {f.name}: {exc}')
         row = {
             'session_id': f.stem,
             'mtime': mtime,
@@ -2792,6 +2800,8 @@ class ClaudeRuntime(AgentRuntime):
         if _lin:
             row['handoff'] = {'provider': _lin[0], 'native_id': _lin[1],
                               'body_tail': lineage_tail(_lin[2])}
+        if not scan_complete:
+            return row
         if len(_SESSION_ROW_CACHE) >= _SESSION_ROW_CACHE_MAX:
             # Crude but adequate: this is a read-through cache of derived
             # data, so dropping the oldest insertions costs a re-parse, not
@@ -2863,7 +2873,6 @@ class ClaudeRuntime(AgentRuntime):
             if cached and cached[0] == mtime and cached[1] == fsize:
                 hits = cached[2]
             else:
-                reparsed = True
                 hits = []
                 try:
                     with open(f, 'r', encoding='utf-8', errors='replace') as fh:
@@ -2887,14 +2896,18 @@ class ClaudeRuntime(AgentRuntime):
                                 name = block.get('name', '')
                                 if name not in ('Write', 'Edit'):
                                     continue
-                                inp = block.get('input') or {}
+                                inp = block.get('input')
+                                if not isinstance(inp, dict):
+                                    continue
                                 fp = str(inp.get('file_path') or '')
                                 if fp.lower().endswith('.md'):
                                     hits.append({'path': fp, 'ts': ts, 'tool': name,
                                                 'session_id': f.stem})
-                except Exception:
-                    hits = []
-                _DOC_WRITE_CACHE[ckey] = (mtime, fsize, hits)
+                except Exception as exc:
+                    _log(f'[document-scan] failed to read {f.name}: {exc}')
+                else:
+                    _DOC_WRITE_CACHE[ckey] = (mtime, fsize, hits)
+                    reparsed = True
             for h in hits:
                 prev = by_path.get(h['path'])
                 if not prev or (h.get('ts') or '') >= (prev.get('ts') or ''):
@@ -2970,6 +2983,7 @@ class ClaudeRuntime(AgentRuntime):
             last_ts = ''
             tool_count = 0
             label = ''
+            scan_complete = False
             try:
                 with open(sf, 'r', encoding='utf-8', errors='replace') as fh:
                     for raw_line in fh:
@@ -2995,8 +3009,9 @@ class ClaudeRuntime(AgentRuntime):
                                     str(x.get('text', '')) for x in c
                                     if isinstance(x, dict))
                             label = label_from_user_text(c)
-            except Exception:
-                pass
+                scan_complete = True
+            except Exception as exc:
+                _log(f'[subagent-scan] failed to read {sf.name}: {exc}')
 
             row = {
                 'agent_id': agent_id,
@@ -3006,11 +3021,13 @@ class ClaudeRuntime(AgentRuntime):
                 'label': label,
                 'path': str(sf),
             }
+            out.append(dict(row))
+            if not scan_complete:
+                continue
             if len(_SUBAGENT_SCAN_CACHE) >= _SUBAGENT_SCAN_CACHE_MAX:
                 for k in list(_SUBAGENT_SCAN_CACHE)[:_SUBAGENT_SCAN_CACHE_MAX // 4]:
                     _SUBAGENT_SCAN_CACHE.pop(k, None)
             _SUBAGENT_SCAN_CACHE[ckey] = (mtime, fsize, row)
-            out.append(dict(row))
         return out
 
     def parse_transcript_file(self, path: Path,
