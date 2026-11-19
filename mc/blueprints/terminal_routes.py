@@ -41,7 +41,7 @@ from typing import Any, Callable
 from flask import Blueprint, Response, jsonify, request
 
 from mc import pty_backend, terminal_output_buffer
-from mc.core import _is_loopback_request
+from mc.core import _is_loopback_request, _log
 from mc.state import agent_sessions, terminal_lock, terminal_sessions
 
 bp = Blueprint('terminal_routes', __name__)
@@ -410,15 +410,15 @@ def terminal_stdin():
     if pty_sess is not None:
         try:
             pty_sess.write(text)
-        except Exception:
-            pass
+        except Exception as exc:
+            _log(f'[terminal] PTY stdin write failed for {session_id}: {exc}', flush=True)
         return jsonify({'ok': True})
 
     try:
         session['proc'].stdin.write(text.encode('utf-8'))
         session['proc'].stdin.flush()
-    except (BrokenPipeError, OSError):
-        pass
+    except OSError as exc:
+        _log(f'[terminal] pipe stdin write failed for {session_id}: {exc}', flush=True)
 
     return jsonify({'ok': True})
 
