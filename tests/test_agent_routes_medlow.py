@@ -322,3 +322,24 @@ def test_run_and_usage_listing_log_unreadable_history(tmp_path, monkeypatch):
         assert routes.api_usage().get_json()['total_sessions'] == 0
     assert [line.split()[0] for line in logs] == ['[recent-runs]', '[usage]']
     assert path.read_text(encoding='utf-8') == '{'
+
+
+def test_chat_search_logs_an_unreadable_transcript(tmp_path, monkeypatch):
+    from mc.blueprints import agent_routes as routes
+
+    transcript_dir = tmp_path / 'encoded'
+    transcript_dir.mkdir()
+    (transcript_dir / 'fixture.jsonl').touch()
+    logs = []
+
+    def fail(*a, **kw):
+        raise OSError('fixture read error')
+
+    monkeypatch.setattr(routes, 'CLAUDE_HOME', tmp_path)
+    monkeypatch.setattr(routes, '_encode_project_path', lambda path: 'encoded')
+    monkeypatch.setattr(routes, '_conversation_cutover', None)
+    monkeypatch.setattr(routes._agent_runtime, 'is_transcript_incognito', lambda sid: False)
+    monkeypatch.setattr(routes, 'open', fail, raising=False)
+    monkeypatch.setattr(routes, '_log', logs.append)
+    assert routes._search_project_transcripts({'project_path': 'sample'}, 'text') == []
+    assert logs == ['[chat-search] could not read fixture.jsonl: fixture read error']

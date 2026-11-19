@@ -17332,7 +17332,8 @@ def _search_project_transcripts(project, query, limit=50):
                         if not snippet:
                             snippet = _make_search_snippet(
                                 _extract_msg_text_from_raw(raw), raw, q)
-        except Exception:
+        except Exception as e:
+            _log(f"[chat-search] could not read {f.name}: {e}")
             continue
         if not match_count:
             continue
@@ -17401,7 +17402,8 @@ def search_global():
             continue
         try:
             hits = _search_project_transcripts(p, q, limit=8)  # cap per project
-        except Exception:
+        except Exception as e:
+            _log(f"[chat-search] project {p.get('id', '')} failed: {e}")
             continue
         pid = p.get('id') or ''
         pname = p.get('name') or pid
@@ -18430,7 +18432,8 @@ def get_project_documents(project_id):
     if project_path:
         try:
             hits = _agent_runtime.get_runtime('claude').list_written_markdown(project_path)  # pyright: ignore[reportAttributeAccessIssue]
-        except Exception:
+        except Exception as e:
+            _log(f"[documents] transcript scan failed for {project_id}: {e}")
             hits = []
         proot = ''
         try:
