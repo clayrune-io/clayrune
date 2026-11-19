@@ -539,3 +539,28 @@ class TestStream:
         assert r.status_code == 200
         assert r.mimetype == 'text/event-stream'
         assert b'no active session' in r.data
+
+
+class TestPipeReaderUtf8Split:
+    def test_multibyte_char_straddling_4096_read_survives(self, client, state):
+        # A terminal QR code is drawn in 3-byte half-block glyphs. Pipe reads
+        # are 4096 bytes, so one glyph can straddle two reads. Decoding each
+        # chunk on its own turned it into U+FFFD marks and broke the code.
+        from mc.blueprints import terminal_routes as tr
+        glyph = '▀'.encode('utf-8')          # 3 bytes: e2 96 80
+        payload = b'a' * 4095 + glyph + ('▄' + ' tail').encode('utf-8')
+        proc = FakeProc()
+        session = {'proc': proc, 'status': 'running', 'output_lines': []}
+        # Windows pipes buffer ~4 KB, so write from a thread or feed() blocks.
+        import threading
+        def _writer():
+            proc.feed(payload)                     # first os.read cuts at 4096
+            proc.eof(rc=0)
+        w = threading.Thread(target=_writer, daemon=True)
+        w.start()
+        tr._read_terminal_stream(proc, session)
+        w.join(timeout=5)
+        text = ''.join(l for l in session['output_lines']
+                       if not l.startswith('\r\n[Process exited'))
+        assert '�' not in text
+        assert text == payload.decode('utf-8')
