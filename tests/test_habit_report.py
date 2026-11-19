@@ -183,6 +183,29 @@ def test_non_cue_message_logs_nothing(env):
     assert _rows(tmp) == []
 
 
+def test_habit_deduplication_holds_one_lock_through_prune_and_insert(env, monkeypatch):
+    from threading import Lock
+
+    hr, _, _ = env
+    lock = Lock()
+    checked = []
+
+    class Recent(dict):
+        def items(self):
+            checked.append(lock.locked())
+            return super().items()
+
+        def __setitem__(self, key, stamp):
+            checked.append(lock.locked())
+            super().__setitem__(key, stamp)
+
+    monkeypatch.setattr(hr, '_recent', Recent())
+    monkeypatch.setattr(hr, '_recent_lock', lock, raising=False)
+    assert hr._seen_recently(('session', 'message')) is False
+    assert hr._seen_recently(('session', 'message')) is True
+    assert checked == [True, True, True]
+
+
 def test_same_message_via_send_and_followup_logs_once(env):
     hr, _, tmp = env
     hr.observe_user_message('p1', 'sid-1', REAL_HABIT, session=_session())

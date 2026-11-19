@@ -27,6 +27,7 @@ Flags (`state.CONFIG`, both default True):
 """
 import json
 import re
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -145,14 +146,18 @@ _recent = {}   # (session_id, message) -> monotonic seen-at; /agent/send hands
                # the same message on to /agent/followup in-process.
 
 
+_recent_lock = threading.Lock()
+
+
 def _seen_recently(key):
-    now = time.monotonic()
-    for k in [k for k, t in _recent.items() if now - t > _DEDUPE_WINDOW_S]:
-        _recent.pop(k, None)
-    if key in _recent:
-        return True
-    _recent[key] = now
-    return False
+    with _recent_lock:
+        now = time.monotonic()
+        for k in [k for k, t in _recent.items() if now - t > _DEDUPE_WINDOW_S]:
+            _recent.pop(k, None)
+        if key in _recent:
+            return True
+        _recent[key] = now
+        return False
 
 
 def observe_user_message(project_id, session_id, message, *, session=None,
