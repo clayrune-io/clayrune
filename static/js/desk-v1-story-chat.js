@@ -44,6 +44,7 @@
 
   const _EMPTY = 'Ask why a scene works or doesn’t, brainstorm, or tell me what to change. Select a scene to talk about just that one.';
   function _turnHTML(t, agentName) {
+    if (t.dispatch && window.DeskV1Dispatch) return window.DeskV1Dispatch.card(t);   // a child session's receipt/result (desk-v1-dispatch.js)
     if (t.role === 'user') {
       return `<div class="desk-v1-chat-turn desk-v1-chat-user" data-chat-turn="user"><div class="desk-v1-chat-meta">You${t.scene ? ` · scene ${esc(t.scene)}` : ''}</div><div class="desk-v1-chat-text">${esc(t.text)}</div></div>`;
     }
@@ -114,6 +115,11 @@
     _paint(box, bridge);
     onSelect();
     const A = Story().ask;
+    // While a dispatched child is pending, its saved result is polled into this thread.
+    if (window.DeskV1Dispatch) {
+      const src = { url: `/api/desk/storyboard/chat?kind=${encodeURIComponent(owner.kind)}&id=${encodeURIComponent(owner.id)}`, status: '[data-sb-ask-status]' };
+      window.DeskV1Dispatch.watch(box, src, st, () => { if (_active && _active.box === box) _paint(box, bridge); });
+    }
 
     if (!st.loaded && !st.loading && !ask.disabled) {
       st.loading = true;
@@ -171,11 +177,12 @@
           res = await window.DeskV1Store.api('POST', '/api/desk/storyboard/chat', body);
         }
         st.pending = null;
-        st.turns.push(...res.turns);
+        if (res.thread) st.turns = res.thread;   // a dispatch saved the user turn and its cards first
+        else st.turns.push(...res.turns);
         st.loaded = true;
         const turn = res.turns[res.turns.length - 1];
         if (bridge.token() !== mine) return;
-        let line = `${res.agent && res.agent.name ? res.agent.name : 'The default engine'} answered.`;
+        let line = `${res.agent && res.agent.name ? res.agent.name : 'The default engine'} answered.${res.thread ? ' Dispatched agents return their results here.' : ''}`;
         if (res.change) {
           try {
             const cur = bridge.ctx().detail.scenes.filter((s) => !s.placeholder).map((s) => s.id).join('|');
@@ -204,7 +211,12 @@
         cur.value = cur.value ? `${text}
 ${cur.value}` : text;
         A.fit(cur);
-        say(`Nothing was changed: ${err && err.message ? err.message : err}. Your message is back in the box.`, 'error');
+        say(`${/dispatched sessions/.test((err && err.message) || '') ? 'The turn failed' : 'Nothing was changed'}: ${err && err.message ? err.message : err}. Your message is back in the box.`, 'error');
+        // A model failure can follow a successful launch: fetch the saved cards.
+        if (window.DeskV1Dispatch) {
+          try { await window.DeskV1Dispatch.refresh({ url: `/api/desk/storyboard/chat?kind=${encodeURIComponent(owner.kind)}&id=${encodeURIComponent(owner.id)}`, status: '[data-sb-ask-status]' }, st); }
+          catch (refreshError) { say(`${(err && err.message) || err}. Saved dispatches could not be read: ${refreshError && refreshError.message ? refreshError.message : refreshError}.`, 'error'); }
+        }
       } finally {
         A.setBusy(false);
         ask.disabled = false;

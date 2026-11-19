@@ -9,9 +9,12 @@ from __future__ import annotations
 import copy
 import json
 import uuid
+from contextlib import nullcontext
 from typing import Callable, Optional
 
 from mc import desk as _desk
+from mc import desk_dispatch as _dispatch
+from mc import desk_dispatch_owner as _owners
 from mc import desk_studio_articles as _arts
 from mc import desk_story as _story
 from mc import desk_studio_engine as _studio_engine
@@ -88,26 +91,36 @@ def chat(article_id: str, body, load_project: Callable[[str], Optional[dict]]) -
                    and t['proposal']['tab_id'] == tab['id']), None)
     payload = {'topic': art['topic'], 'tab': dict(tab, body=text), 'message': message,
                'latest_proposal': ({k: latest[k] for k in ('tab_id', 'body', 'status')} if latest else None),
-               'conversation': [{'from': t['role'], 'text': t['text'][:1500]}
+               'conversation': [{'from': _owners.speaker(t['role'], t['role']), 'text': t['text'][:1500]}
                                 for t in thread[-CONTEXT_TURNS:]]}
     product = _product.product_context(project)
     if product is not None:
         payload['product'] = product
+    at = now_iso()
+    user_turn = {'id': 'tn-' + uuid.uuid4().hex[:12], 'role': 'user', 'text': message, 'at': at}
+    dispatch_turn: dict = {'attempts': 0, 'dispatches': []}
     try:
-        raw = _story._call_model(engine.provider, prompt=_INSTRUCTION + _product.PRODUCT_INSTRUCTION, system_prompt=persona,
-                                 model=engine.model, effort=effort,
-                                 stdin_text=json.dumps(payload, ensure_ascii=False), project=project)
+        # Only with a project: dispatch targets are that project's hired agents.
+        with (_dispatch.typed_turn(_owners.Owner('article', article_id), project, who, user_turn)
+              if project else nullcontext(dispatch_turn)) as dispatch_turn:
+            raw = _story._call_model(engine.provider, prompt=_INSTRUCTION + _product.PRODUCT_INSTRUCTION, system_prompt=persona,
+                                     model=engine.model, effort=effort,
+                                     stdin_text=json.dumps(payload, ensure_ascii=False), project=project)
     except Exception as e:
         _log(f'[desk] article chat failed: {e}', flush=True)
-        raise PieceError(f'the model call failed, so nothing was changed: {e}', 502)
+        # A dispatch tool call may have started a child before the model failed.
+        suffix = ('check the conversation for dispatched sessions before retrying' if dispatch_turn['attempts']
+                  else 'so nothing was changed')
+        raise PieceError(f'the model call failed, {suffix}: {e}', 502)
+    kept = ('check the conversation for dispatched sessions' if dispatch_turn['dispatches'] else 'nothing was changed')
     data = _story._parse_json(raw)
     if data is None:
         if '{' in (raw or ''):
-            raise PieceError('the agent answer could not be read; nothing was changed', 502)
+            raise PieceError(f'the agent answer could not be read; {kept}', 502)
         data = {'reply': raw}
     reply = data.get('reply')
     if not isinstance(reply, str) or not reply.strip() or len(reply) > MAX_REPLY:
-        raise PieceError('the agent sent an empty or oversized answer; nothing was changed', 502)
+        raise PieceError(f'the agent sent an empty or oversized answer; {kept}', 502)
     proposal = None
     error = None
     proposed = data.get('proposal')
@@ -118,19 +131,22 @@ def chat(article_id: str, body, load_project: Callable[[str], Optional[dict]]) -
         elif replacement != text:
             proposal = {'tab_id': tab['id'], 'label': tab['label'], 'before': text,
                         'body': replacement, 'status': 'proposed'}
-    at = now_iso()
-    turns = [{'id': 'tn-' + uuid.uuid4().hex[:12], 'role': 'user', 'text': message, 'at': at},
-             {'id': 'tn-' + uuid.uuid4().hex[:12], 'role': 'agent', 'agent': who,
-              'text': reply.strip(), 'at': at, 'proposal': proposal, 'proposal_error': error}]
+    agent_turn = {'id': 'tn-' + uuid.uuid4().hex[:12], 'role': 'agent', 'agent': who,
+                  'text': reply.strip(), 'at': at, 'proposal': proposal, 'proposal_error': error}
+    turns = [user_turn, agent_turn]
     with _desk._store_lock:
         store = _desk._read_store()
         current = _article(store, article_id)
         # A project reassignment during the call must not attach another project's answer.
         if current.get('project_id') != pid:
             raise PieceError('the article project changed while the agent answered; send again', 409)
-        current['chat'] = ((current.get('chat') or []) + turns)[-MAX_TURNS:]
+        # A dispatch saved the user turn with its first card, so it is not saved twice.
+        current['chat'] = ((current.get('chat') or []) + ([agent_turn] if dispatch_turn.get('user_saved') else turns))[-MAX_TURNS:]
         _desk._write_store(store)
-    return {'turns': turns, 'agent': {'ref': ref, 'name': who}, 'provider': engine.provider, 'model': engine.model}
+    out = {'turns': turns, 'agent': {'ref': ref, 'name': who}, 'provider': engine.provider, 'model': engine.model}
+    if dispatch_turn['dispatches']:
+        out['thread'] = read_thread(article_id)
+    return out
 
 
 def apply_proposal(article_id: str, turn_id: str, body) -> dict:

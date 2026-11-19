@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from contextlib import nullcontext
 from typing import Callable, Optional
 
 from mc import desk as _desk
@@ -48,6 +49,8 @@ from mc import desk_story as _story
 from mc import desk_campaign_engine as _campaign_engine
 from mc import desk_studio_engine as _studio_engine
 from mc import desk_product_context as _product
+from mc import desk_dispatch as _dispatch
+from mc import desk_dispatch_owner as _owners
 from mc import desk_storyboard as _sb
 from mc import desk_story_media as _media
 from mc.core import _log, now_iso
@@ -101,6 +104,7 @@ def _turn_out(t: dict) -> dict:
     ch = t.get('change')
     return {'id': t.get('id'), 'role': t.get('role'), 'text': t.get('text') or '', 'at': t.get('at'),
             'scene': t.get('scene'), 'agent': t.get('agent'),
+            'dispatch': dict(t['dispatch']) if isinstance(t.get('dispatch'), dict) else None,
             'change': dict(ch) if isinstance(ch, dict) else None,
             'change_error': t.get('change_error') or None}
 
@@ -184,7 +188,7 @@ def _context(story: str, scenes: list[dict], focus: Optional[int], thread: list[
         ch = t.get('change')
         if isinstance(ch, dict) and ch.get('status') == 'applied' and ch.get('summary'):
             text += f' [applied: {ch["summary"]}]'
-        convo.append({'from': 'user' if t.get('role') == 'user' else 'you', 'text': text})
+        convo.append({'from': 'user' if t.get('role') == 'user' else _owners.speaker(t.get('role'), 'you'), 'text': text})
     return {'story': story, 'scenes': out, 'focus': focus, 'conversation': convo, 'message': message}, cut
 
 
@@ -318,8 +322,13 @@ def chat(body, load_project: Callable[[str], Optional[dict]]) -> dict:
         persona = f'You are {who}. Your character:\n{rec["body"].strip()}\n\n{_story._PERSONA_TAIL}'
     item_pick = None if camp is not None else _studio_engine.check_save(body.get('engine'), project, body.get('agent'))
     engine, effort = _studio_engine.apply(camp, item_pick, project, rec, _story._resolve_engine(project, rec))
+    user_turn = {'id': 'tn-' + uuid.uuid4().hex[:10], 'role': 'user', 'text': message, 'at': now_iso(), 'scene': focus}
+    dispatch_turn: dict = {'attempts': 0, 'dispatches': []}
     try:
-        with _media.turn_media(saved, raw_scenes, message, focus, engine.provider, project) as media:
+        # Only with a project: dispatch targets are that project's hired agents.
+        with (_dispatch.typed_turn(_owners.storyboard(kind, oid), project, who or 'Studio agent', user_turn)
+              if project else nullcontext(dispatch_turn)) as dispatch_turn, \
+                _media.turn_media(saved, raw_scenes, message, focus, engine.provider, project) as media:
             media.apply(payload)
             extra = {'readable': media.readable} if media.readable else {}
             text = _story._call_model(engine.provider, prompt=_INSTR_CHAT + media.instruction + _product.PRODUCT_INSTRUCTION,
@@ -327,7 +336,10 @@ def chat(body, load_project: Callable[[str], Optional[dict]]) -> dict:
                                       stdin_text=json.dumps(payload, ensure_ascii=False), project=project, **extra)
     except Exception as e:  # TransformFailure / TransformTimeout / provider refusal: the call did not happen
         _log(f'[desk] storyboard chat failed: {e}', flush=True)
-        raise PieceError(f'the model call failed, so nothing was changed: {e}', 502)
+        # A dispatch tool call may have started a child before the model failed.
+        suffix = ('check the conversation for dispatched sessions before retrying' if dispatch_turn['attempts']
+                  else 'so nothing was changed')
+        raise PieceError(f'the model call failed, {suffix}: {e}', 502)
     data = _story._parse_json(text)
     if data is None:
         if '{' in (text or ''):
@@ -348,17 +360,18 @@ def chat(body, load_project: Callable[[str], Optional[dict]]) -> dict:
         if not change:
             raise PieceError('the agent sent no answer, so nothing was changed', 502)
         reply = change['summary']
-    at = now_iso()
-    user_turn = {'id': 'tn-' + uuid.uuid4().hex[:10], 'role': 'user', 'text': message, 'at': at, 'scene': focus}
-    agent_turn = {'id': 'tn-' + uuid.uuid4().hex[:10], 'role': 'agent', 'text': reply, 'at': at, 'scene': focus,
+    agent_turn = {'id': 'tn-' + uuid.uuid4().hex[:10], 'role': 'agent', 'text': reply, 'at': now_iso(), 'scene': focus,
                   'agent': who,
                   'change': ({'mode': change['mode'], 'summary': change['summary'], 'numbers': change['numbers'],
                               'status': 'proposed'} if change else None),
                   'change_error': change_error}
-    _append(kind, oid, key, [user_turn, agent_turn])
+    # A dispatch saved the user turn with its first card, so it is not saved twice.
+    _append(kind, oid, key, [agent_turn] if dispatch_turn.get('user_saved') else [user_turn, agent_turn])
     used = {'agent': ({'ref': body.get('agent'), 'name': who} if rec else None),
             'provider': engine.provider, 'model': engine.model}
     out: dict = dict(used, turns=[_turn_out(user_turn), _turn_out(agent_turn)])
+    if dispatch_turn['dispatches']:
+        out['thread'] = read_thread(kind, oid)
     if change:
         out['change'] = {k: v for k, v in change.items() if k in ('mode', 'scene', 'scene_number', 'scenes', 'summary', 'numbers')}
     return out

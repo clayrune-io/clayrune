@@ -121,6 +121,12 @@ async function newPage(browser, srv, viewport) {
       if (r.status) return J({ error: r.error }, r.status);
       const mk = (role, text, extra) => ({ id: 'tn' + (++GID), role, text, at: '2026-10-06T10:00:00Z', scene: body.scene, agent: role === 'agent' ? 'Dave' : null, change: null, change_error: null, ...extra });
       const turns = [mk('user', body.message), mk('agent', r.reply, r.change ? { change: { mode: r.change.mode, summary: r.change.summary, numbers: r.change.numbers || {}, status: 'proposed' } } : { change_error: r.change_error || null })];
+      if (srv.dispatch) {   // a typed turn that dispatched a child: the saved thread carries the user turn and the card
+        srv.dispatch = false;
+        const card = { session_id: 'child-1', project_id: 'proj-x', agent: 'global:dave', status: 'dispatched' };
+        (srv.threads[key] = srv.threads[key] || []).push(turns[0], { id: 'dispatch-child-1', role: 'dispatch', agent: 'Dave', text: 'Build the HTML page', at: '2026-10-06T10:00:00Z', dispatch: card }, turns[1]);
+        return J({ agent: { ref: 'global:dave', name: 'Dave' }, provider: 'claude', model: 'sonnet', turns, thread: srv.threads[key].map((t) => ({ ...t })) });
+      }
       (srv.threads[key] = srv.threads[key] || []).push(...turns);
       return J({ agent: { ref: 'global:dave', name: 'Dave' }, provider: 'claude', model: 'sonnet', turns, ...(r.change ? { change: r.change } : {}) });
     }
@@ -385,6 +391,21 @@ async function main(browser) {
     ? ok('the failure puts the typed text back, re-enables the box and says so') : fail('restore: ' + JSON.stringify(await ask.inputValue()));
   await ask.fill('');
 
+  // 8b. A dispatched child: its card (with the child-session link) shows in this thread, and its saved result is polled in.
+  console.log('Dispatch cards');
+  srv.dispatch = true;
+  srv.reply = () => ({ reply: 'Dave is building it.' });
+  await ask.fill('have Dave build the page');
+  await ask.press('Enter');
+  await settle(page, () => !!document.querySelector('[data-dispatch-card="child-1"]'));
+  (await page.$$('[data-dispatch-card="child-1"]')).length === 1 && (await page.getAttribute('[data-dispatch-card="child-1"] a', 'href')) === '?project=proj-x&session=child-1'
+    ? ok('the dispatch card shows with an "Open child session" link') : fail('no dispatch card / link');
+  /Dispatched agents return their results here/.test(await statusText(page)) ? ok('the status line says results return here') : fail('status: ' + (await statusText(page)));
+  srv.threads[key()].push({ id: 'result-1', role: 'dispatch_result', agent: 'Dave', text: 'Page built at docs/page.html', at: '2026-10-06T10:01:00Z',
+    dispatch: { session_id: 'child-1', project_id: 'proj-x', status: 'completed' } });
+  await settle(page, () => [...document.querySelectorAll('[data-dispatch-card]')].some((c) => /Page built at docs\/page.html/.test(c.textContent)));
+  (await page.$$('[data-dispatch-card]')).length === 2 ? ok('the child result is polled into the thread while the dispatch is pending') : fail('result not polled in');
+
   // 9. Text size: A-/A+, keyboard reachable, clamped, remembered across a reload.
   console.log('Text size');
   const AGENT_TXT = '[data-chat-turn="agent"] .desk-v1-chat-text';
@@ -486,7 +507,7 @@ async function main(browser) {
   await m.page.evaluate(() => window.deskV1Nav('studio', {}));
   await m.page.waitForSelector(`[data-studio-recent-row="${itemId}"]`, { timeout: 8000 });
   await m.page.click(`[data-studio-recent-row="${itemId}"]`);
-  await settle(m.page, (n) => document.querySelectorAll('[data-chat-turn]').length >= n, srv.threads[key()].length);
+  await settle(m.page, (n) => document.querySelectorAll('[data-chat-turn]').length >= n, srv.threads[key()].filter((t) => !t.dispatch).length);   // a dispatch card is not a chat turn
   const ov = await m.page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   const box = await m.page.$eval('[data-sb-agent]', (e) => { const r = e.getBoundingClientRect(); return { l: r.left, r: r.right, w: innerWidth }; });
   (ov <= 1 && box.l >= 0 && box.r <= box.w + 1) ? ok(`at 390px the agent panel fits the screen (page overflow ${ov}px)`) : fail('mobile overflow: ' + JSON.stringify({ ov, box }));

@@ -16,6 +16,7 @@
     if (!v || !v.box.isConnected) return;
     const { box, opts } = v;
     const rows = st.turns.map((t) => {
+      if (t.dispatch && window.DeskV1Dispatch) return window.DeskV1Dispatch.card(t);   // a child session's receipt/result (desk-v1-dispatch.js)
       const p = t.proposal;
       const proposal = p ? `<div class="desk-v1-article-proposal" data-article-proposal="${esc(t.id)}">
         <strong>${p.status === 'applied' ? 'Accepted' : p.status === 'undone' ? 'Undone' : 'Proposed draft'} · ${esc(p.label)}</strong>
@@ -82,11 +83,17 @@
     const tab = opts.tab();
     try {
       const res = await api('POST', base(opts.article), { message: text, tab_id: tab.id, body: tab.body });
-      st.turns.push(...res.turns);
+      if (res.thread) st.turns = res.thread;   // a dispatch saved the user turn and its cards first
+      else st.turns.push(...res.turns);
       st.loaded = true;
     } catch (e) {
       st.draft = text;
       st.error = `Message not sent: ${e && e.message ? e.message : e}. Your message is back in the box.`;
+      // A model failure can follow a successful launch: fetch the saved cards.
+      if (window.DeskV1Dispatch) {
+        try { await window.DeskV1Dispatch.refresh({ url: base(opts.article), status: '[data-article-chat-status]' }, st); }
+        catch (refreshError) { st.error += ` Saved dispatches could not be read: ${refreshError && refreshError.message ? refreshError.message : refreshError}.`; }
+      }
     } finally { st.pending = null; paint(st); }
   }
 
@@ -132,6 +139,8 @@
         .finally(() => { st.loading = false; paint(st); });
     }
     paint(st);
+    // While a dispatched child is pending, its saved result is polled into this thread.
+    if (window.DeskV1Dispatch) window.DeskV1Dispatch.watch(box, { url: base(a), status: '[data-article-chat-status]' }, st, () => paint(st));
   }
 
   window.DeskV1ArticleChat = { mount };

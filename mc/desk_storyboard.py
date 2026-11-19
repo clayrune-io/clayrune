@@ -311,6 +311,9 @@ def put_storyboard(owner_kind: str, owner_id: str, body) -> dict:
             new['assets_seeded'] = True
         if board.get('thread'):
             new['thread'] = board['thread']   # the agent chat rides with the board (mc/desk_story_chat.py)
+        for k in ('dispatch_sessions', 'dispatch_receipts'):   # dispatch identity + event dedupe (mc/desk_dispatch_owner.py)
+            if board.get(k):
+                new[k] = board[k]
         if owner_kind == 'studio':
             new['title'] = (title.strip() if isinstance(title, str) else board.get('title')) or ''
         boards[key] = new
