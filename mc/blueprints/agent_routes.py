@@ -1574,8 +1574,7 @@ def _compute_code_delta(session):
     # to those commits even though this worktree made them. `--walk-reflogs`
     # treats every positional arg as a ref-with-a-reflog (git rejects a bare
     # commit SHA there with "cannot walk reflogs for <sha>"), so the baseline
-    # exclusion can't be a `--not <commit>` on the same invocation — resolve
-    # each set separately and diff them in Python instead.
+    # exclusion belongs in a separate reachability walk.
     ok, reflog_out = _project_sync.git_run(
         wts, ['reflog', 'HEAD', '--format=%H %gs'], timeout=15)
     if not ok:
@@ -1586,16 +1585,12 @@ def _compute_code_delta(session):
         c, _, subject = line.partition(' ')
         if c and subject and _AUTHORED_REFLOG_SUBJECT_RE.search(subject):
             candidate_commits.append(c)
-    ok, reachable_now_out = _project_sync.git_run(wts, ['rev-list', '--branches', 'HEAD'], timeout=15)
+    ok, reachable_now_out = _project_sync.git_run(
+        wts, ['rev-list', '--branches', 'HEAD', '--not', base_commit], timeout=15)
     if not ok:
         return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
                 'reason': f'branch reachability rev-list failed: {reachable_now_out}'}
     reachable_now = set(reachable_now_out.splitlines())
-    ok, base_reachable_out = _project_sync.git_run(wts, ['rev-list', base_commit], timeout=15)
-    if not ok:
-        return {'status': 'unavailable', 'branch': branch, 'base_commit': base_commit,
-                'reason': f'base rev-list failed: {base_reachable_out}'}
-    base_reachable = set(base_reachable_out.splitlines())
     head_commits = []
     seen = set()
     for c in candidate_commits:
@@ -1604,7 +1599,7 @@ def _compute_code_delta(session):
         # above -- only the one a current branch still points to (or has as
         # an ancestor) is real; the superseded original is dropped here so
         # the same edit isn't diffed twice (Dave's follow-up-5 review).
-        if c in seen or c not in reachable_now or c in base_reachable:
+        if c in seen or c not in reachable_now:
             continue
         seen.add(c)
         head_commits.append(c)
