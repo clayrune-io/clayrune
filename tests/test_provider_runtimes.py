@@ -2939,6 +2939,9 @@ class TestAiderArgvSafety:
 
         def fake_mode_a_dispatch(runtime, cmd, full_prompt, *args, **kwargs):
             captured['cmd'] = cmd
+            msg_file = Path(cmd[cmd.index('--message-file') + 1])
+            captured['message'] = msg_file.read_text(encoding='utf-8')
+            kwargs['cleanup']()
             return object()
 
         monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', fake_mode_a_dispatch)
@@ -2949,7 +2952,8 @@ class TestAiderArgvSafety:
         assert '--message-file' in cmd
         msg_file = cmd[cmd.index('--message-file') + 1]
         assert not any(BIG_PROMPT in part for part in cmd)
-        assert Path(msg_file).read_text(encoding='utf-8') == BIG_PROMPT
+        assert captured['message'] == BIG_PROMPT
+        assert not Path(msg_file).exists()
 
     def test_write_followup_big_message_goes_via_message_file(self, monkeypatch):
         import subprocess as sp
@@ -2958,14 +2962,21 @@ class TestAiderArgvSafety:
 
         def fake_popen(cmd, **kwargs):
             captured['cmd'] = cmd
+            msg_file = Path(cmd[cmd.index('--message-file') + 1])
+            captured['message'] = msg_file.read_text(encoding='utf-8')
             class P:
+                stdout = iter(('done\n',))
                 def poll(self):
+                    return 0
+                def wait(self):
                     return 0
             return P()
 
         monkeypatch.setattr(sp, 'Popen', fake_popen)
         monkeypatch.setattr(agent_runtime.threading, 'Thread',
-                            lambda *a, **k: type('T', (), {'start': lambda self: None})())
+                            lambda target, args, **k: type('T', (), {
+                                'start': lambda self: target(*args),
+                            })())
 
         handle = agent_runtime.SessionHandle(
             mc_session_id='t1', provider='aider', mode='A',
@@ -2977,7 +2988,8 @@ class TestAiderArgvSafety:
         assert '--message' not in cmd
         assert '--message-file' in cmd
         msg_file = cmd[cmd.index('--message-file') + 1]
-        assert BIG_PROMPT in Path(msg_file).read_text(encoding='utf-8')
+        assert BIG_PROMPT in captured['message']
+        assert not Path(msg_file).exists()
 
     def test_oneshot_big_prompt_goes_via_message_file(self, monkeypatch):
         captured = {}
@@ -2994,6 +3006,40 @@ class TestAiderArgvSafety:
         cmd = captured['cmd']
         assert '--message-file' in cmd
         assert not any(BIG_PROMPT in part for part in cmd)
+
+    @pytest.mark.parametrize('fails_to_spawn', [False, True])
+    def test_oneshot_releases_prompt_files_after_run(self, tmp_path, monkeypatch, fails_to_spawn):
+        import tempfile
+
+        monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path))
+        files = []
+
+        def fake_run(cmd, **kwargs):
+            for flag, expected in (('--read', 'system context'), ('--message-file', 'task')):
+                path = Path(cmd[cmd.index(flag) + 1])
+                files.append(path)
+                assert path.read_text(encoding='utf-8') == expected
+            if fails_to_spawn:
+                raise OSError('spawn failed')
+            return subprocess.CompletedProcess(cmd, 0, stdout='done')
+
+        monkeypatch.setattr(agent_runtime.subprocess, 'run', fake_run)
+        self.rt.oneshot(prompt='task', system_prompt='system context')
+        assert len(files) == 2 and not any(path.exists() for path in files)
+
+    def test_dispatch_releases_prompt_files_after_spawn_failure(self, tmp_path, monkeypatch):
+        import tempfile
+
+        monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path))
+
+        def fail_spawn(*args, **kwargs):
+            assert list(tmp_path.rglob('*.md'))
+            raise OSError('spawn failed')
+
+        monkeypatch.setattr(agent_runtime, 'spawn_engine_proc', fail_spawn)
+        with pytest.raises(OSError, match='spawn failed'):
+            self.rt.dispatch(project_path=str(tmp_path), task='task', system_prompt='system context')
+        assert not list(tmp_path.iterdir())
 
 
 class TestKiroArgvSafety:

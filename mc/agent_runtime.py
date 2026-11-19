@@ -5569,7 +5569,8 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
                      callbacks: Optional[Dict[str, Callable]],
                      register_process: Optional[Callable],
                      prompt_via_stdin: bool = True,
-                     system_prompt: str = '') -> SessionHandle:
+                     system_prompt: str = '',
+                     cleanup: Optional[Callable[[], None]] = None) -> SessionHandle:
     """Spawn a Mode-A provider process and return a SessionHandle.
 
     `cmd` is the full command list. When `prompt_via_stdin` is True the prompt
@@ -5667,7 +5668,8 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
                                    session_dict, proc, runtime.name, attempt)
                    if _verify_delivery else None)
     t = threading.Thread(target=_mode_a_reader,
-                         args=(proc, handle, runtime),
+                         args=(proc, handle, runtime, cleanup) if cleanup is not None
+                         else (proc, handle, runtime),
                          daemon=True,
                          name=f'{runtime.name}-reader-{mc_session_id[:8]}')
     t.start()
@@ -6435,7 +6437,8 @@ def _format_tool_activity(name, inp):
 
 
 def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
-                   runtime: 'AgentRuntime') -> None:
+                   runtime: 'AgentRuntime',
+                   cleanup: Optional[Callable[[], None]] = None) -> None:
     """Read Mode-A stdout, with an optional pre-format raw-record callback.
 
     ``callbacks['on_raw_record']`` is an explicit composition seam for a
@@ -6711,6 +6714,9 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             rc = proc.wait()
         except Exception:
             rc = -1
+        if cleanup is not None:
+            cleanup()
+
         def _finish_terminal():
             nonlocal capture_failed
             if session.get('proc') is not proc:
@@ -11087,29 +11093,18 @@ class AiderRuntime(AgentRuntime):
             raise CLINotInstalledError("aider not installed — run: pip install aider-chat")
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
         cmd = self.build_command(model=model)
-        import tempfile
-        if system_prompt:
-            tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
-                                              prefix='mc_aider_ctx_',
-                                              delete=False, encoding='utf-8')
-            tmp.write(system_prompt)
-            tmp.close()
-            cmd.extend(['--read', tmp.name])
-        # aider has no stdin form for the message, but does have a file form
-        # (`--message-file`/`-f`) — use that instead of `--message TEXT` so a
-        # long task never sits on argv, same reasoning as --read above.
-        msg_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
-                                              prefix='mc_aider_msg_',
-                                              delete=False, encoding='utf-8')
-        msg_tmp.write(task)
-        msg_tmp.close()
-        cmd.extend(['--message-file', msg_tmp.name])
-        return _mode_a_dispatch(
-            self, cmd, task, project_path, project_id, task,
-            mc_sid, session_dict, incognito, env_extra, callbacks,
-            register_process, prompt_via_stdin=False,
-            system_prompt=system_prompt,
-        )
+        from mc.aider_prompt_files import prepare
+        cleanup = prepare(cmd, task, system_prompt)
+        try:
+            return _mode_a_dispatch(
+                self, cmd, task, project_path, project_id, task,
+                mc_sid, session_dict, incognito, env_extra, callbacks,
+                register_process, prompt_via_stdin=False,
+                system_prompt=system_prompt, cleanup=cleanup,
+            )
+        except BaseException:
+            cleanup()
+            raise
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
@@ -11122,43 +11117,29 @@ class AiderRuntime(AgentRuntime):
         # Re-state --model: aider is respawned per turn and the flag is not
         # sticky, so without this the chat drops to aider's default model.
         cmd = self.build_command(model=self.session_model(handle))
-        # Re-inject the dispatch-time system context via --read (aider keeps
-        # --read files in context). The dispatch temp file isn't reused across
-        # turns, so write a fresh one from the stashed _system_prompt.
-        import tempfile
-        sys_prompt = (session.get('_system_prompt') or '').strip()
-        if sys_prompt:
-            tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
-                                              prefix='mc_aider_ctx_',
-                                              delete=False, encoding='utf-8')
-            tmp.write(sys_prompt)
-            tmp.close()
-            cmd.extend(['--read', tmp.name])
         log_lines = session.get('log_lines') or []
         tail = '\n'.join(log_lines[-20:])[-3000:].strip()
         msg = (f"[Prior turn excerpt for context only — do not re-execute]\n"
                f"{tail}\n\n---\n\n{message}") if tail else message
-        # --message-file, not --message: msg can carry a full turn's tail plus
-        # the new message, same argv-length risk as dispatch()'s task.
-        msg_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
-                                              prefix='mc_aider_msg_',
-                                              delete=False, encoding='utf-8')
-        msg_tmp.write(msg)
-        msg_tmp.close()
-        cmd.extend(['--message-file', msg_tmp.name])
-        mc_sid = handle.mc_session_id
-        env = os.environ.copy()
-        vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
-        cmd = vendor_fence.prepare_command(self.name, session, cmd, handle.project_path, env)
-        proc = spawn_engine_proc(
-            cmd, session_id=mc_sid, engine=self.name, cwd=handle.project_path, env=env)
-        session['proc'] = proc
-        session['status'] = 'running'
-        session['process_alive'] = True
-        session['last_output_time'] = _time.time()
-        session['last_status_change_time'] = _time.time()
-        threading.Thread(target=_mode_a_reader, args=(proc, handle, self),
-                         daemon=True, name=f'aider-reader-{mc_sid[:8]}').start()
+        from mc.aider_prompt_files import prepare
+        cleanup = prepare(cmd, msg, (session.get('_system_prompt') or '').strip())
+        try:
+            mc_sid = handle.mc_session_id
+            env = os.environ.copy()
+            vendor_fence.prepare_env(self.name, session, env, binary=Path(cmd[0]), cwd=handle.project_path)
+            cmd = vendor_fence.prepare_command(self.name, session, cmd, handle.project_path, env)
+            proc = spawn_engine_proc(
+                cmd, session_id=mc_sid, engine=self.name, cwd=handle.project_path, env=env)
+            session['proc'] = proc
+            session['status'] = 'running'
+            session['process_alive'] = True
+            session['last_output_time'] = _time.time()
+            session['last_status_change_time'] = _time.time()
+            threading.Thread(target=_mode_a_reader, args=(proc, handle, self, cleanup),
+                             daemon=True, name=f'aider-reader-{mc_sid[:8]}').start()
+        except BaseException:
+            cleanup()
+            raise
 
     def interrupt(self, handle: SessionHandle) -> None:
         _mode_a_interrupt(handle)
@@ -11174,22 +11155,11 @@ class AiderRuntime(AgentRuntime):
         if not bin_path:
             return None
         cmd = self.build_command(model=model)
-        import tempfile
-        if system_prompt:
-            tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
-                                              prefix='mc_aider_ctx_',
-                                              delete=False, encoding='utf-8')
-            tmp.write(system_prompt)
-            if stdin_text:
-                tmp.write(f"\n\n---\n\n{stdin_text}")
-            tmp.close()
-            cmd.extend(['--read', tmp.name])
-        msg_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
-                                              prefix='mc_aider_msg_',
-                                              delete=False, encoding='utf-8')
-        msg_tmp.write(prompt)
-        msg_tmp.close()
-        cmd.extend(['--message-file', msg_tmp.name])
+        from mc.aider_prompt_files import prepare
+        context = system_prompt
+        if context and stdin_text:
+            context += f"\n\n---\n\n{stdin_text}"
+        cleanup = prepare(cmd, prompt, context)
         try:
             r = subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -11199,6 +11169,8 @@ class AiderRuntime(AgentRuntime):
             )
         except Exception:
             return None
+        finally:
+            cleanup()
         return OneshotResult(text=(r.stdout or '').strip())
 
     def explain_exit_error(self, rc: int, log_tail: str) -> Optional[str]:
