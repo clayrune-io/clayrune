@@ -8,12 +8,9 @@ stream-reader/kill session helpers, and the TTY-shim spawn machinery
 (PYTHONPATH sitecustomize injection so child Python processes see
 isatty()=True and Rich emits ANSI).
 
-Security note (plan 1.8 acceptance): /api/terminal/launch has NO
-route-private gate — its protection is the app-wide local_auth_gate
-before_request (mc/blueprints/local_auth.py). Loopback is exempt (agents
-curl localhost), CF-tunneled requests are exempt (already passed CF Access
-OTP); every other origin must hold the LAN passcode cookie or gets
-401 auth_required. tests/test_terminal_routes.py pins that contract.
+The launch route also limits callers to the host. It requires loopback
+and refuses Cloudflare-tunnel requests, even when they pass the app-wide
+local auth gate. The terminal stream and controls have their own routes.
 
 The process-ledger fns (_register_process/_unregister_process) and
 get_manager are dispatch-family (shared with agent/hivemind/housekeeping
