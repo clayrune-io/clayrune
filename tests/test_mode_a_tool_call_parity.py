@@ -169,6 +169,30 @@ def test_malformed_mode_a_event_keeps_reader_draining(bad_event, monkeypatch, tm
     assert session['status'] == 'completed'
 
 
+def test_qwen_malformed_bash_preview_does_not_end_stream(tmp_path):
+    from typing import Any
+
+    ar = agent_runtime_mod
+    runtime = ar.QwenRuntime()
+    events = [
+        {'type': 'assistant', 'message': {'content': [
+            {'type': 'tool_use', 'name': 'Bash', 'input': {'command': ['invalid']}},
+        ]}},
+        {'type': 'assistant', 'message': {'content': [
+            {'type': 'text', 'text': 'later output'},
+        ]}},
+    ]
+    proc: Any = _FakeProc(map(json.dumps, events))
+    session = {'log_lines': [], 'proc': proc, 'status': 'running'}
+    handle = SessionHandle(
+        mc_session_id='s', provider='qwen', mode='A', project_path=str(tmp_path),
+        project_id='p', session_dict=session,
+    )
+    ar._mode_a_reader(proc, handle, runtime)
+    assert session['log_lines'] == ['later output']
+    assert session['status'] == 'completed'
+
+
 class TestModeAToolLineMatchesClaude:
     def test_six_tool_calls_produce_six_tool_lines(self):
         log_lines = _drive_codex_sequence()

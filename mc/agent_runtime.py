@@ -6572,153 +6572,152 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 line = line[len(_CODEX_STDIN_BANNER):]
                 if not line:
                     continue
-            from mc.qwen_retry_wait import observe_line
-            if observe_line(session, line, _time.time()):
-                continue
             try:
+                from mc.qwen_retry_wait import observe_line
+                if observe_line(session, line, _time.time()):
+                    continue
                 ev = runtime.parse_event(line, handle.mc_session_id)
-            except Exception as exc:
-                _log(f'[runtime:{runtime.name}] failed to parse stream event: {exc}')
-                continue
-            if ev is None:
-                # None means "this runtime declined to surface it". For a line
-                # that is valid protocol JSON that is a deliberate suppression
-                # (codex's turn.started, or an event type added in a CLI
-                # release we predate) — logging it verbatim put raw JSONL in
-                # the user's chat pane, whole command outputs and all.
-                # A line that is NOT JSON is genuine stray output (a warning,
-                # a stack trace) and must still be kept.
-                if not _is_protocol_json(line):
-                    other_output = True
-                    session['log_lines'].append(line)
-                    session['last_output_time'] = _time.time()
-            elif ev.type == EventType.ASSISTANT_TEXT:
-                _txt = ev.payload.get('text', line)
-                turn_text_parts.append(_txt)
-                fence_window = mc_fence_tail + _txt
-                mc_fence_tail = fence_window[-5:]
-                if not _mc_suppressing and '```mc:' in fence_window:
-                    _mc_suppressing = True
-                if not _mc_suppressing:
-                    session['log_lines'].append(_txt)
-                    session['last_output_time'] = _time.time()
-                    _cb('on_assistant_text', ev)
-            elif ev.type == EventType.TOOL_USE:
-                tool_calls += 1
-                blocks = ev.payload.get('blocks', [])
-                tname = blocks[0].get('name', '') if blocks else ''
-                tinput = blocks[0].get('input', {}) if blocks else {}
-                if not isinstance(tinput, dict):
-                    tinput = {}
-                # Claude's own line format (`[tool: Name] preview`, no
-                # provider name) via the shared formatter above — see its
-                # docstring for why the bare `[{provider} tool: {name}]` this
-                # used to emit broke both the frontend's tool-line styling
-                # and Ron's transcript (six indistinguishable
-                # `[codex tool: shell]` lines with no command shown).
-                session['log_lines'].append(_format_tool_activity(tname, tinput))
-                session['last_output_time'] = _time.time()
-                # Codex workspace-write sandbox denial (UNATTENDED_AGENT_
-                # PERMISSIONS_AUDIT §4): a refused write does NOT fail the
-                # `codex exec` process (rc stays 0 — it's the INNER shell
-                # command that gets a nonzero exit, reported in codex's own
-                # text), so the rc!=0 -> explain_exit_error() hint below never
-                # fires for this case. Scanned here instead, gated to codex
-                # sessions we ourselves put in sandbox mode, so an unrelated
-                # "access denied" on another provider — or a manually-launched
-                # (bypassed) Codex session, which has no such boundary — is
-                # never mislabeled as the sandbox's doing.
-                if (runtime.name == 'codex' and tname == 'shell'
-                        and session.get('_codex_unattended_sandbox')):
-                    _exit_code = tinput.get('exit_code')
-                    _shell_output = blocks[0].get('output', '') if blocks else ''
-                    if (_exit_code not in (None, 0)
-                            and _CODEX_SANDBOX_DENIAL_RE.search(_shell_output or '')):
-                        session['log_lines'].append(
-                            "[hint] That command was refused by the unattended "
-                            "sandbox (-s workspace-write, confined to this "
-                            "session's own working directory) — not a codex "
-                            "failure. If this job legitimately needs to write "
-                            "outside its project folder, that needs an "
-                            "allowance for this job, not a retry.")
-            elif ev.type == EventType.INIT:
-                if ev.provider == 'claude':
-                    note_cli_init(proc_cost, {**ev.payload,
-                                              'session_id': ev.session_id})
-                native_id = ev.payload.get('session_id') or ev.payload.get('thread_id')
-                if native_id:
-                    session['provider_session_id'] = native_id
-                native_model = ev.payload.get('model')
-                if isinstance(native_model, str) and native_model:
-                    # Observation is not user consent. In particular Qwen's
-                    # resolved INIT model must not become the next respawn's
-                    # requested --model or override an explicit native default.
-                    session['observed_model'] = native_model
-                _cb('on_init', ev)
-            elif ev.type == EventType.TURN_END:
-                if terminal_gate is None:
-                    _finish_turn(ev)
-                else:
-                    terminal_gate.submit(lambda event=ev: _finish_turn(event))
-            elif ev.type == EventType.ALLOWANCE_EXHAUSTED:
-                # A terminal failure is never content (Fenn #4): this is the
-                # normalized allowance shape, never the vendor's raw quota
-                # text appended as if it were the model's own line.
-                _allowance_state.record_exhaustion(runtime.name, **ev.payload)
-                from mc.limit_resume import observe as _observe_reset_wait
-                _observe_reset_wait(session, ev.payload)
-                session['log_lines'].append(
-                    f"[{runtime.name}] {_allowance_state.refusal_message(runtime.name)}")
-                session['last_output_time'] = _time.time()
-                # A session that died on allowance must read that way, not as
-                # a generic 'error' (VENDOR_AGNOSTIC_PROGRAM §4 item 4) — the
-                # Floor/chat read this flag to render "Out of allowance"
-                # instead of a red Blocked/Error pill.
-                session['_allowance_exhausted'] = True
-                turn_error_seen = True
-            elif ev.type == EventType.WARN:
-                # Advisory, not a failure: the run continues past it, so it
-                # must not carry the word "error" (a healthy codex turn read
-                # as a failed one -- see _CODEX_NOTICE_PATTERNS). Mirrors the
-                # Gemini reader's own WARN branch, which this one lacked.
-                _severity = ev.payload.get('severity') or 'notice'
-                _wtext = ev.payload.get('text', line)
-                _label = f"[{runtime.name} {_severity}] "
-                if (runtime.name == 'codex' and _severity == 'notice'
-                        and _CODEX_HOOK_TRUST_RE.search(str(_wtext or ''))):
-                    # Hook-trust bypass notice: fires every turn (required by
-                    # guardrail_hooks.py:318). Raw capture above keeps the
-                    # signal every occurrence; only the repeat CHAT line is
-                    # muted, once per mc_session_id, in-process (see
-                    # _CODEX_HOOK_TRUST_NOTICE_SHOWN, DATA_DIR pollution rule).
-                    if handle.mc_session_id in _CODEX_HOOK_TRUST_NOTICE_SHOWN:
-                        _wtext = None
-                    else:
-                        _CODEX_HOOK_TRUST_NOTICE_SHOWN.add(handle.mc_session_id)
-                        _wtext = ('Codex hook-trust review bypassed so Clayrune '
-                                   'guardrail hooks can run (expected).')
-                if _wtext is not None:
-                    session['log_lines'].append(_label + _flatten_error_text(_wtext))
-                    session['last_output_time'] = _time.time()
-            elif ev.type in (EventType.ERROR, EventType.AUTH_ERROR):
-                turn_error_seen = True
-                session['log_lines'].append(
-                    f"[{runtime.name} error] "
-                    f"{_flatten_error_text(ev.payload.get('text', line))}")
-                session['last_output_time'] = _time.time()
-                if runtime.name == 'codex' and ev.payload.get('model_rejected'):
-                    # Read back in `finally` below: this turn gets ONE labelled
-                    # retry without -m (CodexRuntime.retry_without_model).
-                    session['_codex_model_refused'] = ev.payload['model_rejected']
-            else:
-                if ev.type == EventType.TOOL_RESULT:
+                if ev is None:
+                    # None means "this runtime declined to surface it". For a line
+                    # that is valid protocol JSON that is a deliberate suppression
+                    # (codex's turn.started, or an event type added in a CLI
+                    # release we predate) — logging it verbatim put raw JSONL in
+                    # the user's chat pane, whole command outputs and all.
+                    # A line that is NOT JSON is genuine stray output (a warning,
+                    # a stack trace) and must still be kept.
+                    if not _is_protocol_json(line):
+                        other_output = True
+                        session['log_lines'].append(line)
+                        session['last_output_time'] = _time.time()
+                elif ev.type == EventType.ASSISTANT_TEXT:
+                    _txt = ev.payload.get('text', line)
+                    fence_window = mc_fence_tail + _txt
+                    turn_text_parts.append(_txt)
+                    mc_fence_tail = fence_window[-5:]
+                    if not _mc_suppressing and '```mc:' in fence_window:
+                        _mc_suppressing = True
+                    if not _mc_suppressing:
+                        session['log_lines'].append(_txt)
+                        session['last_output_time'] = _time.time()
+                        _cb('on_assistant_text', ev)
+                elif ev.type == EventType.TOOL_USE:
+                    blocks = ev.payload.get('blocks', [])
+                    tname = blocks[0].get('name', '') if blocks else ''
+                    tinput = blocks[0].get('input', {}) if blocks else {}
+                    if not isinstance(tinput, dict):
+                        tinput = {}
+                    # Claude's own line format (`[tool: Name] preview`, no
+                    # provider name) via the shared formatter above — see its
+                    # docstring for why the bare `[{provider} tool: {name}]` this
+                    # used to emit broke both the frontend's tool-line styling
+                    # and Ron's transcript (six indistinguishable
+                    # `[codex tool: shell]` lines with no command shown).
+                    session['log_lines'].append(_format_tool_activity(tname, tinput))
                     tool_calls += 1
-                raw_text = (ev.payload.get('text') or
-                            (json.dumps(ev.payload) if ev.payload else line))
-                if raw_text:
-                    other_output = True
-                    session['log_lines'].append(raw_text)
                     session['last_output_time'] = _time.time()
+                    # Codex workspace-write sandbox denial (UNATTENDED_AGENT_
+                    # PERMISSIONS_AUDIT §4): a refused write does NOT fail the
+                    # `codex exec` process (rc stays 0 — it's the INNER shell
+                    # command that gets a nonzero exit, reported in codex's own
+                    # text), so the rc!=0 -> explain_exit_error() hint below never
+                    # fires for this case. Scanned here instead, gated to codex
+                    # sessions we ourselves put in sandbox mode, so an unrelated
+                    # "access denied" on another provider — or a manually-launched
+                    # (bypassed) Codex session, which has no such boundary — is
+                    # never mislabeled as the sandbox's doing.
+                    if (runtime.name == 'codex' and tname == 'shell'
+                            and session.get('_codex_unattended_sandbox')):
+                        _exit_code = tinput.get('exit_code')
+                        _shell_output = blocks[0].get('output', '') if blocks else ''
+                        if (_exit_code not in (None, 0)
+                                and _CODEX_SANDBOX_DENIAL_RE.search(_shell_output or '')):
+                            session['log_lines'].append(
+                                "[hint] That command was refused by the unattended "
+                                "sandbox (-s workspace-write, confined to this "
+                                "session's own working directory) — not a codex "
+                                "failure. If this job legitimately needs to write "
+                                "outside its project folder, that needs an "
+                                "allowance for this job, not a retry.")
+                elif ev.type == EventType.INIT:
+                    if ev.provider == 'claude':
+                        note_cli_init(proc_cost, {**ev.payload,
+                                                  'session_id': ev.session_id})
+                    native_id = ev.payload.get('session_id') or ev.payload.get('thread_id')
+                    if native_id:
+                        session['provider_session_id'] = native_id
+                    native_model = ev.payload.get('model')
+                    if isinstance(native_model, str) and native_model:
+                        # Observation is not user consent. In particular Qwen's
+                        # resolved INIT model must not become the next respawn's
+                        # requested --model or override an explicit native default.
+                        session['observed_model'] = native_model
+                    _cb('on_init', ev)
+                elif ev.type == EventType.TURN_END:
+                    if terminal_gate is None:
+                        _finish_turn(ev)
+                    else:
+                        terminal_gate.submit(lambda event=ev: _finish_turn(event))
+                elif ev.type == EventType.ALLOWANCE_EXHAUSTED:
+                    # A terminal failure is never content (Fenn #4): this is the
+                    # normalized allowance shape, never the vendor's raw quota
+                    # text appended as if it were the model's own line.
+                    _allowance_state.record_exhaustion(runtime.name, **ev.payload)
+                    from mc.limit_resume import observe as _observe_reset_wait
+                    _observe_reset_wait(session, ev.payload)
+                    session['log_lines'].append(
+                        f"[{runtime.name}] {_allowance_state.refusal_message(runtime.name)}")
+                    session['last_output_time'] = _time.time()
+                    # A session that died on allowance must read that way, not as
+                    # a generic 'error' (VENDOR_AGNOSTIC_PROGRAM §4 item 4) — the
+                    # Floor/chat read this flag to render "Out of allowance"
+                    # instead of a red Blocked/Error pill.
+                    session['_allowance_exhausted'] = True
+                    turn_error_seen = True
+                elif ev.type == EventType.WARN:
+                    # Advisory, not a failure: the run continues past it, so it
+                    # must not carry the word "error" (a healthy codex turn read
+                    # as a failed one -- see _CODEX_NOTICE_PATTERNS). Mirrors the
+                    # Gemini reader's own WARN branch, which this one lacked.
+                    _severity = ev.payload.get('severity') or 'notice'
+                    _wtext = ev.payload.get('text', line)
+                    _label = f"[{runtime.name} {_severity}] "
+                    if (runtime.name == 'codex' and _severity == 'notice'
+                            and _CODEX_HOOK_TRUST_RE.search(str(_wtext or ''))):
+                        # Hook-trust bypass notice: fires every turn (required by
+                        # guardrail_hooks.py:318). Raw capture above keeps the
+                        # signal every occurrence; only the repeat CHAT line is
+                        # muted, once per mc_session_id, in-process (see
+                        # _CODEX_HOOK_TRUST_NOTICE_SHOWN, DATA_DIR pollution rule).
+                        if handle.mc_session_id in _CODEX_HOOK_TRUST_NOTICE_SHOWN:
+                            _wtext = None
+                        else:
+                            _CODEX_HOOK_TRUST_NOTICE_SHOWN.add(handle.mc_session_id)
+                            _wtext = ('Codex hook-trust review bypassed so Clayrune '
+                                       'guardrail hooks can run (expected).')
+                    if _wtext is not None:
+                        session['log_lines'].append(_label + _flatten_error_text(_wtext))
+                        session['last_output_time'] = _time.time()
+                elif ev.type in (EventType.ERROR, EventType.AUTH_ERROR):
+                    turn_error_seen = True
+                    session['log_lines'].append(
+                        f"[{runtime.name} error] "
+                        f"{_flatten_error_text(ev.payload.get('text', line))}")
+                    session['last_output_time'] = _time.time()
+                    if runtime.name == 'codex' and ev.payload.get('model_rejected'):
+                        # Read back in `finally` below: this turn gets ONE labelled
+                        # retry without -m (CodexRuntime.retry_without_model).
+                        session['_codex_model_refused'] = ev.payload['model_rejected']
+                else:
+                    if ev.type == EventType.TOOL_RESULT:
+                        tool_calls += 1
+                    raw_text = (ev.payload.get('text') or
+                                (json.dumps(ev.payload) if ev.payload else line))
+                    if raw_text:
+                        other_output = True
+                        session['log_lines'].append(raw_text)
+                        session['last_output_time'] = _time.time()
+            except Exception as exc:
+                _log(f'[runtime:{runtime.name}] failed to handle stream event: {exc}')
     except Exception as e:
         if session.get('proc') is proc:
             session['log_lines'].append(f"[stream error: {e}]")
