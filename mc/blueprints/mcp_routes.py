@@ -263,12 +263,15 @@ def set_project_mcp_enabled(project_id):
     refusal = refuse_unattended("change a project's MCP loadout")
     if refusal is not None:
         return refusal
-    filepath = DATA_DIR / f'{project_id}.json'
-    if not filepath.exists():
+    existing = load_project(project_id)
+    if not existing:
         return jsonify({'error': 'project not found'}), 404
-    data = request.get_json(silent=True) or {}
-    enabled = data.get('enabled', None)
-    existing = json.loads(filepath.read_text(encoding='utf-8'))
+    data = request.get_json(silent=True)
+    if data is None:
+        data = {}
+    if not isinstance(data, dict):
+        return jsonify({'error': 'expected a JSON object'}), 400
+    enabled = data.get('enabled')
 
     if enabled is None:
         existing.pop('enabled_mcp_servers', None)

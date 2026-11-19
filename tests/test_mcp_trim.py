@@ -240,6 +240,25 @@ def test_put_mcp_enabled_rejects_non_list(srv, client, monkeypatch):
     assert client.put('/api/project/p/mcp-enabled', json={'enabled': 'filesystem'}).status_code == 400
 
 
+def test_put_mcp_enabled_rejects_corrupt_project(srv, client):
+    path = srv.DATA_DIR / 'broken.json'
+    path.write_bytes(b'{')
+
+    reply = client.put('/api/project/broken/mcp-enabled', json={'enabled': []})
+
+    assert reply.status_code == 404
+    assert path.read_bytes() == b'{'
+
+
+def test_put_mcp_enabled_rejects_non_object_without_clearing_loadout(srv, client):
+    _make_project(srv, 'p', enabled_mcp_servers=['filesystem'])
+
+    reply = client.put('/api/project/p/mcp-enabled', json=[])
+
+    assert reply.status_code == 400
+    assert client.get('/api/project/p/mcp-enabled').get_json()['enabled'] == ['filesystem']
+
+
 def test_put_mcp_enabled_unknown_project_404(srv, client):
     assert client.put('/api/project/nope/mcp-enabled', json={'enabled': []}).status_code == 404
 
