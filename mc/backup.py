@@ -258,9 +258,11 @@ def _iter_registered_projects(data_dir: Path) -> list[dict]:
             continue
         try:
             rec = json.loads(f.read_text(encoding='utf-8'))
-        except Exception:
+        except Exception as exc:
+            _log(f"[backup] skipping unreadable project record {f.name}: {exc}", flush=True)
             continue
         if not isinstance(rec, dict):
+            _log(f"[backup] skipping project record {f.name}: expected an object", flush=True)
             continue
         rec.setdefault('id', f.stem)
         out.append(rec)
