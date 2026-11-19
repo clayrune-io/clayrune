@@ -511,6 +511,24 @@ def test_measure_mode_records_estimate_after_subscription_call():
     assert budget.status()['cycle']['estimated_calls'] == 1
 
 
+def test_vault_lock_probe_failure_logs_only_the_exception_type(monkeypatch):
+    from mc import api_credits_offload, secrets_store
+
+    def failed_probe():
+        raise OSError('private error detail')
+
+    logs = []
+    api_credits_offload.forget_key()
+    monkeypatch.setattr(secrets_store, 'is_locked', failed_probe)
+    monkeypatch.setattr(secrets_store, 'get_secret_value', lambda *a, **kw: 'test-only-key')
+    monkeypatch.setattr(api_credits_offload, '_log', lambda message, **kw: logs.append(message))
+    try:
+        assert api_credits_offload._read_key('test-only') == ('test-only-key', '')
+        assert logs == ['[api-credits] vault lock check failed: OSError']
+    finally:
+        api_credits_offload.forget_key()
+
+
 def test_key_test_outcomes():
     turn_on()
     assert offload.run_key_test(post=poster(Resp(200, ok_body())))['result'] == 'ok'
