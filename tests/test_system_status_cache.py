@@ -29,3 +29,20 @@ def test_status_cache_logs_unreadable_state(tmp_path, monkeypatch, capsys):
 
     assert routes.state._LAST_SYSTEM_STATUS == {}
     assert 'status cache read failed' in capsys.readouterr().out
+
+
+def test_status_refresh_reports_absent_cli_without_spawning(monkeypatch):
+    from flask import Flask
+
+    app = Flask(__name__)
+    monkeypatch.setattr(routes, '_resolve_claude', lambda: None)
+    monkeypatch.setattr(routes, '_build_system_status_payload', lambda: {})
+    launches = []
+    monkeypatch.setattr(routes.subprocess, 'run', lambda *args, **kw: launches.append(args))
+
+    with app.test_request_context():
+        response, status = routes.system_status_refresh()
+
+    assert status == 500
+    assert response.get_json()['error'] == 'Claude CLI not found on this server'
+    assert not launches

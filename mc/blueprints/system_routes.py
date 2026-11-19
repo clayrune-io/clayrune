@@ -1643,7 +1643,10 @@ def system_status_refresh():
         # NOT applied here — we WANT the full tool/MCP roster in the init so
         # the panel reflects the user's real environment, not a sandboxed
         # subset (which is why we don't reuse Claydo's flags).
-        cmd = [_resolve_claude(),
+        claude = _resolve_claude()
+        if not claude:
+            raise FileNotFoundError('Claude CLI not found')
+        cmd = [claude,
                '--max-turns', '1',
                '--print', '--verbose',
                '--input-format', 'stream-json',
