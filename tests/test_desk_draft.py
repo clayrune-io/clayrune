@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from mc import desk, desk_brief  # noqa: E402
+from mc import desk, desk_brief, desk_voice_seed, state  # noqa: E402
 from mc.blueprints import desk_routes  # noqa: E402
 
 
@@ -43,6 +43,30 @@ def _signal(store, **kw):
         kw.pop('project_id', 'p'), kw.pop('kind', 'release'),
         kw.pop('summary', 'Shipped drag-to-hire, now live'),
         ref=kw.pop('ref', 'abc123'), **kw)
+
+
+@pytest.mark.parametrize('env_port, expected', [(None, 5297), ('6297', 6297)])
+def test_every_brief_delivers_on_the_configured_port(store, monkeypatch, env_port, expected):
+    monkeypatch.setitem(state.CONFIG, 'port', 5297)
+    if env_port is None:
+        monkeypatch.delenv('MC_PORT', raising=False)
+    else:
+        monkeypatch.setenv('MC_PORT', env_port)
+    sig = _signal(store)
+    item = {'project_id': 'p', 'id': 'item', 'voice': 'personal'}
+    briefs = [
+        (desk_brief.build_triage_brief([sig], voices=['personal']), 1),
+        (desk_brief.build_brief(sig, voice='personal'), 1),
+        (desk_brief.build_rework_brief(sig, item=item, note='Tighten it'), 2),
+        (desk_brief.build_reply_brief(item), 1),
+        (desk_brief.build_suggest_brief({'id': 'c'}, accounts=[]), 1),
+        (desk_brief.build_revise_brief({'id': 'p'}, {'id': 'v'}, account=None), 1),
+        (desk_voice_seed.build_seed_brief(['A sample'], 'personal'), 1),
+    ]
+    for brief, command_count in briefs:
+        commands = [line for line in brief.splitlines() if line.strip().startswith('curl ')]
+        assert len(commands) == command_count
+        assert all(f'http://localhost:{expected}/api/' in command for command in commands)
 
 
 def test_voice_implies_platform(store):

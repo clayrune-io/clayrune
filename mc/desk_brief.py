@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from mc import desk as _desk
 from mc.desk_campaign_results import previous_results_digest
+from mc.desk_local_url import local_url
 
 # PLATFORM IS A PROPERTY OF THE VOICE, not a separate choice, and that is the
 # answer to "should a campaign set the platform too?" — no. A voice and a
@@ -181,7 +182,7 @@ def build_triage_brief(signals: list[dict], *, voices: list[str],
         '',
         '── HOW TO DELIVER IT ──',
         'POST each pick, one call per proposal:',
-        '  curl -s -X POST http://localhost:5199/api/desk/proposals \\',
+        f'  curl -s -X POST {local_url()}/api/desk/proposals \\',
         "    -H 'Content-Type: application/json' \\",
         '    -d \'{"signal_id":"<the [id] above>","voice":"<one of the voices>",'
         '"why":"..."}\'',
@@ -287,7 +288,7 @@ def build_brief(signal: dict, *, voice: str | None = None,
         '',
         '── HOW TO DELIVER IT ──',
         'POST the draft to this endpoint, which puts it on the approval queue:',
-        f'  curl -s -X POST http://localhost:5199/api/project/{pid}/social/queue \\',
+        f'  curl -s -X POST {local_url()}/api/project/{pid}/social/queue \\',
         "    -H 'Content-Type: application/json' \\",
         '    -d \'{"platform":"%s","voice":"%s","signal_id":"%s",'
         '"body":"...","teaching":"...","media":["data/media/your-file.png"]}\''
@@ -355,7 +356,7 @@ def build_rework_brief(signal: dict, *, item: dict, note: str,
         'POST the new draft the same way, PLUS `reworked_from` so the queue '
         'can show what this one replaces and keep the superseded draft '
         'visible:',
-        f'  curl -s -X POST http://localhost:5199/api/project/{item.get("project_id")}/social/queue \\',
+        f'  curl -s -X POST {local_url()}/api/project/{item.get("project_id")}/social/queue \\',
         "    -H 'Content-Type: application/json' \\",
         '    -d \'{"platform":"%s","voice":"%s","signal_id":"%s",'
         '"reworked_from":"%s","body":"...","teaching":"...",'
@@ -424,7 +425,7 @@ def build_reply_brief(item: dict, *, parent_text: str | None = None,
         '',
         '── HOW TO DELIVER IT ──',
         'Save the draft on the conversation (this is the ONLY write you may make):',
-        f'  curl -s -X PATCH http://localhost:5199/api/desk/engagement/{item.get("id")} \\',
+        f'  curl -s -X PATCH {local_url()}/api/desk/engagement/{item.get("id")} \\',
         "    -H 'Content-Type: application/json' \\",
         '    -d \'{"draft":{"text":"..."}}\'',
     ]
@@ -479,7 +480,7 @@ def build_suggest_brief(campaign: dict, *, accounts: list[dict], project_name: s
         '',
         '── HOW TO DELIVER IT ──',
         'Save your suggestions with this ONE call (it replaces only the keys you send):',
-        f'  curl -s -X PUT http://localhost:5199/api/desk/campaigns/{campaign.get("id")}/suggestions \\',
+        f'  curl -s -X PUT {local_url()}/api/desk/campaigns/{campaign.get("id")}/suggestions \\',
         "    -H 'Content-Type: application/json' \\",
         '    -d \'{"what":[{"title":"...","channel_id":"<account id>","because":["<finding id>"]}],'
         '"when":[{"at":"<ISO 8601 time>","because":["<finding id>"]}],'
@@ -534,7 +535,7 @@ def build_revise_brief(piece: dict, version: dict, *, account: dict | None, styl
         '',
         '── HOW TO DELIVER IT ──',
         'Save the new text as the next revision, back in review (the ONLY write you may make):',
-        f'  curl -s -X PATCH http://localhost:5199/api/desk/pieces/{pid}/versions/{vid} \\',
+        f'  curl -s -X PATCH {local_url()}/api/desk/pieces/{pid}/versions/{vid} \\',
         "    -H 'Content-Type: application/json' \\",
         '    -d \'{"body":"<the full new text>","revision":%s,"state":"needs_review"}\'' % ((version.get('revision') or 0) + 1),
         'If the right answer is to change nothing, save nothing and say why in your final message.',

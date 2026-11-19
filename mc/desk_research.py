@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 
 from mc import state, transform_sandbox, desk_dispatch
 from mc.atomic_json import write_json_atomic
+from mc.desk_local_url import local_url
 
 CONFIG_KEY = 'desk_research_enabled'
 TIMEOUT_SEC = 480
@@ -107,8 +108,7 @@ def _argv(binary: str, settings: Path, root: Path | None, model: str, effort: st
 
 
 def _register(pid: int, project: dict | None = None) -> None:
-    port = int(os.environ.get('MC_PORT') or state.CONFIG.get('port') or 5199)
-    request = Request(f'http://localhost:{port}/api/processes/register', method='POST',
+    request = Request(f'{local_url()}/api/processes/register', method='POST',
                       headers={'Content-Type': 'application/json'},
                       data=json.dumps({'pid': pid, 'name': 'Desk research and campaign tools',
                                        'project_id': (project or {}).get('id', ''),
@@ -183,9 +183,8 @@ def run(provider: str, *, prompt: str, system_prompt: str, model: str, effort: s
             tokens = guardrail_hooks.hook_invocation_tokens(
                 'desk-dispatch-mcp', None, Path(desk_dispatch_mcp.__file__).resolve())
             mcp = {'mcpServers': {'desk': {'command': tokens[0], 'args': tokens[1:]}}}
-            port = int(os.environ.get('MC_PORT') or state.CONFIG.get('port') or 5199)
             env['CLAYRUNE_DESK_TURN'] = token
-            env['CLAYRUNE_DESK_TOOL_URL'] = f'http://127.0.0.1:{port}/api/desk/dispatch-tool'
+            env['CLAYRUNE_DESK_TOOL_URL'] = f'{local_url("127.0.0.1")}/api/desk/dispatch-tool'
         cmd = _argv(runtime.resolve_binary_str(), settings, root, model, effort, mcp, not caps['toolless'], readable)
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                 text=True, encoding='utf-8', errors='replace',

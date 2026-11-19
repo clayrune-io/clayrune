@@ -38,6 +38,7 @@ import json
 import re
 
 from mc.core import _log
+from mc.desk_local_url import local_url
 
 # Whatever the human pasted, we did not type. A message that is mostly a stack
 # trace, a diff or a JSON blob is evidence of what they were DOING, not of how
@@ -313,7 +314,7 @@ def build_seed_brief(samples: Iterable[str], voice_name: str) -> str:
         'instructions TO a writer ("Lead with the outcome. Never hedge."), not as '
         'a description of a person.',
         '',
-        f'  curl -s -X PATCH http://localhost:5199/api/desk/voices/{voice_name} \\',
+        f'  curl -s -X PATCH {local_url()}/api/desk/voices/{voice_name} \\',
         "    -H 'Content-Type: application/json' \\",
         '    -d \'{"register":"...","banned":["..."],"never_claims":["..."]}\'',
         '',
