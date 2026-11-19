@@ -341,6 +341,22 @@ def test_domain_edits_preserve_unreadable_settings(ctx, method, url, data):
     assert ctx.settings_path.read_bytes() == b'{'
 
 
+def test_setup_complete_keeps_live_flag_false_after_a_failed_save(ctx, monkeypatch):
+    ctx.state.CONFIG['setup_completed'] = False
+    ctx.config_path.write_text('{"setup_completed": false}', encoding='utf-8')
+
+    def fail(*args, **kwargs):
+        raise OSError('temporary disk failure')
+
+    monkeypatch.setattr(ctx.sr, 'write_json_atomic', fail)
+
+    reply = ctx.client.post('/api/setup/complete')
+
+    assert reply.status_code == 500
+    assert ctx.state.CONFIG['setup_completed'] is False
+    assert json.loads(ctx.config_path.read_text(encoding='utf-8')) == {'setup_completed': False}
+
+
 def test_get_domains_defaults(ctx):
     resp = ctx.client.get('/api/settings/domains')
     assert resp.status_code == 200

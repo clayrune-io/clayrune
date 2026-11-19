@@ -532,6 +532,7 @@ def update_config():
 
 
 @bp.route('/api/setup/complete', methods=['POST'])
+@provider_preferences.serialized_write
 def setup_complete():
     """Record that first-run setup was finished or declined ("Not now").
 
@@ -549,20 +550,25 @@ def setup_complete():
     if is_unattended_caller():
         return jsonify({'error': 'this action needs a human — an unattended '
                                  'agent session cannot change settings'}), 403
-    state.CONFIG['setup_completed'] = True
     # Read-merge-write (as mc.agent_runtime.maybe_set_sole_provider_default):
     # a concurrent editor of unrelated keys in config.json is not clobbered.
     try:
         with open(CONFIG_PATH, encoding='utf-8') as f:
             on_disk = json.load(f)
-    except Exception:
+    except FileNotFoundError:
         on_disk = dict(state.CONFIG)
+    except (OSError, ValueError) as exc:
+        _log(f'[settings] could not read config while completing setup: {exc}', flush=True)
+        return jsonify({'error': 'could not read config'}), 500
+    if not isinstance(on_disk, dict):
+        return jsonify({'error': 'config must be an object'}), 500
     on_disk['setup_completed'] = True
     try:
         write_json_atomic(CONFIG_PATH, on_disk, indent=2, ensure_ascii=False)
     except Exception as e:
         _log(f"[settings] failed to persist setup_completed: {e}", flush=True)
         return jsonify({'error': f'failed to save config: {e}'}), 500
+    state.CONFIG['setup_completed'] = True
     return jsonify({'ok': True, 'setup_completed': True})
 
 
