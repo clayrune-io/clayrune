@@ -18,14 +18,25 @@ No agent is hired implicitly.
 `desk_dispatch_enabled` switch, beside the independent `desk_research_enabled`.
 It uses the existing Settings allowlist and gates. Research can be off while
 dispatch is on. Disabled/unsupported turns receive no dispatch tool and their
-reply gets a deterministic explanation. No provider/model is substituted.
+reply gets a deterministic explanation.
+
+The planner sees each hire’s provider and character pins, with model IDs and
+effort levels grouped by provider. It can pass `model`, `effort`, or both to
+`dispatch_agent`. Each omitted field follows the normal launch settings. An
+explicit pick applies to that launch alone and uses the hire’s provider. If
+allowance or model quota blocks the pick, the launch is refused. The two-field
+`agent` + `task` request follows the existing launch path with the same loopback
+body.
 
 Each typed message allows **two launch attempts**, including failed/ambiguous
 attempts: one builder plus one specialist, without unbounded fan-out. Invalid
-inputs/unhired targets do not spend the budget. The transport never retries.
+inputs, including unavailable model IDs or effort levels, return 400 without
+spending the budget. The transport never retries.
 
-Each successful dispatch immediately saves a target/task card with an **Open
-child session** deep link, visible while the planner is still thinking.
+Each successful dispatch immediately saves a target/task card with the child’s
+launch model and effort and an **Open child session** deep link. The card is
+visible while the planner is still thinking. A blank launch setting displays as
+a provider default. Older cards can have no settings line.
 Completions and questions append result cards to that campaign without invoking
 the planner. Questions show `waiting_for_answer`; open the child session to
 answer. Later typed messages can discuss these results as untrusted data.
@@ -55,11 +66,15 @@ them before retrying. Child sessions have their normal tools and human gates.
   when enabled by the adapter. Shell, writes, built-in subagents and unrelated
   MCP tools remain excluded from the planner.
 - `mc/desk_dispatch_mcp.py` is a stdio JSON-RPC transport with one tool accepting
-  `agent` and `task`. It forwards to `/api/desk/dispatch-tool` with a random,
+  required `agent` and `task` and optional `model` and `effort`. It forwards to
+  `/api/desk/dispatch-tool` with a random,
   short-lived capability inherited through the environment, never argv, model
   input or a repo file. Frozen builds use the existing internal hook registry.
 - The tool route rechecks the switch, campaign project, active project roster
-  and character before launch. It posts over loopback to the existing route
+  and character before launch. `mc/desk_dispatch_model.py` uses the same runtime
+  model catalog and effort levels as the Desk picker. It validates any explicit
+  picks before the route reserves an attempt. The tool posts over loopback to
+  the existing route
   `POST /api/project/<pid>/agent/dispatch`, including normal routing, strict
   character resolution, dispatch trigger and durable launch bookkeeping. It
   never launches a process itself. Tasks start with
@@ -76,8 +91,9 @@ them before retrying. Child sessions have their normal tools and human gates.
 The campaign's `dispatch_sessions` map retains child identities beyond bounded
 chat history; `dispatch_receipts` deduplicates events even after result trimming.
 If launch succeeded before its card was saved, delivery reconstructs the card
-from the notify-bearing live session or durable launch row, checking campaign
-origin and callback target. A missing/moved campaign blocks delivery; an unavailable
+from the notify-bearing live session or durable launch row, including the launch
+settings when available. It checks the owner origin and callback target.
+A missing/moved campaign blocks delivery; an unavailable
 launch row defers it. Neither case re-dispatches the child.
 
 `static/js/desk-v1-dispatch.js` and its CSS own cards and thread refresh. They use
@@ -105,7 +121,7 @@ storyboard rewrite (`put_storyboard`) carries them across, as it does the thread
 - **Project and roster.** Dispatch needs a project: the article's own project, or the
   `project_id` the storyboard page sends. With none (the no-project Studio fallback
   agent) the chat has no dispatch tool and answers as before. The roster is that
-  project's active hires; no implicit hire, no provider substitution.
+  project's active hires. Explicit model and effort picks use the hire's provider.
 - **Delivery.** Same receipt dedupe and blocked/deferred semantics as campaign. A
   missing piece (deleted/trashed article, unsaved or piece-less storyboard) or a
   moved project blocks delivery and never re-dispatches. A storyboard record names
@@ -123,6 +139,11 @@ storyboard rewrite (`put_storyboard`) carries them across, as it does the thread
   dispatched sessions before retrying; the saved user turn and cards stay.
 
 ## Validation and handoff
+
+Model and effort tests cover the original two-field payload, separate and combined
+picks, hire-specific catalogs, refusals that leave the attempt budget intact,
+the allowance and quota boundaries, saved card settings and crash recovery.
+The campaign, storyboard and article browser smokes check the settings line.
 
 Studio owners: `tests/test_desk_dispatch_studio.py` (admission per endpoint and
 owner, non-typed refusal, sinks, launch origin/sink, whole typed turns for both

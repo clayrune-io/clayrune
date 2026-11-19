@@ -1735,16 +1735,17 @@ pages are treated as data; current competitor claims must cite URLs. Research
 calls can take up to eight minutes; the chat's pending state stays visible.
 
 With **Settings → Providers → Advanced → Desk agent dispatch** on (the default),
-a supported Claude campaign planner can start agents already hired on that
-campaign project's Floor. Ask in the campaign conversation; each message allows
-up to two launch attempts. Research and dispatch have separate switches. If the
+a supported Claude planner can start agents already hired on the project's
+Floor. Ask in campaign, storyboard, or article chat. Each message allows up to
+two launch attempts. You can ask for a model or reasoning effort offered by
+the hired agent's provider. Research and dispatch have separate switches. If the
 provider cannot enforce the dispatch boundary, or dispatch is off, the planner
 says so and receives no dispatch tool.
 
-A dispatch card names the agent and task and links to **Open child session**.
-Its result returns to the campaign, including after a reload, without another
+A dispatch card shows the agent, task, model, and effort and links to **Open child session**.
+Its result returns to the same chat, including after a reload, without another
 planner call. A child question shows **waiting_for_answer**; open its session to
-answer. Dispatch is available only on the campaign-chat turn answering a message
+answer. Dispatch is available only on a chat turn answering a message
 you typed, never from outside replies, listening, scheduled work or content
 generation. Child agents use their normal tools and existing human approval
 gates. If a turn fails after starting a child, check its card and the Floor before

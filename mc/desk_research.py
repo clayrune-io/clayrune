@@ -12,7 +12,7 @@ import tempfile
 from typing import Sequence, cast
 from urllib.request import Request, urlopen
 
-from mc import state, transform_sandbox, desk_dispatch, desk_dispatch_owner
+from mc import state, transform_sandbox, desk_dispatch, desk_dispatch_model, desk_dispatch_owner
 from mc.atomic_json import write_json_atomic
 from mc.desk_local_url import local_url
 
@@ -128,9 +128,10 @@ def run(provider: str, *, prompt: str, system_prompt: str, model: str, effort: s
     turn, dispatch_reason = desk_dispatch.admission(provider, project, supported)
     if desk_dispatch._current.get():
         if turn:
+            targets = desk_dispatch_model.prompt_targets(project or {}, desk_dispatch.roster(project or {}))
             prompt += desk_dispatch_owner.prompt_note(
                 turn['owner'], desk_dispatch.TOOL, desk_dispatch.MAX_DISPATCHES,
-                json.dumps(desk_dispatch.roster(project or {})))
+                json.dumps(targets, separators=(',', ':')))
         else:
             prompt += '\n' + dispatch_reason + ' Say so plainly if asked to dispatch; do not claim you dispatched.'
     def disclose(raw: str) -> str:

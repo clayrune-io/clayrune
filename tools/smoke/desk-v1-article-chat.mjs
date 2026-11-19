@@ -74,7 +74,7 @@ async function run(browser, width) {
         proposal: { status: 'proposed', tab_id: body.tab_id, label: 'Draft', before: body.body, body: replacement } }];
     if (dispatching) {   // a typed turn that dispatched a child: the saved thread carries the user turn and the card
       dispatching = false;
-      const card = { session_id: 'child-1', project_id: 'proj-x', agent: 'global:dave', status: 'dispatched' };
+      const card = { session_id: 'child-1', project_id: 'proj-x', agent: 'global:dave', status: 'dispatched', model: 'claude-haiku-5-5', effort: 'high' };
       (chats[id] ||= []).push(turns[0], { id: 'dispatch-child-1', role: 'dispatch', agent: turns[1].agent, text: 'Build the HTML page', dispatch: card }, turns[1]);
       return J({ turns, agent: { name: turns[1].agent }, thread: chats[id] });
     }
@@ -196,6 +196,7 @@ async function run(browser, width) {
   await send('Have Dave build the page');
   assert.equal(await page.locator('[data-dispatch-card="child-1"]').count(), 1);
   assert.equal(await page.locator('[data-dispatch-card="child-1"] a').getAttribute('href'), '?project=proj-x&session=child-1');
+  assert.equal(await page.locator('[data-dispatch-card="child-1"] small').textContent(), 'claude-haiku-5-5 · high effort');
   chats[other].push({ id: 'result-1', role: 'dispatch_result', agent: 'Dave', text: 'Page built at docs/page.html',
     dispatch: { session_id: 'child-1', project_id: 'proj-x', status: 'completed' } });
   await wait(() => [...document.querySelectorAll('[data-dispatch-card]')].some((c) => /Page built at docs\/page.html/.test(c.textContent)));

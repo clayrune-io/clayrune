@@ -22,7 +22,7 @@
  *  10. Pop out  -> the SAME chat element is lifted to a large view: sending from it lands in the
  *                  one thread, not modal, Esc / the stand-in / the button close it and return focus; at 1440
  *                  and 390 with no horizontal scroll.
- *   7. Shots    -> screens at 1440 and 390 into docs/desk_v1/screens/.
+ *   7. Shots    -> screens at 1440 and 390 into SMOKE_SCREENSHOT_DIR or docs/desk_v1/screens/.
  *
  * RUN   cd tools/smoke && node desk-v1-story-chat.mjs
  */
@@ -36,7 +36,7 @@ import { loadStaticJsCss, deskLoaded } from './_static.mjs';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf8');
-const SHOTS = resolve(REPO_ROOT, 'docs', 'desk_v1', 'screens');
+const SHOTS = resolve(REPO_ROOT, process.env.SMOKE_SCREENSHOT_DIR || 'docs/desk_v1/screens');
 const ORIGIN = 'http://mc.smoke.test';
 const STATIC = loadStaticJsCss(REPO_ROOT);
 
@@ -123,7 +123,7 @@ async function newPage(browser, srv, viewport) {
       const turns = [mk('user', body.message), mk('agent', r.reply, r.change ? { change: { mode: r.change.mode, summary: r.change.summary, numbers: r.change.numbers || {}, status: 'proposed' } } : { change_error: r.change_error || null })];
       if (srv.dispatch) {   // a typed turn that dispatched a child: the saved thread carries the user turn and the card
         srv.dispatch = false;
-        const card = { session_id: 'child-1', project_id: 'proj-x', agent: 'global:dave', status: 'dispatched' };
+        const card = { session_id: 'child-1', project_id: 'proj-x', agent: 'global:dave', status: 'dispatched', model: 'claude-haiku-5-5', effort: 'high' };
         (srv.threads[key] = srv.threads[key] || []).push(turns[0], { id: 'dispatch-child-1', role: 'dispatch', agent: 'Dave', text: 'Build the HTML page', at: '2026-10-06T10:00:00Z', dispatch: card }, turns[1]);
         return J({ agent: { ref: 'global:dave', name: 'Dave' }, provider: 'claude', model: 'sonnet', turns, thread: srv.threads[key].map((t) => ({ ...t })) });
       }
@@ -400,6 +400,8 @@ async function main(browser) {
   await settle(page, () => !!document.querySelector('[data-dispatch-card="child-1"]'));
   (await page.$$('[data-dispatch-card="child-1"]')).length === 1 && (await page.getAttribute('[data-dispatch-card="child-1"] a', 'href')) === '?project=proj-x&session=child-1'
     ? ok('the dispatch card shows with an "Open child session" link') : fail('no dispatch card / link');
+  (await page.locator('[data-dispatch-card="child-1"] small').textContent()) === 'claude-haiku-5-5 · high effort'
+    ? ok('the dispatch card shows model and effort') : fail('missing dispatch settings');
   /Dispatched agents return their results here/.test(await statusText(page)) ? ok('the status line says results return here') : fail('status: ' + (await statusText(page)));
   srv.threads[key()].push({ id: 'result-1', role: 'dispatch_result', agent: 'Dave', text: 'Page built at docs/page.html', at: '2026-10-06T10:01:00Z',
     dispatch: { session_id: 'child-1', project_id: 'proj-x', status: 'completed' } });
@@ -448,7 +450,7 @@ async function main(browser) {
   (await hOverflow(page)) <= 1 ? ok('no horizontal scroll with the large view open (1440)') : fail('overflow when popped');
   mkdirSync(SHOTS, { recursive: true });
   await page.screenshot({ path: resolve(SHOTS, 'studio-agent-chat-popout-1440.png') });
-  ok('docs/desk_v1/screens/studio-agent-chat-popout-1440.png');
+  ok(resolve(SHOTS, 'studio-agent-chat-popout-1440.png'));
   srv.reply = () => ({ reply: 'Answered inside the large view.' });
   srv.log.length = 0;
   await ask.fill('sent from the large view');
@@ -498,7 +500,7 @@ async function main(browser) {
   (thread.sh > thread.ch && thread.top + thread.ch >= thread.sh - 2) ? ok(`a long thread scrolls inside its own region (${thread.sh}px in ${thread.ch}px) and stays at the newest turn`) : fail('thread scroll: ' + JSON.stringify(thread));
   await page.evaluate(() => document.querySelector('[data-sb-agent]').scrollIntoView({ block: 'start' }));
   await page.screenshot({ path: resolve(SHOTS, 'studio-agent-chat-1440.png') });
-  ok('docs/desk_v1/screens/studio-agent-chat-1440.png');
+  ok(resolve(SHOTS, 'studio-agent-chat-1440.png'));
   realErrors(pageErrors).forEach((e) => fail('page error: ' + e));
   dialogs.length === 0 ? ok('no window.confirm / alert was raised') : fail('dialogs: ' + dialogs.join('|'));
   await ctx.close();
@@ -513,7 +515,7 @@ async function main(browser) {
   (ov <= 1 && box.l >= 0 && box.r <= box.w + 1) ? ok(`at 390px the agent panel fits the screen (page overflow ${ov}px)`) : fail('mobile overflow: ' + JSON.stringify({ ov, box }));
   await m.page.evaluate(() => document.querySelector('[data-sb-agent]').scrollIntoView({ block: 'start' }));
   await m.page.screenshot({ path: resolve(SHOTS, 'studio-agent-chat-390.png') });
-  ok('docs/desk_v1/screens/studio-agent-chat-390.png');
+  ok(resolve(SHOTS, 'studio-agent-chat-390.png'));
   // the large view at phone width
   await m.page.evaluate(() => { window.__chat = document.querySelector('[data-chat]'); });
   await m.page.click('[data-chat-pop]');
@@ -527,7 +529,7 @@ async function main(browser) {
   await settle(m.page, () => !document.querySelector('[data-chat-thinking]') && [...document.querySelectorAll('[data-chat-turn="agent"]')].some((e) => e.textContent.includes('Phone reply.')));
   (await turns(m.page)).length === n390 + 2 ? ok('sending from the large view works at 390px') : fail('mobile popped send');
   await m.page.screenshot({ path: resolve(SHOTS, 'studio-agent-chat-popout-390.png') });
-  ok('docs/desk_v1/screens/studio-agent-chat-popout-390.png');
+  ok(resolve(SHOTS, 'studio-agent-chat-popout-390.png'));
   await m.page.keyboard.press('Escape');
   const mc = await popState(m.page);
   (!mc.popped && mc.focus === 'pop' && (await hOverflow(m.page)) <= 1) ? ok('closing it at 390px returns to the docked panel, focus on the button') : fail('mobile close: ' + JSON.stringify(mc));

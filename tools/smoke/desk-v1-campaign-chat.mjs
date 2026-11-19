@@ -517,10 +517,12 @@ async function dispatchCards(browser) {
     await settle(page, () => !!document.querySelector('[data-chat-thinking]'));
     srv.threads['camp-1'] = [{ id: 'dispatch-child', role: 'dispatch', agent: 'Claydo',
       text: '<script>unsafe</script> Review the campaign', at: '2026-11-03T10:00:00Z',
-      dispatch: { session_id: 'child-123', project_id: 'clayrune', agent: 'global:dave', status: 'dispatched' } }];
+      dispatch: { session_id: 'child-123', project_id: 'clayrune', agent: 'global:dave', status: 'dispatched', model: 'claude-haiku-5-5', effort: 'high' } }];
     await settle(page, () => !!document.querySelector('[data-dispatch-card="child-123"]'));
     const href = await page.$eval('[data-dispatch-card] a', (a) => a.getAttribute('href'));
     href === '?project=clayrune&session=child-123' ? ok(`${width}: pending dispatch has a child-session deep link`) : fail(`${width}: bad dispatch link ${href}`);
+    (await page.locator('[data-dispatch-card] small').textContent()) === 'claude-haiku-5-5 · high effort'
+      ? ok(`${width}: pending dispatch shows model and effort`) : fail(`${width}: missing dispatch settings`);
     (await page.locator('[data-dispatch-card] script').count()) === 0 ? ok(`${width}: dispatched task is escaped`) : fail(`${width}: unsafe dispatch text`);
     release(); srv.gate = null;
     await settle(page, () => !document.querySelector('[data-chat-thinking]'));

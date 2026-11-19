@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import pytest
 from flask import Flask
 
-from mc import desk, desk_campaign_chat as chat, desk_dispatch as dispatch
+from mc import agent_runtime, desk, desk_campaign_chat as chat, desk_dispatch as dispatch
+from mc import desk_dispatch_model
 from mc import desk_dispatch_mcp as mcp, desk_research as research, desk_story, state
 from mc.blueprints import agent_routes as ar, desk_routes
 from mc.delegation_delivery import DeliveryStore, callback_payload, drain_once
@@ -19,6 +20,7 @@ def rig(env, monkeypatch):
     project = {'id': 'alpha', 'name': 'Alpha', 'roster': [{'character': 'global:dave', 'removed_at': None}]}
     monkeypatch.setattr(state, 'CONFIG', {})
     monkeypatch.setattr(state, 'agent_sessions', {})
+    monkeypatch.setattr(ar, 'agent_sessions', {})
     monkeypatch.setattr('mc.unattended.agent_sessions', {})
     monkeypatch.setattr(desk_routes, 'load_project', lambda pid: project if pid == 'alpha' else None)
     app = Flask(__name__)
@@ -26,7 +28,9 @@ def rig(env, monkeypatch):
     app.register_blueprint(desk_routes.bp)
     app.register_blueprint(ar.bp)
     client = app.test_client()
+    posted = []
     def post_dispatch(pid, body):
+        posted.append(body)
         response = client.post(f'/api/project/{pid}/agent/dispatch', json=body)
         if response.status_code != 200:
             raise RuntimeError(response.json['error'])
@@ -38,10 +42,16 @@ def rig(env, monkeypatch):
     launched = []
     def launch(pid, task, resume='', **kw):
         launched.append(dict(kw, project_id=pid, task=task))
-        return 'child-' + str(len(launched))
+        sid = 'child-' + str(len(launched))
+        character, _ = ar._resolve_character('', kw['character'], project=project, strict=True)
+        ar.agent_sessions[sid] = {
+            'agent_model': kw['model_override'] or ar._character_engine(character, 'model'),
+            'requested_effort': ar._requested_effort(project, character, override=kw['effort_override']),
+        }
+        return sid
     monkeypatch.setattr(ar, '_dispatch_agent_internal', launch)
     monkeypatch.setattr(desk_story, '_resolve_engine', lambda *a: SimpleNamespace(provider='claude', model='pinned'))
-    return SimpleNamespace(client=client, project=project, answer=answer, launched=launched)
+    return SimpleNamespace(client=client, project=project, answer=answer, launched=launched, posted=posted)
 
 
 def send_tool(rig, token, **body):
@@ -88,6 +98,11 @@ def test_existing_dispatch_route_origin_notify_and_turn_expiry(rig):
         assert card['session_id'] == 'child-1'
         launch = rig.launched[0]
         assert launch['task'].startswith(f'Origin: Desk campaign {CID}, agent Posy\n\n')
+        assert json.dumps(rig.posted[0]) == json.dumps({
+            'task': f'Origin: Desk campaign {CID}, agent Posy\n\nReview the campaign',
+            'character': 'global:dave', 'source': 'agent', 'notify_session': dispatch.SINK_PREFIX + CID,
+        })
+        assert launch['model_override'] == '' and launch['effort_override'] is None
         assert launch['character'] == 'global:dave'
         assert launch['project_id'] == 'alpha'
         assert launch['notify_session'] == dispatch.SINK_PREFIX + CID
@@ -98,6 +113,78 @@ def test_existing_dispatch_route_origin_notify_and_turn_expiry(rig):
         assert saved[0]['role'] == 'dispatch'
     assert send_tool(rig, token).status_code == 403
     assert send_tool(rig, 'guessed').status_code == 403
+
+
+@pytest.mark.parametrize('picks', [
+    {}, {'model': 'claude-haiku-5-5'}, {'effort': 'high'},
+    {'model': 'claude-haiku-5-5', 'effort': 'high'},
+], ids=['pinned', 'model-only', 'effort-only', 'both'])
+def test_dispatch_engine_keeps_unspecified_pins_and_saves_launch_settings(rig, monkeypatch, picks):
+    pins = {'provider': 'claude', 'model': 'claude-sonnet-5-5', 'effort': 'low'}
+    monkeypatch.setattr(desk_story._chars, 'read_character', lambda *a, **kw: {'body': 'Test', 'engine': pins})
+    with dispatch.campaign_turn(CID, rig.project, 'Posy') as turn, dispatch.tool_session(turn) as token:
+        response = send_tool(rig, token, **picks)
+    assert response.status_code == 200, response.json
+    posted = rig.posted[0]
+    assert {key: posted[key] for key in ('model', 'effort', 'provider') if key in posted} == picks
+    assert rig.launched[0]['model_override'] == picks.get('model', '')
+    assert rig.launched[0]['effort_override'] == picks.get('effort')
+    saved = rig.client.get(URL).json['thread'][0]['dispatch']
+    assert saved == response.json
+    assert saved['model'] == picks.get('model', pins['model'])
+    assert saved['effort'] == picks.get('effort', pins['effort'])
+
+
+@pytest.mark.parametrize('picks,error', [
+    ({'model': 'gemini-2.5-pro'}, "claude does not offer model 'gemini-2.5-pro'"),
+    ({'effort': 'turbo'}, "claude does not offer effort 'turbo'"),
+    ({'model': None}, 'model must be non-empty text'),
+    ({'effort': ''}, 'effort must be non-empty text'),
+    ({'provider': 'gemini'}, 'uses the hired agent’s own provider'),
+])
+def test_refused_engine_pick_leaves_the_full_attempt_budget(rig, picks, error):
+    with dispatch.campaign_turn(CID, rig.project, 'Posy') as turn, dispatch.tool_session(turn) as token:
+        response = send_tool(rig, token, **picks)
+        assert response.status_code == 400 and error in response.json['error']
+        assert turn['attempts'] == 0 and not rig.posted
+        for _ in range(dispatch.MAX_DISPATCHES):
+            assert send_tool(rig, token).status_code == 200
+        assert send_tool(rig, token).status_code == 429
+
+
+def test_roster_and_validation_use_the_hires_provider(rig, monkeypatch):
+    pins = {'provider': 'codex', 'model': 'gpt-6.1-sol', 'effort': 'medium'}
+    monkeypatch.setattr(desk_story._chars, 'read_character', lambda *a, **kw: {'body': 'Test', 'engine': pins})
+    runtime = agent_runtime.get_runtime('codex')
+    monkeypatch.setattr(runtime, 'model_choices', lambda: [('gpt-6.1-sol', 'GPT-6.1 Sol')])
+    rig.project['provider'] = 'claude'
+    targets = desk_dispatch_model.prompt_targets(rig.project, dispatch.roster(rig.project))
+    assert targets == {
+        'agents': {'global:dave': pins},
+        'choices_by_provider': {'codex': {'models': ['gpt-6.1-sol'], 'efforts': ['low', 'medium', 'high']}},
+    }
+    with dispatch.campaign_turn(CID, rig.project, 'Posy') as turn, dispatch.tool_session(turn) as token:
+        rejected = send_tool(rig, token, model='claude-haiku-5-5')
+        assert rejected.status_code == 400 and 'codex does not offer' in rejected.json['error']
+        assert send_tool(rig, token, model='gpt-6.1-sol', effort='high').status_code == 200
+
+
+@pytest.mark.parametrize('block', ['allowance', 'model_quota'])
+def test_explicit_desk_engine_refuses_provider_fallback(tmp_path, monkeypatch, block):
+    project = {'id': 'alpha', 'project_path': str(tmp_path), 'provider': 'claude'}
+    monkeypatch.setattr(ar, 'load_project', lambda _: project)
+    monkeypatch.setattr(ar, '_assert_runtime_project_generation', lambda *a, **kw: 1)
+    monkeypatch.setattr(ar, '_allowance_refusal', lambda *a, **kw: 'allowance blocked' if block == 'allowance' else '')
+    monkeypatch.setattr(ar._credits_session, 'would_bill_credits', lambda *a, **kw: False)
+    monkeypatch.setattr(ar, '_model_quota_blocked', lambda *a: 'model quota blocked' if block == 'model_quota' else '')
+
+    def unexpected_fallback(*a, **kw):
+        pytest.fail('an explicit Desk pick must preserve its provider')
+
+    monkeypatch.setattr(ar, '_apply_engine_fallback', unexpected_fallback)
+    with pytest.raises(ValueError, match='blocked'):
+        ar._dispatch_agent_internal('alpha', 'Review', model_override='claude-haiku-5-5',
+                                    notify_session=dispatch.SINK_PREFIX + CID)
 
 
 @pytest.mark.parametrize('target', ['global:unknown', 'project:dave', '', None])
@@ -159,7 +246,10 @@ def fake_runner(rig, monkeypatch, *, fail=False, research_on=True):
             tools = list(research.TOOLS[:2]) if research_on else []
             servers = []
             if enabled:
-                assert 'Hired targets: ["global:dave"]' in body
+                targets = json.loads(body.split('Hired targets: ', 1)[1].splitlines()[0])
+                assert targets['agents']['global:dave'] == {'provider': 'claude', 'model': '', 'effort': ''}
+                assert 'claude-haiku-5-5' in targets['choices_by_provider']['claude']['models']
+                assert 'high' in targets['choices_by_provider']['claude']['efforts']
                 for _ in range(2):
                     assert send_tool(rig, self.env['CLAYRUNE_DESK_TURN']).status_code == 200
                 assert send_tool(rig, self.env['CLAYRUNE_DESK_TURN']).status_code == 429
@@ -283,6 +373,10 @@ def test_mcp_protocol_and_unknown_outcome(monkeypatch):
     assert mcp.respond({'method': 'notifications/initialized'}) is None
     assert mcp.respond({'id': 1, 'method': 'initialize'})['result']['capabilities'] == {'tools': {}}
     assert mcp.respond({'id': 2, 'method': 'tools/call', 'params': {'name': 'Bash'}})['error']['code'] == -32601
+    schema = mcp.respond({'id': 3, 'method': 'tools/list'})['result']['tools'][0]['inputSchema']
+    assert schema['required'] == ['agent', 'task']
+    assert schema['properties']['model']['type'] == schema['properties']['effort']['type'] == 'string'
+    assert 'provider' not in schema['properties']
     monkeypatch.setenv('CLAYRUNE_DESK_TURN', 'test-only')
     monkeypatch.setenv('CLAYRUNE_DESK_TOOL_URL', 'http://127.0.0.1:1/api/desk/dispatch-tool')
     def timeout(*a, **kw):

@@ -12791,6 +12791,10 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     provider_name, _provider_source = engine_selection.resolve_provider(
         state.CONFIG, p, override=provider_override,
         character=(character_meta or {}).get('engine'), legacy_default='claude')
+    from mc.desk_dispatch_owner import is_desk_sink
+    # Desk picks were validated against this hire's provider before admission.
+    desk_engine_pick = (bool(model_override or effort_override is not None)
+                        and is_desk_sink(notify_session or ''))
     # Per-call copy only: every context builder sees the effective owner,
     # without changing the project's saved default for other conversations.
     p = dict(p, provider=provider_name)
@@ -12831,6 +12835,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # a resume keeps today's hard refusal. Fresh dispatches (a new chat,
         # every workflow step, and a schedule fire that isn't continuing a
         # prior session) get the swap.
+        if desk_engine_pick:
+            raise ValueError(_allowance_block)
         if resume_id:
             raise _engine_fallback.EngineFallbackBlocked(
                 _engine_fallback.blocked_payload(_allowance_block))
@@ -12884,6 +12890,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             # two trigger shapes the fallback may act on (the first is the
             # vendor-level allowance check above). Same resume_id exception —
             # a native resume never swaps vendors automatically.
+            if desk_engine_pick:
+                raise ValueError(_quota_block)
             if resume_id:
                 raise _engine_fallback.EngineFallbackBlocked(
                     _engine_fallback.blocked_payload(_quota_block))

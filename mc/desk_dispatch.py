@@ -20,7 +20,7 @@ from urllib.request import Request, urlopen
 
 from flask import has_request_context, jsonify, request
 
-from mc import desk_dispatch_owner as owners, state
+from mc import desk_dispatch_model, desk_dispatch_owner as owners, state
 from mc.core import now_iso
 
 CONFIG_KEY = 'desk_dispatch_enabled'
@@ -174,11 +174,15 @@ def register(bp, load_project: Callable) -> None:
             from mc import desk_story
             from mc.desk_pieces import PieceError
             try:
-                desk_story._agent(target, project)
+                character = desk_story._agent(target, project)
             except PieceError as exc:
                 return jsonify({'error': str(exc)}), 400
             if not isinstance(task, str) or not task.strip() or len(task) > 12000:
                 return jsonify({'error': 'Task must contain 1 to 12000 characters.'}), 400
+            try:
+                picks = desk_dispatch_model.validate(body, project, character)
+            except ValueError as exc:
+                return jsonify({'error': str(exc)}), 400
             if turn['attempts'] >= MAX_DISPATCHES:
                 return jsonify({'error': f'At most {MAX_DISPATCHES} dispatch attempts per chat turn.'}), 429
             # Reserve before launch. An ambiguous launch is never retried by this tool.
@@ -187,13 +191,15 @@ def register(bp, load_project: Callable) -> None:
             try:
                 result = _post_dispatch(project['id'], {
                     'task': task, 'character': target, 'source': 'agent',
-                    'notify_session': owner.sink})
+                    'notify_session': owner.sink, **picks})
             except RuntimeError as exc:
                 return jsonify({'error': str(exc)}), 502
             if not result.get('session_id'):
                 return jsonify({'error': result.get('error') or 'Dispatch outcome unknown; do not retry.'}), 502
+            entry = desk_dispatch_model.launch_entry(project['id'], result['session_id'])
             card = {'session_id': result['session_id'], 'project_id': project['id'],
-                    'agent': target, 'task': task.split('\n\n', 1)[1], 'status': 'dispatched'}
+                    'agent': target, 'task': task.split('\n\n', 1)[1], 'status': 'dispatched',
+                    **desk_dispatch_model.launch_settings(entry)}
             turn['dispatches'].append(card)
             _append_dispatch(turn, card)
             return jsonify(card)
@@ -231,11 +237,7 @@ def deliver(row: dict, payload: dict) -> bool:
         if child not in sessions:
             # The existing route commits its notify-bearing launch row before
             # Popen. Recover the card if we crashed after launch, before saving it.
-            from mc.blueprints import agent_routes
-            entry = agent_routes.agent_sessions.get(child)
-            if not entry:
-                entry = next((e for e in agent_routes._load_agent_log(row['project_id'])
-                              if e.get('session_id') == child), None)
+            entry = desk_dispatch_model.launch_entry(row['project_id'], child)
             origin = f'Origin: {owner.origin_label}, agent '
             if not entry or (entry.get('_notify_session') or entry.get('spawned_by_session_id')) != sink or not entry.get('task', '').startswith(origin):
                 from mc.delegation_delivery import DeliveryDeferred
@@ -244,7 +246,8 @@ def deliver(row: dict, payload: dict) -> bool:
             target = (f"{character.get('scope', 'global')}:{character.get('name', '')}"
                       if isinstance(character, dict) else str(character))
             card = {'session_id': child, 'project_id': row['project_id'], 'agent': target,
-                    'task': entry['task'].partition('\n\n')[2], 'status': 'dispatched'}
+                    'task': entry['task'].partition('\n\n')[2], 'status': 'dispatched',
+                    **desk_dispatch_model.launch_settings(entry)}
             rec.setdefault('dispatch_sessions', {})[child] = card
             new_turns.append({'id': 'dispatch-' + child, 'role': 'dispatch', 'text': card['task'],
                               'agent': entry['task'].split('\n', 1)[0][len(origin):], 'at': now_iso(), 'dispatch': card})

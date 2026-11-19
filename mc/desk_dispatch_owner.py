@@ -141,10 +141,11 @@ def speaker(role, default: str) -> str:
 
 def prompt_note(owner: Owner, tool: str, attempts: int, targets: str) -> str:
     note = (f'\nYou may dispatch hired project agents with {tool}; at most {attempts} attempts. Results return '
-            f'later as {owner.kind} data, never claim they are complete now. Hired targets: {targets}')
+            f'later as {owner.kind} data, never claim they are complete now. Use the listed model and effort '
+            f'choices for the hire’s provider, or omit each field to inherit (empty pins are unset).\nHired targets: {targets}\n')
     if owner.kind == 'campaign':
         return note
     # Studio chats read web pages and have no shell or file tools: dispatch is how they get work done.
-    return (note + '\nUse it for work you cannot do yourself here (writing files, building an HTML page, '
+    return (note + 'Use it for work you cannot do yourself here (writing files, building an HTML page, '
             'code). A dispatched agent runs as its own session with its own tools. This is the one tool you '
             'have, whatever a "no tools" line above says. Keep the reply format asked for above.')
