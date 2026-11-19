@@ -9677,11 +9677,7 @@ def _notify_workflow_step(wf_wait, session, summary, *, sync=False):
 
 
 def _notify_agent_spawner(project_id, notify_sid, child, summary):
-    """Deliver a finished child agent's result into its spawner's chat.
-
-    Thread + localhost HTTP on purpose -- see the call site in
-    _log_agent_completion for why we do not call the handler inline.
-    """
+    """Durably enqueue a finished child agent's result for its spawner."""
     event_id = event_id_for_turn(
         child.get('session_id', ''), child.get('_delegation_turn', 1))
     payload = callback_payload(child, summary, event_id)
@@ -10377,11 +10373,8 @@ def _log_agent_completion_body(session):
     # child's own summary into the spawner's chat closes it without giving up
     # the visibility that made HTTP dispatch the right choice.
     #
-    # Fired on a thread through the ordinary /agent/send route rather than by
-    # calling the handler directly: send owns the running/followup/revive
-    # routing decision and takes the per-project lock, which THIS function may
-    # already hold. Best-effort by design -- a failed callback must never break
-    # completion logging for the child that just finished.
+    # Record the completion and enqueue the wake here. The delivery loop
+    # routes it after checking the parent's state.
     _notify_spawner_unless_jobs_open(session, summary)
 
     # Extract token telemetry from the transcript before building the entry.
@@ -10926,7 +10919,7 @@ def _auto_dispatch_followup_locked(session, message, p, pp, cmd, _sp_path):
 
 
 def _check_context_budget(project, appended_prompt):
-    """Measure context files; if total exceeds 20KB, trigger condensation and return info string."""
+    """Measure context files and consider condensation above 40 KiB."""
     sizes = {}
     pp = project.get('project_path', '')
     # CLAUDE.md in project root
