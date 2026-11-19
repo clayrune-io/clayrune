@@ -5887,6 +5887,11 @@ async function sendFollowup(projectId, sessionId, sendMode) {
         }
         const inp = document.getElementById(`agent-followup-${sessionId}`);
         if (inp && !inp.value && !delivered) window.mcSendRefusal.restoreComposer(inp, message);
+        // The refused send answered a question card: the agent is still waiting,
+        // so draw the form again (the 409/502/500 branch below does the same via
+        // settleRefusedSend, which would also overwrite this branch's own
+        // [blocked] echo and add a toast on top of the banner).
+        if (!delivered) window.mcSendRefusal.reArmQuestion(projectId, sessionId, answeringQuestion);
         delete _sendInFlight[sessionId];
         delete _preSendStatus[sessionId];
         return;
@@ -6023,6 +6028,9 @@ async function sendFollowup(projectId, sessionId, sendMode) {
     // the message and is/was running — restoring would show stale text that the
     // user already sent, which is the "text jumps back" bug.
     if (inp && !inp.value && !_turnStartAcked[sessionId] && !delivered) window.mcSendRefusal.restoreComposer(inp, message);
+    // Same guard as the composer: once turn_start arrived the agent has the
+    // answer and is no longer waiting, so re-arming would invite a double answer.
+    if (!_turnStartAcked[sessionId] && !delivered) window.mcSendRefusal.reArmQuestion(projectId, sessionId, answeringQuestion);
     if (!delivered) showToast(aborted
       ? 'Send timed out — network may be paused. Try again.'
       : `Send failed: ${e && e.message ? e.message : 'network error'}`, 4500);
