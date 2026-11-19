@@ -3507,16 +3507,17 @@ def _claude_interrupt_hook(handle):
     if not session:
         return
     proc = session.get('proc')
+    session['status'] = 'stopped'
+    session['last_status_change_time'] = _time.time()
+    session['process_alive'] = False
     if proc:
         try:
             if proc.poll() is None:
                 _kill_pid(proc.pid, tree=True)
                 proc.kill()
-        except Exception:
-            pass
-    session['status'] = 'stopped'
-    session['last_status_change_time'] = _time.time()
-    session['process_alive'] = False
+            _unregister_process(proc.pid)
+        except Exception as exc:
+            _log(f'[runtime:claude] stop hook process cleanup failed: {exc}')
     session['log_lines'].append('[interrupted via runtime hook]')
 
 
