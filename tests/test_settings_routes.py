@@ -326,6 +326,21 @@ def test_update_config_no_respawn_for_non_tier1_key(ctx):
 
 # ── /api/settings/domains — CRUD round-trips ──────────────────────────────────
 
+@pytest.mark.parametrize(('method', 'url', 'data'), [
+    ('POST', '/api/settings/domains/add', {'id': 'new'}),
+    ('PATCH', '/api/settings/domains/new', {'label': 'Changed'}),
+    ('DELETE', '/api/settings/domains/new', None),
+])
+def test_domain_edits_preserve_unreadable_settings(ctx, method, url, data):
+    ctx.settings_path.write_bytes(b'{')
+
+    reply = ctx.client.open(url, method=method, json=data)
+
+    assert reply.status_code == 409
+    assert reply.get_json()['error'] == 'domain settings could not be read'
+    assert ctx.settings_path.read_bytes() == b'{'
+
+
 def test_get_domains_defaults(ctx):
     resp = ctx.client.get('/api/settings/domains')
     assert resp.status_code == 200

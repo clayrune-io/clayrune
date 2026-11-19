@@ -50,7 +50,7 @@ import json
 
 from mc.ui_field_validation import validate_colors
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, abort, jsonify, request
 
 from mc import provider_preferences
 from mc import state
@@ -88,16 +88,22 @@ DEFAULT_DOMAINS = [
     {'id': 'hobby', 'label': 'Hobby', 'color': 'var(--amber-text)', 'bg': 'var(--amber-dim)'},
 ]
 
-def _load_settings():
+def _load_settings(*, for_update=False):
     defaults = {'domains': list(DEFAULT_DOMAINS)}
-    if SETTINGS_PATH.exists():
-        try:
-            with open(SETTINGS_PATH, encoding='utf-8') as f:
-                saved = json.load(f)
-            for k, v in saved.items():
-                defaults[k] = v
-        except Exception:
-            pass
+    try:
+        with open(SETTINGS_PATH, encoding='utf-8') as f:
+            saved = json.load(f)
+        if not isinstance(saved, dict):
+            raise ValueError('expected a settings object')
+        defaults.update(saved)
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as exc:
+        _log(f'[settings] could not read domain settings: {type(exc).__name__}', flush=True)
+        if for_update:
+            response = jsonify({'error': 'domain settings could not be read'})
+            response.status_code = 409
+            abort(response)
     return defaults
 
 def _save_settings(settings):
@@ -659,7 +665,7 @@ def add_domain():
     label = data.get('label', domain_id.capitalize())
     color = data.get('color', 'var(--text-dim)')
     bg = data.get('bg', 'var(--surface3)')
-    settings = _load_settings()
+    settings = _load_settings(for_update=True)
     domains = settings.get('domains', [])
     if any(d['id'] == domain_id for d in domains):
         return jsonify({'error': 'domain already exists'}), 409
@@ -675,7 +681,7 @@ def update_domain(domain_id):
     if error:
         return jsonify({'error': error}), 400
 
-    settings = _load_settings()
+    settings = _load_settings(for_update=True)
     domains = settings.get('domains', [])
     domain = next((d for d in domains if d['id'] == domain_id), None)
     if not domain:
@@ -694,7 +700,7 @@ def update_domain(domain_id):
 def delete_domain(domain_id):
     if domain_id == 'general':
         return jsonify({'error': 'cannot delete general domain'}), 400
-    settings = _load_settings()
+    settings = _load_settings(for_update=True)
     domains = settings.get('domains', [])
     before = len(domains)
     domains = [d for d in domains if d['id'] != domain_id]
