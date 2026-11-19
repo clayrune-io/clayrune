@@ -12347,7 +12347,8 @@ def _in_flight_children(project_id, session_id):
             continue
         if (s.get('_notify_session') or '').strip() != session_id:
             continue
-        if s.get('status') in ('done', 'error'):
+        status = s.get('status')
+        if status != 'running' and not (status == 'idle' and _bg_tasks.held_tasks(s)):
             continue
         out.append({'session_id': s.get('session_id', ''),
                     'task': (s.get('task') or '')[:200],

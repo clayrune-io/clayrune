@@ -77,3 +77,18 @@ def test_session_scan_survives_a_dispatch_mid_iteration(monkeypatch):
     }
     monkeypatch.setattr(routes, 'agent_sessions', sessions)
     assert routes._live_context_tokens('sample', 'chat') == 12
+
+
+def test_handoff_ignores_finished_children_but_keeps_pending_background_work(monkeypatch):
+    from mc.blueprints import agent_routes as routes
+
+    sessions = {}
+    for status in ('running', 'error', 'stopped', 'completed', 'idle', 'idle-background'):
+        sessions[status] = {
+            'project_id': 'sample', '_notify_session': 'parent',
+            'session_id': status, 'status': status.removesuffix('-background'),
+        }
+    monkeypatch.setattr(routes, 'agent_sessions', sessions)
+    monkeypatch.setattr(routes._bg_tasks, 'held_tasks', lambda s: s['session_id'] == 'idle-background')
+    children = routes._in_flight_children('sample', 'parent')
+    assert [child['session_id'] for child in children] == ['running', 'idle-background']
