@@ -33,18 +33,18 @@ ships. See `docs/remote-access/03-control-plane-api.md` §3.15.4 for the patch.
 from __future__ import annotations
 
 import datetime as _dt
-import json as _json
 import logging
 import os
 import secrets
 from typing import Optional
-from urllib.parse import urlparse
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from . import auth, entitlement, firestore as fs, jwt_es256, sessions
+from .connect_page_safety import json_for_script
 from .routes_account import _request_id
+from .signin_return_to import safe_return_to
 from .username_claim import holds_claim
 
 router = APIRouter()
@@ -326,21 +326,10 @@ def _safe_return_to(url: str) -> Optional[str]:
     The Worker appends `?return_to=<the url they wanted>` when it 302s here. That
     parameter is attacker-controllable, so it is an open-redirect primitive until
     proven otherwise — and this page is reached with a live session cookie in
-    scope.
+    scope. The check itself lives in signin_return_to.py (MB27: urlparse alone
+    is not enough, a backslash makes it and a browser disagree about the host).
     """
-    if not url:
-        return None
-    try:
-        u = urlparse(url)
-    except ValueError:
-        return None
-    if u.scheme != "https":
-        return None
-    host = (u.hostname or "").lower()
-    zone = _zone().lower()
-    if host != zone and not host.endswith("." + zone):
-        return None
-    return url
+    return safe_return_to(url, _zone())
 
 
 @router.get("/signin", response_class=HTMLResponse, tags=["auth"])
@@ -360,13 +349,13 @@ async def signin_page(
     # is what lets us refuse 'unsafe-inline' and still run our own script.
     nonce = secrets.token_urlsafe(16)
     html = _SIGNIN_HTML.replace("__NONCE__", nonce) \
-        .replace("__FB_CFG__", _json.dumps({
+        .replace("__FB_CFG__", json_for_script({
             "apiKey": os.environ.get("FB_API_KEY", ""),
             "authDomain": os.environ.get("FB_AUTH_DOMAIN", "clayrune.firebaseapp.com"),
             "projectId": os.environ.get("FB_PROJECT_ID", "clayrune"),
         })) \
-        .replace("__RETURN_TO__", _json.dumps(dest)) \
-        .replace("__ZONE__", _json.dumps(_zone()))
+        .replace("__RETURN_TO__", json_for_script(dest)) \
+        .replace("__ZONE__", json_for_script(_zone()))
     return HTMLResponse(content=html, headers={
         "Cache-Control": "no-store",
         # This page obtains the Google ID token and mints the Domain=.clayrune.io
