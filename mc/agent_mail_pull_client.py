@@ -728,7 +728,10 @@ class PullClient:
                     failure = _Failure('storage_unavailable', halt=True)
                 except (websocket.WebSocketProtocolException, websocket.WebSocketPayloadException):
                     failure = _Failure('protocol_failure', halt=True)
-                except Exception:
+                except Exception as exc:
+                    # A socket error and a code defect both land here. The type
+                    # name (never the message) is what tells them apart.
+                    _log(f'[agent-mail] pull_client unexpected {type(exc).__name__}', flush=True)
                     failure = _Failure('connection_lost')
                 if self._stop.is_set():
                     self._notice('stopped')
