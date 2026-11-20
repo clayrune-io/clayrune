@@ -43,6 +43,7 @@ visibility/audit, not as the only route back.
 """
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import re
@@ -209,9 +210,11 @@ _SECRET_REF_RE = re.compile(
 )
 
 # Files we don't attempt to text-scan at all (binary formats where regex is
-# meaningless). Anything else is read with errors='ignore' and scanned as
-# text — a mis-decoded binary just yields no matches, which is safe here
-# because it can never suppress a real finding (only add noise).
+# meaningless). Anything else is decoded (`_read_text_for_scan`) and scanned
+# as text. A mis-decoded file yields no matches, and that CAN hide a real
+# finding: text in an encoding with no byte-order mark, a file over the size
+# cap and a script given one of these extensions are all copied on import
+# without having been scanned.
 _BINARY_EXTS = {
     '.png', '.jpg', '.jpeg', '.gif', '.ico', '.bmp', '.webp',
     '.so', '.dll', '.dylib', '.exe', '.bin',
@@ -309,6 +312,30 @@ def scan_text(filename: str, text: str) -> list[Finding]:
     return findings
 
 
+# Longest mark first: the UTF-32-LE mark begins with the UTF-16-LE one.
+_BOM_ENCODINGS = (
+    (codecs.BOM_UTF32_LE, 'utf-32'), (codecs.BOM_UTF32_BE, 'utf-32'),
+    (codecs.BOM_UTF8, 'utf-8-sig'),
+    (codecs.BOM_UTF16_LE, 'utf-16'), (codecs.BOM_UTF16_BE, 'utf-16'),
+)
+
+
+def _read_text_for_scan(path: Path) -> str:
+    """The file as text, decoded by its byte-order mark when it has one.
+
+    Read as UTF-8, a UTF-16 script (what Windows PowerShell 5.1 writes with
+    `>`) is the same characters separated by NUL bytes: no pattern matches
+    across them and the scan reports nothing for a file it never really read
+    (ML37). A file with no mark is read as UTF-8, as before.
+    """
+    raw = path.read_bytes()
+    encoding = next((enc for mark, enc in _BOM_ENCODINGS
+                     if raw.startswith(mark)), 'utf-8')
+    text = raw.decode(encoding, errors='ignore')
+    # Same line endings `read_text` gave the scanner before.
+    return text.replace('\r\n', '\n').replace('\r', '\n')
+
+
 def scan_skill_dir(root: Path) -> list[Finding]:
     """Scan every text file under root (SKILL.md + any bundled scripts/assets).
 
@@ -324,7 +351,7 @@ def scan_skill_dir(root: Path) -> list[Finding]:
             continue
         if path.stat().st_size > 2_000_000:
             continue  # not a plausible text file; skip rather than choke on it
-        text = path.read_text(encoding='utf-8', errors='ignore')
+        text = _read_text_for_scan(path)
         rel = str(path.relative_to(root)).replace(os.sep, '/')
         findings.extend(scan_text(rel, text))
     return findings
