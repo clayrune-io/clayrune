@@ -156,6 +156,30 @@ def test_commit_managed_entry_preserves_sentinel_and_watermark(tmp_data_dir):
     assert rec and rec.get("running_summary") == "in flight"
 
 
+def test_commit_keeps_inline_entries_until_session_log_is_written(
+        tmp_data_dir, monkeypatch):
+    """ML19: on a project not yet migrated to the split, the inline entries
+    and watermarks leave MEMORY.md only AFTER SESSION_LOG.md holds them. The
+    curated strip used to run first, so a failed session-log write lost both
+    (and a live session's watermark, so its next checkpoint started at 0)."""
+    m = _mem(tmp_data_dir)
+    p = {"id": "memproj-order"}
+    mp = m._get_memory_path(p)
+    mp.parent.mkdir(parents=True, exist_ok=True)
+    wm = ['<!-- clayrune:wm:sidLIVE {"session_id":"sidLIVE",'
+          '"running_summary":"in flight"} -->']
+    inline = m._mem_compose("# Idx", ["- [2026-06-01] **old** — inline entry"], wm)
+    mp.write_text(inline, encoding="utf-8")
+
+    def boom(*a, **k):
+        raise OSError("simulated full disk")
+
+    monkeypatch.setattr(m, "_write_session_log", boom)
+    with pytest.raises(OSError):
+        m._commit_managed_entry(p, mem_entry="- [2026-06-10] **new** — x")
+    assert mp.read_text(encoding="utf-8") == inline
+
+
 def test_commit_managed_entry_wm_remove_on_teardown(tmp_data_dir):
     m = _mem(tmp_data_dir)
     p = {"id": "memproj2"}

@@ -4914,9 +4914,17 @@ def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None,
             _log(f"[mem-log] {project_id}: over ring cap "
                  f"({len(mem_entries)}/{ring}) with {_skipped} live "
                  f"entr{'y' if _skipped == 1 else 'ies'} protected from eviction")
+        # Three files, three atomic writes, no rollback, so the order is
+        # chosen so that a failure between any two DUPLICATES and never
+        # loses (ML19): the archive takes the evicted lines before they
+        # leave the log, and MEMORY.md gives up an unmigrated project's
+        # inline entries and watermarks only after SESSION_LOG.md holds
+        # them. A repeat is collapsed by the next commit or by the archive
+        # reader's dedupe; a line stripped before its destination was
+        # written is gone.
         _append_to_archive(p, overflow)
-        _write_curated_only(mem_path, curated)
         _write_session_log(p, mem_entries, wm_markers)
+        _write_curated_only(mem_path, curated)
         return _should_condense(p, include_claude_md=True)
 
 
