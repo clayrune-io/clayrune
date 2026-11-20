@@ -43,7 +43,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from . import cloudflare, firestore as fs, sessions as _sessions
 from .shared_name_devices import other_devices_holding_hostname
 from .tunnel_names import is_tunnel_of, new_tunnel_name
-from .username_claim import forget_released_username
+from .username_claim import forget_released_username, holds_claim
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -890,6 +890,11 @@ async def _do_enroll_after_auth(
     Raises HTTPException on any failure (claims released, CF resources rolled back).
     Returns the JSON-able response dict the protocol expects.
     """
+    # Read before claiming: `_claim_username` also returns True for a name this
+    # account already holds, and the rollback below must not release that one
+    # (MB28: a transient Cloudflare error on a second machine freed the name the
+    # first machine was live on).
+    already_held = holds_claim(user["user_id"], username)
     if not _claim_username(username, user["user_id"]):
         raise HTTPException(status_code=409, detail={
             "code": "username_taken",
@@ -940,7 +945,8 @@ async def _do_enroll_after_auth(
     except Exception as e:
         log.exception("CF provisioning failed mid-flight; rolling back: %s", e)
         await _rollback_cf_resources(cf_resources)
-        _release_username(username, user["user_id"])
+        if not already_held:
+            _release_username(username, user["user_id"])
         if isinstance(e, cloudflare.CloudflareAPIError):
             raise HTTPException(status_code=503, detail={
                 "code": "provisioning_failed",
@@ -962,17 +968,28 @@ async def _do_enroll_after_auth(
     now = _dt.datetime.now(_dt.timezone.utc)
     db = fs.db()
 
-    db.collection(fs.COL_USERS).document(user["user_id"]).set({
+    # Identity fields are written every time. The rest are first-enroll defaults:
+    # a re-enroll must not reset the account's creation date or its usage
+    # counter (MB28), so each is written only where the row has no value yet.
+    user_ref = db.collection(fs.COL_USERS).document(user["user_id"])
+    user_snap = user_ref.get()
+    existing_user = (user_snap.to_dict() or {}) if user_snap.exists else {}
+    user_fields: dict[str, Any] = {
         "user_id": user["user_id"],
         "email": user["email"],
         "email_hash": hashlib.sha256(user["email"].encode("utf-8")).hexdigest(),
         "username": username,
-        "created_at": now,
-        "tier": "free",
-        "device_cap": 2,
-        "bandwidth_quota_period_bytes": 5 * 1024 ** 3,
-        "bandwidth_used_period_bytes": 0,
-    }, merge=True)
+    }
+    for field, default in (
+        ("created_at", now),
+        ("tier", "free"),
+        ("device_cap", 2),
+        ("bandwidth_quota_period_bytes", 5 * 1024 ** 3),
+        ("bandwidth_used_period_bytes", 0),
+    ):
+        if field not in existing_user:
+            user_fields[field] = default
+    user_ref.set(user_fields, merge=True)
 
     device_pub_hash = hashlib.sha256(device_pub_b64.encode("utf-8")).hexdigest()
     db.collection(fs.COL_DEVICES).document(device_id).set({

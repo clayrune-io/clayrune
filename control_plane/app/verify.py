@@ -204,8 +204,8 @@ async def verify(req: AttestationRequest, *, raw_envelope: dict) -> VerifiedAtte
     # / Memorystore counter is wired up.
 
     # Step 12: device_cap not exceeded.
-    # v1 simplified: enforced at /v1/enroll (can't enroll past cap) rather
-    # than at every attest. Skipped here.
+    # Not enforced anywhere today: /v1/enroll writes `device_cap` on the user
+    # row and nothing reads it (MC-1179 MB28). Skipped here.
 
     # Step 13: hostname_claim matches stored.
     stored_hostname = device.get("hostname_claim", "")
