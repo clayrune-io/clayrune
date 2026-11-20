@@ -572,13 +572,22 @@ _MEM_END = '<!-- clayrune:managed:end -->'
 _MEM_LOG_HEADER = '## Session Log'
 
 
+# The LEGACY (sentinel-free) managed region starts at a line that is the
+# heading and nothing else. A substring test read a curated sentence that
+# merely mentions the heading as the start of the region, and since the
+# SESSION_LOG.md split every MEMORY.md is sentinel-free (ML18).
+_MEM_LOG_HEADER_LINE_RE = re.compile(
+    r'^' + re.escape(_MEM_LOG_HEADER) + r'[ \t]*\r?$', re.M)
+
+
 _MEM_WM_PREFIX = '<!-- clayrune:wm:'
 
 
 def _mem_split_full(content):
     """Split MEMORY.md into (curated_text, [entry_lines], [wm_marker_lines]).
 
-    Managed region = sentinel-delimited (or a legacy bare '## Session Log').
+    Managed region = sentinel-delimited (or a legacy bare '## Session Log'
+    on a line of its own).
     `entries` = lines starting with '- [' (curated pointer lines, also
     '- [...]', are never collected — they're above the sentinel).
     `wm_markers` = full lines starting with the Step-6 watermark prefix.
@@ -590,12 +599,12 @@ def _mem_split_full(content):
         j = content.index(_MEM_END, i)
         curated = content[:i].rstrip()
         mid = content[i + len(_MEM_BEGIN):j]
-    elif _MEM_LOG_HEADER in content:
-        i = content.index(_MEM_LOG_HEADER)
-        curated = content[:i].rstrip()
-        mid = content[i + len(_MEM_LOG_HEADER):]
     else:
-        return content.rstrip(), [], []
+        m = _MEM_LOG_HEADER_LINE_RE.search(content)
+        if not m:
+            return content.rstrip(), [], []
+        curated = content[:m.start()].rstrip()
+        mid = content[m.end():]
     entries, wm = [], []
     for ln in mid.splitlines():
         s = ln.strip()

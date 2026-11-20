@@ -92,6 +92,32 @@ def test_mem_migrate_wraps_legacy_bare_header(tmp_data_dir):
     assert m._mem_migrate(migrated) == migrated
 
 
+def test_legacy_header_inside_prose_is_not_a_managed_region(tmp_data_dir):
+    """ML18: a sentinel-free index (every MEMORY.md since the SESSION_LOG.md
+    split) that merely MENTIONS the heading keeps everything after it. Only a
+    line that is the heading and nothing else starts the legacy region."""
+    m = _mem(tmp_data_dir)
+    index = ("# Curated index\n\n"
+             "- [Log format](log.md) — entries used to sit under `## Session Log` inline.\n"
+             "- [Second](second.md) — must survive\n\n"
+             "## Decisions\nplain prose that is not a pointer line")
+    cur, ents, wm = m._mem_split_full(index)
+    assert cur == index
+    assert ents == [] and wm == []
+    # and the commit path's migrate + split keeps the curated text whole
+    cur2, ents2, _ = m._mem_split_full(m._mem_migrate(index))
+    assert cur2 == index and ents2 == []
+
+
+def test_legacy_header_with_trailing_space_or_crlf_still_migrates(tmp_data_dir):
+    m = _mem(tmp_data_dir)
+    legacy = ("# Curated index\r\n\r\n## Session Log  \r\n"
+              "- [2026-06-01] **old** — legacy entry\r\n")
+    cur, ents = m._mem_split(legacy)
+    assert cur == "# Curated index"
+    assert ents == ["- [2026-06-01] **old** — legacy entry"]
+
+
 # ── _commit_managed_entry: leaf-locked atomic write preserves sentinels + wm ──
 # §16 step 4 (MC-944): entries + wm markers live in SESSION_LOG.md now, not
 # inline in MEMORY.md — MEMORY.md is curated-only after this write path runs.
