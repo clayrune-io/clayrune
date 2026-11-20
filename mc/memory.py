@@ -1740,8 +1740,13 @@ def _cont_empty_slots():
             'thread_confirmed': {}}
 
 
-def read_continuity(project, owner=None, reader_owns=True):
+def read_continuity(project, owner=None, reader_owns=True, *, strict=False):
     """The continuity record. `owner=None` merges every agent's slots.
+
+    `strict=True` is for a WRITER: a read that failed is raised instead of
+    being returned as the empty record, same split as `_session_log_read`.
+    The write that follows a failed read would otherwise persist a file
+    holding only the caller's bucket.
 
     `reader_owns=False` is for a named reader that keeps no bucket of its own
     (a dispatched global helper — see `_session_owner`): none of the named
@@ -1763,6 +1768,8 @@ def read_continuity(project, owner=None, reader_owns=True):
             fp.read_text(encoding='utf-8', errors='replace'))
     except Exception as e:
         _log(f'[continuity] read failed: {e}')
+        if strict:
+            raise
         return empty
     if not isinstance(meta, dict):
         meta = {}
@@ -1845,9 +1852,26 @@ def write_continuity(project, threads=None, commitments=None,
     agent's write silently replaced the others'. Measured on this project the
     day this shipped: five threads from four different sessions, none marked
     done, two of them describing work that had already landed.
+
+    Leaf-locked, same reason as `write_position`: read, replace one bucket,
+    write the whole file back is a read-modify-write over a file every agent
+    on the project shares, and two agents finishing a turn together lost the
+    first one's update. The read is strict, so an unreadable file raises
+    here (an OSError for the route, logged by the extractor) and is left as
+    it was.
     """
+    project_id = project.get('id', '') if isinstance(project, dict) else ''
+    with _get_mem_write_lock(f'continuity:{project_id}'):
+        return _write_continuity_locked(
+            project, threads, commitments, understanding, owner,
+            confirmed_threads)
+
+
+def _write_continuity_locked(project, threads, commitments, understanding,
+                             owner, confirmed_threads):
+    """`write_continuity`'s read-modify-write. Caller holds the leaf lock."""
     key = _cont_owner_key(owner)
-    cur = read_continuity(project)
+    cur = read_continuity(project, strict=True)
     by_owner = dict(cur.get('by_owner') or {})
     mine = by_owner.get(key) or _cont_empty_slots()
     rec = {
