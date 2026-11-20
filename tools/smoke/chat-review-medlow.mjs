@@ -44,6 +44,37 @@ try {
       assert.ok(toasts.some(x => /Model pinned/.test(x)), `success toast, got ${JSON.stringify(toasts)}`);
     });
   });
+
+  // CV8: the status poll took any JSON body. A 401 {error:'auth_required'} from
+  // a lapsed passcode session parsed as "no sessions", and the detach pass then
+  // marked every idle chat of the project STOPPED and closed its stream.
+  await t.step('CV8 an error reply to the status poll does not detach the open chats', async () => {
+    await scenario(browser, {}, async ({ page, errors }) => {
+      await page.route('**/agent/status', route =>
+        route.fulfill({ status: 401, json: { error: 'auth_required' } }));
+      const status = await page.evaluate(async ({ pid, sid }) => {
+        agentStatusCache[sid].status = 'idle';
+        agentHistory.find(h => h.sessionId === sid).status = 'idle';
+        await window.fetchAgentStatus(pid);
+        return [agentStatusCache[sid].status, agentHistory.find(h => h.sessionId === sid).status];
+      }, { pid, sid });
+      assert.deepEqual(status, ['idle', 'idle'], 'an auth error is not "the server forgot every session"');
+      assert.deepEqual(errors(), []);
+    });
+  });
+
+  await t.step('CV8 a real reply that no longer lists the session still detaches it', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await page.route('**/agent/status', route => route.fulfill({ json: { sessions: [] } }));
+      const status = await page.evaluate(async ({ pid, sid }) => {
+        agentStatusCache[sid].status = 'idle';
+        agentHistory.find(h => h.sessionId === sid).status = 'idle';
+        await window.fetchAgentStatus(pid);
+        return agentStatusCache[sid].status;
+      }, { pid, sid });
+      assert.equal(status, 'stopped', 'the keep-window-open detach is unchanged for a genuine empty list');
+    });
+  });
 } finally {
   t.done();
   await browser.close();

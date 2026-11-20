@@ -6151,7 +6151,11 @@ async function fetchAgentStatus(projectId) {
   try {
     const res = await fetchFailFast(API_BASE + `/api/project/${projectId}/agent/status`);
     const data = await res.json();
-    const sessions = data.sessions || [];
+    // An error body that parses as JSON (401 {error:'auth_required'} from a
+    // lapsed passcode session) is not "the server holds no sessions": reading it
+    // that way made the detach pass below mark every idle chat STOPPED.
+    if (!res.ok || !data || !Array.isArray(data.sessions)) return;
+    const sessions = data.sessions;
     window.updateAgentMailHoldNotices?.(projectId, data.agent_mail_holds);
     const pName = (allProjects.find(x => x.id === projectId) || {}).name || projectId;
 
