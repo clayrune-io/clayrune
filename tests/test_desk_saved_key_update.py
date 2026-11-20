@@ -91,3 +91,24 @@ def test_edit_rejects_self_reference_and_project_source(env,source):
                                  'key_id':{'keep':True},'confirm_replace':True}))
     assert out.status_code==400
     assert vault._load_store()['secrets']['higgsfield']==before
+
+
+def test_source_removed_before_the_write_is_named_not_a_500(env,monkeypatch):
+    """DCW-C7: the picked entry was deleted after the form was checked. The person is told that."""
+    from mc import secret_field_refs
+    from mc.desk_connect import saved_key_update
+    client,_,_=env
+    vault.set_secret('higgsfield','old-value',username='old-id')
+    vault.set_secret('source','new-value')
+    before=copy.deepcopy(vault._load_store()['secrets']['higgsfield'])
+    real=saved_key_update.apply
+    def gone_meanwhile(*args):
+        vault.delete_secret('source')
+        return real(*args)
+    monkeypatch.setattr(saved_key_update,'apply',gone_meanwhile)
+    out=_commit_req(client,draft({'edit_saved':True,'secret':{'name':'source','part':'value'},
+                                 'key_id':{'keep':True},'confirm_replace':True}))
+    assert out.status_code==409, out.get_json()
+    assert out.get_json()['code']=='source_unavailable'
+    assert secret_field_refs.RECONNECT in out.get_json()['error']
+    assert vault._load_store()['secrets']['higgsfield']==before

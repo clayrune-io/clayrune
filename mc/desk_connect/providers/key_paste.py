@@ -69,7 +69,10 @@ class KeyPaste:
     def apply(self, clean: dict, undo, names) -> None:
         if clean.get('edit_saved') is True:
             from mc.desk_connect import saved_key_update
-            saved_key_update.apply(self.vault, clean, undo)
+            try:
+                saved_key_update.apply(self.vault, clean, undo)
+            except secret_field_refs.FieldRefError as e:    # the picked entry is gone or locked: say so, not a 500
+                raise base.ProviderError(str(e), 409, e.code) from None
             return
         referenced = isinstance(clean['secret'], dict) or isinstance(clean['username'], dict)
         if self.vault in names and not referenced:
