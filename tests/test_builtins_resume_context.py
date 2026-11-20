@@ -28,6 +28,12 @@ class Thread:
 
 @pytest.fixture
 def spawns(monkeypatch, codex_mcp_cli):
+    # A Codex dispatch claims its delivery attempt in the agent log, through
+    # agent_routes._agent_log_path, and agent_routes.DATA_DIR is wired only by
+    # server's import. Without this the three Codex cases pass only when some
+    # earlier file in the same process happened to import server, and fail
+    # when this file runs alone (TypeError: NoneType / str).
+    import server  # noqa: F401
     captured = []
 
     def popen(cmd, **kwargs):

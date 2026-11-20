@@ -45,6 +45,15 @@ def _clean_registry():
 
 @pytest.fixture
 def env(tmp_path, monkeypatch):
+    # agent_routes' module globals (DATA_DIR, load_project, _write_session_memory,
+    # ...) are wired by server's import. This fixture patches them, and `wf`, which
+    # every user requests AFTER it, is what imports server. When this was the first
+    # server import in the process, monkeypatch had recorded the UNWIRED values
+    # (None) and its undo put them back over the wired ones for the rest of the
+    # run: `import server` is a no-op from then on, so any later test that relies
+    # on it to wire the blueprint met agent_routes.DATA_DIR = None. Import first,
+    # so the undo restores the wired values.
+    import server  # noqa: F401
     root = tmp_path / 'shims'
     sdir = root / 'probe'
     sdir.mkdir(parents=True)

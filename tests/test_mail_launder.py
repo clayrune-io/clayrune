@@ -8,6 +8,7 @@ any failure path. `runtime`/`fetch_fn`/`launder_fn` injection lets every test
 run with no real IMAP connection and no real `claude -p` subprocess.
 """
 import importlib.util
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -180,7 +181,15 @@ def _load_read_digest():
     spec = importlib.util.spec_from_file_location('mail_read_digest', path)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # read_digest.py prepends tools/mail-mcp to sys.path for its sibling import.
+    # Left in place, the next bare `import server` / `importlib.reload(server)`
+    # in this pytest process resolves tools/mail-mcp/server.py instead of the
+    # application's server.py (MC-1212, MC-1223).
+    before = sys.path[:]
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path[:] = before
     return mod
 
 

@@ -19,8 +19,17 @@ def _load(name, fname):
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
     import sys
+    # Both this insert and the tool's own (server.py / read_digest.py prepend
+    # tools/mail-mcp for the sibling import) are undone after the load: left
+    # in place, the next bare `import server` / `importlib.reload(server)` in
+    # this pytest process resolves tools/mail-mcp/server.py instead of the
+    # application's server.py (MC-1212, MC-1223).
+    before = sys.path[:]
     sys.path.insert(0, str(_HERE))
-    spec.loader.exec_module(mod)
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path[:] = before
     return mod
 
 

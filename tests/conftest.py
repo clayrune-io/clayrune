@@ -163,6 +163,63 @@ def _no_live_state_writes():
         raise AssertionError("live operator state written:\n  " + "\n  ".join(new))
 
 
+# ── No test may leave `server` (or any loaded module) shadowed (MC-1212, MC-1223) ──
+# Mechanism and the incident: tests/import_shadow_guard.py. Hook wrappers, not a
+# fixture: the check has to run after EVERY fixture's teardown (a
+# monkeypatch.syspath_prepend is undone there), and at collection there is no
+# fixture at all.
+import import_shadow_guard as _shadow_guard  # noqa: E402
+# Same wrappers, second job: method patches left on a shared runtime instance
+# (monkeypatch's undo re-assigns a bound method onto the instance) are deleted
+# again. Mechanism and the incident: tests/runtime_singleton_guard.py.
+import runtime_singleton_guard as _runtime_guard  # noqa: E402
+
+_SHADOW_BEFORE = pytest.StashKey[tuple]()
+_RUNTIME_BEFORE = pytest.StashKey[dict]()
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_setup(item):
+    item.stash[_SHADOW_BEFORE] = (_shadow_guard.snapshot(),
+                                  _shadow_guard.server_identity_problem() is None)
+    item.stash[_RUNTIME_BEFORE] = _runtime_guard.snapshot()
+    return (yield)
+
+
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item, nextitem):
+    try:
+        result = yield
+    except BaseException:
+        # The teardown's own error is the one to report; still undo a new shadow.
+        before, _ok = item.stash.get(_SHADOW_BEFORE, (None, False))
+        _shadow_guard.check_and_repair(before, server_was_ok=False)
+        _runtime_guard.restore(item.stash.get(_RUNTIME_BEFORE, None), item.nodeid)
+        raise
+    _runtime_guard.restore(item.stash.get(_RUNTIME_BEFORE, None), item.nodeid)
+    before, server_was_ok = item.stash.get(_SHADOW_BEFORE, (None, False))
+    problems = _shadow_guard.check_and_repair(before, server_was_ok=server_was_ok)
+    if problems:
+        raise _shadow_guard.ImportShadowLeak(
+            _shadow_guard.message(problems, f"test {item.nodeid}"))
+    return result
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_make_collect_report(collector):
+    is_module = isinstance(collector, pytest.Module)
+    before = _shadow_guard.snapshot() if is_module else None
+    server_was_ok = is_module and _shadow_guard.server_identity_problem() is None
+    report = yield
+    if is_module:
+        problems = _shadow_guard.check_and_repair(before, server_was_ok=server_was_ok)
+        if problems and report.outcome == "passed":
+            report.outcome = "failed"
+            report.longrepr = _shadow_guard.message(
+                problems, f"importing {collector.nodeid}")
+    return report
+
+
 @pytest.fixture(autouse=True)
 def _desk_oauth_reads_no_real_vault(monkeypatch):
     """`mc.desk_oauth` decides signed-in / not from the vault's metadata. A test
