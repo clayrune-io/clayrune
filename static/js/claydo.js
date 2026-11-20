@@ -12,6 +12,12 @@
 // Cap at 6 messages (3 exchanges) — anything older falls off the front.
 let _claydoHistory = [];
 let _claydoMode = 'ask';
+// Bumped every time the conversation is replaced (a mode switch, Home, a
+// fresh open, a restore). A stream captures it at submit and its terminal
+// handlers stand down when it has moved on: the answer belongs to a
+// conversation that is no longer on screen (CD3).
+let _claydoEpoch = 0;
+let _claydoSubmitSeq = 0;
 
 // One-time localStorage migration from the previous "Playdo" name. Read the
 // old key, write to the new key if not already set, then delete the old.
@@ -267,6 +273,7 @@ async function openClaydo() {
   // from the DOM.)
   _claydoHistory = [];
   _claydoMode = 'ask';
+  _claydoEpoch++;
 
   const win = document.createElement('div');
   win.className = 'modal-window';
@@ -349,6 +356,7 @@ function _claydoResetConversation(mode) {
   if (!histDiv) return;
   _claydoHistory = [];
   _claydoMode = mode;
+  _claydoEpoch++;
   const ui = _CLAYDO_MODE_UI[mode] || _CLAYDO_MODE_UI.ask;
 
   const sub = document.getElementById('claydo-subtitle');
@@ -465,6 +473,9 @@ async function submitClaydo() {
   input.value = '';
   input.disabled = true;
   send.disabled = true;
+  const epoch = _claydoEpoch;
+  const submitSeq = ++_claydoSubmitSeq;
+  const stale = () => epoch !== _claydoEpoch;
 
   if (_mobileSend) {
     try { input.blur(); } catch (e) {}
@@ -501,6 +512,10 @@ async function submitClaydo() {
   let assembled = '';
   let firstChunk = true;
   let errored = false;
+  // Set by the `done` and `error` events. A stream that ends without either
+  // (the server restarted, a proxy cut the response) is handled after the
+  // read loop (CD4).
+  let terminalSeen = false;
 
   // Rendering `assembled` was previously synchronous on EVERY SSE delta —
   // full innerHTML rebuild (re-parsing the whole reply's markers/markdown
@@ -583,7 +598,9 @@ async function submitClaydo() {
           // Batched to one paint per frame — see _scheduleDeltaRender above.
           _scheduleDeltaRender();
         } else if (payload.type === 'error') {
+          terminalSeen = true;
           _cancelDeltaRender();
+          if (stale()) return;
           // Older servers discard stdout diagnostics on a nonzero CLI exit.
           // Keep the quota/auth message already streamed instead of hiding it.
           const message = /^claude exit \d+$/.test(payload.message || '') && assembled.trim()
@@ -592,7 +609,13 @@ async function submitClaydo() {
           errored = true;
           return;
         } else if (payload.type === 'done') {
+          terminalSeen = true;
           _cancelDeltaRender();
+          // The conversation this answered was reset while it streamed. Its
+          // bubble is gone; pushing the answer would make it the first entry
+          // of the NEW conversation, run its goto/open-modal actions and save
+          // it into the session.
+          if (stale()) return;
           // Final assembled answer — use it as ground truth in case any
           // delta got dropped. Then parse markers and dispatch.
           const finalText = (payload.answer || assembled).trim();
@@ -628,13 +651,27 @@ async function submitClaydo() {
         }
       }
     }
+    if (!terminalSeen && !stale()) {
+      // Without this the bubble kept "Claydo is thinking" (or a partial
+      // answer) for good while the input came back, so it read as still
+      // working; and the next question left two user turns in a row in the
+      // history. Retry drops the unanswered turn.
+      _cancelDeltaRender();
+      _claydoRenderError(botMsg, 'The answer was cut off.', question);
+      errored = true;
+    }
   } catch (e) {
     _cancelDeltaRender();
-    _claydoRenderError(botMsg, 'Network error: ' + (e.message || e), question);
-    errored = true;
+    if (!stale()) {
+      _claydoRenderError(botMsg, 'Network error: ' + (e.message || e), question);
+      errored = true;
+    }
   } finally {
     input.disabled = false;
     send.disabled = false;
+    // A newer question (asked after a close and reopen) owns the mascot and
+    // the focus now; this one only had to give its own composer back.
+    if (submitSeq !== _claydoSubmitSeq) return;
     input.focus();
     histDiv.scrollTop = histDiv.scrollHeight;
     // On error: hold the confused/error pose for ~3s so the user notices,
@@ -1406,13 +1443,29 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
   // generating anything, same graceful-degradation contract as a failed gen.
   goBtn.disabled = false;
 
-  let overwrite = false;
+  // CD1: a 409 arms the overwrite for the name and scope that collided, and
+  // for nothing else. Armed for the whole panel, retyping the name (or picking
+  // another Where) and saving replaced a different existing character with no
+  // second warning.
+  let overwriteFor = null;
+  const goLabel = goBtn.textContent;
+  const nameEl = panel.querySelector('#claydo-save-name');
+  const whereEl = panel.querySelector('#claydo-save-scope');
+  const saveKey = () => nameEl.value.trim().toLowerCase() + '|' + whereEl.value;
+  const disarmIfMoved = () => {
+    if (overwriteFor !== null && overwriteFor !== saveKey()) { overwriteFor = null; goBtn.textContent = goLabel; }
+  };
+  nameEl.addEventListener('input', disarmIfMoved);
+  whereEl.addEventListener('change', disarmIfMoved);
   goBtn.onclick = async () => {
     const nameVal = panel.querySelector('#claydo-save-name').value.trim().toLowerCase();
     const descVal = panel.querySelector('#claydo-save-desc').value.trim();
     // 'global' → global scope; any other value is a project id.
     const whereVal = panel.querySelector('#claydo-save-scope').value;
     const isGlobal = whereVal === 'global';
+    disarmIfMoved();
+    const key = saveKey();
+    const overwrite = overwriteFor === key;
     if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(nameVal)) {
       return showErr('Name must be kebab-case: letters, digits, hyphens.');
     }
@@ -1442,7 +1495,7 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
       const res = { ok: result.ok, status: result.status };
       const data = result.body;
       if (res.status === 409 && !overwrite) {
-        overwrite = true;
+        overwriteFor = key;
         goBtn.disabled = false;
         goBtn.textContent = 'Overwrite existing';
         return showErr(`"${nameVal}" already exists in that scope — save again to overwrite.`);
@@ -1567,6 +1620,9 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
     alert('Could not load that persona: ' + (e.message || e));
     return;
   }
+  // Again, after the await (CD5): a second call that started while this one
+  // was loading passed the remove() at the top too, and both would append.
+  document.querySelector('.persona-editor')?.remove();
 
   const panel = document.createElement('div');
   panel.className = 'claydo-save-panel persona-editor';
@@ -1797,14 +1853,29 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
   // A dirty check on the backdrop click. Ron lost an edit to exactly this: the
   // Save button was off the bottom of the panel, so clicking away looked like
   // the only exit and threw the work away without a word.
-  const _initial = () => JSON.stringify([
+  // Every field Save sends is in here (CD2): the emoji select and the three
+  // engine pins were left out, so changing one and clicking away, or pressing
+  // Move, lost it without a word.
+  const _fields = () => [
     panel.querySelector('#pe-agent-name').value,
     panel.querySelector('#pe-avatar').value,
     panel.querySelector('#pe-desc').value,
     panel.querySelector('#pe-skills').value,
     bodyEl.value,
-  ]);
-  const _snapshot = _initial();
+    panel.querySelector('#pe-emojis').value,
+    panel.querySelector('#pe-provider').value,
+    panel.querySelector('#pe-model').value,
+    panel.querySelector('#pe-effort').value,
+  ];
+  const _initial = () => JSON.stringify(_fields());
+  let _snapshot = _initial();
+  // "Let it choose" persists one field server-side. That field is then saved,
+  // so it stops counting as a change; the other fields keep their own state.
+  const _markFieldSaved = (i) => {
+    const saved = JSON.parse(_snapshot);
+    saved[i] = _fields()[i];
+    _snapshot = JSON.stringify(saved);
+  };
   const closeIfClean = () => {
     if (_initial() !== _snapshot
         && !confirm('Discard your changes to this persona?')) return;
@@ -1965,6 +2036,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       // The endpoint already persisted it; reflect that in the field so a
       // subsequent Save does not send a stale value back over it.
       nameEl.value = data.agent_name || '';
+      _markFieldSaved(0);
       showPickedNote(data);
       if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
       _announceCharacterChange(scope, name, 'rename');
@@ -1999,6 +2071,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       // Already persisted server-side; mirror it into the field so a later
       // Save does not push a stale value back over it.
       setFace(data.avatar || '');
+      _markFieldSaved(1);
       showPickedNote(data);
       if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
       _announceCharacterChange(scope, name, 'avatar');

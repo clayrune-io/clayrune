@@ -1317,8 +1317,11 @@ let newProjDomain = 'general';
 async function fetchDomains() {
   try {
     const res = await fetch(API_BASE + '/api/settings/domains');
-    domainsList = await res.json();
+    const rows = res.ok ? await res.json() : null;
+    if (!Array.isArray(rows)) throw new Error('HTTP ' + res.status);
+    domainsList = rows;
   } catch(e) {
+    console.warn('[domains] load failed, using the built-in list:', e);
     domainsList = [
       {id:'general', label:'General', color:'var(--text-dim)', bg:'var(--surface3)'},
       {id:'trading', label:'Trading', color:'var(--accent)', bg:'var(--accent-dim)'},
@@ -1503,7 +1506,7 @@ document.addEventListener('DOMContentLoaded', () => {
   _mcDomReady = true;
   if (_mcRenderQueued) { _mcRenderQueued = false; render(); }
 }, { once: true });
-function render() { if (!_mcDomReady) { _mcRenderQueued = true; return; } renderStats(); renderProjects(); renderListView(); renderFeed(); if (typeof renderBeacon === 'function') renderBeacon(); renderSidebarProjects(); applyViewMode(); renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); if (openModals.has('__all_backlog')) renderAllBacklog(); if (openModals.has('__all_social')) renderAllSocial(); if (openModals.has('__all_hivemind')) renderAllHiveminds(); }
+function render() { if (!_mcDomReady) { _mcRenderQueued = true; return; } renderStats(); renderProjects(); if (currentView === 'list') renderListView(); renderFeed(); if (typeof renderBeacon === 'function') renderBeacon(); renderSidebarProjects(); applyViewMode(); renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); if (openModals.has('__all_backlog')) renderAllBacklog(); if (openModals.has('__all_social')) renderAllSocial(); if (openModals.has('__all_hivemind')) renderAllHiveminds(); }
 
 window.addEventListener('resize', () => { if (!_mcDomReady) return; renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); renderProjects(); });
 
@@ -1845,6 +1848,9 @@ function setView(mode) {
   currentView = mode;
   localStorage.setItem('mc_view', mode);
   applyViewMode();
+  // render() builds the list only while it is the view on screen, so the
+  // switch to it is what fills it.
+  if (currentView === 'list') renderListView();
 }
 
 function applyViewMode() {
@@ -2179,11 +2185,12 @@ function updateStopButtonUI(sessionId, status) {
 
 async function guardianReset(projectId, sessionId, action) {
   try {
-    await fetch(API_BASE + `/api/project/${projectId}/agent/guardian-reset`, {
+    const res = await fetch(API_BASE + `/api/project/${projectId}/agent/guardian-reset`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ session_id: sessionId, action })
     });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
     const cached = agentStatusCache[sessionId];
     if (cached) {
       if (action === 'retry') {
@@ -2223,6 +2230,12 @@ function refreshModalById(modalId) {
   // changed. Streaming output is unaffected: the SSE append path writes into
   // #agent-output-<sid> directly and doesn't come through here.
   if (entry.element.querySelector('.modal-menu-dropdown.open')) return;
+  // Same deferral for a backlog item or a social draft body being edited in
+  // place: both are contenteditable elements saved on blur, and the swap below
+  // carries textarea/input values across but not a contenteditable's text or
+  // caret. The blur save and the next tick rebuild as before.
+  const _editing = document.activeElement;
+  if (_editing && _editing.isContentEditable && entry.element.contains(_editing)) return;
   if ((modalActiveTab[entry.projectId] || 'agent') === 'agent' &&
       window.deferChatModalRefresh?.(entry.element, `modal:${modalId}`, () => refreshModalById(modalId),
         [activeAgentTab[entry.projectId], splitAgentTab[entry.projectId]], pendingResumeId[entry.projectId])) return;
@@ -2719,7 +2732,12 @@ function showActionToast(message, actions, opts = {}) {
 
 async function refreshSilent() {
   const res = await fetch(API_BASE + '/api/projects');
-  allProjects = _preserveOpenSocial(_preserveOpenBacklogs(await res.json()));
+  // An error reply is JSON but not the project list: taken as one it replaced
+  // allProjects with an object and every later allProjects.find threw. Keep
+  // the list on screen, as fetchProjects does, and let the next refresh retry.
+  const rows = res.ok ? await res.json().catch(() => null) : null;
+  if (!Array.isArray(rows)) { console.warn('[refresh] /api/projects refused, keeping the current list:', res.status); return; }
+  allProjects = _preserveOpenSocial(_preserveOpenBacklogs(rows));
   // Refresh global config cache so per-project menu labels reflect the effective mode
   try {
     const cfgRes = await fetch(API_BASE + '/api/config');
@@ -3498,8 +3516,12 @@ async function openTranscriptViewer(projectId, csid, label, provider) {
 function startRefresh() {
   refreshCountdown = 30;
   clearInterval(refreshInterval); clearInterval(countdownInterval);
-  refreshInterval = setInterval(() => { fetchProjects(); refreshCountdown = 30; }, 30000);
+  // A duplicate tab (the single-instance script at the top of this file) has
+  // replaced its body with an "already open" notice and cannot unload what is
+  // already running, so each timer here stands down on its flag.
+  refreshInterval = setInterval(() => { if (window._clayruneDuplicateTab) return; fetchProjects(); refreshCountdown = 30; }, 30000);
   countdownInterval = setInterval(() => {
+    if (window._clayruneDuplicateTab) return;
     refreshCountdown--;
     document.getElementById('refresh-timer').textContent = `refresh in ${refreshCountdown}s`;
   }, 1000);
@@ -3845,6 +3867,7 @@ startRefresh();
 
 // ── Fallback: poll for missed agent completions every 15s ───────────────────
 setInterval(async () => {
+  if (window._clayruneDuplicateTab) return;
   // Piggyback a server-restart check here so dashboards with no live SSE still
   // notice a restart within ~15s. _checkServerRestart triggers the reload
   // overlay if the server's start time changed since first load.
@@ -3859,7 +3882,12 @@ setInterval(async () => {
     const h = { projectId: pid };
     try {
       const res = await fetch(API_BASE + `/api/project/${h.projectId}/agent/status`);
+      // An error body has no sessions array; read as "no sessions" it marked
+      // every running or idle chat of the project stopped (same guard as
+      // fetchAgentStatus).
+      if (!res.ok) continue;
       const data = await res.json();
+      if (!data || !Array.isArray(data.sessions)) continue;
       window.updateAgentMailHoldNotices?.(pid, data.agent_mail_holds);
       if (window.discoverNewSessions?.(pid, data.sessions)) continue;
       const serverMap = {};
@@ -3900,7 +3928,7 @@ setInterval(async () => {
           connectAgentStream(h.projectId, rh.sessionId);
         }
       }
-    } catch(e) {}
+    } catch(e) { console.warn('[agent-status] 15s completion poll failed:', e); }
   }
 }, 15000);
 
@@ -3926,7 +3954,7 @@ setInterval(async () => {
 // here, so the slot discipline the 15s poll protects is preserved.
 const FRESHNESS_TICK_MS = 5000;
 setInterval(() => {
-  if (document.visibilityState !== 'visible') return;
+  if (document.visibilityState !== 'visible' || window._clayruneDuplicateTab) return;
   for (const [, entry] of openModals) {
     if (!entry || entry.minimized || !entry.projectId) continue;
     const pid = entry.projectId;

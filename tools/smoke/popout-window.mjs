@@ -79,7 +79,7 @@ function makeRegistry() {
   const slots = new Set();
   return {
     slots,
-    claims: [], releases: [], sends: [],
+    claims: [], releases: [], sends: [], paneStatus: [],
   };
 }
 
@@ -115,6 +115,11 @@ async function installRoutes(ctx, reg) {
     if (path === `/api/project/${PID}/agent/send`) {
       reg.sends.push(JSON.parse(req.postData() || '{}'));
       return json(200, { ok: true, session_id: SID });
+    }
+    // BP3: a running browser-pane session, and who asks about it.
+    if (path.endsWith('/browser/status')) {
+      reg.paneStatus.push(req.headers().referer || '');
+      return json(200, { sessions: [{ session_id: 'bp-smoke', status: 'running', url: 'https://example.test/' }] });
     }
     if (path === `/api/project/${PID}/agent/stream`) {
       return route.fulfill({ status: 200, contentType: 'text/event-stream', body: ': hold\n\n' });
@@ -158,6 +163,9 @@ try {
     check(await page.evaluate(() => !document.querySelector('button[onclick^="openPlanViewer"][title="Open output in viewer window"]')),
       'the in-app viewer button is gone from the chat header', 'the old openPlanViewer header button is still rendered');
 
+    // BP3: the dashboard has a browser pane open. The key is per origin, so the
+    // pop-out (same SPA, same origin) reads it too.
+    await page.evaluate((pid) => localStorage.setItem('mc_browser_pane_open', JSON.stringify({ sid: 'bp-smoke', pid })), PID);
     const popupP = ctx.waitForEvent('page');
     await btn.click();
     const popup = await popupP;
@@ -180,6 +188,16 @@ try {
     check(await popup.evaluate((s) => { const e = document.getElementById('agent-followup-' + s); const r = e.getBoundingClientRect(); return r.width > 0 && r.height > 0 && r.bottom <= innerHeight + 1; }, SID),
       'composer is visible inside the popup viewport', 'composer is not visible in the popup');
     check(reg.slots.has(SID) && reg.claims.includes(SID), 'server registry holds the slot for the conversation', 'no slot claimed for the popped conversation');
+
+    // BP3: the pop-out hides the Browser button and the tray, so it must not
+    // re-open the main window's pane or poll for pane sessions.
+    await popup.waitForTimeout(700);
+    check(await popup.evaluate(() => !document.getElementById('mc-browser-pane')),
+      'popup does not re-open the browser pane of the dashboard', 'popup opened a browser pane over the chat');
+    check(!reg.paneStatus.some((r) => r.includes('popout=1')),
+      'popup does not poll browser-pane sessions', `popup asked for pane status ${reg.paneStatus.filter((r) => r.includes('popout=1')).length} time(s)`);
+    check(await popup.evaluate(() => !!localStorage.getItem('mc_browser_pane_open')),
+      'the open-pane record of the dashboard is left alone', 'popup cleared the open-pane record');
 
     // Can send from the popup.
     await popup.fill(`#agent-followup-${SID}`, 'hello from the popup');

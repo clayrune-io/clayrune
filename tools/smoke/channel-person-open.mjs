@@ -49,7 +49,7 @@ const openEnd = source.indexOf('window.openConversation = openConversation;', op
 const viewed = [];
 const viewerContext = vm.createContext({
   conversationsCache: { p: [{ provider: 'codex', provider_session_id: 'native', label: 'External chat' }] },
-  agentStatusCache: {}, agentOutputBuffers: {}, agentServerLines: {}, agentHistory: [], API_BASE: '',
+  agentStatusCache: {}, agentOutputBuffers: {}, agentServerLines: {}, agentHistory: [], API_BASE: '', _openConvSeq: {},
   fetch: async () => ({ok: true, json: async () => ({messages: [
     {role: 'user', text: 'original question'}, {role: 'assistant', text: 'original answer'}]})}),
   switchAgentTab: (...args) => viewed.push(args),

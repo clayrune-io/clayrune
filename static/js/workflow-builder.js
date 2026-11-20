@@ -417,11 +417,32 @@ function _wfEnsureProviderAuthFresh(provider) {
       // touch-drag smoke case: an aborted probe's unconditional re-render
       // detached the very node the next gesture was about to grab).
       if (d && d.name) {
+        // WB6: the only thing this cache draws is the warning line, so an
+        // answer that leaves that line as it was (the common ok/unknown)
+        // re-renders nothing. One that changes it goes through the sync, or
+        // the rebuild drops whatever was typed while the probe was pending.
+        const before = _wfAuthWarnStatus(d.name);
         _wfAuthCache[d.name] = { status: d.auth_status || 'unknown', fetchedAt: Date.now() };
-        if (_wfEntry()) _wfRender();
+        if (_wfAuthWarnStatus(d.name) !== before) _wfSyncThenRender();
       }
     })
     .catch(() => { _wfAuthFetching.delete(provider); });
+}
+
+// The status the warning below would name for this provider, or '' when it
+// draws nothing (never probed, ok, unknown).
+function _wfAuthWarnStatus(provider) {
+  const rec = _wfAuthCache[provider];
+  return (!rec || rec.status === 'ok' || rec.status === 'unknown') ? '' : String(rec.status);
+}
+
+// A re-render that is NOT the direct result of an edit on this canvas (a
+// network answer, a button outside the inspector) still replaces the open
+// inspector, so it takes the typed fields into the model first (WB6).
+function _wfSyncThenRender() {
+  const entry = _wfEntry(); if (!entry || !entry._wf) return;
+  _wfSyncDomToModel(entry);
+  _wfRender();
 }
 
 // Definite-negative statuses only. Confirmed against every
@@ -438,9 +459,9 @@ function _wfEnsureProviderAuthFresh(provider) {
 function _wfProviderAuthWarning(provider) {
   if (!provider) return '';
   _wfEnsureProviderAuthFresh(provider);
-  const rec = _wfAuthCache[provider];
-  if (!rec || rec.status === 'ok' || rec.status === 'unknown') return '';
-  return `This step will fail when the workflow runs — ${provider} is not authenticated (${String(rec.status).replace(/_/g, ' ')}).`;
+  const status = _wfAuthWarnStatus(provider);
+  if (!status) return '';
+  return `This step will fail when the workflow runs — ${provider} is not authenticated (${status.replace(/_/g, ' ')}).`;
 }
 
 // The single warning line an agent card shows, highest-signal first. Every
@@ -550,6 +571,9 @@ function _wfConfirmDiscardIfDirty(targetLabel) {
 function _wfSyncBeforeLeave(projectId) {
   if (!_wfState || _wfState.projectId !== projectId || !_wfState._wf) return;
   _wfSyncDomToModel(_wfState);
+  // An edge selected on this canvas is not selected once the canvas is gone:
+  // left set, a later Delete or Backspace removed it from the hidden model.
+  _wfSelectedEdge = null;
   // Every popover in this file lives on <body>, OUTSIDE the tab-content div
   // that's about to be torn down (agent-console.js's tabOn('workflows')
   // lazy-skip) — none of them get removed by that teardown on their own, so
@@ -625,6 +649,21 @@ function _wfRemountDom(projectId) {
   // browser tab or the phone. One cheap GET; patches in place once it
   // resolves (see _wfRefreshBench), same as the in-tab listener.
   _wfRefreshBench(_wfState._wf);
+  _wfRefreshLiveRunOnRemount(_wfState._wf);
+}
+
+// WB7: the render above drew the live-run strip from the run as last seen,
+// and the poll stops itself while the canvas is off screen
+// (_wfPollLiveRunTick). Coming back to the tab therefore re-reads the run and
+// restarts the poll, or a run that ended meanwhile stays "running" until the
+// user presses Run now or Cancel. Patched in place, like the poll tick.
+async function _wfRefreshLiveRunOnRemount(st) {
+  if (!st || !st.workflowId) return;
+  await _wfLoadLiveRun(st);
+  const entry = _wfEntry();
+  if (!entry || entry._wf !== st || !document.getElementById('wfb-live-run-slot')) return;
+  _wfApplyLiveRunToDom(st);
+  _wfStartLivePollIfNeeded(st);
 }
 
 function _wfFreshState(def, workflowId, error, hintProjectId) {
@@ -1982,6 +2021,10 @@ function _wfBindCharacterChangeListener() {
   if (_wfCharacterListenerBound) return;
   _wfCharacterListenerBound = true;
   window.addEventListener('clayrune:characters-changed', () => {
+    // WB9: the persona pickers read this per-project cache. Left stale, a new
+    // hire is missing from the picker, which falls back to "Project default",
+    // and the next sync writes that fallback over the step's persona.
+    _wfCharCache.clear();
     const entry = _wfEntry();
     if (!entry || !entry._wf) return;
     _wfRefreshBench(entry._wf);
@@ -3243,6 +3286,9 @@ document.addEventListener('keydown', (e) => {
   if (!_wfState || !_wfSelectedEdge) return;
   const tag = document.activeElement && document.activeElement.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  // Same host test as the Ctrl+Z handler: with the canvas off screen (another
+  // tab of the modal, or the modal closed) a key press is not about this edge.
+  if (!document.getElementById('wfb-inline-host-' + _wfState.projectId)) return;
   if (e.key === 'Delete' || e.key === 'Backspace') {
     _wfDeleteEdge(_wfSelectedEdge.from, _wfSelectedEdge.to, _wfSelectedEdge.when);
   } else if (e.key === 'Escape') {
@@ -4305,7 +4351,16 @@ async function _wfSaveLinkedSchedule(st) {
   const isSchedule = st.def.trigger && st.def.trigger.type === 'schedule';
   if (!isSchedule) {
     if (st.linkedSchedule && st.linkedSchedule.id) {
-      try { await fetch(`${API_BASE}/api/schedules/${encodeURIComponent(st.linkedSchedule.id)}`, { method: 'DELETE' }); } catch (e) {}
+      // WB8: a refused DELETE leaves the row alive, and the scheduler starts
+      // runs from it whatever the trigger type says. Keep its id so the next
+      // save tries again, and say so. 404 is "already gone".
+      try {
+        const res = await fetch(`${API_BASE}/api/schedules/${encodeURIComponent(st.linkedSchedule.id)}`, { method: 'DELETE' });
+        if (!res.ok && res.status !== 404) throw new Error('HTTP ' + res.status);
+      } catch (e) {
+        showToast('Workflow saved, but its schedule could not be removed and will keep firing (' + e.message + '). Save again to retry.', 8000);
+        return;
+      }
       st.linkedSchedule = null;
     }
     return;
@@ -4677,7 +4732,7 @@ function _wfDismissUnassignedFinding(i) {
   const entry = _wfEntry(); if (!entry) return;
   const st = entry._wf;
   (st.reviewUnassigned || []).splice(i, 1);
-  _wfRender();
+  _wfSyncThenRender();
 }
 window._wfDismissUnassignedFinding = _wfDismissUnassignedFinding;
 
@@ -4800,7 +4855,7 @@ async function _wfCancelRun() {
   if (!run || st.cancellingRun) return;
   if (!confirm(`Cancel run ${run.id}? Its remaining steps will not run. An agent already working on a step keeps going until you stop it from its chat.`)) return;
   st.cancellingRun = true;
-  _wfRender();
+  _wfSyncThenRender();
   try {
     const result = await humanProofFetch(`${API_BASE}/api/workflow-runs/${encodeURIComponent(run.id)}/cancel`, {
       method: 'POST',
@@ -4808,7 +4863,7 @@ async function _wfCancelRun() {
       title: 'Cancel run',
       description: 'Re-enter your dashboard passcode to cancel this run.',
     });
-    if (result === null) { st.cancellingRun = false; _wfRender(); return; }
+    if (result === null) { st.cancellingRun = false; _wfSyncThenRender(); return; }
     const res = { ok: result.ok, status: result.status };
     const data = result.body;
     if (!res.ok || !data || !data.ok) {
@@ -4841,7 +4896,7 @@ async function _wfCancelRun() {
     // null on both cancel-succeeded paths above, so this stops the timer;
     // a genuine network failure leaves liveRun set and the poll running.
     _wfStartLivePollIfNeeded(st);
-    _wfRender();
+    _wfSyncThenRender();
   }
 }
 

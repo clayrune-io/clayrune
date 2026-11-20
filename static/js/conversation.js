@@ -23,6 +23,8 @@ let pendingDispatchProvider = {};  // project_id → provider chosen in the new-
 let pendingDispatchCharacter = {}; // project_id → "scope:name" persona chosen in the new-chat composer (Prompt Builder Phase 2)
 let characterCache = {};           // project_id → array of available characters (lazy-loaded for the composer picker)
 let characterCacheLoading = {};    // project_id → true while a fetch is in flight (dedupe)
+const _openConvSeq = {};           // project_id → number of the latest openConversation call (CV17 stale-reply guard)
+const _planTitleProbed = {};       // session_id → 'sid|planFile' once the header's title probe has been sent (CV13)
 
 // ── Speaker attribution (MC-937 Phase 2a — channel model spec §4) ───────────
 // One persona per session today (multi-speaker sessions are the rest of
@@ -114,13 +116,14 @@ function _engShortLabel(engine) {
 // With a project default set, an empty pick is NOT "no persona" — it inherits.
 // Labelling it "None" would state the opposite of what dispatch will do. Shared
 // between the <select> picker below and the WHO face-card grid so the two
-// surfaces can never show different text for the same state.
+// surfaces can never show different text for the same state. Returns RAW text:
+// each caller escapes it once where it is emitted.
 function _composerNoneLabel(p, list) {
   const defRec = p.default_character
     ? list.find(c => ((c.scope || 'global') + ':' + c.name) === p.default_character)
     : null;
   return p.default_character
-    ? 'Project default' + (defRec ? ' (' + esc(defRec.display_name || defRec.name) + ')' : '')
+    ? 'Project default' + (defRec ? ' (' + (defRec.display_name || defRec.name) + ')' : '')
     : 'None';
 }
 
@@ -155,7 +158,7 @@ function _composerCharacterPicker(p, resumeId) {
   return `<div class="composer-provider-row composer-character-row">
     <span class="composer-provider-label">Persona</span>
     <select class="composer-provider-select" onchange="setComposerCharacter('${window.jsAttr(p.id)}',this.value)">
-      <option value="">${noneLabel}</option>${opts}
+      <option value="">${esc(noneLabel)}</option>${opts}
       <option value="__create__">&#43; Create new persona&hellip;</option>
     </select>
     ${editBtn}
@@ -573,19 +576,34 @@ function _positionChatModelMenu(pillEl) {
 async function switchChatModel(projectId, sid, model) {
   _closeChatModelMenu();
   const s = agentStatusCache[sid];
+  const prevPin = s ? s.pinnedModel : undefined;
   if (s) s.pinnedModel = model;
   refreshModalById(projectId);
+  // The pin above is optimistic. A refused request (404 session not found for a
+  // detached or transcript-keyed tab, 400 invalid model id) or a network error
+  // puts the old pin back, so the pill never shows a model the server did not take.
+  const refused = (why) => {
+    if (s) s.pinnedModel = prevPin;
+    refreshModalById(projectId);
+    if (typeof showToast === 'function') showToast('Could not change model' + (why ? ': ' + why : ''), 3500);
+  };
   try {
-    await fetch(`${API_BASE}/api/project/${projectId}/agent/${sid}/model`, {
+    const res = await fetch(`${API_BASE}/api/project/${projectId}/agent/${sid}/model`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model }),
     });
+    if (!res.ok) {
+      let why = '';
+      try { why = ((await res.json()) || {}).error || ''; } catch (e) {}
+      refused(why);
+      return;
+    }
     if (typeof showToast === 'function') {
       showToast(model ? `Model pinned — applies on your next message` : `Following the default model again`, 2600);
     }
   } catch (e) {
-    if (typeof showToast === 'function') showToast('Could not change model', 2500);
+    refused('');
   }
 }
 
@@ -1791,9 +1809,14 @@ function agentPanelHTML(p) {
       ? (() => {
           const fname = activeSession.planFile.split(/[/\\]/).pop();
           const label = planFileTitle[activeSessionId] || planFileLabel(activeSession.task || fname);
-          // Lazy-fetch heading if not cached yet
-          if (!planFileTitle[activeSessionId]) {
-            fetch(API_BASE + `/api/project/${esc(p.id)}/agent/plan-file?session=${esc(activeSessionId)}`)
+          // Lazy-fetch heading if not cached yet. One probe per (chat, plan file):
+          // this runs inside the render, and a plan with no `# ` heading or a
+          // deleted file (404) never fills planFileTitle, so without the record
+          // every modal rebuild sent the request again.
+          const _probeKey = activeSessionId + '|' + activeSession.planFile;
+          if (!planFileTitle[activeSessionId] && _planTitleProbed[activeSessionId] !== _probeKey) {
+            _planTitleProbed[activeSessionId] = _probeKey;
+            fetch(API_BASE + `/api/project/${encodeURIComponent(p.id)}/agent/plan-file?session=${encodeURIComponent(activeSessionId)}`)
               .then(r => r.ok ? r.json() : null)
               .then(d => {
                 if (d && d.content) {
@@ -1803,9 +1826,6 @@ function agentPanelHTML(p) {
                     if (t.length > 40) t = t.slice(0, 37) + '...';
                     planFileTitle[activeSessionId] = t;
                     const c = document.getElementById(`plan-file-btn-${activeSessionId}`);
-                    if (c) c.querySelector('.btn-plan-file')?.childNodes?.forEach?.((n, i) => {
-                      if (i > 0) n.textContent = ' ' + t;
-                    });
                     if (c && c.querySelector('.btn-plan-file')) {
                       c.querySelector('.btn-plan-file').innerHTML = `&#128196; ${esc(t)}`;
                     }
@@ -2764,8 +2784,9 @@ function mobileUserConversationsHTML(p, convos, opts) {
     // Title now carries the subject, so the sub-line carries the latest turn —
     // the row answers both "what is this about?" and "where did it get to?".
     const _recent = _convRecent(c);
-    const meta = [esc(c.ts_relative || ''), c.turns ? `${c.turns} turn${c.turns !== 1 ? 's' : ''}` : '',
-                  _recent ? esc(_recent.slice(0, 70)) : ''].filter(Boolean).join(' · ');
+    // Raw parts: the row escapes `meta` once where it is emitted (conv-sub below).
+    const meta = [c.ts_relative || '', c.turns ? `${c.turns} turn${c.turns !== 1 ? 's' : ''}` : '',
+                  _recent ? _recent.slice(0, 70) : ''].filter(Boolean).join(' · ');
     const incIcon = _convIsIncognito(c)
       ? '<span class="conv-inc-icon" title="Incognito — not saved to project memory or agent log">&#x1F576;&#xFE0F;</span>'
       : '';
@@ -3191,104 +3212,6 @@ function collapseChannelRows(projectId) {
 }
 window.collapseChannelRows = collapseChannelRows;
 
-// ── Open Threads board (project-level) ──────────────────────────────────────
-// A full-width overlay that groups a project's OPEN conversations into three
-// buckets — Waiting on you / Running / Stalled — so interrupted work stops being
-// buried under the recency list. Reuses the rail's own data + open/hide helpers;
-// "Archive" IS the existing hide mechanism (localStorage 'mc_hidden_convos').
-// Frontend-only.
-
-function _threadState(c, live) {
-  const ls = _convLiveState(live, c);
-  if (ls === 'waiting' || c.waiting_for_question || c.waiting_for_plan_approval) return 'waiting';
-  if (ls === 'working' || (c.live && (c.status === 'running' || c.status === 'idle' || !c.status))) return 'running';
-  if ((c.status || '') === 'completed') return null;               // done — not "open"
-  const st = c.status || '';
-  if ((c.turns || 0) >= 2 && ['interrupted', 'stopped', 'error', 'idle', ''].includes(st)) return 'stalled';
-  return null;                                                       // too trivial / empty
-}
-
-// Bucket a project's open threads. {waiting, running, stalled, doneCount}.
-function _openThreads(projectId) {
-  const live = _liveConvStates({ id: projectId });
-  const b = { waiting: [], running: [], stalled: [], doneCount: 0 };
-  for (const c of _userInitiatedConvos(projectId)) {                // excludes hidden + noise
-    const st = _threadState(c, live);
-    if (st) b[st].push(c);
-    else if ((c.status || '') === 'completed') b.doneCount++;
-  }
-  return b;
-}
-
-function _openThreadsBadge(projectId) {
-  try {
-    const b = _openThreads(projectId);
-    const n = b.waiting.length + b.running.length + b.stalled.length;
-    return n ? `<span class="rail-threads-badge">${n}</span>` : '';
-  } catch (e) { return ''; }
-}
-
-function _threadTitle(c) {
-  if (_isStewardConvo(c)) return '\u{1F9ED} Steward' + (c.steward_objective ? ' — ' + String(c.steward_objective).split('\n')[0].slice(0, 50) : '');
-  return (_convTitle(c) || '(empty conversation)').slice(0, 90);
-}
-
-function _threadCardHTML(pid, c, kind) {
-  const csid = c.claude_session_id || '', mcsid = c.mc_session_id || '';
-  // Open the conversation but LEAVE the board open (it's a triage surface — the
-  // user picks the next thread from it). openConversation raises the project
-  // modal; the board stays a click away.
-  const open = `openConversation('${window.jsAttr(pid)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})`;
-  const meta = [esc(c.ts_relative || ''), c.turns ? `${c.turns} turn${c.turns !== 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ');
-  let acts;
-  if (kind === 'waiting') acts = `<button class="tb-act p" onclick="${open}">${c.waiting_for_plan_approval ? 'Review plan' : 'Answer'}</button>`;
-  else if (kind === 'running') acts = `<button class="tb-act go" onclick="${open}">Open</button>`;
-  else acts = `<button class="tb-act" onclick="${open}">Resume</button><button class="tb-act" onclick="archiveThread(event,'${window.jsAttr(pid)}','${esc(csid)}')">Archive</button>`;
-  return `<div class="tb-card" onclick="${open}">
-      <div class="tb-title">${esc(_threadTitle(c))}</div>
-      <div class="tb-meta">${meta}</div>
-      <div class="tb-acts" onclick="event.stopPropagation()">${acts}</div>
-    </div>`;
-}
-
-function _threadColHTML(pid, label, cls, items, kind, emptyMsg) {
-  const cards = items.length ? items.map(c => _threadCardHTML(pid, c, kind)).join('')
-    : `<div class="tb-empty">${emptyMsg}</div>`;
-  return `<div class="tb-col">
-      <div class="tb-colhead ${cls}"><span class="tb-dot"></span>${label}<span class="tb-n">${items.length}</span></div>
-      ${cards}
-    </div>`;
-}
-
-function _threadsBoardHTML(pid) {
-  const b = _openThreads(pid);
-  const open = b.waiting.length + b.running.length + b.stalled.length;
-  const archived = _hiddenConvSet(pid).size;
-  const name = esc((allProjects.find(x => x.id === pid) || {}).name || pid);
-  const mid = '__threads_' + pid;
-  const summary = `<b>${open} open</b> · ${b.stalled.length} stalled · ${b.running.length} running · ${b.waiting.length} waiting on you`
-    + `<span class="tb-muted"> — ${b.doneCount} done${archived ? `, ${archived} archived` : ''}</span>`;
-  // .modal-header is the manager's drag handle; .modal-content gets resize from
-  // the #modal-layer observer (interactions.js). Header buttons are drag-excluded.
-  return `<div class="modal-header tb-head">
-      <div class="tb-htext">
-        <div class="tb-hrow"><span class="tb-h1">${name}</span> <span class="tb-h2">Open Threads</span></div>
-        <div class="tb-summary">${summary}</div>
-      </div>
-      <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
-        <button class="modal-minimize" onclick="minimizeModal('${esc(mid)}')" title="Minimize">&#x2015;</button>
-        <button class="modal-close" onclick="closeThreadsBoard('${window.jsAttr(pid)}')" title="Close (Esc)">&#10005;</button>
-      </div>
-    </div>
-    <div class="tb-body">
-      <div class="tb-cols">
-        ${_threadColHTML(pid, 'Stalled', 'slate', b.stalled, 'stalled', 'No stalled threads — you’re caught up.')}
-        ${_threadColHTML(pid, 'Running', 'green', b.running, 'running', 'No agents working right now.')}
-        ${_threadColHTML(pid, 'Waiting on you', 'amber', b.waiting, 'waiting', 'Nothing needs a decision right now.<br>Questions &amp; plan-approvals land here.')}
-      </div>
-    </div>`;
-}
-
 // ── Topics digest (the board's content) ────────────────────────────────────
 // Instead of one card per chat, show agent-synthesized TOPICS (GET/POST
 // /api/project/<id>/topics). A subject discussed across many chats appears once
@@ -3580,8 +3503,11 @@ async function confirmSweep(pid) {
   let ok = 0;
   for (const id of ids) {
     try {
-      await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/backlog/${encodeURIComponent(id)}`,
+      const r = await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/backlog/${encodeURIComponent(id)}`,
         { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'done' }) });
+      // A refused close (404 for an item deleted since the scan) is not a close:
+      // no note, and it is left out of the count the toast reports.
+      if (!r.ok) continue;
       try {
         await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/backlog/${encodeURIComponent(id)}/note`,
           { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Closed via topic sweep' + (byId[id] && byId[id].topic ? ` (topic: ${byId[id].topic})` : '') }) });
@@ -3641,12 +3567,26 @@ async function reviewTopics(pid) {
 }
 async function setTopicState(pid, topicId, state) {
   const d = _topicsData[pid];
-  if (d && d.topics) { const t = d.topics.find(x => x.id === topicId); if (t) t.user_state = state; }
+  const t = (d && d.topics) ? d.topics.find(x => x.id === topicId) : null;
+  const prev = t ? t.user_state : undefined;
+  if (t) t.user_state = state;
   refreshThreadsBoard(pid);
+  // The write above is optimistic. A refused or failed POST puts the topic back
+  // and says so; it used to show as done/archived until the next reload.
+  const refused = (why) => {
+    if (t) t.user_state = prev;
+    refreshThreadsBoard(pid);
+    if (typeof showToast === 'function') showToast('Could not update the topic' + (why ? ': ' + why : ''), 3500);
+  };
   try {
-    await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/topics/${encodeURIComponent(topicId)}/state`,
+    const r = await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/topics/${encodeURIComponent(topicId)}/state`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state }) });
-  } catch (e) {}
+    if (!r.ok) {
+      let why = '';
+      try { why = ((await r.json()) || {}).error || ''; } catch (e) {}
+      refused(why);
+    }
+  } catch (e) { refused(''); }
 }
 function toggleTopic(pid, topicId) { const k = pid + '/' + topicId; _topicsExpanded[k] = !_topicsExpanded[k]; refreshThreadsBoard(pid); }
 function toggleTopicsArchived(pid) { _topicsShowArchived[pid] = !_topicsShowArchived[pid]; refreshThreadsBoard(pid); }
@@ -3733,11 +3673,6 @@ function closeThreadsBoard(projectId) {
     if (String(id).startsWith('__threads_')) closeModalById(id);
   }
 }
-function archiveThread(event, projectId, csid) {
-  if (event) { event.stopPropagation(); event.preventDefault(); }
-  hideConversation(event, projectId, csid);   // existing: persists to mc_hidden_convos + refreshModal
-  refreshThreadsBoard(projectId);
-}
 
 // Inject the board's CSS once. Themed entirely via CSS vars so it tracks the
 // active light/dark theme.
@@ -3816,14 +3751,7 @@ function _ensureThreadsCss() {
     .tb-sweep-meta{font-size:calc(var(--tbf)*0.8);color:var(--text-faint);display:block;margin-top:2px}
     .tb-conf{font-weight:700;text-transform:uppercase;font-size:calc(var(--tbf)*0.72)}
     .tb-conf.high{color:var(--green)} .tb-conf.medium{color:var(--amber)} .tb-conf.low{color:var(--text-faint)}
-    .tb-sweep-foot{margin-top:8px}
-    .rail-threads-badge{margin-left:6px;background:var(--accent);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:0 6px}
-    /* Shares the "+ New conversation" pill frame (.conv-newbtn.agent-rail-new)
-       so it is EXACTLY the same size; we only override the colour to a
-       secondary outline. Scoped to .agent-3pane so it beats .agent-3pane
-       .agent-rail-new (equal specificity, later source order wins). */
-    .agent-3pane .agent-rail-threads{margin-top:0;background:var(--surface);color:var(--accent);border-color:var(--accent)}
-    .agent-3pane .agent-rail-threads:hover{background:var(--accent);color:#fff}`;
+    .tb-sweep-foot{margin-top:8px}`;
   document.head.appendChild(s);
 }
 
@@ -3835,7 +3763,6 @@ window.railMode = railMode;
 window.setRailMode = setRailMode;
 window.openTopicNewest = openTopicNewest;
 window.closeThreadsBoard = closeThreadsBoard;
-window.archiveThread = archiveThread;
 
 // Open a conversation in chat mode. Live/tracked → its thread; past chat with an
 // MC session id → reconstruct its transcript into a read-only thread (ready to
@@ -3843,6 +3770,10 @@ window.archiveThread = archiveThread;
 // Deliberately does NOT reuse openProjectAtSession — its `activeAgentTab || sid`
 // fallback dumped every tap back onto the currently-open chat.
 async function openConversation(projectId, csid, mcSessionId, isLive) {
+  // Latest call per project wins: every switch that follows an await below
+  // checks this, so a slow reply cannot pull the pane back from a chat the
+  // user opened after it.
+  const _seq = _openConvSeq[projectId] = (_openConvSeq[projectId] || 0) + 1;
   // Native-only Codex history belongs in the normal conversation pane. Its
   // synthetic tab key is UI-only; sends carry the actual provider identity.
   if (!mcSessionId && csid) {
@@ -3872,6 +3803,7 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
           return;
         }
       }
+      if (_openConvSeq[projectId] !== _seq) return;
       switchAgentTab(projectId, sid);
       return;
     }
@@ -3900,7 +3832,7 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
     // Shared mc id but a DIFFERENT transcript — skip the mc-based routes (both
     // the live seed and /session/<mc>/reconstruct resolve to the mc id's
     // CURRENT transcript, not this row's) and open it by csid instead.
-    if (csid) { await _openConversationByCsid(projectId, csid); return; }
+    if (csid) { await _openConversationByCsid(projectId, csid, _seq); return; }
   }
   // SERVER-AUTHORITATIVE LIVE ROUTE. `live` comes from /conversations (the row's
   // claude_session_id matched an in-memory agent_session), so the chat IS alive
@@ -3930,6 +3862,7 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
   if (mcSessionId) {
     try {
       const rr = await fetch(API_BASE + `/api/project/${projectId}/session/${encodeURIComponent(mcSessionId)}/reconstruct`);
+      if (_openConvSeq[projectId] !== _seq) return;
       if (rr.status === 409) {
         // Raced a session that just went live (rail row was stale). Same route.
         switchAgentTab(projectId, mcSessionId);
@@ -3937,6 +3870,7 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
       }
       if (rr.ok) {
         const rd = await rr.json();
+        if (_openConvSeq[projectId] !== _seq) return;
         agentStatusCache[mcSessionId] = {
           status: 'completed', task: rd.task || '', projectId,
           startedAt: rd.started_at || '', claudeSessionId: rd.claude_session_id || csid || '',
@@ -3958,7 +3892,8 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
   }
   // Transcript-only conversation (no MC session id, e.g. an interrupted chat or
   // a fresh-start continuation): reconstruct straight from the claude_session_id.
-  if (csid) { await _openConversationByCsid(projectId, csid); }
+  if (_openConvSeq[projectId] !== _seq) return;
+  if (csid) { await _openConversationByCsid(projectId, csid, _seq); }
 }
 window.openConversation = openConversation;
 
@@ -3969,7 +3904,10 @@ window.openConversation = openConversation;
 // in chat mode ready to continue". Falls back to arming a resume if
 // unreconstructable. Split out of openConversation so the shared-mc-id
 // disambiguation path can reach it directly.
-async function _openConversationByCsid(projectId, csid) {
+async function _openConversationByCsid(projectId, csid, _seq) {
+  // Called from openConversation with its sequence number, or directly (no
+  // number): a direct call is itself the latest request for this project.
+  if (_seq === undefined) _seq = _openConvSeq[projectId] = (_openConvSeq[projectId] || 0) + 1;
   // A live conversation can reach here with NO mc_session_id (its
   // claude_session_id matched a running agent_session, but this row never
   // carried the MC id). If any cache entry already tracks THIS transcript as
@@ -3990,14 +3928,17 @@ async function _openConversationByCsid(projectId, csid) {
   if (agentStatusCache[csid]) { switchAgentTab(projectId, csid); return; }
   try {
     const rr = await fetch(API_BASE + `/api/project/${projectId}/transcript/${encodeURIComponent(csid)}/reconstruct`);
+    if (_openConvSeq[projectId] !== _seq) return;
     if (rr.status === 409) {
       // Server says this transcript belongs to a live session (race: the
       // cache scan above missed it). Open the live tab it points us at.
       const rd = await rr.json().catch(() => ({}));
+      if (_openConvSeq[projectId] !== _seq) return;
       if (rd.session_id) { switchAgentTab(projectId, rd.session_id); return; }
     }
     if (rr.ok) {
       const rd = await rr.json();
+      if (_openConvSeq[projectId] !== _seq) return;
       agentStatusCache[csid] = {
         status: 'completed', task: rd.task || '', projectId,
         startedAt: rd.started_at || '', claudeSessionId: csid,
@@ -4016,6 +3957,7 @@ async function _openConversationByCsid(projectId, csid) {
       return;
     }
   } catch (e) { /* fall through to resume */ }
+  if (_openConvSeq[projectId] !== _seq) return;
   selectResumeSession(projectId, csid);
 }
 window._openConversationByCsid = _openConversationByCsid;
@@ -6136,7 +6078,11 @@ async function fetchAgentStatus(projectId) {
   try {
     const res = await fetchFailFast(API_BASE + `/api/project/${projectId}/agent/status`);
     const data = await res.json();
-    const sessions = data.sessions || [];
+    // An error body that parses as JSON (401 {error:'auth_required'} from a
+    // lapsed passcode session) is not "the server holds no sessions": reading it
+    // that way made the detach pass below mark every idle chat STOPPED.
+    if (!res.ok || !data || !Array.isArray(data.sessions)) return;
+    const sessions = data.sessions;
     window.updateAgentMailHoldNotices?.(projectId, data.agent_mail_holds);
     const pName = (allProjects.find(x => x.id === projectId) || {}).name || projectId;
 
@@ -6230,6 +6176,10 @@ async function fetchAgentStatus(projectId) {
         // rebuilt server buffer made a reply vanish until the next message.
         // See _mergeShorterHistory (resume-preview.js).
         if (!window._mergeShorterHistory?.(sid, _incoming, 'status-poll', _incomingTs)) {
+          // Wholesale replace drops any prepended rollover parts (MC-978): reset
+          // the count, as the stream-reset twin does (_settleHistoryReplay), or
+          // "Load earlier conversation" skips the part that just vanished.
+          delete rolloverLoadedCounts[sid];
           agentOutputBuffers[sid] = _incoming;
           agentOutputTimestamps[sid] = _incomingTs;
         }
@@ -6384,7 +6334,12 @@ async function fetchAgentStatus(projectId) {
     else _subagentPollStop(projectId);
     if (_attendOnceAnyPassOpen(sessions)) _attendOncePollStart(projectId);
     else _attendOncePollStop(projectId);
-  } catch(e) {}
+  } catch(e) {
+    // Everything above runs in this one try. Silent, a throw on one session row
+    // skipped the rest of the pass (later rows, detach, the timer decisions)
+    // with no trace. Still swallowed: the next poll retries.
+    console.warn(`[Clayrune] agent/status poll failed for ${projectId}:`, e);
+  }
 }
 
 

@@ -630,7 +630,11 @@ async function loadWorkflows(projectId) {
   try {
     const wfRes = await fetch(API_BASE + '/api/workflows');
     const mine = wfRes.ok ? _wfClayruneWorkflowsFor(projectId, await wfRes.json()) : [];
-    if (typeof window._wfSyncTabsForProject === 'function') window._wfSyncTabsForProject(projectId, mine);
+    // An error reply is not "this project has no workflows": synced as an empty
+    // list over a built section it replaced the canvas being edited with the
+    // empty state. Only a section that never loaded still takes the empty list.
+    const built = document.getElementById('wfb-clayrune-section-' + projectId)?.dataset.wfBuilt === '1';
+    if ((wfRes.ok || !built) && typeof window._wfSyncTabsForProject === 'function') window._wfSyncTabsForProject(projectId, mine);
   } catch (e) { /* the CC fan-out section below still renders on its own */ }
 
   const fanoutEl = document.getElementById('wfb-fanout-section-' + projectId);

@@ -402,6 +402,8 @@ try {
   // needed since _wfEnsureProviderAuthFresh caches per-provider and this
   // route is read fresh on every request.
   const providerAuthResponses = {};
+  let charactersOverride = null;    // WB9: a roster that changes after the first read
+  const providerAuthDelayMs = {};   // WB6: hold one provider's probe so a test can type while it is pending
   await page.route('**/*', async (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -427,12 +429,13 @@ try {
     }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
-    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: charactersOverride || CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     const authMatch = path.match(/^\/api\/agent\/provider\/([^/]+)\/auth$/);
     if (authMatch) {
       const name = authMatch[1];
+      if (providerAuthDelayMs[name]) await new Promise((r) => setTimeout(r, providerAuthDelayMs[name]));
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         name, installed: true, version: null, binary_path: null,
         auth_status: providerAuthResponses[name] || 'unknown', auth_method: null,
@@ -1129,6 +1132,28 @@ try {
     const c7KbSel = `g.wfb-edge-group path[onpointerdown*="_wfEdgeClick(event,'${c7KeyboardEdge.from}','${c7KeyboardEdge.to}'"]`;
     const c7KbCountBefore = await page.$$eval('.wfb-edge-path', els => els.length);
     await clickEdgeOffCenter(page, c7KbSel); // off-center — see the note above on the delete × sitting at the midpoint
+    // WB12 (MC-1179 pass 04): with an edge selected, leave the Workflows tab
+    // and press Delete there. The handler used to remove the edge from a
+    // canvas that was no longer on screen; the model must be left alone, and
+    // the selection must not survive the trip.
+    const wb12Before = await page.evaluate(() => window._wfEntry()._wf.def.edges.length);
+    await page.evaluate((pid) => { switchModalTab(pid, 'agent'); }, PID);
+    await page.waitForTimeout(120);
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    await page.keyboard.press('Delete');
+    await page.waitForTimeout(100);
+    const wb12Away = await page.evaluate(() => window._wfEntry()._wf.def.edges.length);
+    wb12Away === wb12Before ? ok('WB12: Delete pressed on another tab leaves the off-screen canvas alone')
+                            : fail(`WB12: Delete on another tab removed an edge from the hidden canvas (${wb12Before} -> ${wb12Away})`);
+    await page.evaluate((pid) => { switchModalTab(pid, 'workflows'); }, PID);
+    await page.waitForSelector(c7KbSel);
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    await page.keyboard.press('Delete');
+    await page.waitForTimeout(100);
+    const wb12Back = await page.evaluate(() => window._wfEntry()._wf.def.edges.length);
+    wb12Back === wb12Before ? ok('WB12: the edge selected before leaving is no longer selected on return')
+                            : fail(`WB12: a selection from before the tab switch was still live on return (${wb12Before} -> ${wb12Back})`);
+    await clickEdgeOffCenter(page, c7KbSel);
     await page.keyboard.press('Delete');
     await page.waitForTimeout(100);
     const c7KbCountAfter = await page.$$eval('.wfb-edge-path', els => els.length);
@@ -1586,6 +1611,84 @@ try {
   (!c13UnknownState.warningClass && !c13UnknownState.inlineWarning)
     ? ok('an `unknown` auth status never trips the warning — "unknown is not unauthenticated"')
     : fail(`expected no warning for an unknown auth status, got ${JSON.stringify(c13UnknownState)}`);
+
+  // WB6 (MC-1179 pass 04): the auth probe is started from inside a render and
+  // its answer re-rendered the whole body, straight from the model. Text typed
+  // into the inspector while the probe was pending was gone when it landed.
+  // A probe that changes nothing on screen must not re-render; one that does
+  // (a definite negative, which draws the warning) must sync the fields first.
+  for (const [prov, status] of [['wb6ok', 'ok'], ['wb6bad', 'not_logged_in']]) {
+    providerAuthResponses[prov] = status;
+    providerAuthDelayMs[prov] = 600;
+    const nodeName = `c13-${prov}`;
+    // The step uses a persona the inspector's select really offers (global
+    // "builder"): the sync reads that select, so a persona it does not list
+    // would be written back as "Project default" and take the provider with
+    // it. Its bench row (the bench was replaced by an earlier section) carries
+    // the fake provider and is taken out again below.
+    await page.evaluate(({ pid, prov, nodeName }) => {
+      const st = window._wfEntry()._wf;
+      st.bench = st.bench.concat([{ name: 'builder', scope: 'global', display: 'Tobin', avatar: '',
+        description: '', skills: [], provider: prov, model: `${prov}-1`, effort: '',
+        project_id: '', project_name: '', rooms: [], _wb6: true }]);
+      st.def.nodes = (st.def.nodes || []).concat([{ type: 'agent', name: nodeName, x: -1300, y: -900,
+        project_id: pid, character: 'global:builder', prompt: '', outcomes: [] }]);
+      window._wfMarkDirty();
+      window._wfSetTriggerType(st.def.trigger.type || 'manual');
+    }, { pid: PID, prov, nodeName });
+    await openInspector(page, nodeName);
+    await setValue(page, '#wfb-inspector .wfb-prompt', 'typed while the probe is pending');
+    await page.evaluate(() => { document.querySelector('#wfb-inspector .wfb-prompt').dataset.wb6 = 'original'; });
+    await page.waitForTimeout(1100);
+    const wb6 = await page.evaluate(() => {
+      const el = document.querySelector('#wfb-inspector .wfb-prompt');
+      return { value: el ? el.value : null, sameNode: !!el && el.dataset.wb6 === 'original',
+        warned: !!document.querySelector('#wfb-inspector .wfb-node-inline-warning') };
+    });
+    await closeInspector(page);
+    await page.evaluate(() => {
+      const st = window._wfEntry()._wf;
+      st.bench = st.bench.filter(x => !x._wb6);
+    });
+    if (status === 'ok') {
+      (wb6.sameNode && wb6.value === 'typed while the probe is pending')
+        ? ok('WB6: an auth probe that changes nothing does not rebuild the inspector being typed in')
+        : fail(`WB6: the probe's answer rebuilt the inspector mid-typing: ${JSON.stringify(wb6)}`);
+    } else {
+      (wb6.warned && wb6.value === 'typed while the probe is pending')
+        ? ok('WB6: an auth probe that adds a warning keeps the text typed while it was pending')
+        : fail(`WB6: the warning re-render dropped typed text or never drew: ${JSON.stringify(wb6)}`);
+    }
+  }
+
+  // WB9 (MC-1179 pass 04): the persona list is cached per project and was
+  // never cleared, so a person hired after the first editor was opened was
+  // missing from the picker. The picker fell back to "Project default", and
+  // closing the editor wrote that fallback over the step's persona.
+  charactersOverride = JSON.stringify(JSON.parse(CHARACTERS_JSON).concat([
+    { name: 'newbie', display_name: 'newbie', agent_name: 'Nova', scope: 'global',
+      avatar: '', description: '', engine: { provider: 'claude', model: 'claude-sonnet-5' } }]));
+  await page.evaluate(({ pid }) => {
+    window.dispatchEvent(new CustomEvent('clayrune:characters-changed'));
+    const st = window._wfEntry()._wf;
+    st.bench = st.bench.concat([{ name: 'newbie', scope: 'global', display: 'Nova', avatar: '',
+      description: '', skills: [], provider: 'claude', model: '', effort: '',
+      project_id: '', project_name: '', rooms: [] }]);
+    st.def.nodes = (st.def.nodes || []).concat([{ type: 'agent', name: 'wb9-new-hire', x: -1500, y: -900,
+      project_id: pid, character: 'global:newbie', prompt: 'test', outcomes: [] }]);
+    window._wfMarkDirty();
+    window._wfSetTriggerType(st.def.trigger.type || 'manual');
+  }, { pid: PID });
+  await openInspector(page, 'wb9-new-hire');
+  await page.waitForFunction(() => {
+    const sel = document.querySelector('#wfb-inspector .wfb-persona');
+    return sel && sel.dataset.loading !== '1';
+  }, { timeout: 4000 }).catch(() => {});
+  await closeInspector(page);
+  const wb9 = await page.evaluate(() => (window._wfEntry()._wf.def.nodes.find(n => n.name === 'wb9-new-hire') || {}).character);
+  wb9 === 'global:newbie'
+    ? ok('WB9: a person hired after the persona list was first read keeps their step (the list is re-read)')
+    : fail(`WB9: opening and closing the editor rewrote the new hire's persona to ${JSON.stringify(wb9)}`);
 
   // ── Mobile viewport: palette becomes a bottom sheet, canvas still present ─
   await ctx.close();
@@ -2086,6 +2189,7 @@ try {
   page3.on('pageerror', (e) => page3Errors.push(e.message || String(e)));
   let savedWorkflow3 = null;
   let savedSchedule3 = null;
+  let scheduleDeleteStatus3 = 200, scheduleDeletes3 = 0;   // WB8
   await page3.route('**/*', (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -2126,6 +2230,18 @@ try {
       const body = JSON.parse(req.postData() || '{}');
       savedSchedule3 = { ...savedSchedule3, ...body };
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedSchedule3) });
+    }
+    // WB8: the schedule DELETE can be refused, and the workflow itself re-saved.
+    if (path.startsWith('/api/schedules/') && req.method() === 'DELETE') {
+      scheduleDeletes3 += 1;
+      if (scheduleDeleteStatus3 !== 200) return route.fulfill({ status: scheduleDeleteStatus3, contentType: 'application/json', body: '{"error":"refused"}' });
+      savedSchedule3 = null;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+    }
+    if (path === '/api/workflows/wf-smoke3' && req.method() === 'PUT') {
+      const body = JSON.parse(req.postData() || '{}');
+      savedWorkflow3 = { ...savedWorkflow3, ...body };
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, workflow: savedWorkflow3 }) });
     }
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
     // Unmocked, these abort forever and agent-log.js's rail poller retries
@@ -2273,6 +2389,38 @@ try {
   (reopenActiveDays.length === 1 && reopenActiveDays[0] === '3')
     ? ok('reopening highlights the previously-picked day (Wed) and no others')
     : fail(`expected only day 3 highlighted on reopen, got ${JSON.stringify(reopenActiveDays)}`);
+
+  // WB8 (MC-1179 pass 04): switching the trigger back to Manual deletes the
+  // linked schedule. A refused DELETE used to be swallowed and the builder
+  // forgot the schedule's id, so the row stayed alive and kept starting runs
+  // with nothing on screen to say so and no way to retry.
+  await page3.evaluate(() => {
+    window.__toasts = [];
+    const orig = window.showToast;
+    window.showToast = (msg, ms) => { window.__toasts.push(String(msg)); if (orig) orig(msg, ms); };
+    window._wfSetTriggerType('manual');
+  });
+  scheduleDeleteStatus3 = 500;
+  await page3.click('.wfb-toolbar .btn-sched-save');
+  await answerHumanProofModalIfShown(page3);
+  await page3.waitForFunction(() => (window.__toasts || []).length > 0, { timeout: 4000 }).catch(() => {});
+  await page3.waitForTimeout(200);
+  const wb8 = await page3.evaluate(() => ({
+    id: (window._wfEntry()._wf.linkedSchedule || {}).id || null, toasts: window.__toasts.slice() }));
+  (scheduleDeletes3 === 1 && wb8.id === 'sched-smoke3' && wb8.toasts.some(t => /schedule could not be removed/i.test(t)))
+    ? ok('WB8: a refused schedule DELETE is reported and the builder keeps the schedule it could not remove')
+    : fail(`WB8: a refused schedule DELETE was swallowed: deletes=${scheduleDeletes3} ${JSON.stringify(wb8)}`);
+  // The retry: the id was kept, so marking the canvas changed and saving again removes it.
+  scheduleDeleteStatus3 = 200;
+  await page3.evaluate(() => { window.__toasts = []; window._wfMarkDirty(); });
+  await page3.click('.wfb-toolbar .btn-sched-save');
+  await answerHumanProofModalIfShown(page3);
+  await page3.waitForFunction(() => (window.__toasts || []).length > 0, { timeout: 4000 }).catch(() => {});
+  await page3.waitForTimeout(200);
+  const wb8b = await page3.evaluate(() => window._wfEntry()._wf.linkedSchedule);
+  (scheduleDeletes3 === 2 && savedSchedule3 === null && wb8b === null)
+    ? ok('WB8: the next save retries the DELETE and the schedule is gone')
+    : fail(`WB8: the retry did not remove the schedule: deletes=${scheduleDeletes3} linked=${JSON.stringify(wb8b)}`);
 
   const uncaught3 = page3Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught3.length) uncaught3.forEach((e) => fail('uncaught exception in the cadence trigger flow: ' + e));
@@ -2965,6 +3113,7 @@ try {
   // the toast must say the cancel FAILED.
   const RUN8 = { ...RUN7, id: 'run-5de9dfa5',
     steps: { 'us-stock-investor': { status: 'running', project_id: PID, session_id: '3ee1e9fa0865' } } };
+  let runs8 = [RUN8];   // WB7 swaps this while the tab is away
   const ctx8 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page8 = await ctx8.newPage();
   const page8Errors = [];
@@ -2992,7 +3141,7 @@ try {
     if (path === '/api/schedules') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([WF7]) });
-    if (path === `/api/workflows/${WF7.id}/runs`) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([RUN8]) });
+    if (path === `/api/workflows/${WF7.id}/runs`) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(runs8) });
     if (path === `/api/workflow-runs/${RUN8.id}/cancel` && req.method() === 'POST') {
       return route.fulfill({ status: 404, contentType: 'text/html; charset=utf-8', body: '<!doctype html><title>404 Not Found</title><h1>Not Found</h1>' });
     }
@@ -3016,6 +3165,28 @@ try {
   if (!strip8) {
     fail('expected the live-run strip for run-5de9dfa5 before cancelling');
   } else {
+    // WB7 (MC-1179 pass 04): leave the tab for longer than one poll tick (the
+    // tick stops itself when the canvas is gone), let the run end meanwhile,
+    // and come back. The strip used to be redrawn from the run as last seen,
+    // with nothing left to refresh it.
+    await page8.evaluate((pid) => { switchModalTab(pid, 'agent'); }, PID);
+    runs8 = [];
+    await page8.waitForTimeout(4400);
+    await page8.evaluate((pid) => { switchModalTab(pid, 'workflows'); }, PID);
+    await page8.waitForSelector('#wfb-live-run-slot', { state: 'attached', timeout: 5000 });
+    await page8.waitForTimeout(500);
+    (await page8.$('.wfb-live-run'))
+      ? fail('WB7: back on the Workflows tab, the strip still shows a run that ended while the tab was away')
+      : ok('WB7: returning to the Workflows tab re-reads the run, so a run that ended while away is cleared');
+    // And the other way round: a run that started while away shows on return
+    // (this also puts the strip back for the cancel check below).
+    await page8.evaluate((pid) => { switchModalTab(pid, 'agent'); }, PID);
+    runs8 = [RUN8];
+    await page8.waitForTimeout(150);
+    await page8.evaluate((pid) => { switchModalTab(pid, 'workflows'); }, PID);
+    (await page8.waitForSelector('.wfb-live-run', { timeout: 5000 }).catch(() => null))
+      ? ok('WB7: a run that started while the tab was away shows on return')
+      : fail('WB7: a run that started while the tab was away did not show on return');
     await page8.click('.wfb-live-run-cancel');
     await answerHumanProofModalIfShown(page8);
     await page8.waitForTimeout(250);

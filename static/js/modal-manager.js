@@ -318,7 +318,7 @@ function openProjectModal(projectId, restoreState) {
   // Re-size agent chat when modal is resized + persist size pref. Skip the
   // size-persist while snapped — snap-driven resizes shouldn't clobber the
   // user's saved "free" size (which we want back when they unsnap).
-  new ResizeObserver(() => {
+  const _sizeObserver = new ResizeObserver(() => {
     const entry = openModals.get(projectId);
     if (!entry || entry.minimized) return;
     const sid = activeAgentTab[projectId];
@@ -328,7 +328,11 @@ function openProjectModal(projectId, restoreState) {
     if (!entry.snap) {
       _setModalPref(projectId, { width: content.offsetWidth, height: content.offsetHeight });
     }
-  }).observe(content);
+  });
+  _sizeObserver.observe(content);
+  // Kept on the entry so closeModalById can disconnect it.
+  const _opened = openModals.get(projectId);
+  if (_opened) _opened._sizeObserver = _sizeObserver;
 }
 
 function closeModalById(modalId) {
@@ -363,9 +367,10 @@ function closeModalById(modalId) {
   // Clean up terminal pop-out resources
   cleanupTerminalModal(modalId);
   if (entry._statusBarObserver) { entry._statusBarObserver.disconnect(); delete entry._statusBarObserver; }
+  if (entry._sizeObserver) { entry._sizeObserver.disconnect(); delete entry._sizeObserver; }
   window.ProjectTestRuns?.detach(modalId);
   entry.element.remove();
-  const chip = document.getElementById('chip-' + CSS.escape(modalId));
+  const chip = document.getElementById('chip-' + modalId);
   if (chip) chip.remove();
   openModals.delete(modalId);
   window._syncMaximizedBodyClass && window._syncMaximizedBodyClass();
@@ -504,7 +509,9 @@ function _fitModalMenu(dd) {
   // 8px of air above the window edge; never collapse below ~3 rows.
   dd.style.maxHeight = Math.max(120, Math.floor(bottom - ddTop - 8)) + 'px';
   if (box && !dd._fitRO && typeof ResizeObserver === 'function') {
-    dd._fitRO = new ResizeObserver(() => _fitModalMenu(dd));
+    // The dropdown is rebuilt with the modal; an observer whose dropdown has
+    // left the document lets go of it on its next fire.
+    dd._fitRO = new ResizeObserver(() => { if (!dd.isConnected) { dd._fitRO.disconnect(); return; } _fitModalMenu(dd); });
     dd._fitRO.observe(box);
   }
 }
@@ -532,26 +539,39 @@ function toggleModalMenuAdvanced(e, projectId) {
   try { localStorage.setItem('mc_modal_menu_advanced_open', open ? '1' : '0'); } catch (_) {}
 }
 
+// A refused project-record write (a human-only setting, a role guard, a 500):
+// toast the server's reason, or `fallback`, and return true so the caller
+// skips its success path. These writes used to discard the reply.
+async function _projectWriteRefused(r, fallback) {
+  if (r.ok) return false;
+  let why = '';
+  try { why = ((await r.json()) || {}).error || ''; } catch (e) {}
+  showToast(why || fallback);
+  return true;
+}
+
 async function setProjectStatus(projectId, status) {
   document.querySelectorAll('.modal-menu-dropdown.open').forEach(d => d.classList.remove('open'));
   try {
-    await fetch(API_BASE + `/api/project/${projectId}`, {
+    const r = await fetch(API_BASE + `/api/project/${projectId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ status })
     });
+    if (await _projectWriteRefused(r, 'Failed to set status')) return;
     await refreshSilent();
-  } catch(e) {}
+  } catch(e) { console.warn('[project] status write failed:', e); }
 }
 
 async function setProjectColor(projectId, color, bg) {
   document.querySelectorAll('.modal-menu-dropdown.open').forEach(d => d.classList.remove('open'));
   try {
-    await fetch(API_BASE + `/api/project/${projectId}`, {
+    const r = await fetch(API_BASE + `/api/project/${projectId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ modal_color: { color, bg } })
     });
+    if (await _projectWriteRefused(r, 'Failed to set colour')) return;
     await refreshSilent();
     // A project's accent is its identity across the whole app, not just its
     // tile — the Floor room, its runs on the calendar and its rows in the
@@ -562,7 +582,7 @@ async function setProjectColor(projectId, color, bg) {
     if (typeof window.renderScheduleCalendar === 'function') window.renderScheduleCalendar();
     if (typeof window.refreshScheduleList === 'function') window.refreshScheduleList();
     if (typeof window.refreshFloor === 'function') window.refreshFloor();
-  } catch(e) {}
+  } catch(e) { console.warn('[project] colour write failed:', e); }
 }
 
 // Durable per-CONVERSATION pin toggle (chat-level — pins THIS chat, not the
@@ -636,15 +656,16 @@ async function setProjectStreamingMode(projectId, mode) {
   // '' clears the override (inherit global); 'a'/'b' pin an explicit mode.
   const value = mode === '' ? null : (mode === 'b');
   try {
-    await fetch(API_BASE + `/api/project/${projectId}`, {
+    const r = await fetch(API_BASE + `/api/project/${projectId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ use_streaming_agent: value })
     });
+    if (await _projectWriteRefused(r, 'Failed to set process mode')) return;
     if (value === null) showToast('Process mode follows the global default');
     else showToast(value ? 'Mode B (persistent process) for new sessions' : 'Mode A (spawn per turn) for new sessions');
     await refreshSilent();
-  } catch(e) {}
+  } catch(e) { console.warn('[project] process-mode write failed:', e); }
 }
 
 const EMOJI_CHOICES = [
@@ -680,15 +701,23 @@ async function pickEmoji(emoji) {
   closeEmojiPicker();
   if (!projectId) return;
   try {
-    await fetch(API_BASE + `/api/project/${projectId}`, {
+    const r = await fetch(API_BASE + `/api/project/${projectId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ emoji })
     });
+    if (await _projectWriteRefused(r, 'Failed to set emoji')) return;
     await refreshSilent();
     // The picker may have been opened from the profile dialog — sync its emoji button.
-    if (_profileDialogProjectId === projectId) _renderProfileDialog();
-  } catch(e) {}
+    // The dialog stayed open underneath and the rebuild is from the saved
+    // record, so what was typed in its fields is carried across it.
+    if (_profileDialogProjectId === projectId) {
+      const ids = ['pfd-path', 'pfd-character', 'pfd-key', 'pfd-desc'];
+      const typed = ids.map(id => document.getElementById(id)?.value);
+      _renderProfileDialog();
+      ids.forEach((id, i) => { const el = document.getElementById(id); if (el && typed[i] != null) el.value = typed[i]; });
+    }
+  } catch(e) { console.warn('[project] emoji write failed:', e); }
 }
 
 async function generateProjectProfile(projectId, opts) {
@@ -1071,7 +1100,7 @@ function restoreModal(modalId) {
   entry.minimized = false;
   entry.element.classList.remove('minimized');
   window._syncMaximizedBodyClass && window._syncMaximizedBodyClass();
-  const chip = document.getElementById('chip-' + CSS.escape(modalId));
+  const chip = document.getElementById('chip-' + modalId);
   if (chip) chip.remove();
   if (entry.projectId && !modalId.startsWith('__hivemind_')) refreshModalById(modalId);
   const scrollBody = entry.element.querySelector('.modal-scroll-body');

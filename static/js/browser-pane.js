@@ -66,6 +66,7 @@ let _bpViewW = BP_VIEW_W, _bpViewH = BP_VIEW_H;
 // page's bottom-right corner -- instead of (640,400).
 let _bpServerDims = false;
 let _bpSession = null, _bpES = null, _bpMoveTs = 0, _bpPressed = false;
+let _bpOpenSeq = 0;   // bumped per openBrowserPane call; a call that is no longer the newest stops after its await
 // The mouseup handler lives on `window` (a drag can end off the image), so it
 // must be tracked and removed on teardown — otherwise every re-open stacks
 // another listener bound to a now-detached <img>. The oldest stale one wins the
@@ -298,6 +299,10 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   // switching must not kill a session another agent (or you) may still want.
   // Only the × button / per-session stop actually ends a session.
   _bpDetachView();
+  // Two calls can overlap (a double-click on the Browser button, "View" on the
+  // toast while the restore-on-load is still attaching). Each awaits a request
+  // below; only the newest goes on to build a pane.
+  const openSeq = ++_bpOpenSeq;
   const pid = projectId || window.currentProjectId ||
     (typeof activeProjectId !== 'undefined' ? activeProjectId : null) || 'mission_control';
   let curProfile = null;
@@ -311,6 +316,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       const s = (st.sessions || []).find(x => x.session_id === sessionId);
       if (s) { curProfile = s.profile || null; desktopSite = !!s.desktop_site; if (!url) url = s.url; }
     } catch (e) {}
+    if (openSeq !== _bpOpenSeq) return;
   } else {
     let data;
     try {
@@ -327,6 +333,9 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       alert('Browser pane unavailable: ' + e.message);
       return;
     }
+    // Superseded while launching: the session stays running and is listed in
+    // the session menu; the newer call owns the view.
+    if (openSeq !== _bpOpenSeq) return;
     _bpSession = data.session_id;
     curProfile = data.profile || null;
     desktopSite = !!data.desktop_site;
@@ -1126,6 +1135,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     if ('dialog' in d) _bpRenderDialog(win, d.dialog);
     if ('file_chooser' in d) _bpRenderFileChooser(win, d.file_chooser);
   };
+  if (_bpES) { try { _bpES.close(); } catch (e) {} }   // never overwrite a live stream handle
   _bpES = openStream(_bpSession, onStream);
   _bpES.onerror = () => { if (spin) spin.style.color = '#e57373'; };
   _bpES.onclose = () => { stopTimingFrames(); paintBlob.release(); };
@@ -1872,6 +1882,7 @@ function _bpNotifyNewSessions(fresh, pid) {
     { key: 'bp-new-session', autoDismissMs: 12000 });
 }
 function _bpStartPoll() {
+  if (window.__mcPopout) return;   // a pop-out chat window has no Browser button or tray: no pane, no poll
   if (_bpPollTimer) return;
   _bpPollStatus();
   _bpPollTimer = setInterval(_bpPollStatus, 5000);
@@ -1898,6 +1909,11 @@ async function browserButtonClick(pid) {
 // server restart, which kills all panes — clears the flag so no ghost pane
 // pops up. This also stops refreshes from leaking orphaned Chromiums.
 function _bpRestoreOnLoad() {
+  // A pop-out chat window is the same SPA on the same origin, so it reads the
+  // dashboard's mc_browser_pane_open. Re-attaching there laid the remote page
+  // out again at the pop-out's size and put a Close that stops the session
+  // the dashboard is using over the chat.
+  if (window.__mcPopout) return;
   let saved;
   try { saved = JSON.parse(localStorage.getItem('mc_browser_pane_open') || 'null'); } catch (e) { saved = null; }
   if (!saved || !saved.sid) return;

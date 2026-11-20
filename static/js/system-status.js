@@ -61,7 +61,10 @@ let _ubRangeKey = '';  // '' = current window (server default); else 'range_star
 // whatever provider/window_kind the report page happens to have selected).
 let _ubPopupProvider = null;      // which provider's popup is open, or null
 const _ubPopupData = {};          // provider -> {ts, character, model, error}
-let _ubPopupReqSeq = 0;
+// provider -> sequence number of its latest popup fetch. One counter per
+// provider: a single shared one meant entering a second bar discarded the
+// first bar's answer in flight and left its entry marked `fetching`.
+const _ubPopupReqSeq = {};
 const _UB_POPUP_TTL_MS = 60000;
 const _UB_POPUP_MIN_SAMPLES = 5;  // mirrors _MIN_ELIGIBLE_INTERVALS, mc/usage_breakdown_aggregate.py
 
@@ -1083,7 +1086,10 @@ function toggleSysStatusPopover(ev) {
     // showed whatever it had last fetched, however old. Unconditional, same
     // as fetchSystemStatus() above: reopening is itself the "give me current
     // data" signal.
-    if (_sysStatusActiveTab === 'usage') { fetchUsageBreakdown(); fetchUsageWindows(); }
+    // The Breakdown is drawn only in the Usage report modal now (see
+    // _ubReportOpen), so this popover refreshes it only for a report that is
+    // open behind it.
+    if (_sysStatusActiveTab === 'usage' && _ubReportOpen()) { fetchUsageBreakdown(); fetchUsageWindows(); }
   } else {
     pop.classList.remove('open');
   }
@@ -1105,14 +1111,18 @@ async function refreshSystemStatus(ev) {
   } catch { /* surface as no-update */ }
   _sysStatusRefreshing = false;
   renderSysStatusPill();
-  // Drop the usage cache too so the next render re-fetches stats-cache.json.
-  systemUsageCache = null;
+  // Re-fetch usage on every tab, and keep the cache until the answer lands.
+  // This used to null the cache and re-fetch only on the Usage tab; on any
+  // other tab the bottom usage strip, which reads the same cache, went empty
+  // until the next 60 s tick.
+  fetchSystemUsage();
   if (_sysStatusActiveTab === 'usage') {
-    fetchSystemUsage();
     // Review finding #7: this global "Refresh" footer button updated the
     // old usage cache only, on every tab — Breakdown never moved.
-    fetchUsageBreakdown();
-    fetchUsageWindows();
+    if (_ubReportOpen()) {
+      fetchUsageBreakdown();
+      fetchUsageWindows();
+    }
   }
   _rerenderSysStatusSurfaces();
 }
@@ -1172,6 +1182,15 @@ function openSystemUsage() {
 // bars-and-windows glance. Same renderer (`_renderUsageBreakdownSection`),
 // own modal, own mount point (`#usage-report-surface`, handled in
 // `_rerenderSysStatusSurfaces`).
+// The Breakdown request is a multi-second compute on a busy box (see
+// _UB_FETCH_TIMEOUT_MS). Since the move it is drawn in this modal and nowhere
+// else, so the popover's open, its Refresh and the 60 s tick ask for it only
+// while this modal exists. A minimized report counts as open: restoring it
+// from the tray does not go through openUsageReport, so it has to stay current.
+function _ubReportOpen() {
+  return openModals.has('__usage_report');
+}
+
 function openUsageReport() {
   const modalId = '__usage_report';
   // Review finding #7 (carried over): refresh unconditionally on every open/
@@ -1230,7 +1249,16 @@ function _rerenderSysStatusSurfaces() {
   const surface = document.getElementById('sys-status-surface');
   if (surface) surface.innerHTML = renderSysStatusPanel();
   const reportSurface = document.getElementById('usage-report-surface');
-  if (reportSurface) reportSurface.innerHTML = _renderUsageBreakdownSection();
+  if (reportSurface) {
+    // Every status, usage and breakdown response lands here. Rewriting markup
+    // that has not changed rebuilt the report's six <select> controls and
+    // closed a dropdown the user had open.
+    const html = _renderUsageBreakdownSection();
+    if (reportSurface._ubHtml !== html) {
+      reportSurface.innerHTML = html;
+      reportSurface._ubHtml = html;
+    }
+  }
   _renderUsageBarStrip();
 }
 
@@ -1270,16 +1298,16 @@ function _ubPopupStale(provider) {
 }
 
 async function _ubFetchBarPopup(provider) {
-  const seq = ++_ubPopupReqSeq;
+  const seq = _ubPopupReqSeq[provider] = (_ubPopupReqSeq[provider] || 0) + 1;
   _ubPopupData[provider] = { ..._ubPopupData[provider], fetching: true };
   const qs = `provider=${encodeURIComponent(provider)}&window_kind=7d&window_scope=all`;
   let charData = null, modelData = null, error = false;
   try {
     const [charRes, modelRes] = await Promise.all([
       _ubFetchBreakdownRetry(API_BASE + '/api/system/usage/breakdown?' + qs + '&dimension=character',
-                             () => seq === _ubPopupReqSeq),
+                             () => seq === _ubPopupReqSeq[provider]),
       _ubFetchBreakdownRetry(API_BASE + '/api/system/usage/breakdown?' + qs + '&dimension=model',
-                             () => seq === _ubPopupReqSeq),
+                             () => seq === _ubPopupReqSeq[provider]),
     ]);
     if (!charRes.ok || !modelRes.ok) throw new Error('bad status');
     charData = await charRes.json();
@@ -1287,7 +1315,7 @@ async function _ubFetchBarPopup(provider) {
   } catch {
     error = true;
   }
-  if (seq !== _ubPopupReqSeq) return; // superseded by a newer open meanwhile
+  if (seq !== _ubPopupReqSeq[provider]) return; // superseded by a newer fetch for this provider
   _ubPopupData[provider] = { ts: Date.now(), fetching: false, charData, modelData, error };
   if (_ubPopupProvider === provider) _ubRerenderBarPopup();
 }
@@ -1499,12 +1527,14 @@ fetchSystemUsage();
 // Review finding #7: the 60s tick refreshed the OLD usage cache only, so
 // Breakdown could sit stale indefinitely once loaded. Gated on
 // `systemUsageBreakdownCache` (not the active tab) -- once Breakdown has
-// been loaded at all this session it keeps ticking even if the user is
-// currently on another tab, same as the poll never stops for the usage bar.
+// been loaded it keeps ticking even if the user is currently on another tab,
+// for as long as the Usage report modal that draws it is open
+// (_ubReportOpen). Without that second gate one look at the report bought
+// the compute once a minute until the page was reloaded.
 setInterval(() => {
   fetchSystemStatus();
   fetchSystemUsage();
-  if (systemUsageBreakdownCache) { fetchUsageBreakdown(); fetchUsageWindows(); }
+  if (systemUsageBreakdownCache && _ubReportOpen()) { fetchUsageBreakdown(); fetchUsageWindows(); }
 }, 60000);
 
 // ── Interop: re-expose for inline / cross-module + region-generated on*=

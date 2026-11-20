@@ -723,13 +723,19 @@ async function _renderInboxList(list) {
   const seq = ++_inboxSeq;
   const q = _inboxQuery.trim();
   if (!list.dataset.loaded) list.innerHTML = '<div class="mib-empty">Loading…</div>';
-  let data = { items: [], unread: 0 };
+  let data = null;
   try {
     const res = await fetch(API_BASE + '/api/notifications?limit=200'
       + (q ? '&q=' + encodeURIComponent(q) : ''));
     if (res.ok) data = await res.json();
   } catch (e) { /* offline → keep whatever's shown */ }
   if (seq !== _inboxSeq) return;  // a newer render superseded this one
+  if (!data) {
+    // Offline or refused: the list on screen and the unread badge stay as they
+    // are. A list that never loaded swaps its "Loading…" for the empty state.
+    if (!list.dataset.loaded) list.innerHTML = '<div class="mib-empty">No updates yet.</div>';
+    return;
+  }
   list.dataset.loaded = '1';
   setInboxBadge(data.unread || 0);
   const items = data.items || [];
@@ -808,13 +814,19 @@ async function _renderDesktopInboxList(list) {
   const seq = ++_inboxSeq;
   const q = _inboxQuery.trim();
   if (!list.dataset.loaded) list.innerHTML = '<div class="dib-empty">Loading…</div>';
-  let data = { items: [], unread: 0 };
+  let data = null;
   try {
     const res = await fetch(API_BASE + '/api/notifications?limit=200'
       + (q ? '&q=' + encodeURIComponent(q) : ''));
     if (res.ok) data = await res.json();
   } catch (e) { /* offline → keep whatever's shown */ }
   if (seq !== _inboxSeq) return;  // a newer render superseded this one
+  if (!data) {
+    // Offline or refused: the list on screen and the unread badge stay as they
+    // are. A list that never loaded swaps its "Loading…" for the empty state.
+    if (!list.dataset.loaded) list.innerHTML = '<div class="dib-empty">No updates yet.</div>';
+    return;
+  }
   list.dataset.loaded = '1';
   setInboxBadge(data.unread || 0);
   const items = data.items || [];
@@ -1092,7 +1104,6 @@ window._closeGlobalSearchUI = _closeGlobalSearchUI;
 // Self-healing: driven off live state every render tick with a change-guard, so
 // no lifecycle path can leave a stale/orphaned bar and the 2s poll never
 // clobbers the active :active state or an open ⋮ menu.
-let _globalBarHTML = null;      // snapshot of the static global markup (captured once)
 let _barContextPid = undefined; // current context key, to skip needless re-renders
 
 function _focusedProjectModalId() {
@@ -1111,14 +1122,15 @@ function _focusedProjectModalId() {
 function _syncBottomBarContext() {
   const bar = document.getElementById('bottom-tab-bar');
   if (!bar) return;
-  if (_globalBarHTML === null) _globalBarHTML = bar.innerHTML;  // capture static global markup once
   // Spec §1 (2026-07-06): the bottom bar exists ONLY on the Layer-1 Dashboard.
   // Inside a project — the conversation LIST (Layer 2) or a THREAD (Layer 3) —
   // there is NO bar; navigation is the header ‹ back + ⋮ project menu (iOS
   // push/pop; "the user chose no-bar"). So hide the bar whenever a project modal
   // is focused on mobile (and let the modal fill full height); restore the
   // global dashboard bar otherwise. (Supersedes the earlier context-adaptive
-  // project bar.)
+  // project bar.) The bar's markup is never swapped any more, only hidden, so
+  // nothing is written back on return: a snapshot restored here replaced the
+  // live #inbox-badge with its boot-time state.
   const inProject = !!_focusedProjectModalId();
   const ctx = inProject ? '__hidden__' : '__global__';
   if (ctx === _barContextPid) return;   // unchanged → skip re-render
@@ -1126,7 +1138,6 @@ function _syncBottomBarContext() {
   bar.classList.remove('project-context');
   bar.classList.toggle('mc-bar-hidden', inProject);
   document.body.classList.toggle('mc-modal-fullh', inProject);
-  if (!inProject) bar.innerHTML = _globalBarHTML;
 }
 window._syncBottomBarContext = _syncBottomBarContext;
 
