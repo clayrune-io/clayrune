@@ -319,9 +319,14 @@ def _fit_lines(pos_lines, note_lines, budget, ledger_block=''):
     not at all, never split line-by-line like the two sections above: a
     partial Negation Ledger (some slugs shown, others silently cut) would
     look complete while quietly hiding entries, which is worse than the
-    lowest-priority section being dropped outright on a tight turn budget."""
+    lowest-priority section being dropped outright on a tight turn budget.
+
+    Returns (block, bytes used, how many offered lines — the ledger counting
+    as one — did not fit). The caller logs on the count: comparing byte totals
+    cannot see a drop, because `bytes used` also counts the section headers."""
     out: list[str] = []
     total = 0
+    dropped = 0
 
     def _add(line):
         nonlocal total
@@ -337,22 +342,30 @@ def _fit_lines(pos_lines, note_lines, budget, ledger_block=''):
                    "these without first checking whether the stated reason still "
                    "holds; if it has expired, say so explicitly and reopen it) ---")
         if _add(header):
-            for line in pos_lines:
+            for i, line in enumerate(pos_lines):
                 if not _add(line):
+                    dropped += len(pos_lines) - i
                     break
+        else:
+            dropped += len(pos_lines)
     if note_lines:
         header = ("--- RELEVANT MEMORY (re-surfaced for this message; recomputed "
                    "server-side for this turn, not just at session start) ---")
         if _add(header):
-            for line in note_lines:
+            for i, line in enumerate(note_lines):
                 if not _add(line):
+                    dropped += len(note_lines) - i
                     break
+        else:
+            dropped += len(note_lines)
     if ledger_block:
         lb = len(ledger_block.encode('utf-8')) + 1
         if total + lb <= budget:
             out.append(ledger_block)
             total += lb
-    return "\n".join(out), total
+        else:
+            dropped += 1
+    return "\n".join(out), total, dropped
 
 
 def refresh_for_turn(project, session, message, *, topk=None, expand=None,
@@ -488,12 +501,11 @@ def _refresh_for_turn(project, session, message, *, topk, expand, context):
         _log(f"[mem-turn] {pid}: negation ledger render failed: {e}")
         ledger_block = ''
 
-    block, cost = _fit_lines(pos_lines, note_lines, budget, ledger_block)
-    if block:
-        raw_bytes = sum(len(l.encode('utf-8')) + 1 for l in pos_lines + note_lines)
-        if raw_bytes > cost:
-            _log(f"[mem-turn] {pid}: per-turn block truncated {raw_bytes}B -> "
-                 f"{cost}B (budget {budget}B)")
+    block, cost, dropped = _fit_lines(pos_lines, note_lines, budget, ledger_block)
+    if dropped:
+        _log(f"[mem-turn] {pid}: per-turn block truncated, dropped {dropped} "
+             f"of {len(pos_lines) + len(note_lines) + bool(ledger_block)} "
+             f"line(s), kept {cost}B (budget {budget}B)")
 
     delivered_uids = []
     for h in kept:
