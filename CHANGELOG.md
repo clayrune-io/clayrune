@@ -27,6 +27,12 @@
 - DCW-C6, C7. A typed credential never replaces a vault entry another Save made a moment earlier, and picking a saved entry that is gone or locked says so instead of "could not save".
 - DCW-C11, C12, C13. A remote MCP server that takes the request and answers late reads as a timeout, a check record that is briefly unreadable keeps its tool baseline, a pane-account Save that fails midway leaves no half-made account, and expired npm registry documents are dropped from memory.
 - DCW-C9, C14. The discovery proxy's documentation states its real connection cap, `node --eval=code` gets the inline-code label, connection text is cleaned only up to the part that is kept, and a connection's status is read under the same lock its check writes under.
+## [2026-11-19] - Second-review follow-ups to the agent fixes (MC-1179 R34, P95, X1)
+
+- R34. A chat restored after a server restart remembers which lines of its buffer are user prompts. A child's report to its spawner no longer joins the previous reply, a queued follow-up prompt and the new reply into one. A reply that itself begins with a quoted line is still reported whole.
+- P95. The Windows installer stops CLI setup when a running Claude process cannot be identified, for example an elevated one. It names the process ID and asks you to close it or run the installer elevated. It also recognises an npm folder that is a junction or symlink, as nvm-windows sets up.
+- X1. Codex and Qwen follow-ups detach a previous process that has already exited, as the other per-turn providers do, so its late output cannot end the new turn.
+- Tests added for the pending-context refusal through `/agent/send` (R39) and the failed-resume re-check in Mode B (R27).
 
 ## [2026-11-19] - Desk planners can pick a child's model and effort
 

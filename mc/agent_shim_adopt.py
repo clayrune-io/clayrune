@@ -45,6 +45,7 @@ from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Set, 
 
 from mc import agent_shim as _shim
 from mc import agent_shim_client as _client
+from mc import user_turn_marks as _user_turn_marks
 from mc.atomic_json import write_json_atomic
 
 SCHEMA = 1
@@ -162,7 +163,8 @@ def _json_copy(value: Any) -> Tuple[bool, Any]:
 
 def project_session(session: Mapping[str, Any], *, log_tail: int = LOG_TAIL_MAX) -> Dict[str, Any]:
     """The JSON-safe projection of a session dict, `log_lines` as
-    {'lines': [...last N], 'ts': [...], 'dropped': n}. Returns a plain dict with
+    {'lines': [...last N], 'ts': [...], 'dropped': n, 'user_turns': [...]}
+    (`user_turns`: mc/user_turn_marks.py). Returns a plain dict with
     `_skipped` naming every key that could not be serialized, so a lossy
     projection is visible in the checkpoint rather than silent."""
     out: Dict[str, Any] = {}
@@ -183,7 +185,8 @@ def project_session(session: Mapping[str, Any], *, log_tail: int = LOG_TAIL_MAX)
     kept = lines[-log_tail:] if log_tail else []
     kept_ts = ts[-len(kept):] if (ts and len(ts) == len(lines) and kept) else [None] * len(kept)
     out['log_lines'] = {'lines': [str(x) for x in kept], 'ts': kept_ts,
-                        'dropped': max(0, len(lines) - len(kept))}
+                        'dropped': max(0, len(lines) - len(kept)),
+                        _user_turn_marks.KEY: _user_turn_marks.indexes(kept)}
     out['_skipped'] = sorted(skipped)
     return out
 
@@ -194,7 +197,7 @@ def restore_session(projection: Mapping[str, Any]) -> Dict[str, Any]:
     from mc.core import TimestampedLines
     session = {k: _untag(v) for k, v in projection.items() if k not in ('log_lines', '_skipped')}
     ll = projection.get('log_lines') or {}
-    lines = list(ll.get('lines') or [])
+    lines = _user_turn_marks.rewrap(ll.get('lines') or [], ll.get(_user_turn_marks.KEY))
     ts = list(ll.get('ts') or [])
     session['log_lines'] = (TimestampedLines(lines, ts=ts) if len(ts) == len(lines)
                             else TimestampedLines(lines))

@@ -448,20 +448,68 @@ function Install-ClaudeNpm {
     Refresh-Path
 }
 
+# Full path with every junction / directory symlink on the way replaced by
+# its target. GetFullPath leaves links in place, so an npm prefix that IS a
+# link (nvm-windows points its nodejs directory at the active version) never
+# matched the image path Windows reports for a running claude.exe, which is
+# under the target. A component that is missing or cannot be read is kept as
+# written, and so is a reparse point with no followable target.
+function Resolve-LinkedPath {
+    param([string]$Path)
+    $full = [IO.Path]::GetFullPath($Path)
+    for ($hop = 0; $hop -lt 32; $hop++) {
+        $root = [IO.Path]::GetPathRoot($full)
+        $parts = @($full.Substring($root.Length).Split([char[]]@('\', '/'), [StringSplitOptions]::RemoveEmptyEntries))
+        $current = $root
+        $next = $null
+        for ($i = 0; $i -lt $parts.Count; $i++) {
+            $current = [IO.Path]::Combine($current, $parts[$i])
+            $item = $null
+            try { $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop } catch { break }
+            if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { continue }
+            # .Target is a string[] in Windows PowerShell and a string in PowerShell 7.
+            $target = [string](@($item.Target) | Select-Object -First 1)
+            if ($target -match '^\\(\\\?|\?\?)\\[A-Za-z]:\\') { $target = $target.Substring(4) }
+            if (-not $target -or $target.StartsWith('\\?\') -or $target.StartsWith('\??\')) { continue }
+            if (-not [IO.Path]::IsPathRooted($target)) {
+                $target = [IO.Path]::Combine([IO.Path]::GetDirectoryName($current), $target)
+            }
+            $rest = @()
+            if ($i + 1 -lt $parts.Count) { $rest = @($parts[($i + 1)..($parts.Count - 1)]) }
+            $next = [IO.Path]::GetFullPath([IO.Path]::Combine([string[]](@($target) + $rest)))
+            break
+        }
+        if (-not $next) { break }
+        $full = $next
+    }
+    return $full
+}
+
 # npm install with an automatic one-shot clean-reinstall fallback. Health is
 # judged ONLY by `claude --version` (Test-ClaudeWorks) - layout-agnostic.
 function Invoke-ClaudeNpmInstall {
     param([string]$Label)
-    $npmRoot = [IO.Path]::GetFullPath((Get-NpmPrefix)).TrimEnd('\', '/') +
+    $npmRoot = (Resolve-LinkedPath (Get-NpmPrefix)).TrimEnd('\', '/') +
         [IO.Path]::DirectorySeparatorChar
     foreach ($process in (Get-Process -Name claude -ErrorAction SilentlyContinue)) {
+        $processPath = ''
         try {
             $processPath = $process.Path
-            if (-not $processPath) { continue }
-            $processPath = [IO.Path]::GetFullPath($processPath)
+            if ($processPath) { $processPath = Resolve-LinkedPath $processPath }
         } catch {
-            # The process may have exited or its executable may be inaccessible.
-            continue
+            $processPath = ''
+        }
+        if (-not $processPath) {
+            # No readable image path: an elevated Claude seen from a normal
+            # shell, or a 64-bit one seen from 32-bit PowerShell (PowerShell
+            # hands back $null there, it does not throw). It may be the npm
+            # one, so it stops the install like one. Only a process that has
+            # gone in the meantime is skipped: it holds no lock on claude.exe.
+            $processId = $process.Id
+            if (-not (Get-Process -Id $processId -ErrorAction SilentlyContinue)) { continue }
+            Write-Host "  A Claude process is running (PID $processId) and this window cannot see where it was started from." -ForegroundColor Yellow
+            Write-Host '  Close it, or re-run this installer from an elevated PowerShell, then retry CLI setup.' -ForegroundColor Yellow
+            return $false
         }
         if ($processPath.StartsWith($npmRoot, [StringComparison]::OrdinalIgnoreCase)) {
             Write-Host "  Close the running Claude CLI at '$processPath' before retrying CLI setup." -ForegroundColor Yellow
