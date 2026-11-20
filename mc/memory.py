@@ -794,7 +794,6 @@ def _mem_tokens(text):
     query of "memory system" has to reach a note whose text says
     `project_memory_system_redesign`.
     """
-    import re  # module has no top-level `re` import (see _re_auth pattern)
     return [t for t in re.findall(r'[a-z0-9]+', (text or '').lower())
             if len(t) >= 3]
 
@@ -815,7 +814,6 @@ def _mem_link_key(s):
     filename stem. Resolution bug fix, not a new authoring convention: no
     note or link needs to change for this to repair itself.
     """
-    import re  # module has no top-level `re` import (see _re_auth pattern)
     s = (s or '').strip()
     if s.lower().endswith('.md'):
         s = s[:-3]
@@ -4708,7 +4706,6 @@ def _entry_group_key(line):
     the byte-preservation guarantee on existing entries holds. It folds legacy
     boilerplate titles onto the compact label so pre-fix and post-fix steward
     entries collapse into one group instead of two."""
-    import re  # module has no top-level `re` import (see _re_auth pattern)
     m = re.match(_ENTRY_HEAD_PAT, line or '')
     if not m:
         return None
@@ -6109,16 +6106,16 @@ def _scribe_classify_habits(project, session, statements):
 
     Origin stamping / unattended-loop rail: unlike `write_topic_note` (which
     stamps honestly either way — see its own docstring), THIS caller gates on
-    it. `_memory_search`'s corpus has no `origin` filter anywhere (verified:
-    `grep -n "'origin'" mc/memory.py` outside this section returns nothing) —
-    the origin-stamped read-floor the rail relies on is a different
-    subsystem's (`mc.distiller`'s `exploration_read_floor
-    (consumer_unattended=True)`, scoped to learning artifacts, not the
-    general topic-note corpus every session's memory search reads from. A
-    note minted here reaches EVERY consumer, attended or not, the moment it
-    exists — so an unattended session's habit statement must never mint at
-    all, or it silently becomes exactly the autonomous-output-as-input the
-    rail exists to prevent. Checked with `_stamp_origin` itself, off the same
+    it. When this gate was written `_memory_search`'s corpus had no `origin`
+    filter at all, so a note minted here reached EVERY consumer, attended or
+    not, the moment it existed. It has one now: `_mem_unit_allowed` withholds
+    an `origin: unattended` topic note or position from an unattended
+    consumer. This gate is NOT made redundant by that and must stay: the
+    filter is on the read side and passes unstamped notes, and a habit note
+    claims "the operator said this", which only a human's own statement can
+    back. So an unattended session's habit statement must never mint at
+    all, or it becomes exactly the autonomous-output-as-input the rail
+    exists to prevent. Checked with `_stamp_origin` itself, off the same
     `task`/`trigger_type` `write_topic_note` will stamp with, so the gate and
     the stamp can never disagree.
 
