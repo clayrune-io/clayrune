@@ -25,6 +25,7 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from . import canonical, firestore as fs
+from .logsafe import scrub
 from .schemas import AttestationRequest
 
 log = logging.getLogger(__name__)
@@ -203,8 +204,8 @@ async def verify(req: AttestationRequest, *, raw_envelope: dict) -> VerifiedAtte
     # / Memorystore counter is wired up.
 
     # Step 12: device_cap not exceeded.
-    # v1 simplified: enforced at /v1/enroll (can't enroll past cap) rather
-    # than at every attest. Skipped here.
+    # Not enforced anywhere today: /v1/enroll writes `device_cap` on the user
+    # row and nothing reads it (MC-1179 MB28). Skipped here.
 
     # Step 13: hostname_claim matches stored.
     stored_hostname = device.get("hostname_claim", "")
@@ -254,5 +255,10 @@ def _is_user_suspended(user_id: str) -> bool:
         if not snap.exists:
             return False
         return bool((snap.to_dict() or {}).get("suspended"))
-    except Exception:
+    except Exception as e:
+        # Still answers "not suspended": the attest route re-reads this row and
+        # checks entitlement, which suspension overrides. Logged so a read
+        # fault that let a suspended account through this step can be seen.
+        log.warning("suspension lookup failed for user %s: %s: %s",
+                    scrub(user_id), type(e).__name__, scrub(e))
         return False

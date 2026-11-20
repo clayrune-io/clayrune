@@ -11,7 +11,8 @@ instead of raising: a status read must not become a way to wedge the kill switch
 its owner/address fields are for the authenticated dashboard, never agent
 context. Remote queue values are observations, not authority or live counters.
 It never composes a transport, starts a worker, bootstraps or advances a flow.
-The GET cutover belongs to a separate route-wiring unit; this adapter is unwired.
+It is the body of the status panel: ``GET /api/agent-mail/enrollment`` returns it
+(``mc/blueprints/agent_mail_enrollment_routes.py``), and ``Disable`` reads it too.
 
 Legacy prerequisite/proof helpers remain solely for existing Enrollment callers
 until their separately scoped retirement. Their tunnel/proof readiness fields
@@ -266,7 +267,7 @@ def _mailbox(value: Any) -> str:
 
 
 def pull_status(factory: Any, *, supervisor: Any = None, signup: Any = None) -> dict[str, Any]:
-    """Unwired section10 dashboard view. All I/O is local and read-only.
+    """Section10 dashboard view, served by the enrollment GET. All I/O is local and read-only.
 
     factory must be the checked MailFactory (or its explicit fake). It supplies
     require_pull_store, seal and clock, never bootstrap/default global lookup.

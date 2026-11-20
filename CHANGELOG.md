@@ -6,6 +6,14 @@
 - W8, W11. Worker failure logs carry the exception name and a fixed code, never the exception text. An inbound plain-text body containing a NUL byte is dropped with reason `text_nul` and an audit row, where it used to fail the SMTP delivery as a storage fault.
 - W9. The Worker entry no longer loads the retired enrollment and lifecycle modules on cold start; the retired routes still answer `410 legacy_retired`.
 - W7, W18. The Wrangler template lists all six D1 migrations, the Worker README describes the pull transport that runs, two superseded transport documents say so at the top, and file headers stop calling wired modules "Unwired".
+## [2026-11-19] - Mail backend and control plane: medium and low findings (MC-1179 pass 05b)
+
+- MB2, MB7, MB11. The laundered mail digest is rebuilt from nine typed, length-capped fields instead of being returned whole. A mail pipe write produces one receipt instead of two. The pull worker logs the type of an unexpected exception.
+- MB27, MB30. The sign-in page refuses a `return_to` whose host a browser reads differently from the server, and the value can no longer close the page's script. A sign-in intent stops working when its 15 minutes are up.
+- MB28, MB33. A re-enroll that fails mid-provisioning keeps a username the account already holds, and a re-enroll no longer resets the account's creation date or usage counter. A failed suspension lookup in the verify chain is logged.
+- MB35. The phone-pairing error no longer returns the control plane's response body, which can hold a one-time pairing token.
+- MB21, MB34. Six agent-mail file headers and four control plane comments now describe the code as it is. Two control plane auth stubs with no caller are removed.
+- The control plane changes reach users when the control plane is next deployed.
 
 ## [2026-11-19] - Desk planners can pick a child's model and effort
 

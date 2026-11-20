@@ -20,6 +20,12 @@ GOOD_PUB = base64.b64encode(b"\x01" * 32).decode()
 GOOD_CB = "http://127.0.0.1:5199/api/mc-callback"
 
 
+def _in_five_minutes():
+    # /signin/complete refuses an intent with no live expires_at (MB30)
+    import datetime as dt
+    return dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=5)
+
+
 # ─── MB26: the callback check ────────────────────────────────────────────────
 
 @pytest.mark.parametrize("cb", [
@@ -74,6 +80,7 @@ def test_signin_complete_redirects_to_a_rebuilt_callback_not_the_stored_string(
         "csrf_nonce_hash": h,
         "device_pub_hash": hashlib.sha256(GOOD_PUB.encode()).hexdigest(),
         "callback": stored,
+        "expires_at": _in_five_minutes(),
     })
     monkeypatch.setattr(routes_account, "_verify_firebase_token",
                         lambda t: {"email": "a@b.c", "email_verified": True, "uid": "u"})
@@ -99,6 +106,7 @@ def test_signin_complete_redirect_is_rebuilt_from_parsed_parts(
         "csrf_nonce_hash": h,
         "device_pub_hash": hashlib.sha256(GOOD_PUB.encode()).hexdigest(),
         "callback": GOOD_CB,
+        "expires_at": _in_five_minutes(),
     })
     monkeypatch.setattr(routes_account, "_verify_firebase_token",
                         lambda t: {"email": "a@b.c", "email_verified": True, "uid": "u"})

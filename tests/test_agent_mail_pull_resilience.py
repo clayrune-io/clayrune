@@ -137,3 +137,24 @@ def test_halt_reasons_still_halt_the_worker(w, reason):
         peer.stop.set()
         client.stop()
         peer.close()
+
+
+def test_unexpected_exception_type_is_logged_and_still_retried(w, monkeypatch):
+    """MB11: a code defect in the session loop is retried like a dropped
+    socket, but its type must be in the log or it reads as a network fault."""
+    from mc import agent_mail_pull_client as pull
+    lines = []
+    monkeypatch.setattr(pull, '_log', lambda text, **kw: lines.append(text))
+    client = w.client(socket_factory=lambda: pytest.fail('no socket expected'))
+
+    def defect():
+        raise KeyError('row text that must not be logged')
+    monkeypatch.setattr(client, '_session', defect)
+    client.start()
+    try:
+        eventually(lambda: any('connection_lost' in line for line in lines))
+        assert client.running  # retried under backoff, not halted
+        assert any('KeyError' in line for line in lines)
+        assert not any('row text' in line for line in lines)
+    finally:
+        assert client.stop()

@@ -1,6 +1,8 @@
 """Human-owned local enrollment lifecycle; injected adapters only (unit 7b).
 
-No production factory, network client, key generator, unlock or startup worker.
+No network client, key generator, unlock or startup worker. A factory exists
+(``MailFactory.enrollment``) and has no production caller: the enrollment routes
+take the pull branch, and the service answers this protocol ``410 legacy_retired``.
 Remote adapters must be reviewed before wiring: ownership never enables mail.
 """
 from __future__ import annotations

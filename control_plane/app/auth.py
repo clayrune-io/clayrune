@@ -3,17 +3,17 @@
 PROPRIETARY AND CONFIDENTIAL.
 Copyright (c) 2026 Clayrune. All rights reserved.
 
-Three schemes (`docs/remote-access/03-control-plane-api.md` §2):
+Of the three schemes in `docs/remote-access/03-control-plane-api.md` §2, this
+file holds one:
 
   - parse_device_auth: extract device_id from `Authorization: MC-Device ...`
                        header. Body signature verification happens later in
                        verify.py — this just gets us the device_id string.
 
-  - firebase_user:    Firebase ID token → decoded claims dict.
-                      (Stub for now; routes that need it call this directly.)
-
-  - operator_user:    operator JWT issued by Google IAP.
-                      (Stub for now; admin endpoints not in v1 scope.)
+The other two live with their routes: Firebase ID tokens are verified by
+`routes_account._verify_firebase_token`, and the operator gate is the email
+allowlist in `routes_admin`. The two stubs that used to stand in for them here
+had no caller and were removed (MC-1179 MB34).
 
 The parsers raise HTTPException so they integrate cleanly with FastAPI
 `Depends()`.
@@ -76,26 +76,6 @@ def maybe_device_auth_dep(authorization: Optional[str] = Header(None, alias="Aut
         return parse_device_auth(authorization)
     except HTTPException:
         return None
-
-
-# ─── Firebase ID token (browser flows) ───────────────────────────────────────
-
-
-async def firebase_user(authorization: str = Header(..., alias="Authorization")) -> dict:
-    """Verify Firebase ID token and return decoded claims dict.
-
-    Stub. Real impl uses firebase-admin SDK with project public keys cached.
-    Raises HTTPException(401) on invalid/missing/expired.
-    """
-    raise NotImplementedError("firebase-admin SDK integration pending — wire up with §3 of SETUP_CHECKLIST.md")
-
-
-# ─── Operator JWT (admin endpoints) ──────────────────────────────────────────
-
-
-async def operator_user(authorization: str = Header(..., alias="Authorization")) -> dict:
-    """Verify operator JWT issued by Google IAP. Stub for v1."""
-    raise NotImplementedError("Operator JWT (IAP) integration pending — admin endpoints out of v1 scope")
 
 
 # ─── IP hashing for attestation_log ──────────────────────────────────────────

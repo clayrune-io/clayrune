@@ -58,6 +58,12 @@ def write(proc: Any, data: Any, session: Any, lock: Any, close_after: bool) -> d
     scope.begin()
     scope.waited = True
     done = threading.Event()
+    # One receipt per delivery (MC-1179 MB7). The caller owns it for a write it
+    # saw finish inside the window, synchronously, because MailWake reads the
+    # receipt as soon as this returns. The worker owns only the late one, and
+    # waits for the caller's verdict so the two can never both accept.
+    handed = threading.Event()
+    late = [False]
     result: dict[str, str] = {'ack': 'unknown'}
 
     def worker() -> None:
@@ -78,16 +84,25 @@ def write(proc: Any, data: Any, session: Any, lock: Any, close_after: bool) -> d
             _log(f'[agent-mail] pipe write failed: {type(exc).__name__}', flush=True)
         finally:
             done.set()  # release a route holding manager.lock before gate work
-        if result['ack'] == 'written':
+        handed.wait()
+        if late[0] and result['ack'] == 'written':
             finish(scope, type('Receipt', (), {'ok': True})())
-        else:
-            scope.unknown()
 
     threading.Thread(target=worker, daemon=True, name='mail-followup-stdin').start()
-    if not done.wait(ACK_SECONDS):
-        scope.unknown()
-    elif result['ack'] == 'written':
-        scope.accept()
+    try:
+        if not done.wait(ACK_SECONDS):
+            late[0] = True
+            scope.unknown()
+        elif result['ack'] == 'written':
+            try:
+                scope.accept()
+            except Exception:
+                scope.unknown()  # what the worker's second accept used to do
+                raise
+        else:
+            scope.unknown()
+    finally:
+        handed.set()
     return dict(result)
 
 

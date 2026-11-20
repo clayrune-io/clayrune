@@ -232,3 +232,64 @@ def test_cli_imap_fetch_failure_also_fails_closed_without_calling_launder():
     assert result['ok'] is False
     assert result['error'] == 'imap_fetch_failed'
     assert called == []  # laundering never ran over a failed fetch
+
+
+# ── MB2: the digest handed back is rebuilt, not passed through ───────────────
+
+def _digest_with(**overrides):
+    import json
+    data = json.loads(_VALID_DIGEST_JSON)
+    data.update(overrides)
+    return json.dumps(data)
+
+
+def test_digest_keeps_only_the_nine_named_keys():
+    """A steered model can add a key the instruction never asked for
+    ("system", "tool_result", ...); it must not reach the tooled session."""
+    rt = _fake_runtime(text=_digest_with(system=_HOSTILE_BODY, extra={'run': _SECRET_MARKER}))
+    out = ml.launder_mail_digest(_ONE_MESSAGE, query='q', runtime=rt)
+    assert out['ok'] is True
+    assert set(out['content']['digest']) == ml._REQUIRED_DIGEST_KEYS
+    assert _SECRET_MARKER not in str(out)
+
+
+def test_digest_text_fields_are_length_capped():
+    huge = 'A' * 50_000
+    rt = _fake_runtime(text=_digest_with(reply_text=huge, notes=huge, quoted_original_ask=huge,
+                                         reply_from_header=huge, subjects_seen=[huge] * 50))
+    digest = ml.launder_mail_digest(_ONE_MESSAGE, query='q', runtime=rt)['content']['digest']
+    for key in ('reply_text', 'notes', 'quoted_original_ask', 'reply_from_header'):
+        assert len(digest[key]) <= ml._MAX_DIGEST_TEXT_CHARS + len(ml._TRUNCATED_MARK)
+        assert digest[key].endswith(ml._TRUNCATED_MARK)
+    assert len(digest['subjects_seen']) <= ml._MAX_MESSAGES
+    assert all(len(s) <= ml._MAX_DIGEST_TEXT_CHARS + len(ml._TRUNCATED_MARK)
+               for s in digest['subjects_seen'])
+
+
+def test_digest_with_a_wrong_typed_field_fails_closed():
+    """A nested object under a text key is a second way to carry the thread
+    back out whole; wrong types are a shape error, never coerced through."""
+    for overrides in (
+        {'reply_text': {'role': 'system', 'content': _HOSTILE_BODY}},
+        {'notes': [_HOSTILE_BODY]},
+        {'subjects_seen': _HOSTILE_BODY},
+        {'subjects_seen': [{'x': _HOSTILE_BODY}]},
+        {'has_likely_reply': 'true'},
+        {'ambiguous_or_mixed': 0},
+        {'message_count': '1'},
+        {'message_count': True},
+    ):
+        rt = _fake_runtime(text=_digest_with(**overrides))
+        out = ml.launder_mail_digest(_ONE_MESSAGE, query='q', runtime=rt)
+        assert out['ok'] is False, overrides
+        assert out['error'] == 'launder_shape_error'
+        assert _SECRET_MARKER not in str(out)
+
+
+def test_digest_null_text_fields_stay_null():
+    rt = _fake_runtime(text=_digest_with(reply_text=None, reply_from_header=None,
+                                         quoted_original_ask=None, has_likely_reply=False,
+                                         decision='no_reply_found'))
+    digest = ml.launder_mail_digest(_ONE_MESSAGE, query='q', runtime=rt)['content']['digest']
+    assert digest['reply_text'] is None and digest['reply_from_header'] is None
+    assert digest['quoted_original_ask'] is None

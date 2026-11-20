@@ -1208,9 +1208,12 @@ def mobile_pair_generate():
     client_id = body_out.get('client_id') or ''
     client_secret = body_out.get('client_secret') or ''
     if not (hostname and client_id and client_secret):
+        # Field NAMES only, never the body: a newer control plane answers with a
+        # one-time pair_token here, and echoing it hands a live pairing
+        # credential back in an error (MC-1179 MB35).
         return jsonify({'error': 'cp_incomplete_response',
                         'message': 'Control plane response missing creds.',
-                        'cp_body': body_out}), 502
+                        'cp_fields': sorted(str(k) for k in body_out)}), 502
 
     tunnel_url = hostname if hostname.startswith(('http://', 'https://')) else 'https://' + hostname
     pair_uri = _mobile_pair_auto_uri(tunnel_url=tunnel_url, client_id=client_id,
