@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-19] - Memory and learning reliability fixes (MC-1179 pass 03, medium and low)
+
+- ML17, ML18, ML19, ML20, ML23. The continuity record is written under its lock and never over a record that could not be read. Only a line that is the old session-log heading starts the managed region. A session commit strips `MEMORY.md` after the session log is written. A checkpoint that fails to launch gives its slot back and logs.
+- ML14, ML28, ML29, S3.3, S3.6. A note slug that is a path is refused. The note gate checks a new note before taking the topic write lock. A note edit is refused with 409 when the note changed after it was read. A failed note read is logged and retried. A rename that cannot remove the old file is undone and refused.
+- S2.2, S2.3, S2.4, S2.7, S2.8. Six Scribe file failures now log. A stray JSON line no longer drops the rest of a transcript's usage. The watermark sweep reads the live sessions inside the lock. One unreadable position no longer fails the whole list. Four stale comments are corrected.
+- S3.2, S3.5, ML35, ML36, S5.4. The per-turn memory block logs when a line is dropped for budget. The cold index skips a stray log entry and stops re-purging an incognito transcript. An ordinary word after "branch" is no longer probed as a branch name. The topic state route returns 404 for an unknown project and 500 for a failed save.
+- ML31, ML32, ML34, ML37, S4.1, S4.5. A failed model call while rendering a learning artifact is logged. Malformed extraction output no longer loses a session's well-formed signals. A double-quoted skill frontmatter value is unescaped when read, so a save no longer doubles its backslashes. The skill import scanner decodes a script by its byte-order mark. A transcript that vanishes mid-scan no longer fails the skill usage report. A counter update works on a stats file with no counters.
+
 ## [2026-11-19] - Desk planners can pick a child's model and effort
 
 - Campaign, storyboard, and article planners see the models and effort levels each hired agent's provider offers. Dispatch cards show the launch settings, and invalid picks leave the attempt budget intact.
