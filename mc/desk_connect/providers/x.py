@@ -105,9 +105,12 @@ class XProvider(base.Provider):
                     saved_fields.create(vault, clean[key], allow_unattended=clean['allow_unattended'], undo=undo,
                                         confirm_replace=clean.get('confirm_replace') is True)
                 else:
+                    # create_only: the names check above is a courtesy message; this is the guard.
                     _vault.set_secret(vault, clean[key], description=f'{what} (from Connect by address)',
                                       scope='global', allow_unattended=clean['allow_unattended'],
-                                      entry_type=_vault.ENTRY_API_KEY)
+                                      entry_type=_vault.ENTRY_API_KEY, create_only=True)
+            except _vault.SecretExists as e:
+                raise _exists(vault) from e
             except _vault.SecretsError as e:
                 raise base.ProviderError(f'the credential could not be stored: {e}', 400, 'vault_refused') from e
             if not isinstance(clean[key], dict):

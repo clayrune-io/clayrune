@@ -34,7 +34,11 @@ def save(clean: dict) -> dict:
         try:
             _vault.set_secret(cred['name'], cred['value'], username=cred['username'],
                               description=cred['description'], scope='global',
-                              allow_unattended=cred['allow_unattended'], entry_type=cred['entry_type'])
+                              allow_unattended=cred['allow_unattended'], entry_type=cred['entry_type'],
+                              create_only=True)   # the names check above is a courtesy message; this is the guard
+        except _vault.SecretExists as e:
+            raise CommitError(f'a secret named "{cred["name"]}" already exists; pick another name '
+                              f'(Clayrune does not replace a stored credential from here)', 409, 'secret_exists') from e
         except _vault.SecretsError as e:
             raise CommitError(f'the credential could not be stored: {e}', 400, 'vault_refused') from e
         wrote_secret = True
