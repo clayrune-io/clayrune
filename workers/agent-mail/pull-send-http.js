@@ -1,4 +1,4 @@
-// Pull send HTTP boundary (unit14a). Unwired; unit14 owns entry registration.
+// Pull send HTTP boundary (unit14a). Registered in worker.js (unit14).
 import { Ledger, DAY } from './ledger.js';
 import { OwnerRegistry } from './owner-registry.js';
 import { pullOutbound, validateSend } from './outbound.js';

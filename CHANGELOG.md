@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-19] - Agent mail Worker reliability fixes (MC-1179 pass 05a)
+
+- W5, W12. Scheduled retention now deletes expired rate-limit buckets, and a short notification page ends the sweep pass without spending an extra tick.
+- W8, W11. Worker failure logs carry the exception name and a fixed code, never the exception text. An inbound plain-text body containing a NUL byte is dropped with reason `text_nul` and an audit row, where it used to fail the SMTP delivery as a storage fault.
+- W9. The Worker entry no longer loads the retired enrollment and lifecycle modules on cold start; the retired routes still answer `410 legacy_retired`.
+- W7, W18. The Wrangler template lists all six D1 migrations, the Worker README describes the pull transport that runs, two superseded transport documents say so at the top, and file headers stop calling wired modules "Unwired".
+
 ## [2026-11-19] - Desk planners can pick a child's model and effort
 
 - Campaign, storyboard, and article planners see the models and effort levels each hired agent's provider offers. Dispatch cards show the launch settings, and invalid picks leave the attempt budget intact.

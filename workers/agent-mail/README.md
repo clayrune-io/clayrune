@@ -1,19 +1,40 @@
 # Agent mail: Worker transport and inbound plain-text library
 
-Cloudflare Email Worker candidate behind per-install agent mail
-(`docs/AGENT_MAIL_SPEC.md`, MC-1166 units 2 and 3). **Not deployed or enabled;
-no Cloudflare account touched.** Unit 2 adds `worker.js` fetch/email/scheduled
-handlers, separate Ed25519 signing, owner-only outbound construction, ingress,
-and a D1 ledger/replay loop. Unit 3 remains the authentication/strip library.
+Cloudflare Email Worker behind per-install agent mail
+(`docs/AGENT_MAIL_SPEC.md`, MC-1166). The transport is **pull**: the install
+opens an outbound WebSocket to the Worker and mail is handed down it. The wire,
+custody and schema contract is
+[`docs/AGENT_MAIL_PULL_CONTRACT.md`](../../docs/AGENT_MAIL_PULL_CONTRACT.md).
+Nothing in this folder deploys itself: `wrangler.toml.example` ships with
+`MAIL_ENABLED` and `MAIL_INGRESS_VERIFIED` off, and whether a Worker is live is
+a fact about the operator's account, not about this repository.
 
-The exact wire, custody, schema and enrollment handoff contract is in
-[`docs/AGENT_MAIL_TRANSPORT.md`](../../docs/AGENT_MAIL_TRANSPORT.md).
-`MAIL_ENABLED` and `MAIL_INGRESS_VERIFIED` default off; unit 7 must supply verified
-owner/public-key/generation and service-authoritative tunnel bindings, and unit
-4 must implement the signed receiver plus durable custody receipt. An account
-hostname suffix or an install-provided callback is never ownership evidence.
+The earlier push transport (signed `/v1/mail/send`, enrollment, lifecycle,
+scheduled replay to a tunnel callback;
+[`docs/AGENT_MAIL_TRANSPORT.md`](../../docs/AGENT_MAIL_TRANSPORT.md)) is
+retired. Its routes answer `410 legacy_retired` (`legacy-paths.js`) and the
+entry no longer loads its modules; see "Retired modules" below.
 
-## What it does
+## What runs
+
+`production.js` is the deployed entry (`main` in `wrangler.toml.example`). It
+re-exports `worker.js` and the Durable Object class `PullSocketMailbox`.
+
+| Entry | Path or trigger | Handler |
+| --- | --- | --- |
+| fetch | `GET /v1/mail/manifest` | `manifest-http.js` |
+| fetch | `/v1/pull/ticket`, then `/v1/pull/socket` | `session-auth.js`, `pull-socket-route.js` into the Durable Object (`pull-socket-mailbox.js`, `pull-mailbox.js`, `pull-frame.js`) |
+| fetch | `/v1/pull/send`, `/v1/pull/send/status` | `pull-send-http.js`, `email-sending.js`, `outbound.js` |
+| fetch | `/v1/pull/activate`, `/v1/pull/status`, `/v1/pull/fence`, `/v1/pull/key/rotate` | `pull-activate-http.js`, `pull-status-http.js`, `pull-fence-http.js`, `pull-key-rotate-http.js` |
+| fetch | `/v1/pull/signup/*`, `/v1/pull/management/*`, `/mail/*` (hosted pages) | `signup-http.js`, `owner-management.js`, `owner-change.js`, `link-router.js`, `verification-mail.js`, `owner-registry.js` |
+| fetch | retired push routes | `410 legacy_retired` (`legacy-paths.js`) |
+| email | inbound mail | `ingress.js`, `ingress-pull.js`, `held-envelope.js`, then the auth/strip library below; custody in `pull-ledger.js` |
+| scheduled | every minute | `pull-sweep.js` (lost-wake recovery), `control-mail-delivery.js` (signup mail), `pull-retention.js` (metadata retention) |
+
+Machine requests are verified by `signed-v2-verifier.js`; D1 access goes
+through `ledger.js`, `ledger-pull.js` and `pull-ledger.js`.
+
+## The inbound library
 
 Ron's rules (spec "Inbound hardening"): a reply is owner-only, and only plain
 text ever reaches custody. A failed check is a **drop**, not a hold.
@@ -25,13 +46,9 @@ text ever reaches custody. A failed check is a **drop**, not a hold.
 | `outbound.js` | Allowlisted note/question payload; server-derived recipient, From, Reply-To and Message-ID; send-intent deduplication and uncertainty. Reply-To is the plain per-user address; the reply token rides in `References`. |
 | `reply-token.js` | `referencesValue()` builds `<TOKEN.NONCE@domain>` for outbound `References` (Cloudflare rejects a caller-set Message-ID, allows References); `headerTokens()` reads token ids back from a reply's `In-Reply-To`/`References` (own domain only, nearest ancestor first, max 8). |
 | `ingress.js` | Bounded raw stream and ordered headers; provider header agreement, loop suppression, unit-3 auth/strip, stable event identity and held missing ids. |
-| `ledger.js`, `schema.sql` | Dedicated D1 state, transactional send/correlation reservation, queue bounds, leased claims, generation revocation and retention. |
-| `replay.js` | Scheduled or authenticated recovery replay; proven routes only, fresh signing nonce, manual redirects, exact durable-custody receipts. |
-| `worker.js` | Thin fetch/email/scheduled entry and synthetic dependency injection factory; no enrollment or dashboard-auth bypass. |
+| `ledger.js`, `schema.sql` | Dedicated D1 state: the shared limiter (`rate_limits`) and the retired push transport's send/correlation tables. Pull state is added by `migrations/0005_pull.sql` and `0006_pull_retention_indexes.sql`. |
+| `worker.js` | Thin fetch/email/scheduled entry and synthetic dependency injection factory; its routes are listed under "What runs". |
 | `manifest-http.js` | `GET /v1/mail/manifest`: serves the PRE-SIGNED service manifest from the `MAIL_SERVICE_MANIFEST` var, verbatim. Never signs, never holds the root key; a missing or malformed var is a 503 with a closed code. |
-| `enrollment-begin-proof.js` | Device possession over every begin field, service, flow-secret digest and freshness; durable D1 nonce claim before provisioning. |
-| `destination-cloudflare.js` | Account-scoped, bounded Cloudflare destination list/create client, no redirects; timestamp/null verification semantics. |
-| `destination-provisioning.js`, `migrations/0004_destinations.sql` | Durable per-device pending attempt, rolling create budgets, account capacity and create tombstones; provider seam wiring. See [signup contract](../../docs/AGENT_MAIL_AUTO_DESTINATION.md). |
 | `auth.js` | `decide(meta, ownerRecord, tokenLookup)` -> `{accept:true, thread, evidence}` or `{accept:false, reason_code}`. `rejectionRecord()` is the only thing kept about a drop: time, reason code, auth result words. |
 | `mailbox.js` | Strict one-mailbox From parsing. Domain case-insensitive, local part exact. No substring or display-name matching. |
 | `authres.js` | Cloudflare `Authentication-Results` (authserv-id `mx.cloudflare.net` only) and the D6=A rule: DMARC pass with aligned SPF **or** DKIM. |
@@ -182,6 +199,25 @@ a visible reason, no text. (Dave's call 2026-11-08: deciding what HTML hides is
 an arms race; every mainstream client sends a plain alternative.) `html_parts`
 and `remote_image_refs` are counts only.
 
+## Retired modules
+
+Kept in the tree with their tests, reachable by no request: `production.js`
+does not import them, directly or through another module.
+
+`replay.js`, `lifecycle.js`, `enrollment.js`, `enrollment-http.js`,
+`enrollment-begin-proof.js`, `enrollment-challenge.js`, `enrollment-grant.js`,
+`enrollment-preflight.js`, `enrollment-provider.js`,
+`enrollment-reservations.js`, `destination-cloudflare.js`,
+`destination-provisioning.js` (signup contract:
+[`docs/AGENT_MAIL_AUTO_DESTINATION.md`](../../docs/AGENT_MAIL_AUTO_DESTINATION.md)),
+`delivery-capability.js`, `delivery-proof.js`, `cp-client.js`, `code-mail.js`,
+`edge-policy.js`, `edge-vendor.js`, `response-signing.js`,
+`legacy-transport-http.js`, `legacy-transport-hooks.js`,
+`legacy-error-boundary.js`.
+
+Migrations `0001` to `0004` created their tables and are still applied, in
+order, before `0005` and `0006`: history is not edited.
+
 ## Publishing the signed service manifest
 
 For Windows Git Bash steps, offline key generation, D1/binding setup, manifest
@@ -209,9 +245,10 @@ is not a secret; the root PRIVATE key never goes near Cloudflare.
   turns. No real destination verification, DNS/DKIM or mail has been performed.
 - Unit 2 keeps the stricter unit-3 no-HTML-fallback decision. The broader draft
   spec's HTML fallback does not override Dave's recorded refusal decision.
-- Scheduled replay and the install recovery call are both required. A failed
-  Email Worker invocation is **not** claimed to provide a durable provider retry
-  guarantee; queue-capacity/storage failure is an explicit custody failure.
+- A failed Email Worker invocation is **not** claimed to provide a durable
+  provider retry guarantee; queue-capacity/storage failure is an explicit
+  custody failure. Mail that reached custody but whose socket wake was lost is
+  recovered by the scheduled sweep (`pull-sweep.js`), not by a replay call.
 
 - **Ingress trust is positional and unverified against real Cloudflare output.**
   The spec requires real provider fixtures before launch. `authres.js` believes

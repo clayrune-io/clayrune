@@ -2,7 +2,7 @@
   "name": "clayrune-agent-mail-worker",
   "version": "0.0.0",
   "private": true,
-  "description": "Owner-only signed agent-mail Worker transport and inbound plain-text library. Not deployed.",
+  "description": "Owner-only signed agent-mail Worker transport and inbound plain-text library.",
   "type": "module",
   "scripts": {
     "test": "node --test test/*.test.js"

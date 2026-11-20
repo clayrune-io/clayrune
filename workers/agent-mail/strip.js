@@ -74,6 +74,9 @@
 // dropped with reason_code `html_only`. Deciding what HTML hides from a reader
 // is an arms race (entities, stylesheets, !important, transparent colour); every
 // mainstream client sends a text/plain alternative (Dave's call, 2026-11-08).
+// Kept text that contains a NUL is dropped with reason_code `text_nul`: custody
+// stores no NUL (pull-ledger.js enqueue), and refusing it there surfaced as a
+// storage fault at SMTP, with no reason and no audit row.
 //
 // WHY THIS DOES NOT USE postal-mime's `email.text` OR `textMap`: `email.text`
 // merges text rendered from any html part that is not a sibling of the plain
@@ -388,6 +391,7 @@ export async function strip(raw, opts = {}) {
     return { ok: false, reason_code: 'html_only', stripped };
   }
   text = text.replace(/\r\n?/g, '\n').trim();
+  if (text.includes('\0')) return { ok: false, reason_code: 'text_nul', stripped };
 
   if (encoder.encode(text).byteLength > lim.maxTextBytes) {
     return { ok: false, reason_code: 'text_too_large', stripped };

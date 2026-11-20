@@ -1,4 +1,4 @@
-// Pull lifecycle HTTP boundary (unit 14b). Unwired; unit 14 owns routing.
+// Pull lifecycle HTTP boundary (unit 14b). Routed by worker.js (unit 14).
 import { Ledger, DAY } from './ledger.js';
 import { OwnerRegistry } from './owner-registry.js';
 import { PULL_SKEW_MS } from './signed-v2-verifier.js';

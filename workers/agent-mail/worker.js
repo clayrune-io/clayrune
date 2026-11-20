@@ -2,8 +2,8 @@
 // The production DO export lives in production.js, keeping this factory Node-importable.
 import { Ledger } from './ledger.js';
 import { BODY_TIMEOUT_MS } from './request-body.js';
-import { isLifecyclePath } from './lifecycle.js';
-import { isEnrollmentPath } from './enrollment-http.js';
+import { isRetiredLegacyPath } from './legacy-paths.js';
+import { failureDetail } from './failure-log.js';
 import { manifestHttp, isManifestRequest } from './manifest-http.js';
 import { VerificationMail } from './verification-mail.js';
 import { unbase64url } from './signing.js';
@@ -55,8 +55,7 @@ export function createWorker({ clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS
       const url = new URL(request.url);
       // Keep the pre-signed manifest byte contract and the legacy route grammar.
       if (isManifestRequest(request, url)) return manifestHttp({ env });
-      if (request.method === 'POST' && !url.search && (isLifecyclePath(url.pathname)
-        || isEnrollmentPath(url.pathname) || ['/v1/mail/send', '/v1/mail/reconcile'].includes(url.pathname))) {
+      if (request.method === 'POST' && !url.search && isRetiredLegacyPath(url.pathname)) {
         return reply(410, { code: 'legacy_retired' });
       }
       const hosted = HOSTED_ROUTES.find(([paths]) => paths.includes(url.pathname));
@@ -82,8 +81,9 @@ export function createWorker({ clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS
         }
         return await new http[1]({ ...options, config: { from: env.MAIL_FROM, domain: env.MAIL_DOMAIN },
           binding: env.MAIL_SEND }).handle(request, context);
-      } catch {
-        console.error('[agent-mail] pull_http_storage_or_configuration_failure');
+      } catch (error) {
+        // Name and closed code only, never the exception text (failure-log.js).
+        console.error(`[agent-mail] pull_http_storage_or_configuration_failure ${failureDetail(error)}`);
         return reply(503, { v: 1, code: 'service_unavailable' });
       }
     },
@@ -93,8 +93,8 @@ export function createWorker({ clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS
         return await ingress({ message, ledger: new Ledger(env.MAIL_DB).pull({ clock }),
           config: { domain: env.MAIL_DOMAIN, ingressVerified: env.MAIL_INGRESS_VERIFIED === 'true' },
           now: clock(), wake: wake(env) });
-      } catch {
-        console.error('[agent-mail] ingress_storage_or_capacity_failure');
+      } catch (error) {
+        console.error(`[agent-mail] ingress_storage_or_capacity_failure ${failureDetail(error)}`);
         throw new Error('agent_mail_custody_failed');
       }
     },
@@ -106,8 +106,8 @@ export function createWorker({ clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS
       let swept, control, retention, failure;
       try {
         swept = await sweep({ ledger: new Ledger(env.MAIL_DB).pull({ clock }), wake: wake(env) });
-      } catch {
-        console.error('[agent-mail] pull_sweep_storage_or_configuration_failure');
+      } catch (error) {
+        console.error(`[agent-mail] pull_sweep_storage_or_configuration_failure ${failureDetail(error)}`);
         failure = new Error('agent_mail_sweep_failed');
       }
       // No seal config means signup was never provisioned here: nothing to deliver.
@@ -115,18 +115,18 @@ export function createWorker({ clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS
         try {
           control = await deliverControlMail({ mail: verificationMail(env), binding: env.MAIL_SEND,
             from: env.MAIL_FROM, domain: env.MAIL_DOMAIN, clock });
-        } catch {
-          console.error('[agent-mail] control_delivery_failure');
+        } catch (error) {
+          console.error(`[agent-mail] control_delivery_failure ${failureDetail(error)}`);
           failure ??= new Error('agent_mail_control_delivery_failed');
         }
       }
       // One bounded slice (<=100 rows of one family) per tick, every tick: the
-      // cursor visits each of its 16 families once per 16 ticks. Gating it to
-      // hourly would cut that to ~150 rows/day/family, below the nonce growth rate.
+      // cursor visits each of its 17 families once per 17 ticks. Gating it to
+      // hourly would cut that to ~140 rows/day/family, below the nonce growth rate.
       try {
         retention = await retain({ ledger: new Ledger(env.MAIL_DB).pull({ clock }) });
-      } catch {
-        console.error('[agent-mail] pull_retention_failure');
+      } catch (error) {
+        console.error(`[agent-mail] pull_retention_failure ${failureDetail(error)}`);
         failure ??= new Error('agent_mail_retention_failed');
       }
       if (failure) throw failure;

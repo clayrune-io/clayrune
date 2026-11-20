@@ -1,5 +1,5 @@
 // Pull v1 ticket/connection authority (units 06, contract sections 2-4).
-// Unwired: unit 14 routes HTTP; unit 09 owns WebSocketPair/hibernation/101 and
+// Wiring: worker.js (unit 14) routes HTTP; unit 09 owns WebSocketPair/hibernation/101 and
 // prior-socket close. Only admitSocket's committed attachment may reach that DO.
 import { bytes, randomId, sha256, base64url, unbase64url } from './signing.js';
 import { origin } from './enrollment-transcript.js';

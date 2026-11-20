@@ -1,4 +1,4 @@
-// MC-1166 W01. Internal scheduled consumer, deliberately unwired until W30.
+// MC-1166 W01. Internal scheduled consumer; worker.js scheduled() runs it every tick.
 import { bytes, randomId, sha256 } from './signing.js';
 import { parseAddrSpec } from './mailbox.js';
 import { verificationBinding, VERIFICATION_TTL } from './verification-mail.js';

@@ -1,4 +1,4 @@
-// MC-1166 unit 13: trusted, bounded scheduled maintenance; no route wiring.
+// MC-1166 unit 13: trusted, bounded scheduled maintenance; run by worker.js scheduled(), no route.
 import { randomId } from './signing.js';
 import { SQL_NOW } from './sql-clock.js';
 
@@ -54,7 +54,9 @@ async function notify(q, wake) {
       WHERE install_id IN (SELECT value FROM json_each(?)) AND next_attempt_ms<=${SQL_NOW}
       AND (lease_id IS NULL OR lease_until_ms<=${SQL_NOW})`, lease, JSON.stringify(due.map((n) => n.install_id))),
     q.stmt('SELECT * FROM pull_notifications WHERE lease_id=? ORDER BY install_id', lease),
-    saveCursor(q, c, last && { ms: 0, id: last.install_id }),
+    // A short page is the end of this pass: restart from the first install next
+    // tick instead of spending a tick finding nothing past the last one.
+    saveCursor(q, c, due.length === LIMIT ? { ms: 0, id: last.install_id } : undefined),
   ]);
   if (!r) return { claimed: 0, woken: 0 };
   const claimed = r[2].results; let woken = 0;

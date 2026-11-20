@@ -1,4 +1,4 @@
-// MC-1166 W03. Trusted metadata maintenance only; W30 owns scheduled wiring.
+// MC-1166 W03. Trusted metadata maintenance only; worker.js scheduled() runs one slice per tick.
 import { SQL_NOW } from './sql-clock.js';
 
 const DAY = 86400000, MONTH = 30 * DAY, YEAR = 365 * DAY, LIMIT = 100;
@@ -15,6 +15,8 @@ const threadScope = (parent) => `t.install_id=${parent}.install_id AND t.generat
 // Blocked and not-yet-due rows advance the cursor too. A fixed pass high-water
 // ensures continuous appends cannot prevent wrap/revisiting earlier deadlines.
 // No private values or provider results enter a cursor or returned statistics.
+// APPEND ONLY: the persisted cursor indexes families by position, and load()
+// pads a cursor saved by an earlier, shorter list. Never reorder or remove.
 const families = [
   ['control', 'pull_control_outbox', (q, ids) => [
     q.stmt(`UPDATE pull_control_outbox SET state='uncertain',finished_ms=COALESCE(finished_ms,${SQL_NOW}),
@@ -123,6 +125,12 @@ const families = [
           AND t.intent_id=pull_intents.intent_id`)}`, intents),
     ];
   }],
+  // Shared limiter buckets (Ledger.limit): the key carries its window index and
+  // expires_at is its first charge plus two windows, so an expired bucket can
+  // never be charged again. Nothing else in the pull Worker deletes them.
+  ['limits', 'rate_limits', (q, ids) => [
+    q.stmt(`DELETE FROM rate_limits WHERE rowid IN (${ids}) AND ${due('expires_at')}`),
+  ]],
 ];
 
 function corrupt() { console.error('[agent-mail] pull_retention_cursor_corrupt'); throw new Error('storage_unavailable'); }
@@ -133,9 +141,11 @@ async function load(q) {
   try { positions = JSON.parse(row.cursor_id); } catch { corrupt(); } // Syntax only.
   if (!Number.isSafeInteger(row.cursor_ms) || row.cursor_ms < 0 || row.cursor_ms >= families.length
     || !Number.isSafeInteger(row.updated_ms) || row.updated_ms < 0
-    || !Array.isArray(positions) || positions.length !== families.length
+    || !Array.isArray(positions) || positions.length > families.length
     || positions.some((p) => !Array.isArray(p) || p.length !== 2
       || p.some((n) => !Number.isSafeInteger(n) || n < 0) || p[0] > p[1])) corrupt();
+  // A shorter list was saved before a family was appended: new families start a pass.
+  while (positions.length < families.length) positions.push([0,0]);
   return { row, phase: row.cursor_ms, positions };
 }
 
