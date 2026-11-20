@@ -148,7 +148,7 @@ test('missing config fails closed with a sanitized error and no legacy fallback'
     assert.deepEqual(await response.json(), { v: 1, code: 'service_unavailable' });
   }
   assert.equal(logs.length, direct.length + LINK_PATHS.length + 1);
-  assert.ok(logs.every((s) => s === '[agent-mail] pull_http_storage_or_configuration_failure'));
+  assert.ok(logs.every((s) => /^\[agent-mail\] pull_http_storage_or_configuration_failure name=[A-Za-z]+(?: code=[a-z_]+)?$/.test(s)));
 });
 
 test('HTTP uses the existing edge-source resolver, ignoring caller forwarding/source/install hints', async (t) => {
@@ -167,7 +167,25 @@ test('unexpected HTTP handler errors retain only the closed operational failure'
   t.mock.method(SessionAuth.prototype, 'handle', async () => { throw new Error('private token SQL owner@example.com'); });
   const response = await createWorker().fetch(request(TICKET_PATH), env);
   assert.equal(response.status, 503); assert.deepEqual(await response.json(), { v: 1, code: 'service_unavailable' });
-  assert.deepEqual(logs, ['[agent-mail] pull_http_storage_or_configuration_failure']);
+  assert.deepEqual(logs, ['[agent-mail] pull_http_storage_or_configuration_failure name=Error']);
+});
+
+// W8: the catch used to log one fixed string, so a code bug, a missing binding
+// and a storage outage were indistinguishable. The name and a closed code are
+// logged; the exception text still never is, and the reply is unchanged.
+test('the HTTP catch logs the exception name and a closed code, never the exception text', async (t) => {
+  const env = await envFor(), logs = [];
+  t.mock.method(console, 'error', (...args) => logs.push(args.join(' ')));
+  for (const thrown of [new TypeError('private owner@example.com is not a function'), new Error('storage_unavailable'),
+    new Error('private_token_shaped_text'), 'private string throw']) {
+    t.mock.method(SessionAuth.prototype, 'handle', async () => { throw thrown; });
+    const response = await createWorker().fetch(request(TICKET_PATH), env);
+    assert.equal(response.status, 503); assert.deepEqual(await response.json(), { v: 1, code: 'service_unavailable' });
+  }
+  assert.deepEqual(logs, ['[agent-mail] pull_http_storage_or_configuration_failure name=TypeError',
+    '[agent-mail] pull_http_storage_or_configuration_failure name=Error code=storage_unavailable',
+    '[agent-mail] pull_http_storage_or_configuration_failure name=Error',
+    '[agent-mail] pull_http_storage_or_configuration_failure name=unknown']);
 });
 
 async function real(t, kind = 'status') {
@@ -248,8 +266,8 @@ test('SMTP and scheduled storage failures throw sanitized errors rather than acc
   await assert.rejects(worker.email(message(), env), { message: 'agent_mail_custody_failed' });
   await assert.rejects(worker.scheduled({}, env), { message: 'agent_mail_sweep_failed' });
   assert.ok(logs.every((s) => !s.includes('private storage detail')));
-  assert.ok(logs.includes('[agent-mail] ingress_storage_or_capacity_failure'));
-  assert.ok(logs.includes('[agent-mail] pull_sweep_storage_or_configuration_failure'));
+  assert.ok(logs.includes('[agent-mail] ingress_storage_or_capacity_failure name=Error code=storage_unavailable'));
+  assert.ok(logs.includes('[agent-mail] pull_sweep_storage_or_configuration_failure name=Error code=storage_unavailable'));
 });
 
 // ---- U7: signup admission option and the control-mail consumer in the cron ----
@@ -372,7 +390,7 @@ test('consumer failure cannot suppress the notification sweep, and is surfaced a
   const woken = f.wakes.length;
   await assert.rejects(f.worker.scheduled({}, f.env), { message: 'agent_mail_control_delivery_failed' });
   assert.equal(f.wakes.length, woken + 1, 'sweep still woke the pending notification');
-  assert.deepEqual(logs, ['[agent-mail] control_delivery_failure']);
+  assert.deepEqual(logs, ['[agent-mail] control_delivery_failure name=Error']);
 });
 
 test('sweep failure cannot suppress control delivery, and the sweep error is the one surfaced', async (t) => {
@@ -386,7 +404,7 @@ test('sweep failure cannot suppress control delivery, and the sweep error is the
   };
   await assert.rejects(f.worker.scheduled({}, f.env), { message: 'agent_mail_sweep_failed' });
   assert.equal(f.sent.length, 1, 'control mail was delivered although the sweep failed');
-  assert.ok(logs.includes('[agent-mail] pull_sweep_storage_or_configuration_failure'));
+  assert.ok(logs.includes('[agent-mail] pull_sweep_storage_or_configuration_failure name=Error code=storage_unavailable'));
   assert.ok(logs.every((l) => !l.includes('private sweep storage detail') && !l.includes('Owner@example.com')));
 });
 
@@ -437,7 +455,7 @@ test('retention failure cannot suppress the sweep or control delivery, and is su
   const woken = f.wakes.length;
   await assert.rejects(f.worker.scheduled({}, f.env), { message: 'agent_mail_retention_failed' });
   assert.equal(f.wakes.length, woken + 1, 'sweep still woke the pending notification');
-  assert.ok(logs.includes('[agent-mail] pull_retention_failure'));
+  assert.ok(logs.includes('[agent-mail] pull_retention_failure name=Error code=storage_unavailable'));
   assert.ok(logs.every((l) => !l.includes('not json')));
 });
 
