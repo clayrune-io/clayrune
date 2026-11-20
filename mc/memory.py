@@ -5909,6 +5909,11 @@ def _extract_transcript_telemetry_multi(paths):
                         m = json.loads(line)
                     except Exception:
                         continue
+                    if not isinstance(m, dict):
+                        # A JSON line that is not an object (a bare list or
+                        # string) used to raise here, and the handler below
+                        # abandoned the rest of this transcript's usage.
+                        continue
                     msg = m.get('message') if isinstance(m.get('message'), dict) else None
                     if not msg:
                         continue
