@@ -2223,6 +2223,12 @@ function refreshModalById(modalId) {
   // changed. Streaming output is unaffected: the SSE append path writes into
   // #agent-output-<sid> directly and doesn't come through here.
   if (entry.element.querySelector('.modal-menu-dropdown.open')) return;
+  // Same deferral for a backlog item or a social draft body being edited in
+  // place: both are contenteditable elements saved on blur, and the swap below
+  // carries textarea/input values across but not a contenteditable's text or
+  // caret. The blur save and the next tick rebuild as before.
+  const _editing = document.activeElement;
+  if (_editing && _editing.isContentEditable && entry.element.contains(_editing)) return;
   if ((modalActiveTab[entry.projectId] || 'agent') === 'agent' &&
       window.deferChatModalRefresh?.(entry.element, `modal:${modalId}`, () => refreshModalById(modalId),
         [activeAgentTab[entry.projectId], splitAgentTab[entry.projectId]], pendingResumeId[entry.projectId])) return;
