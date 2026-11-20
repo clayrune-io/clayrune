@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-19] - Desk Connect and workflow reliability fixes (MC-1179 pass 06b)
+
+- DCW-W4, W7, W8, W9. Workflow mail sends a long body through a file instead of the command line, an action step's result is saved before the next step starts, a malformed workflow definition is reported instead of raising, and one docstring now matches its code.
+- DCW-C1, C3, C5, C10. Connection details in a README are found in linear time, a wrong-shaped start-check answer after Save is a result instead of a 500, a GitHub stage that fails removes its clone, and a failed install step leaves the end of its output in the server log.
+- DCW-C6, C7. A typed credential never replaces a vault entry another Save made a moment earlier, and picking a saved entry that is gone or locked says so instead of "could not save".
+- DCW-C11, C12, C13. A remote MCP server that takes the request and answers late reads as a timeout, a check record that is briefly unreadable keeps its tool baseline, a pane-account Save that fails midway leaves no half-made account, and expired npm registry documents are dropped from memory.
+- DCW-C9, C14. The discovery proxy's documentation states its real connection cap, `node --eval=code` gets the inline-code label, connection text is cleaned only up to the part that is kept, and a connection's status is read under the same lock its check writes under.
+
 ## [2026-11-19] - Desk planners can pick a child's model and effort
 
 - Campaign, storyboard, and article planners see the models and effort levels each hired agent's provider offers. Dispatch cards show the launch settings, and invalid picks leave the attempt budget intact.
