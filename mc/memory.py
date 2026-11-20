@@ -5166,7 +5166,8 @@ def _checkpoint_watermark(p, sid):
         _c, _e, legacy_wm = _mem_split_full(mp.read_text(encoding='utf-8'))
         r = _wm_find(legacy_wm, sid)
         return r or {}
-    except Exception:
+    except Exception as e:
+        _log(f"[scribe] checkpoint watermark read failed for {sid}: {e}")
         return {}
 
 
@@ -5591,7 +5592,9 @@ def _scribe_stat(project_id, key, n=1):
             if fp.exists():
                 try:
                     stats = json.loads(fp.read_text(encoding='utf-8') or '{}')
-                except Exception:
+                except Exception as e:
+                    _log(f"[scribe-stat] {fp.name} unreadable, counters "
+                         f"restart from zero: {e}")
                     stats = {}          # corrupt file: restart, don't die
             if not isinstance(stats, dict):
                 stats = {}
@@ -5606,8 +5609,8 @@ def _scribe_stat(project_id, key, n=1):
             stats['_updated'] = now_iso()
             _atomic_write_text(fp, json.dumps(stats, indent=2,
                                               ensure_ascii=False))
-    except Exception:
-        pass
+    except Exception as e:
+        _log(f"[scribe-stat] {project_id} bump of {key} failed: {e}")
 
 
 def _scribe_render_lines(lines):
@@ -5956,7 +5959,8 @@ def _extract_transcript_telemetry_multi(paths):
                             ttl_ok = False
                     elif cw_tok:
                         ttl_ok = False
-        except Exception:
+        except Exception as e:
+            _log(f"[telemetry] transcript read failed for {path}: {e}")
             continue
     if not model_tokens:
         return {}
@@ -6270,7 +6274,9 @@ def _scribe_extract(project, session):
                         return None, 'no_transcript'
                     transcript = _render_log_lines_as_transcript(log_lines)
                     from_log = True
-        except Exception:
+        except Exception as e:
+            _log(f"[scribe] transcript render failed for {pid}: "
+                 f"{type(e).__name__}: {e}")
             return None, 'parse_empty'
         model = _model_for_provider('scribe_model', provider)
         # want_why: terminal entries only — see _SCRIBE_WHY_SUFFIX.
@@ -6613,8 +6619,8 @@ def _condense_plan(project):
             try:
                 blob = ap.read_text(encoding='utf-8')
                 archive_tail = blob[-_CONDENSE_ARCHIVE_TAIL_KB * 1024:]
-            except Exception:
-                pass
+            except Exception as e:
+                _log(f"[condense] archive tail read failed for {ap}: {e}")
         body = json.dumps({
             'curated_headings': valid_headings,
             'entries': in_entries,
