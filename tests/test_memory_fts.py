@@ -258,3 +258,57 @@ def test_route_cold_k_zero_opts_out(tmp_data_dir, tmp_path, monkeypatch):
     assert r.status_code == 200
     assert r.get_json() == index_hits
     assert called == []
+
+
+# ── MC-1179 pass 3 (lesser, memory_fts.py:186, :231) ────────────────────────
+
+def test_a_non_object_agent_log_entry_does_not_lose_the_rest(tmp_data_dir, tmp_path, monkeypatch):
+    """One entry that is not an object used to raise out of the loop, so the
+    whole file was abandoned, never recorded as indexed, and retried on every
+    build. The other entries are indexed and the file is recorded."""
+    m = _mem(tmp_data_dir)
+    _wire_claude_home(monkeypatch, m, tmp_path)
+    import mc.memory_fts as fts
+    p = {'id': 'ftsbadlog'}
+    data_dir = tmp_path / 'projects'
+    data_dir.mkdir()
+    log = ['a stray string where an entry should be', None, {
+        'task': 'investigate the heron regression in the pipeline',
+        'summary': 'root cause was a heron off-by-one, fixed in commit abc123',
+        'claude_session_id': 'csid-1', 'started_at': '2026-08-05T00:00:00Z'}]
+    (data_dir / 'ftsbadlog_agent_log.json').write_text(json.dumps(log), encoding='utf-8')
+
+    stats = fts.build_index(p, data_dir=data_dir)
+    assert stats['agent_log_indexed'] is True and stats['rows_written'] == 2
+    assert len(fts.cold_search(p, 'heron', limit=10)) == 2
+    again = fts.build_index(p, data_dir=data_dir)       # recorded: not retried
+    assert again['agent_log_indexed'] is False and again['rows_written'] == 0
+
+
+def test_an_incognito_transcript_is_purged_once_not_on_every_build(tmp_data_dir, tmp_path, monkeypatch):
+    m = _mem(tmp_data_dir)
+    fake_home = _wire_claude_home(monkeypatch, m, tmp_path)
+    import mc.memory_fts as fts
+    p = _project(tmp_path, 'ftsincog')
+    tdir = fake_home / agent_runtime.ClaudeRuntime._encode_project_path(p['project_path'])
+    tdir.mkdir(parents=True)
+    _write_transcript(tdir, 'sess-private', [
+        ('user', 'please look into the private heron matter for me today'),
+        ('assistant', 'the private heron matter is resolved, details follow here')])
+
+    assert fts.build_index(p)['rows_written'] == 2      # indexed while ordinary
+    assert len(fts.cold_search(p, 'heron', limit=10)) == 2
+
+    monkeypatch.setattr(agent_runtime, 'is_transcript_incognito',
+                        lambda sid: sid == 'sess-private')
+    recorded = []
+    real_record = fts._record_indexed
+    monkeypatch.setattr(fts, '_record_indexed',
+                        lambda *a, **k: (recorded.append(a[1]), real_record(*a, **k))[1])
+    fts.build_index(p)                                  # marked: rows purged
+    assert fts.cold_search(p, 'heron', limit=10) == []
+    assert len(recorded) == 1
+    fts.build_index(p)                                  # nothing left to do
+    fts.build_index(p)
+    assert len(recorded) == 1
+    assert fts.cold_search(p, 'heron', limit=10) == []

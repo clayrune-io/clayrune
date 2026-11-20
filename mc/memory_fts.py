@@ -184,6 +184,14 @@ def _index_transcript_file(conn: sqlite3.Connection, path: Path) -> Optional[int
     # PRIOR build already wrote for this file (before the marker existed, or
     # before this check shipped) are purged rather than left stale.
     if _agent_runtime.is_transcript_incognito(session_id):
+        # Already purged at this fingerprint (recorded with zero rows): there
+        # is nothing to delete and nothing new to record. A file indexed
+        # BEFORE it was marked has rows > 0, so it still takes the purge.
+        done = conn.execute(
+            'SELECT mtime_ns, size, rows FROM indexed_files WHERE path = ?',
+            (key,)).fetchone()
+        if done and (done[0], done[1]) == fp and not done[2]:
+            return None
         conn.execute('DELETE FROM session_fts WHERE source_file = ?', (key,))
         _record_indexed(conn, key, fp, 0)
         return None
@@ -229,6 +237,8 @@ def _index_agent_log(conn: sqlite3.Connection, data_dir: Path, project_id: str) 
     conn.execute('DELETE FROM session_fts WHERE source_file = ?', (key,))
     rows = 0
     for e in entries if isinstance(entries, list) else []:
+        if not isinstance(e, dict):
+            continue    # one stray value must not cost the rest of the file
         session_id = e.get('claude_session_id') or e.get('session_id') or ''
         ts = e.get('started_at') or e.get('ts') or ''
         for role, field in (('task', 'task'), ('summary', 'summary')):
