@@ -169,14 +169,20 @@ def _no_live_state_writes():
 # monkeypatch.syspath_prepend is undone there), and at collection there is no
 # fixture at all.
 import import_shadow_guard as _shadow_guard  # noqa: E402
+# Same wrappers, second job: method patches left on a shared runtime instance
+# (monkeypatch's undo re-assigns a bound method onto the instance) are deleted
+# again. Mechanism and the incident: tests/runtime_singleton_guard.py.
+import runtime_singleton_guard as _runtime_guard  # noqa: E402
 
 _SHADOW_BEFORE = pytest.StashKey[tuple]()
+_RUNTIME_BEFORE = pytest.StashKey[dict]()
 
 
 @pytest.hookimpl(wrapper=True, tryfirst=True)
 def pytest_runtest_setup(item):
     item.stash[_SHADOW_BEFORE] = (_shadow_guard.snapshot(),
                                   _shadow_guard.server_identity_problem() is None)
+    item.stash[_RUNTIME_BEFORE] = _runtime_guard.snapshot()
     return (yield)
 
 
@@ -188,7 +194,9 @@ def pytest_runtest_teardown(item, nextitem):
         # The teardown's own error is the one to report; still undo a new shadow.
         before, _ok = item.stash.get(_SHADOW_BEFORE, (None, False))
         _shadow_guard.check_and_repair(before, server_was_ok=False)
+        _runtime_guard.restore(item.stash.get(_RUNTIME_BEFORE, None), item.nodeid)
         raise
+    _runtime_guard.restore(item.stash.get(_RUNTIME_BEFORE, None), item.nodeid)
     before, server_was_ok = item.stash.get(_SHADOW_BEFORE, (None, False))
     problems = _shadow_guard.check_and_repair(before, server_was_ok=server_was_ok)
     if problems:
