@@ -23,6 +23,7 @@ import re
 from urllib.parse import urlsplit, urljoin
 
 from mc.desk_connect import display_text
+from mc.desk_connect import fence_scan
 from mc.desk_connect import parameter_schema as ps
 from mc.desk_connect.parameter_schema import field
 
@@ -31,7 +32,6 @@ MAX_NODES = 20_000
 MAX_DEPTH = 40
 MAX_BLOCKS = 8
 MAX_SERVERS = 4
-_FENCE = re.compile(r'```[A-Za-z0-9_+-]*[ \t]*\r?\n(.*?)\r?\n[ \t]*```', re.DOTALL)
 _NPM_NAME = re.compile(r'^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$')
 _NPM_TAG = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$')
 _EXACT_NPM = re.compile(r'^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$')
@@ -227,12 +227,11 @@ def _candidate_blocks(text: str) -> list:
     whole = load_json(text)
     if whole is not None:
         out.append(whole)
-    for m in _FENCE.finditer(text or ''):
-        block = m.group(1).strip()
+    for block in fence_scan.fenced_blocks(text or ''):   # linear: the text is third-party
+        block = block.strip()
         if not re.search(r'mcpServers|"servers"|"command"|"url"|"serverUrl"|"httpUrl"', block):
             continue
-        stripped = re.sub(r'(?m)^\s*//.*$', '', block)
-        data = load_json(stripped)
+        data = load_json(fence_scan.drop_comment_lines(block))
         if data is not None:
             out.append(data)
         if len(out) >= MAX_BLOCKS:
