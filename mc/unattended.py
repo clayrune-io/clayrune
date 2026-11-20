@@ -13,8 +13,11 @@ now generalizes); this is that same function, lifted so it has exactly one
 definition instead of drifting into a second copy the way the 50-note cap
 did.
 
-This never reads anything the caller sends (no header, no body field — any
-of those are exactly what an agent process can forge). Instead it asks: is
+The session test reads nothing the caller sends (no header, no body field —
+any of those are exactly what an agent process can forge);
+`non_manual_session_running` is that test on its own. `is_unattended_caller`
+does read one thing first, the browser `Origin` header, and only ever to
+SPARE a request a refusal (2026-09-14, below). The session test asks: is
 there a LIVE session, currently mid-turn (`status == 'running'`), that could
 be the one making this very HTTP call right now? A Bash-tool `curl` to a
 Clayrune route can only exist because some Claude CLI session is executing a
