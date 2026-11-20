@@ -47,6 +47,7 @@ import mc.allowance_state as _allowance_state  # live vendor exhaustion state (M
 import mc.memory_overlap_df as _overlap_df  # M4 corpus document-frequency stoplist (MC-964 fix A2)
 import mc.memory_gate_tap as _gate_tap  # G1 report-mode observer for mints (MC-964 step 10)
 import mc.memory_entry_line as _entry_line  # ML15: a managed entry is one physical line
+from mc.memory_note_slug import is_safe_note_slug as _is_safe_note_slug  # ML14
 import mc.condense_agent_mode as _condense_agent_mode  # ML16: agent-mode "anything to do" test + prompt
 import mc.condense_mode as _condense_mode  # ML16: which executor a config selects; the one default
 
@@ -2258,6 +2259,9 @@ def write_position(project, subject, verdict, reason,
     mem_dir = _get_memory_path(project).parent
     mem_dir.mkdir(parents=True, exist_ok=True)
     slug = (slug or '').strip() or _mem_link_key(subject)[:48] or 'unnamed'
+    # The slug becomes a filename and the route passes the caller's through.
+    if not _is_safe_note_slug(mem_dir, slug, POSITION_PREFIX):
+        raise ValueError('slug must be a plain name, not a path')
     path = mem_dir / f'{POSITION_PREFIX}{slug}.md'
     project_id = project.get('id', '') if isinstance(project, dict) else ''
 
@@ -2353,6 +2357,9 @@ def write_topic_note(project, slug, description, body, *, note_type='project',
         return ''
     mem_dir = _get_memory_path(project).parent
     mem_dir.mkdir(parents=True, exist_ok=True)
+    if not _is_safe_note_slug(mem_dir, slug):
+        _log(f'[memory] write_topic_note skip (bad slug): {slug[:80]!r}')
+        return ''
     path = mem_dir / f'{slug}.md'
     if path.exists():
         _log(f'[memory] write_topic_note skip (exists): {path.name}')
