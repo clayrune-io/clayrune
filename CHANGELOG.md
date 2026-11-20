@@ -1,5 +1,15 @@
 # Clayrune — Changelog
 
+## [2026-11-19] - Memory and learning: seven decided fixes (MC-1179 pass 03, decided asks)
+
+- ML10. A pattern a person rejected as a skill is no longer proposed again when the same pattern arrives as a topic signal: the "no" check and the 7-day duplicate check now look under the kind the artifact is stored as. Stored records are not rewritten.
+- ML11. `POST /api/distiller/reject` refuses an unattended caller with 403, the same check the promote route uses.
+- ML13. A topic note's frontmatter is written by the same serializer positions use, so a description containing a line of `---` can no longer cut the note's origin stamp off. Notes written the old way read as before.
+- S3.4. When a memory search by an unattended run is redirected from a superseded note to its replacement, the list of superseded notes that comes with it leaves out any note written by an unattended run. An attended reader sees what it saw before.
+- S2.5. Each thread, commitment and understanding line pulled from a session into the continuity record is checked by the Distiller's authority guard. A line that grants autonomy or removes an approval step is dropped and counted (`continuity_line_refused_authority`); the rest of the record is written.
+- ML14. A position saved without a slug whose generated filename already holds a different subject gets a short hash suffix instead of replacing that subject. A slug the caller supplies, and the same subject, behave as before. No stored file is renamed.
+- ML21. After an agent-mode condense run fails its integrity check, the restore and the watermark heal take the memory write lock, write atomically, and write only if `MEMORY.md` is unchanged since the run ended. Otherwise the file is left and the skip is counted (`condense_restore_skipped_changed`). A commit that lands during the run, after the agent's own write, is still replaced by a restore.
+- The other decided items of this pass (ML22, ML26, ML27, ML30, ML31, ML33, ML35, ML36, ML37, S2.1, S4.2, S4.4, S5.1, S5.3) are not built yet.
 ## [2026-11-19] - A dispatched agent's final message reaches its spawner again (MC-1179 A1/R34 follow-up)
 
 - When a dispatched agent's last turn had a refused tool call and a `[coverage]` advisory, the spawner received the advisory line and nothing else. With no refused call, the advisory was glued onto the end of the reply. The same text went to the agent-log summary and to a workflow step's result.
