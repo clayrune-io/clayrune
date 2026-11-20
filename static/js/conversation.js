@@ -2779,8 +2779,9 @@ function mobileUserConversationsHTML(p, convos, opts) {
     // Title now carries the subject, so the sub-line carries the latest turn —
     // the row answers both "what is this about?" and "where did it get to?".
     const _recent = _convRecent(c);
-    const meta = [esc(c.ts_relative || ''), c.turns ? `${c.turns} turn${c.turns !== 1 ? 's' : ''}` : '',
-                  _recent ? esc(_recent.slice(0, 70)) : ''].filter(Boolean).join(' · ');
+    // Raw parts: the row escapes `meta` once where it is emitted (conv-sub below).
+    const meta = [c.ts_relative || '', c.turns ? `${c.turns} turn${c.turns !== 1 ? 's' : ''}` : '',
+                  _recent ? _recent.slice(0, 70) : ''].filter(Boolean).join(' · ');
     const incIcon = _convIsIncognito(c)
       ? '<span class="conv-inc-icon" title="Incognito — not saved to project memory or agent log">&#x1F576;&#xFE0F;</span>'
       : '';

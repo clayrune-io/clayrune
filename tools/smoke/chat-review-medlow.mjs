@@ -91,6 +91,23 @@ try {
         `the failure reaches the console, got ${JSON.stringify(warnings)}`);
     });
   });
+
+  // CV10: the rail row's sub-line was built from esc()'d parts and then passed
+  // through esc() again, so a latest message with a quote, & or < showed its
+  // entities as text.
+  await t.step('CV10 the rail sub-line shows the latest message once-escaped', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      const sub = await page.evaluate(({ pid }) => {
+        const c = conversationsCache[pid][0];
+        c.first_user = 'Earlier prompt';
+        c.last_user = 'use "strict" & a<b';
+        refreshModalById(pid);
+        return [...document.querySelectorAll('.conv-sub')].map(e => e.textContent).join('\n');
+      }, { pid });
+      assert.match(sub, /use "strict" & a<b/, `raw characters on screen, got ${JSON.stringify(sub)}`);
+      assert.doesNotMatch(sub, /&quot;|&amp;|&lt;/, 'no entity text on screen');
+    });
+  });
 } finally {
   t.done();
   await browser.close();
