@@ -178,6 +178,26 @@ try {
       await page.waitForFunction(() => /Ship the fix/.test(document.querySelector('.btn-plan-file')?.textContent || ''));
     });
   });
+
+  // CV18: when the status poll replaces the buffer with a longer server copy,
+  // the earlier parts prepended by "Load earlier conversation" are dropped with
+  // it, but the loaded count stayed, so the control offered the next older part
+  // and the nearest one could not be loaded again. The stream-reset twin
+  // (_settleHistoryReplay) already resets the count.
+  await t.step('CV18 a buffer replaced by the status poll resets the loaded-earlier count', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      const longer = ['> Ron: Earlier prompt', 'Earlier reply', '> Ron: next', 'reply two', 'reply three', 'reply four'];
+      await page.route('**/agent/status', route => route.fulfill({ json: { sessions: [
+        { session_id: sid, status: 'idle', log_lines: longer }] } }));
+      const count = await page.evaluate(async ({ pid, sid }) => {
+        agentOutputBuffers[sid] = ['(earlier part)', '> Ron: Earlier prompt', 'Earlier reply'];
+        rolloverLoadedCounts[sid] = 1;
+        await window.fetchAgentStatus(pid);
+        return [agentOutputBuffers[sid].length, rolloverLoadedCounts[sid] || 0];
+      }, { pid, sid });
+      assert.deepEqual(count, [6, 0], 'buffer replaced by the server copy, and the count of loaded parts with it');
+    });
+  });
 } finally {
   t.done();
   await browser.close();

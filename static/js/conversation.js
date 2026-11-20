@@ -6146,6 +6146,10 @@ async function fetchAgentStatus(projectId) {
         // rebuilt server buffer made a reply vanish until the next message.
         // See _mergeShorterHistory (resume-preview.js).
         if (!window._mergeShorterHistory?.(sid, _incoming, 'status-poll', _incomingTs)) {
+          // Wholesale replace drops any prepended rollover parts (MC-978): reset
+          // the count, as the stream-reset twin does (_settleHistoryReplay), or
+          // "Load earlier conversation" skips the part that just vanished.
+          delete rolloverLoadedCounts[sid];
           agentOutputBuffers[sid] = _incoming;
           agentOutputTimestamps[sid] = _incomingTs;
         }
