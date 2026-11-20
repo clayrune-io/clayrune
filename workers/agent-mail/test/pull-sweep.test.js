@@ -170,16 +170,29 @@ test('notification exact100 boundary, restart continuation and wrap across103 in
   assert.equal((await run(f)).notify.claimed, 100);
 });
 
+// MC-1179 W12: a short page used to park the cursor on its last install, so the
+// next tick selected nothing past it and only reset the cursor: with 1 to 99 due
+// notifications every second tick woke nobody.
+test('a short notification page ends the pass: the next tick starts again from the first install', async (t) => {
+  const f = await fixture(t); const b = id(2); await seed(f.db, b);
+  events(f, 1); events(f, 1, { install: b }); intent(f); intent(f, b);
+  assert.equal((await run(f)).notify.claimed, 2);
+  assert.equal(rows(f, 'pull_sweep_cursors').find((c) => c.task === 'notify').cursor_id, '');
+  f.db.sql.exec('UPDATE pull_notifications SET next_attempt_ms=0');
+  assert.equal((await run(f)).notify.claimed, 2);
+  assert.deepEqual(f.wakes, [b, INSTALL, b, INSTALL]);
+});
+
 test('>=3 installs with skewed load retain fair stable-id passes despite changing retry times', async (t) => {
   const f = await fixture(t); const a = id(1), b = id(2);
   await seed(f.db, a); await seed(f.db, b);
   events(f, 100, { install: a }); events(f, 1, { install: b }); events(f, 1);
   for (const i of [a,b,INSTALL]) intent(f, i);
-  // A low-id leased head is skipped initially, then revisited after wrap.
+  // A low-id leased head is skipped initially, then revisited on the next pass.
+  // The first page was short, so that pass starts on the very next tick.
   f.db.sql.exec(`UPDATE pull_notifications SET lease_id='${id(5)}',lease_until_ms=${SQL_NOW}+60000 WHERE install_id='${a}'`);
   await run(f); assert.deepEqual(f.wakes, [b,INSTALL]);
   f.db.sql.exec(`UPDATE pull_notifications SET lease_until_ms=${SQL_NOW}-1,next_attempt_ms=0`);
-  assert.equal((await run(f)).notify.claimed, 0); // wrap
   assert.equal((await run(f)).notify.claimed, 3);
   assert.deepEqual(f.wakes.slice(2), [a,b,INSTALL]);
   assert.equal(rows(f, 'pull_events').length, 102);
@@ -323,8 +336,8 @@ test('lost SMTP wake recovered from notification alone by actual D1 and DO RPC a
     const intent = await db.prepare('SELECT * FROM pull_notifications').first(); assert.equal(intent.attempts, n + 1);
     assert.equal((await db.prepare('SELECT * FROM pull_events').first()).text, 'A fresh reply');
     await db.prepare('UPDATE pull_notifications SET next_attempt_ms=0').run();
-    // One invocation completes/wraps the persisted pass before the next retry.
-    const wrap = await mf.dispatchFetch('https://mail.example.com/sweep'); assert.equal((await wrap.json()).result.notify.claimed, 0);
+    // The one-row page was short, so the persisted pass is already complete:
+    // the next invocation retries without a wrap tick in between.
     await mf.unsafeEvictDurableObject('sweep-test', 'TestMailbox', { name: INSTALL, webSockets: 'hibernate' });
   }
   // Trusted fixture inserts a ticket; actual admission consumes it atomically.
