@@ -550,6 +550,9 @@ function _wfConfirmDiscardIfDirty(targetLabel) {
 function _wfSyncBeforeLeave(projectId) {
   if (!_wfState || _wfState.projectId !== projectId || !_wfState._wf) return;
   _wfSyncDomToModel(_wfState);
+  // An edge selected on this canvas is not selected once the canvas is gone:
+  // left set, a later Delete or Backspace removed it from the hidden model.
+  _wfSelectedEdge = null;
   // Every popover in this file lives on <body>, OUTSIDE the tab-content div
   // that's about to be torn down (agent-console.js's tabOn('workflows')
   // lazy-skip) — none of them get removed by that teardown on their own, so
@@ -3243,6 +3246,9 @@ document.addEventListener('keydown', (e) => {
   if (!_wfState || !_wfSelectedEdge) return;
   const tag = document.activeElement && document.activeElement.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  // Same host test as the Ctrl+Z handler: with the canvas off screen (another
+  // tab of the modal, or the modal closed) a key press is not about this edge.
+  if (!document.getElementById('wfb-inline-host-' + _wfState.projectId)) return;
   if (e.key === 'Delete' || e.key === 'Backspace') {
     _wfDeleteEdge(_wfSelectedEdge.from, _wfSelectedEdge.to, _wfSelectedEdge.when);
   } else if (e.key === 'Escape') {

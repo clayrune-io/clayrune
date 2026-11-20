@@ -1129,6 +1129,28 @@ try {
     const c7KbSel = `g.wfb-edge-group path[onpointerdown*="_wfEdgeClick(event,'${c7KeyboardEdge.from}','${c7KeyboardEdge.to}'"]`;
     const c7KbCountBefore = await page.$$eval('.wfb-edge-path', els => els.length);
     await clickEdgeOffCenter(page, c7KbSel); // off-center — see the note above on the delete × sitting at the midpoint
+    // WB12 (MC-1179 pass 04): with an edge selected, leave the Workflows tab
+    // and press Delete there. The handler used to remove the edge from a
+    // canvas that was no longer on screen; the model must be left alone, and
+    // the selection must not survive the trip.
+    const wb12Before = await page.evaluate(() => window._wfEntry()._wf.def.edges.length);
+    await page.evaluate((pid) => { switchModalTab(pid, 'agent'); }, PID);
+    await page.waitForTimeout(120);
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    await page.keyboard.press('Delete');
+    await page.waitForTimeout(100);
+    const wb12Away = await page.evaluate(() => window._wfEntry()._wf.def.edges.length);
+    wb12Away === wb12Before ? ok('WB12: Delete pressed on another tab leaves the off-screen canvas alone')
+                            : fail(`WB12: Delete on another tab removed an edge from the hidden canvas (${wb12Before} -> ${wb12Away})`);
+    await page.evaluate((pid) => { switchModalTab(pid, 'workflows'); }, PID);
+    await page.waitForSelector(c7KbSel);
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    await page.keyboard.press('Delete');
+    await page.waitForTimeout(100);
+    const wb12Back = await page.evaluate(() => window._wfEntry()._wf.def.edges.length);
+    wb12Back === wb12Before ? ok('WB12: the edge selected before leaving is no longer selected on return')
+                            : fail(`WB12: a selection from before the tab switch was still live on return (${wb12Before} -> ${wb12Back})`);
+    await clickEdgeOffCenter(page, c7KbSel);
     await page.keyboard.press('Delete');
     await page.waitForTimeout(100);
     const c7KbCountAfter = await page.$$eval('.wfb-edge-path', els => els.length);
