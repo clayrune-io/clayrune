@@ -510,6 +510,51 @@ def test_retry_cannot_launch_after_a_failed_native_context_build(app_env, monkey
     assert not reply.get_json()['ok']
 
 
+@pytest.mark.parametrize('status', ['error', 'running'])
+def test_send_refuses_a_session_whose_native_context_is_pending(app_env, monkeypatch, status):
+    """R39 through /agent/send, the route the chat box uses. 'error' is the
+    session a failed context build leaves behind; 'running' is the window while
+    the build is still in progress. Without the gate in agent_send itself both
+    still answer 409, because send routes them to agent_followup / agent_interrupt
+    and those refuse, but only after send has written the prompt into the chat
+    buffer, raised its follow-up flags and tagged the answer with a route."""
+    from types import SimpleNamespace
+
+    ar = app_env['ar']
+    calls = []
+    runtime = SimpleNamespace(name='codex', dispatch=lambda **kwargs: calls.append('dispatch'),
+                              write_followup=lambda *args: calls.append('followup'))
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda _: runtime)
+    monkeypatch.setattr(ar, '_resolve_runtime_model', lambda *a: '')
+    monkeypatch.setattr(ar.get_manager('p1'), 'ensure_guardian', lambda: None)
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_persist_runtime_start_failure', lambda *a: None)
+    monkeypatch.setattr(ar, '_allowance_refusal', lambda *a, **k: None)
+
+    def unreadable(*args, **kwargs):
+        raise OSError('test context is unreadable')
+
+    monkeypatch.setattr(ar, '_build_agent_context', unreadable)
+    with pytest.raises(OSError, match='test context is unreadable'):
+        ar._dispatch_via_runtime(app_env['project'], 'first task', provider_name='codex')
+    sid, = app_env['sessions']
+    session = app_env['sessions'][sid]
+    assert session['_native_context_pending']
+    session['status'] = status
+    before = list(session['log_lines'])
+
+    reply = app_env['client'].post('/api/project/p1/agent/send',
+                                   json={'session_id': sid, 'message': 'retry'})
+    body = reply.get_json()
+    assert reply.status_code == 409, (reply.status_code, body)
+    assert body == ar._native_context_refusal(sid)
+    assert not calls
+    assert list(session['log_lines']) == before
+    assert not any(key in session for key in (
+        '_send_already_logged', '_dispatching_followup', 'pending_followups'))
+    assert session['_native_context_pending']
+
+
 @pytest.mark.parametrize('endpoint', ['followup', 'interrupt'])
 @pytest.mark.parametrize('outcome', ['unknown', 'missing'])
 def test_gemini_followup_reports_actual_launch_outcome(app_env, monkeypatch, endpoint, outcome):
