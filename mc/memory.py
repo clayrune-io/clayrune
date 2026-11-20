@@ -48,6 +48,7 @@ import mc.memory_overlap_df as _overlap_df  # M4 corpus document-frequency stopl
 import mc.memory_gate_tap as _gate_tap  # G1 report-mode observer for mints (MC-964 step 10)
 import mc.memory_entry_line as _entry_line  # ML15: a managed entry is one physical line
 from mc.memory_note_slug import is_safe_note_slug as _is_safe_note_slug  # ML14
+from mc.memory_note_frontmatter import topic_note_head as _topic_note_head  # ML13
 import mc.condense_agent_mode as _condense_agent_mode  # ML16: agent-mode "anything to do" test + prompt
 import mc.condense_mode as _condense_mode  # ML16: which executor a config selects; the one default
 
@@ -2367,22 +2368,18 @@ def write_topic_note(project, slug, description, body, *, note_type='project',
     origin = _stamp_origin(task, trigger_type)
     generated = _stamp_generated(actor)
     project_id = project.get('id', '') if isinstance(project, dict) else ''
-    lines = ['---', f"name: {slug.replace('_', '-')}",
-             f'description: "{description.replace(chr(34), chr(92)+chr(34))}"',
-             'metadata:', f'  type: {note_type}']
-    if triggers:
-        lines.append(f'triggers: {triggers.strip()}')
-    if supersedes:
-        lines.append(f'supersedes: {supersedes.strip()}')
-    if supersedes.strip() == 'unresolved' and mint_candidates:
-        lines.append(f'mint_candidates: {mint_candidates.strip()}')
-    lines.append(f'origin: {origin}')
-    lines.append('generated:')
-    lines.append(f"  by: {generated['by']}")
-    lines.append(f"  at: {generated['at']}")
-    lines.append('---')
-    lines.append('')
-    text = '\n'.join(lines) + (body or '').strip() + '\n'
+    # Built by the dumper `write_position` uses, never by concatenation: a
+    # `---` line in the description used to close the block early and drop
+    # the origin stamp below it (ML13). See mc/memory_note_frontmatter.py.
+    supersedes = (supersedes or '').strip()
+    text = _topic_note_head(
+        name=slug.replace('_', '-'), description=description,
+        note_type=note_type, origin=origin,
+        generated_by=generated['by'], generated_at=generated['at'],
+        triggers=(triggers or '').strip(), supersedes=supersedes,
+        mint_candidates=((mint_candidates or '').strip()
+                         if supersedes == 'unresolved' else ''),
+    ) + (body or '').strip() + '\n'
     # G1 report-mode tap: observes, never refuses or alters `text`. Evaluated
     # BEFORE the lock: it reads the head of every note in the vault (and of
     # every sibling vault for an unresolved link), and nothing it reads is
