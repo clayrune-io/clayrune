@@ -5003,7 +5003,14 @@ def _write_session_memory(p, session, status, summary_fallback, ts_date):
     Scribe over the full .jsonl → brief (fallback to summary, then a
     guaranteed breadcrumb) → _commit_managed_entry (which also drops this
     session's Step-6 wm marker = clean teardown) → condense trigger. Returns
-    True iff a memory entry was written. Never raises.
+    True iff a memory entry was written. A failed file write in
+    `_commit_managed_entry` PROPAGATES (a failed write must not be
+    acknowledged); both callers catch and log it and leave the row
+    unscribed, so the startup reconciler runs this function again. The
+    best-effort steps after the commit (Distiller, Beacon, topics, mint)
+    never raise, and are skipped when the commit does: running them here
+    would run the Distiller twice for one session, once now and once when
+    the reconciler retries.
     SPEC docs/MEMORY_SYSTEM_SPEC.md §3 Leg A/0/C.
     """
     project_id = p.get('id', '')
