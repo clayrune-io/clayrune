@@ -2,8 +2,7 @@
 // The production DO export lives in production.js, keeping this factory Node-importable.
 import { Ledger } from './ledger.js';
 import { BODY_TIMEOUT_MS } from './request-body.js';
-import { isLifecyclePath } from './lifecycle.js';
-import { isEnrollmentPath } from './enrollment-http.js';
+import { isRetiredLegacyPath } from './legacy-paths.js';
 import { manifestHttp, isManifestRequest } from './manifest-http.js';
 import { VerificationMail } from './verification-mail.js';
 import { unbase64url } from './signing.js';
@@ -55,8 +54,7 @@ export function createWorker({ clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS
       const url = new URL(request.url);
       // Keep the pre-signed manifest byte contract and the legacy route grammar.
       if (isManifestRequest(request, url)) return manifestHttp({ env });
-      if (request.method === 'POST' && !url.search && (isLifecyclePath(url.pathname)
-        || isEnrollmentPath(url.pathname) || ['/v1/mail/send', '/v1/mail/reconcile'].includes(url.pathname))) {
+      if (request.method === 'POST' && !url.search && isRetiredLegacyPath(url.pathname)) {
         return reply(410, { code: 'legacy_retired' });
       }
       const hosted = HOSTED_ROUTES.find(([paths]) => paths.includes(url.pathname));
