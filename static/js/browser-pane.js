@@ -1872,6 +1872,7 @@ function _bpNotifyNewSessions(fresh, pid) {
     { key: 'bp-new-session', autoDismissMs: 12000 });
 }
 function _bpStartPoll() {
+  if (window.__mcPopout) return;   // a pop-out chat window has no Browser button or tray: no pane, no poll
   if (_bpPollTimer) return;
   _bpPollStatus();
   _bpPollTimer = setInterval(_bpPollStatus, 5000);
@@ -1898,6 +1899,11 @@ async function browserButtonClick(pid) {
 // server restart, which kills all panes — clears the flag so no ghost pane
 // pops up. This also stops refreshes from leaking orphaned Chromiums.
 function _bpRestoreOnLoad() {
+  // A pop-out chat window is the same SPA on the same origin, so it reads the
+  // dashboard's mc_browser_pane_open. Re-attaching there laid the remote page
+  // out again at the pop-out's size and put a Close that stops the session
+  // the dashboard is using over the chat.
+  if (window.__mcPopout) return;
   let saved;
   try { saved = JSON.parse(localStorage.getItem('mc_browser_pane_open') || 'null'); } catch (e) { saved = null; }
   if (!saved || !saved.sid) return;
