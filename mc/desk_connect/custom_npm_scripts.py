@@ -106,6 +106,13 @@ def spawn(cmd, cwd: Path, env: dict, timeout: float) -> tuple[int | None, bytes]
     return rc, bytes(tail)
 
 
+def failure_note(rc: int | None, tail: bytes) -> str:
+    """How a step ended and the end of what it printed, for the server log only: printable text,
+    300 characters. The step ran with `script_env`, so no Clayrune secret is in its output."""
+    shown = ''.join(c if c.isprintable() else ' ' for c in tail.decode('utf-8', 'replace'))[-300:].strip()
+    return f'{"timed out" if rc is None else f"exit {rc}"}; {shown}'
+
+
 def run(step: dict, cwd: Path, home: Path, *, node_dir: str, timeout: float = TIMEOUT_S, start=None) -> None:
     """Run one approved step in `cwd`. Raises ActivationError `script_failed` when it exits non-zero or
     runs past the limit. `start(cmd, cwd, env, timeout)` is the test seam for `spawn`."""
@@ -115,8 +122,7 @@ def run(step: dict, cwd: Path, home: Path, *, node_dir: str, timeout: float = TI
     rc, tail = (start or spawn)(_command(step['body']), cwd, env, timeout)
     if rc == 0:
         return
-    shown = ''.join(c if c.isprintable() else ' ' for c in tail.decode('utf-8', 'replace'))[-300:].strip()
-    _log(f'[desk_connect] install script {label} failed: {"timed out" if rc is None else f"exit {rc}"}; {shown}', flush=True)
+    _log(f'[desk_connect] install script {label} failed: {failure_note(rc, tail)}', flush=True)
     why = f'ran past {int(timeout)} seconds' if rc is None else f'exited with code {rc}'
     raise ActivationError(f'the install script you approved for {label} {why}, so the package was NOT saved. '
                           f'Nothing was registered.', 'script_failed', 422)
