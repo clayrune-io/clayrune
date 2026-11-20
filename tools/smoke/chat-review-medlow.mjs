@@ -129,6 +129,31 @@ try {
       assert.equal(await none.getAttribute('title'), 'Project default (R&D)');
     });
   });
+
+  // CV12: confirmSweep counted an item as closed unless the fetch itself
+  // rejected, so a 404 for an item deleted since the scan was reported closed.
+  await t.step('CV12 the sweep toast counts only the items the server closed', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      const notes = [];
+      await page.route('**/topics/backlog-sweep', route => route.fulfill({ json: { matches: [
+        { id: 'bl-kept', text: 'still there', confidence: 'high' },
+        { id: 'bl-gone', text: 'deleted since the scan', confidence: 'high' }] } }));
+      await page.route('**/backlog/**', route => {
+        const path = new URL(route.request().url()).pathname;
+        if (path.endsWith('/note')) { notes.push(path); return route.fulfill({ json: { ok: true } }); }
+        if (path.endsWith('/bl-gone')) return route.fulfill({ status: 404, json: { error: 'not found' } });
+        return route.fulfill({ json: { ok: true } });
+      });
+      await page.evaluate(async ({ pid }) => {
+        await window.sweepBacklog(pid);
+        await window.confirmSweep(pid);
+      }, { pid });
+      const toasts = await page.evaluate(() => smokeToasts);
+      assert.ok(toasts.some(x => /Closed 1 backlog item from the sweep/.test(x)), `one closed, got ${JSON.stringify(toasts)}`);
+      assert.equal(notes.filter(n => n.includes('bl-gone')).length, 0, 'no "closed" note is posted for the refused item');
+      assert.equal(notes.filter(n => n.includes('bl-kept')).length, 1);
+    });
+  });
 } finally {
   t.done();
   await browser.close();

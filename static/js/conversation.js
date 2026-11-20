@@ -3597,8 +3597,11 @@ async function confirmSweep(pid) {
   let ok = 0;
   for (const id of ids) {
     try {
-      await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/backlog/${encodeURIComponent(id)}`,
+      const r = await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/backlog/${encodeURIComponent(id)}`,
         { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'done' }) });
+      // A refused close (404 for an item deleted since the scan) is not a close:
+      // no note, and it is left out of the count the toast reports.
+      if (!r.ok) continue;
       try {
         await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/backlog/${encodeURIComponent(id)}/note`,
           { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Closed via topic sweep' + (byId[id] && byId[id].topic ? ` (topic: ${byId[id].topic})` : '') }) });
