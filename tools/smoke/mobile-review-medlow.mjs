@@ -32,6 +32,36 @@ try {
       assert.deepEqual(errors(), []);
     });
   });
+
+  // MB2: both inbox renderers say "offline → keep whatever's shown", then went
+  // on with an empty default: the list became "No updates yet." and the unread
+  // badge was zeroed though nothing had been read.
+  for (const [name, listId, render] of [['phone', 'mobile-inbox-list', 'renderInbox'], ['desktop', 'desktop-inbox-list', 'renderDesktopInbox']]) {
+    await t.step(`MB2 a failed Inbox fetch keeps the ${name} list and the unread badge`, async () => {
+      await scenario(browser, {}, async ({ page, errors }) => {
+        let fail = false;
+        await page.route('**/api/notifications**', route => fail
+          ? route.fulfill({ status: 401, json: { error: 'auth_required' } })
+          : route.fulfill({ json: { unread: 2, items: [
+            { id: 'n1', ts: 1794300000, title: 'First update', project_id: 'send_harness' },
+            { id: 'n2', ts: 1794296400, title: 'Second update', project_id: 'send_harness' }] } }));
+        const read = () => page.evaluate(({ listId }) => {
+          const b = document.getElementById('inbox-badge');
+          return { rows: document.getElementById(listId).querySelectorAll('[data-id]').length > 0,
+            empty: /No updates yet/.test(document.getElementById(listId).textContent), badge: b.hidden ? '' : b.textContent };
+        }, { listId });
+        await page.evaluate(async ({ listId, render }) => {
+          if (!document.getElementById(listId)) document.body.insertAdjacentHTML('beforeend', `<div id="${listId}"></div>`);
+          await window[render]();
+        }, { listId, render });
+        assert.deepEqual(await read(), { rows: true, empty: false, badge: '2' }, 'a good reply fills the list');
+        fail = true;
+        await page.evaluate(({ render }) => window[render](), { render });
+        assert.deepEqual(await read(), { rows: true, empty: false, badge: '2' }, 'a refused reply changes nothing');
+        assert.deepEqual(errors(), []);
+      });
+    });
+  }
 } finally {
   t.done();
   await browser.close();

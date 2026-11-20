@@ -723,13 +723,19 @@ async function _renderInboxList(list) {
   const seq = ++_inboxSeq;
   const q = _inboxQuery.trim();
   if (!list.dataset.loaded) list.innerHTML = '<div class="mib-empty">Loading…</div>';
-  let data = { items: [], unread: 0 };
+  let data = null;
   try {
     const res = await fetch(API_BASE + '/api/notifications?limit=200'
       + (q ? '&q=' + encodeURIComponent(q) : ''));
     if (res.ok) data = await res.json();
   } catch (e) { /* offline → keep whatever's shown */ }
   if (seq !== _inboxSeq) return;  // a newer render superseded this one
+  if (!data) {
+    // Offline or refused: the list on screen and the unread badge stay as they
+    // are. A list that never loaded swaps its "Loading…" for the empty state.
+    if (!list.dataset.loaded) list.innerHTML = '<div class="mib-empty">No updates yet.</div>';
+    return;
+  }
   list.dataset.loaded = '1';
   setInboxBadge(data.unread || 0);
   const items = data.items || [];
@@ -808,13 +814,19 @@ async function _renderDesktopInboxList(list) {
   const seq = ++_inboxSeq;
   const q = _inboxQuery.trim();
   if (!list.dataset.loaded) list.innerHTML = '<div class="dib-empty">Loading…</div>';
-  let data = { items: [], unread: 0 };
+  let data = null;
   try {
     const res = await fetch(API_BASE + '/api/notifications?limit=200'
       + (q ? '&q=' + encodeURIComponent(q) : ''));
     if (res.ok) data = await res.json();
   } catch (e) { /* offline → keep whatever's shown */ }
   if (seq !== _inboxSeq) return;  // a newer render superseded this one
+  if (!data) {
+    // Offline or refused: the list on screen and the unread badge stay as they
+    // are. A list that never loaded swaps its "Loading…" for the empty state.
+    if (!list.dataset.loaded) list.innerHTML = '<div class="dib-empty">No updates yet.</div>';
+    return;
+  }
   list.dataset.loaded = '1';
   setInboxBadge(data.unread || 0);
   const items = data.items || [];
