@@ -153,7 +153,14 @@ def test_denied_line_does_not_become_the_reply():
     '[docs](x)',
     '[docs](x) and [more](y)',
     '[1] First point, see [2]',
+    '[1] first point',
     '[file:C:/a/b.md] is the report',
+    '[file:C:/a/b.md|Full report] is attached',
+    # Near the `coverage` / `context trim` labels, but not them.
+    '[coverage report](http://x) is here',
+    '[coverage: 91%] of lines are hit',
+    '[context] matters here',
+    '[context trimming] was discussed',
     '[{"a": 1}, {"b": 2}] are the rows',
 ])
 def test_model_text_that_begins_with_a_bracket_is_reply_text(line):

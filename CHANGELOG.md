@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-19] - A dispatched agent's final message reaches its spawner again (MC-1179 A1/R34 follow-up)
+
+- When a dispatched agent's last turn had a refused tool call and a `[coverage]` advisory, the spawner received the advisory line and nothing else. With no refused call, the advisory was glued onto the end of the reply. The same text went to the agent-log summary and to a workflow step's result.
+- `[coverage] ...` and `[context trim] ...` are now registered as Clayrune status lines in `mc/reply_line_kind.py`, so both reply scanners skip them. Reply lines that only begin with `[` (`[1] first point`, a `[file:...]` marker followed by text) are still reply text.
+- Callbacks and agent-log summaries already stored with the advisory in place of the reply are not rewritten. The fix takes effect when the server next restarts.
+
 ## [2026-11-19] - Agent mail Worker reliability fixes (MC-1179 pass 05a)
 
 - W5, W12. Scheduled retention now deletes expired rate-limit buckets, and a short notification page ends the sweep pass without spending an extra tick.
