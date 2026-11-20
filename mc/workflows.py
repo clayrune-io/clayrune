@@ -417,6 +417,10 @@ def _compute_dominators(order: list, parents_map: dict) -> dict:
     return dom
 
 
+def _is_string_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+
 def validate_workflow(doc: dict) -> list:
     """Return a list of error strings; empty = valid. Never raises.
 
@@ -427,6 +431,8 @@ def validate_workflow(doc: dict) -> list:
     implemented here.
     """
     errors: list = []
+    if not isinstance(doc, dict):
+        return ['workflow definition must be an object']
     trigger = doc.get('trigger') or {'type': 'manual'}
     if not isinstance(trigger, dict) or trigger.get('type') not in TRIGGER_TYPES:
         errors.append(f"trigger.type must be one of {TRIGGER_TYPES}")
@@ -465,16 +471,25 @@ def validate_workflow(doc: dict) -> list:
         if t == 'agent':
             if not node.get('project_id'):
                 errors.append(f"agent step '{name}' missing project_id")
-            if not (node.get('prompt') or '').strip():
+            prompt = node.get('prompt') or ''
+            if not isinstance(prompt, str):
+                errors.append(f"agent step '{name}' prompt must be text")
+            elif not prompt.strip():
                 errors.append(f"agent step '{name}' missing prompt")
             errors.extend(engine_field_errors(node, f"agent step '{name}'"))
             outcomes = node.get('outcomes') or []
+            if not _is_string_list(outcomes):
+                errors.append(f"agent step '{name}' outcomes must be a list of text labels")
+                continue
             if RESERVED_WHEN in outcomes:
                 errors.append(f"agent step '{name}': '{RESERVED_WHEN}' is reserved, not a declared outcome")
             if len(set(outcomes)) != len(outcomes):
                 errors.append(f"agent step '{name}' has duplicate outcomes")
         elif t == 'approval':
             options = node.get('options') or []
+            if not _is_string_list(options):
+                errors.append(f"approval node '{name}' options must be a list of text labels")
+                continue
             if not options:
                 errors.append(f"approval node '{name}' has no options")
             if RESERVED_WHEN in options:
@@ -484,8 +499,13 @@ def validate_workflow(doc: dict) -> list:
         elif t == 'action':
             if node.get('action') not in ACTION_ALLOWLIST:
                 errors.append(f"action step '{name}' action must be one of {ACTION_ALLOWLIST}")
+            if not isinstance(node.get('config') or {}, dict):
+                errors.append(f"action step '{name}' config must be an object")
         elif t == 'wait':
             config = node.get('config') or {}
+            if not isinstance(config, dict):
+                errors.append(f"wait step '{name}' config must be an object")
+                continue
             mode = config.get('mode')
             if mode not in WAIT_MODES:
                 errors.append(f"wait step '{name}' config.mode must be one of {WAIT_MODES}")
@@ -512,6 +532,9 @@ def validate_workflow(doc: dict) -> list:
             errors.append('edge is not an object')
             continue
         frm, to, when = e.get('from'), e.get('to'), e.get('when')
+        if not isinstance(frm, str) or not isinstance(to, str):
+            errors.append("edge 'from' and 'to' must be step names")
+            continue
         if frm not in nodes_by_name:
             errors.append(f"edge references unknown node '{frm}'")
             continue
