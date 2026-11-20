@@ -23,6 +23,7 @@ let pendingDispatchProvider = {};  // project_id → provider chosen in the new-
 let pendingDispatchCharacter = {}; // project_id → "scope:name" persona chosen in the new-chat composer (Prompt Builder Phase 2)
 let characterCache = {};           // project_id → array of available characters (lazy-loaded for the composer picker)
 let characterCacheLoading = {};    // project_id → true while a fetch is in flight (dedupe)
+const _openConvSeq = {};           // project_id → number of the latest openConversation call (CV17 stale-reply guard)
 const _planTitleProbed = {};       // session_id → 'sid|planFile' once the header's title probe has been sent (CV13)
 
 // ── Speaker attribution (MC-937 Phase 2a — channel model spec §4) ───────────
@@ -3755,6 +3756,10 @@ window.closeThreadsBoard = closeThreadsBoard;
 // Deliberately does NOT reuse openProjectAtSession — its `activeAgentTab || sid`
 // fallback dumped every tap back onto the currently-open chat.
 async function openConversation(projectId, csid, mcSessionId, isLive) {
+  // Latest call per project wins: every switch that follows an await below
+  // checks this, so a slow reply cannot pull the pane back from a chat the
+  // user opened after it.
+  const _seq = _openConvSeq[projectId] = (_openConvSeq[projectId] || 0) + 1;
   // Native-only Codex history belongs in the normal conversation pane. Its
   // synthetic tab key is UI-only; sends carry the actual provider identity.
   if (!mcSessionId && csid) {
@@ -3784,6 +3789,7 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
           return;
         }
       }
+      if (_openConvSeq[projectId] !== _seq) return;
       switchAgentTab(projectId, sid);
       return;
     }
@@ -3812,7 +3818,7 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
     // Shared mc id but a DIFFERENT transcript — skip the mc-based routes (both
     // the live seed and /session/<mc>/reconstruct resolve to the mc id's
     // CURRENT transcript, not this row's) and open it by csid instead.
-    if (csid) { await _openConversationByCsid(projectId, csid); return; }
+    if (csid) { await _openConversationByCsid(projectId, csid, _seq); return; }
   }
   // SERVER-AUTHORITATIVE LIVE ROUTE. `live` comes from /conversations (the row's
   // claude_session_id matched an in-memory agent_session), so the chat IS alive
@@ -3842,6 +3848,7 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
   if (mcSessionId) {
     try {
       const rr = await fetch(API_BASE + `/api/project/${projectId}/session/${encodeURIComponent(mcSessionId)}/reconstruct`);
+      if (_openConvSeq[projectId] !== _seq) return;
       if (rr.status === 409) {
         // Raced a session that just went live (rail row was stale). Same route.
         switchAgentTab(projectId, mcSessionId);
@@ -3849,6 +3856,7 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
       }
       if (rr.ok) {
         const rd = await rr.json();
+        if (_openConvSeq[projectId] !== _seq) return;
         agentStatusCache[mcSessionId] = {
           status: 'completed', task: rd.task || '', projectId,
           startedAt: rd.started_at || '', claudeSessionId: rd.claude_session_id || csid || '',
@@ -3870,7 +3878,8 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
   }
   // Transcript-only conversation (no MC session id, e.g. an interrupted chat or
   // a fresh-start continuation): reconstruct straight from the claude_session_id.
-  if (csid) { await _openConversationByCsid(projectId, csid); }
+  if (_openConvSeq[projectId] !== _seq) return;
+  if (csid) { await _openConversationByCsid(projectId, csid, _seq); }
 }
 window.openConversation = openConversation;
 
@@ -3881,7 +3890,10 @@ window.openConversation = openConversation;
 // in chat mode ready to continue". Falls back to arming a resume if
 // unreconstructable. Split out of openConversation so the shared-mc-id
 // disambiguation path can reach it directly.
-async function _openConversationByCsid(projectId, csid) {
+async function _openConversationByCsid(projectId, csid, _seq) {
+  // Called from openConversation with its sequence number, or directly (no
+  // number): a direct call is itself the latest request for this project.
+  if (_seq === undefined) _seq = _openConvSeq[projectId] = (_openConvSeq[projectId] || 0) + 1;
   // A live conversation can reach here with NO mc_session_id (its
   // claude_session_id matched a running agent_session, but this row never
   // carried the MC id). If any cache entry already tracks THIS transcript as
@@ -3902,14 +3914,17 @@ async function _openConversationByCsid(projectId, csid) {
   if (agentStatusCache[csid]) { switchAgentTab(projectId, csid); return; }
   try {
     const rr = await fetch(API_BASE + `/api/project/${projectId}/transcript/${encodeURIComponent(csid)}/reconstruct`);
+    if (_openConvSeq[projectId] !== _seq) return;
     if (rr.status === 409) {
       // Server says this transcript belongs to a live session (race: the
       // cache scan above missed it). Open the live tab it points us at.
       const rd = await rr.json().catch(() => ({}));
+      if (_openConvSeq[projectId] !== _seq) return;
       if (rd.session_id) { switchAgentTab(projectId, rd.session_id); return; }
     }
     if (rr.ok) {
       const rd = await rr.json();
+      if (_openConvSeq[projectId] !== _seq) return;
       agentStatusCache[csid] = {
         status: 'completed', task: rd.task || '', projectId,
         startedAt: rd.started_at || '', claudeSessionId: csid,
@@ -3928,6 +3943,7 @@ async function _openConversationByCsid(projectId, csid) {
       return;
     }
   } catch (e) { /* fall through to resume */ }
+  if (_openConvSeq[projectId] !== _seq) return;
   selectResumeSession(projectId, csid);
 }
 window._openConversationByCsid = _openConversationByCsid;

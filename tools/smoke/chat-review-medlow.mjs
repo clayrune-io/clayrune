@@ -198,6 +198,36 @@ try {
       assert.deepEqual(count, [6, 0], 'buffer replaced by the server copy, and the count of loaded parts with it');
     });
   });
+
+  // CV17: openConversation awaited /reconstruct and then switched to that chat
+  // without checking it was still the one the user last asked for. Click a slow
+  // finished chat, then a cached one: the second opened at once and the first
+  // response then pulled the pane back.
+  await t.step('CV17 a late reconstruct reply does not steal the view from the chat opened after it', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await page.route('**/session/mc-slow/reconstruct', async route => {
+        await new Promise(r => setTimeout(r, 700));
+        return route.fulfill({ json: { task: 'Slow one', started_at: '', claude_session_id: 'cs-slow',
+          log_lines: ['> Ron: slow chat', 'slow reply'], log_line_ts: [] } });
+      });
+      await page.evaluate(({ pid, sid }) => {
+        window.openConversation(pid, 'cs-slow', 'mc-slow', false);              // slow, not cached
+        setTimeout(() => window.openConversation(pid, 'native-send-harness', sid, true), 60);  // cached
+      }, { pid, sid });
+      await page.waitForTimeout(1500);
+      assert.equal(await page.evaluate(({ pid }) => activeAgentTab[pid], { pid }), sid,
+        'the chat clicked last stays on screen');
+    });
+  });
+
+  await t.step('CV17 a lone reconstruct still opens its chat', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await page.route('**/session/mc-slow/reconstruct', route => route.fulfill({ json: {
+        task: 'Slow one', started_at: '', claude_session_id: 'cs-slow', log_lines: ['> Ron: slow chat', 'slow reply'], log_line_ts: [] } }));
+      await page.evaluate(({ pid }) => window.openConversation(pid, 'cs-slow', 'mc-slow', false), { pid });
+      await page.waitForFunction(({ pid }) => activeAgentTab[pid] === 'mc-slow', { pid });
+    });
+  });
 } finally {
   t.done();
   await browser.close();
