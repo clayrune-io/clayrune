@@ -40,6 +40,7 @@ from contextvars import ContextVar
 
 import mc.agent_runtime as _agent_runtime  # multi-provider runtime (transcript + oneshot)
 from mc import continuity_threads as _cont_threads
+from mc import continuity_authority as _cont_authority  # S2.5: authority screen on extracted lines
 from mc import scribe_user_turn as _scribe_user_turn
 import mc.skills as _skills                # frontmatter parse for position notes
 import mc.distiller as _distiller          # Phase 4 learning observer (best-effort)
@@ -2168,12 +2169,21 @@ def _extract_continuity(project, delta, model, owner=None, *, provider=None,
         d = json.loads(txt[i:j + 1])
         if not isinstance(d, dict):
             return None
+        # Rail 1 (S2.5): this record goes into every later system prompt as
+        # something the agent committed to. A line that expands the agent's
+        # own authority is dropped; the rest of the record is still written.
+        d, refused = _cont_authority.screen(d, _distiller._authority_violation)
+        project_id = project.get('id', '') if isinstance(project, dict) else ''
+        for slot, line, phrase in refused:
+            _scribe_stat(project_id, 'continuity_line_refused_authority')
+            _log(f'[continuity] {slot} line refused (authority guard hit '
+                 f'{phrase!r}): {line[:120]!r}')
         return write_continuity(
             project,
-            threads=d.get('threads') or [],
-            commitments=d.get('commitments') or [],
-            understanding=d.get('understanding') or '',
-            owner=owner, confirmed_threads=d.get('confirmed_threads') or [])
+            threads=d['threads'],
+            commitments=d['commitments'],
+            understanding=d['understanding'],
+            owner=owner, confirmed_threads=d['confirmed_threads'])
     except Exception as e:
         _log(f"[continuity] extraction failed: {e}")
         return None
