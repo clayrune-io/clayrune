@@ -52,6 +52,7 @@ from mc.memory_note_slug import is_safe_note_slug as _is_safe_note_slug  # ML14
 from mc.memory_note_slug import subject_suffixed_slug as _subject_suffixed_slug  # ML14
 from mc.memory_note_frontmatter import topic_note_head as _topic_note_head  # ML13
 import mc.condense_agent_mode as _condense_agent_mode  # ML16: agent-mode "anything to do" test + prompt
+import mc.condense_restore as _condense_restore  # ML21: locked, conditional restore/heal after an agent run
 import mc.condense_mode as _condense_mode  # ML16: which executor a config selects; the one default
 
 from mc import state
@@ -6493,7 +6494,7 @@ def _scribe_summarize_text(text, model, want_why=False):
     return out, 'extracted'
 
 
-def _condense_integrity_check(mem_path, pre_mem, pre_wm, rc):
+def _condense_integrity_check(mem_path, pre_mem, pre_wm, rc, post_reader=None):
     """Post-condense safety net for MEMORY.md.
 
     A condense run is an external `claude` subprocess that rewrites MEMORY.md
@@ -6511,6 +6512,11 @@ def _condense_integrity_check(mem_path, pre_mem, pre_wm, rc):
     Returns (action, reason, status_kw). status_kw is merged into the per-
     project condense status so chronic turn-cap failures stay visible in
     telemetry instead of silently self-healing on the next trigger.
+
+    `post_reader` (ML21): a callable giving the post-run text, or raising
+    what the read raised. The agent-mode caller passes the one read it took
+    when the run ended, so the verdict and the repair that follows are about
+    the same text. Default: read `mem_path` here, as before.
     """
     if pre_mem is None:
         # No pre-image captured — can only trust the exit code.
@@ -6521,7 +6527,10 @@ def _condense_integrity_check(mem_path, pre_mem, pre_wm, rc):
                          'no pre-image captured to verify integrity'}
         return 'ok', '', {}
     try:
-        post = mem_path.read_text(encoding='utf-8') if mem_path.exists() else ''
+        if post_reader is not None:
+            post = post_reader()
+        else:
+            post = mem_path.read_text(encoding='utf-8') if mem_path.exists() else ''
     except Exception as e:
         return 'restore', f'post-read failed ({e})', {
             'state': 'error',
@@ -7041,33 +7050,48 @@ def _dispatch_condense(project):
             # before the write step) must never leave MEMORY.md corrupted or
             # drop a live-session watermark.
             rc = proc.returncode
+            # ML21: one read of MEMORY.md, taken now. The check judges it, and
+            # the repair below writes (under the write lock, atomically) only
+            # if the file still holds it; a commit that landed since is kept.
+            end_image = _condense_restore.EndImage(mem_path)
             action, reason, kw = _condense_integrity_check(
-                mem_path, pre_mem, pre_wm, rc)
+                mem_path, pre_mem, pre_wm, rc, post_reader=end_image.replay)
+
+            def _left_changed(what):
+                _scribe_stat(pid, 'condense_restore_skipped_changed')
+                _log(f"[condense] {pid}: integrity FAIL ({reason}) but "
+                     f"MEMORY.md changed after the run ended; {what} skipped, "
+                     f"file left as it is")
+                return {'state': 'error',
+                        'error': f'condense integrity check failed ({reason}); '
+                                 f'MEMORY.md changed after the run ended, so '
+                                 f'the {what} was skipped and the pre-image '
+                                 f'was not restored'}
+
             if action == 'restore':
                 try:
-                    mem_path.write_text(pre_mem, encoding='utf-8')  # pyright: ignore[reportArgumentType]  # moved-verbatim typing debt (mop)
-                    _log(f"[condense] {pid}: integrity FAIL ({reason}) — "
-                         f"restored pre-image")
+                    if _condense_restore.restore(pid, mem_path, pre_mem, end_image):  # pyright: ignore[reportArgumentType]  # moved-verbatim typing debt (mop)
+                        _log(f"[condense] {pid}: integrity FAIL ({reason}) — "
+                             f"restored pre-image")
+                    else:
+                        kw = _left_changed('restore')
                 except Exception as e:
                     _log(f"[condense] {pid}: RESTORE FAILED ({e}) — {reason}")
             elif action == 'heal':
                 try:
-                    cur, ent, wm = _mem_split_full(
-                        mem_path.read_text(encoding='utf-8'))
-                    have = set(wm)
-                    for w in pre_wm:
-                        if w not in have:
-                            wm.append(w)
-                            have.add(w)
-                    mem_path.write_text(_mem_compose(cur, ent, wm),
-                                        encoding='utf-8')
-                    _log(f"[condense] {pid}: healed ({reason}) — re-injected "
-                         f"dropped watermark(s), kept agent curation")
+                    if _condense_restore.heal(pid, mem_path, pre_wm, end_image,
+                                              _mem_split_full, _mem_compose):
+                        _log(f"[condense] {pid}: healed ({reason}) — re-injected "
+                             f"dropped watermark(s), kept agent curation")
+                    else:
+                        kw = _left_changed('heal')
                 except Exception as e:
                     # Heal failed — fall back to full restore to protect the
                     # load-bearing watermark over the agent's curation.
                     try:
-                        mem_path.write_text(pre_mem, encoding='utf-8')  # pyright: ignore[reportArgumentType]  # moved-verbatim typing debt (mop)
+                        if not _condense_restore.restore(pid, mem_path, pre_mem, end_image):  # pyright: ignore[reportArgumentType]  # moved-verbatim typing debt (mop)
+                            _scribe_stat(pid, 'condense_restore_skipped_changed')
+                            _log(f'[condense] {pid}: MEMORY.md changed after the run ended; pre-image restore skipped')
                     except Exception as restore_error:
                         _log(f'[condense] {pid}: restoring memory pre-image failed: {restore_error}')
                     _log(f"[condense] {pid}: heal FAILED ({e}) — attempted "
