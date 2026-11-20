@@ -24,6 +24,8 @@ def snap(tmp_path, monkeypatch):
     (live / 'topic.md').write_text('now')
     monkeypatch.setattr(tool, 'memory_dir', lambda: live)
     monkeypatch.setattr(tool, 'SNAP_ROOT', tmp_path / 'snaps')
+    # restore() marks a restore in progress under the home directory.
+    monkeypatch.setattr(tool._snap, '_marker_dir', lambda: tmp_path / 'restore-active')
     d = tool.create('t')
     (live / 'topic.md').write_text('changed since')
     return live, d
@@ -60,3 +62,39 @@ def test_create_refuses_a_directory_with_no_memory_index(tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         tool.create('x')
     assert not (tmp_path / 'snaps').exists()
+
+
+def test_create_refuses_the_daily_jobs_label_prefix(tmp_path, monkeypatch):
+    live = tmp_path / 'live'
+    live.mkdir()
+    (live / 'MEMORY.md').write_text('CURRENT INDEX')
+    monkeypatch.setattr(tool, 'memory_dir', lambda: live)
+    monkeypatch.setattr(tool, 'SNAP_ROOT', tmp_path / 'snaps')
+    with pytest.raises(SystemExit):
+        tool.create('auto-mine')
+    assert not (tmp_path / 'snaps').exists()
+
+
+def test_restore_marks_a_restore_in_progress_while_it_copies(snap, monkeypatch):
+    live, d = snap
+    seen = []
+    real_copy = tool.shutil.copy2
+
+    def copy(src, dst):
+        seen.append(tool._snap.restore_in_progress())
+        return real_copy(src, dst)
+    monkeypatch.setattr(tool.shutil, 'copy2', copy)
+    tool.restore(d, ['topic.md'])
+    assert seen == [True]
+    assert tool._snap.restore_in_progress() is False
+
+
+def test_verify_reports_a_changed_and_a_missing_file(snap, capsys):
+    live, d = snap
+    assert tool.verify(d) is True
+    (Path(d) / 'memory' / 'topic.md').write_text('tampered')
+    (Path(d) / 'memory' / 'MEMORY.md').unlink()
+    assert tool.verify(d) is False
+    out = capsys.readouterr().out
+    assert 'MISSING MEMORY.md' in out and 'SHA MISMATCH topic.md' in out
+    assert '0/2 ok, 1 mismatched, 1 missing' in out
