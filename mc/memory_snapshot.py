@@ -162,7 +162,7 @@ def create_snapshot(src: Path, root: Path, label: str,
         'count': len(entries),
         'files': entries,
     }
-    (dest / 'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
+    write_json_atomic(dest / 'manifest.json', manifest, indent=2)
     return dest, manifest
 
 
