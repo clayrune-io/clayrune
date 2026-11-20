@@ -114,13 +114,14 @@ function _engShortLabel(engine) {
 // With a project default set, an empty pick is NOT "no persona" — it inherits.
 // Labelling it "None" would state the opposite of what dispatch will do. Shared
 // between the <select> picker below and the WHO face-card grid so the two
-// surfaces can never show different text for the same state.
+// surfaces can never show different text for the same state. Returns RAW text:
+// each caller escapes it once where it is emitted.
 function _composerNoneLabel(p, list) {
   const defRec = p.default_character
     ? list.find(c => ((c.scope || 'global') + ':' + c.name) === p.default_character)
     : null;
   return p.default_character
-    ? 'Project default' + (defRec ? ' (' + esc(defRec.display_name || defRec.name) + ')' : '')
+    ? 'Project default' + (defRec ? ' (' + (defRec.display_name || defRec.name) + ')' : '')
     : 'None';
 }
 
@@ -155,7 +156,7 @@ function _composerCharacterPicker(p, resumeId) {
   return `<div class="composer-provider-row composer-character-row">
     <span class="composer-provider-label">Persona</span>
     <select class="composer-provider-select" onchange="setComposerCharacter('${window.jsAttr(p.id)}',this.value)">
-      <option value="">${noneLabel}</option>${opts}
+      <option value="">${esc(noneLabel)}</option>${opts}
       <option value="__create__">&#43; Create new persona&hellip;</option>
     </select>
     ${editBtn}

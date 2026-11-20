@@ -108,6 +108,27 @@ try {
       assert.doesNotMatch(sub, /&quot;|&amp;|&lt;/, 'no entity text on screen');
     });
   });
+
+  // CV11: _composerNoneLabel returned pre-escaped text and the face card
+  // escaped it again, so a default persona shown as `R&D` read
+  // `Project default (R&amp;D)` on the card and in its tooltip.
+  await t.step('CV11 the "Project default" face card names the persona once-escaped', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await page.route('**/api/characters*', route => route.fulfill({ json: [
+        { name: 'rnd', scope: 'global', display_name: 'R&D', description: 'x' }] }));
+      await page.evaluate(({ pid }) => {
+        const p = allProjects.find(x => x.id === pid);
+        p.default_character = 'global:rnd';
+        window.agentConvNew = window.agentConvNew || {};
+        agentConvNew[pid] = true;
+        window.reloadCharacters(pid);
+      }, { pid });
+      const none = page.locator('.ces-person-card.ces-person-none');
+      await none.waitFor();
+      assert.equal((await none.locator('.ces-person-name').textContent()).trim(), 'Project default (R&D)');
+      assert.equal(await none.getAttribute('title'), 'Project default (R&D)');
+    });
+  });
 } finally {
   t.done();
   await browser.close();
