@@ -7854,12 +7854,9 @@ class QwenRuntime(AgentRuntime):
                        attachments: Optional[List[str]] = None) -> None:
         vendor_fence.check_launch(self.name, handle.session_dict)
         session = handle.session_dict
-        old_proc = session.get('proc')
-        if old_proc and old_proc.poll() is None:
-            # Disown before kill — see CodexRuntime.write_followup's identical
-            # comment for the exact race this ordering avoids.
-            session['proc'] = None
-            _kill_pid(old_proc.pid)
+        # Disown before kill — see CodexRuntime.write_followup's identical
+        # comment for the exact race this ordering avoids.
+        _runtime_turn_ownership.retire(handle, _kill_pid)
         session['_system_prompt'] = self.with_mc_tool_protocol(
             session.get('_system_prompt') or '')
 
@@ -9774,29 +9771,28 @@ class CodexRuntime(AgentRuntime):
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
         session = handle.session_dict
-        old_proc = session.get('proc')
-        if old_proc and old_proc.poll() is None:
-            # Disown the old proc BEFORE killing it, not after. `_kill_pid`
-            # on Windows is a BLOCKING `subprocess.run(['taskkill', '/F', ...])`
-            # — it does not return until the target is dead, which force-closes
-            # its stdout pipe well before that. `_mode_a_reader`'s own thread
-            # for `old_proc` is blocked on that pipe and unblocks (EOF) DURING
-            # this call, i.e. concurrently with it, on another thread — so its
-            # `finally` block (which decides whether to log "[codex exited
-            # with code N]") can run and complete before this line even
-            # returns. Its only defense is `session.get('proc') is proc`, and
-            # that check only works if the reassignment has ALREADY happened
-            # — reassigning `session['proc']` AFTER this call (as the old code
-            # did) loses that race almost every time a follow-up arrives while
-            # the previous turn is still alive/tearing down. Reproduced live:
-            # a genuinely-completing old process, force-killed mid-teardown,
-            # left a spurious "[codex exited with code 1]" / "[hint] Codex
-            # exited with code 1. Check auth and model name." in the chat
-            # immediately followed by the NEW turn's real, successful reply —
-            # exactly Ron's Kalshi screenshot. Clearing the reference first
-            # makes the guard win instead of racing.
-            session['proc'] = None
-            _kill_pid(old_proc.pid)
+        # Disown the old proc BEFORE killing it, not after. `_kill_pid`
+        # on Windows is a BLOCKING `subprocess.run(['taskkill', '/F', ...])`
+        # — it does not return until the target is dead, which force-closes
+        # its stdout pipe well before that. `_mode_a_reader`'s own thread
+        # for the old proc is blocked on that pipe and unblocks (EOF) DURING
+        # this call, i.e. concurrently with it, on another thread — so its
+        # `finally` block (which decides whether to log "[codex exited
+        # with code N]") can run and complete before this line even
+        # returns. Its only defense is `session.get('proc') is proc`, and
+        # that check only works if the reassignment has ALREADY happened
+        # — reassigning `session['proc']` AFTER this call (as the old code
+        # did) loses that race almost every time a follow-up arrives while
+        # the previous turn is still alive/tearing down. Reproduced live:
+        # a genuinely-completing old process, force-killed mid-teardown,
+        # left a spurious "[codex exited with code 1]" / "[hint] Codex
+        # exited with code 1. Check auth and model name." in the chat
+        # immediately followed by the NEW turn's real, successful reply —
+        # exactly Ron's Kalshi screenshot. Clearing the reference first
+        # makes the guard win instead of racing. `retire` does both in that
+        # order under the turn lock, and also disowns a process that has
+        # already exited: its reader may still be draining stdout.
+        _runtime_turn_ownership.retire(handle, _kill_pid)
         # Re-apply the MC Tool Protocol before composing the respawn prompt.
         # `agent_routes.py`'s /agent/send and /agent/interrupt refresh
         # `session['_system_prompt']` from a bare project context ahead of

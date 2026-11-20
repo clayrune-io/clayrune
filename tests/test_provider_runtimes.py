@@ -2328,7 +2328,7 @@ class TestKiroRuntime:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize('provider', ['opencode', 'goose', 'aider', 'kiro'])
+@pytest.mark.parametrize('provider', ['opencode', 'goose', 'aider', 'kiro', 'codex', 'qwen'])
 def test_exited_mode_a_reader_is_detached_before_followup(provider, tmp_path, monkeypatch):
     from types import SimpleNamespace
     from typing import Any
@@ -2409,7 +2409,7 @@ def test_capabilities_name_matches_runtime_name(provider_name):
     )
 
 
-@pytest.mark.parametrize('provider', ['opencode', 'goose', 'aider', 'kiro'])
+@pytest.mark.parametrize('provider', ['opencode', 'goose', 'aider', 'kiro', 'codex', 'qwen'])
 def test_replaced_mode_a_turn_loses_ownership_before_kill(provider, tmp_path, monkeypatch):
     from types import SimpleNamespace
 
