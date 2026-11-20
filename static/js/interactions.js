@@ -681,6 +681,8 @@ function modalDragMove(x, y) {
     if (entry) {
       entry.snap = null;
       modalDrag.element.classList.remove('is-snapped');
+      modalDrag.element.classList.remove('is-maximized');
+      _syncMaximizedBodyClass();
       const content = modalDrag.element.querySelector('.modal-content');
       if (ps && content) {
         content.style.width = ps.width + 'px';
@@ -692,6 +694,7 @@ function modalDragMove(x, y) {
       if (entry.projectId && modalDrag.modalId && !modalDrag.modalId.startsWith('__')) {
         _setModalPref(entry.projectId, { snap: null, preSnap: null });
       }
+      _syncMaximizeBtn(modalDrag.modalId);
     }
     // Recenter the un-snapped window under the cursor so it tracks naturally.
     const w = modalDrag.element.offsetWidth;
