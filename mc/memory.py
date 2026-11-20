@@ -4958,10 +4958,12 @@ def _gc_stale_watermarks(projects):
         project_id = p.get('id', '')
         if not project_id:
             continue
-        live = {s.get('session_id') or s.get('id')
-                for s in agent_sessions.values()}
         try:
             with _get_mem_write_lock(project_id):
+                # Taken INSIDE the lock, as the docstring says: a session
+                # revived while this sweep waited must keep its marker.
+                live = {s.get('session_id') or s.get('id')
+                        for s in list(agent_sessions.values())}
                 log_path = _get_session_log_path(p)
                 if log_path.exists():
                     _c, log_entries, log_wm = _mem_split_full(

@@ -250,6 +250,36 @@ def test_gc_stale_watermarks_noop_when_all_live(tmp_data_dir):
     assert mp.read_text(encoding="utf-8") == before
 
 
+def test_gc_reads_live_sessions_inside_the_lock(tmp_data_dir, monkeypatch):
+    """MC-1179 pass 3: the docstring promises the liveness test is done
+    inside the lock, so a session revived while the sweep waits for the lock
+    keeps its marker. `live` used to be taken before the lock."""
+    m = _mem(tmp_data_dir)
+    p = {"id": "gcproj3"}
+    mp = m._get_memory_path(p)
+    mp.parent.mkdir(parents=True, exist_ok=True)
+    mp.write_text(m._mem_compose("# Idx", [], [_seed_wm("sidREVIVED", "x")]),
+                  encoding="utf-8")
+    before = mp.read_text(encoding="utf-8")
+
+    class RevivesWhileWaiting:
+        """Stands in for the leaf lock: the session comes back to life in the
+        window between the sweep asking for the lock and getting it."""
+        def __enter__(self):
+            m.agent_sessions["sidREVIVED"] = {"session_id": "sidREVIVED"}
+
+        def __exit__(self, *exc):
+            return False
+
+    m.agent_sessions.clear()
+    monkeypatch.setattr(m, "_get_mem_write_lock", lambda pid: RevivesWhileWaiting())
+    try:
+        assert m._gc_stale_watermarks([p]) == 0
+    finally:
+        m.agent_sessions.clear()
+    assert mp.read_text(encoding="utf-8") == before
+
+
 # ── MC-917: index-cap hard refusal (_index_overflow / _enforce_index_cap) ────
 # A budget nothing enforces silently drifts — the watermark-GC leak (67
 # markers, 37.8KB) blew the ~24KB index_byte_budget with no error anywhere.
