@@ -76,9 +76,12 @@ def _state_path(m, project):
     return m._get_memory_path(project).parent / REVIEW_STATE_FILE
 
 
-def read_state(m, project):
+def read_state(m, project, path=None):
+    """`path` puts the sidecar somewhere other than the memory directory (the
+    health rules in memory_health.py share this mechanism and keep theirs out
+    of the vault)."""
     try:
-        p = _state_path(m, project)
+        p = path or _state_path(m, project)
         if not p.is_file():
             return {}
         d = json.loads(p.read_text(encoding='utf-8'))
@@ -89,9 +92,9 @@ def read_state(m, project):
         return {}
 
 
-def write_state(m, project, state):
+def write_state(m, project, state, path=None):
     from mc.core import _atomic_write_text
-    _atomic_write_text(_state_path(m, project),
+    _atomic_write_text(path or _state_path(m, project),
                        json.dumps(state, indent=2, sort_keys=True) + '\n')
 
 

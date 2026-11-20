@@ -26,6 +26,10 @@ Also reports:
        asserted on `sys.modules`, NOT by grepping output, because the reaper runs
        on a daemon thread and a grep races it.
   The CONDENSE DEADBAND, published rather than assumed — see below.
+  The HEALTH RULES — M1 split by who wrote the note, and the fixed thresholds
+       that turn this run's numbers into a finding someone is mailed. They live
+       in `memory_health.py`; `--notify` sends, without it the run prints what
+       it would send.
 """
 
 import argparse
@@ -39,6 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _harness  # noqa: E402
+import memory_health  # noqa: E402
 
 SUITE = _harness.repo_root() / 'data' / 'memory-eval' / 'suite-v1.jsonl'
 
@@ -135,8 +140,10 @@ def deadband(m, project):
     }
 
 
-def run(corpus_snapshot=None, canary=False):
-    m, project = _harness.wire(corpus_snapshot=corpus_snapshot)
+def run(corpus_snapshot=None, canary=False, notify=False, project_path=None,
+        health=True):
+    m, project = _harness.wire(corpus_snapshot=corpus_snapshot,
+                               project_path=project_path)
     topk, expand = _harness.live_signature()
     mem_path = m._get_memory_path(project)
     mem_dir = mem_path.parent
@@ -153,7 +160,9 @@ def run(corpus_snapshot=None, canary=False):
             'Qqxzzy vorplex thrunge. Nothing links here and no real task shares '
             'this vocabulary.\n', encoding='utf-8')
         try:
-            return run(corpus_snapshot=str(tmp), canary=False)
+            # health=False: the rules judge the live vault, not this copy.
+            return run(corpus_snapshot=str(tmp), canary=False,
+                       project_path=project_path, health=False)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)  # MC-1179 TL29: this copy was never removed
 
@@ -170,6 +179,7 @@ def run(corpus_snapshot=None, canary=False):
     print(f'  cited by index or another note : {len(cited)}')
     print(f'  reachable via the read floor   : {len(reach)}')
     print(f'  M1 VIOLATIONS (uncited AND unreachable): {len(violations)}')
+    print(memory_health.split_line(violations))
     for v in violations:
         print(f'     ! {v}')
 
@@ -187,6 +197,9 @@ def run(corpus_snapshot=None, canary=False):
           f'-> {"SUPPRESSED (floor evicts first)" if d["byte_half_suppressed"] else "live"}')
     print(f'     line: trigger {d["line_trigger"]} vs floor {d["line_floor"]} '
           f'-> {"LIVE (trigger fires first)" if d["line_half_live"] else "suppressed"}')
+    if health:
+        memory_health.report(m, project, violations, cited | reach, topk, expand,
+                             notify=notify)
     _harness.assert_no_server()
     return violations
 
@@ -197,8 +210,16 @@ def main():
     ap.add_argument('--inject-canary', action='store_true',
                     help='inject a synthetic uncited+unreachable note into a COPY '
                          'and confirm the invariant catches it')
+    ap.add_argument('--project-path', default=None,
+                    help="canonical project checkout (default: this repo's own "
+                         'root; pass this when running from a worktree)')
+    ap.add_argument('--notify', action='store_true',
+                    help='mail each new health finding through tools/night-review/'
+                         'send_mail.py and record it as raised. Without this the '
+                         'run prints what it would send and records nothing')
     args = ap.parse_args()
-    v = run(corpus_snapshot=args.corpus_snapshot, canary=args.inject_canary)
+    v = run(corpus_snapshot=args.corpus_snapshot, canary=args.inject_canary,
+            notify=args.notify, project_path=args.project_path)
     return 0 if not v else 1
 
 

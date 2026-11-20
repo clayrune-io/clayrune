@@ -3,7 +3,8 @@
 Read-only probes behind the memory redesign (`docs/MEMORY_REDESIGN_2026-08.md`,
 backlog `dae8d6e7`). Nothing here edits a memory note. A few probes write
 their own sidecar: `delivery_backfill.py` and `delivery_review.py` (delivery
-counters / review state), `fact_canary_probe.py` (its state file), and
+counters / review state), `fact_canary_probe.py` (its state file),
+`eval.py --notify` (the health rules' state, outside the memory directory), and
 `fts_recall_probe.py` builds a cold-search database beside the index.
 
 ```bash
@@ -93,6 +94,45 @@ is not archived, it is deleted with a receipt on disk.
 
 `--inject-canary` copies the corpus, adds an uncited note nothing can rank, and
 expects the violation count to rise. A check that cannot fail is not a check.
+
+## The health rules (`memory_health.py`, called by `eval.py`)
+
+The invariant count alone stopped working as an alarm once auto-written mint
+notes filled it: it read as known noise, and hand-written notes went
+unreachable inside it for weeks with every weekly entry ending "no email". So
+`eval.py` now prints the count split by who wrote the note (`M1 by kind:
+hand-written | positions | mints | system files`, the old total stays for the
+trend line) and hands the run to four fixed rules. "System files" are the
+session log and the continuity record, which the memory system rewrites itself:
+the invariant lists them as topic files, and they are nobody's note. Each threshold is a named constant with its
+reason beside it in `memory_health.py`:
+
+| rule | finding when |
+|---|---|
+| (a) hand-written unreachable | any note that is not `mint_*`, `position_*` or a system file is in the M1 list |
+| (b) planted-fact recall | more than 10 points under the stored baseline in 2 consecutive `--notify` runs |
+| (c) contradiction pass rate | 0 of the pinned pairs pass |
+| (d) memory snapshot | the newest one under `~/.clayrune/memory-snapshots` is older than 26 hours, or there is none |
+
+```bash
+python tools/memory-eval/eval.py             # prints what it would send, records nothing
+python tools/memory-eval/eval.py --notify    # mails each new finding, records it as raised
+python tools/memory-eval/memory_health.py --set-recall-baseline <percent>   # once, for rule (b)
+```
+
+One mail per rule, through `tools/night-review/send_mail.py`, subject
+`[Clayrune memory] <finding>`, body under 200 words with the verdict first. A
+finding is mailed once and stays quiet until it clears and recurs; the hash and
+flagged-set are `delivery_review.py`'s, reused. Rule (a) keeps one hash per
+note, so a new note going dark behind two known ones is still reported.
+
+For an unreachable hand-written note the mail carries a drafted fix: the
+best-ranked reachable hand-written note that should link to it. **The run
+writes nothing into the memory directory**; a person applies the link. Its only
+file is `data/memory-eval/health_state.json` (gitignored), which also holds the
+recall baseline. Without a stored baseline rule (b) prints `NOT MEASURED`, it
+does not adopt the current figure, because adopting a figure that has already
+slid would hide the slide.
 
 ## Results
 
