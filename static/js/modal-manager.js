@@ -532,26 +532,39 @@ function toggleModalMenuAdvanced(e, projectId) {
   try { localStorage.setItem('mc_modal_menu_advanced_open', open ? '1' : '0'); } catch (_) {}
 }
 
+// A refused project-record write (a human-only setting, a role guard, a 500):
+// toast the server's reason, or `fallback`, and return true so the caller
+// skips its success path. These writes used to discard the reply.
+async function _projectWriteRefused(r, fallback) {
+  if (r.ok) return false;
+  let why = '';
+  try { why = ((await r.json()) || {}).error || ''; } catch (e) {}
+  showToast(why || fallback);
+  return true;
+}
+
 async function setProjectStatus(projectId, status) {
   document.querySelectorAll('.modal-menu-dropdown.open').forEach(d => d.classList.remove('open'));
   try {
-    await fetch(API_BASE + `/api/project/${projectId}`, {
+    const r = await fetch(API_BASE + `/api/project/${projectId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ status })
     });
+    if (await _projectWriteRefused(r, 'Failed to set status')) return;
     await refreshSilent();
-  } catch(e) {}
+  } catch(e) { console.warn('[project] status write failed:', e); }
 }
 
 async function setProjectColor(projectId, color, bg) {
   document.querySelectorAll('.modal-menu-dropdown.open').forEach(d => d.classList.remove('open'));
   try {
-    await fetch(API_BASE + `/api/project/${projectId}`, {
+    const r = await fetch(API_BASE + `/api/project/${projectId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ modal_color: { color, bg } })
     });
+    if (await _projectWriteRefused(r, 'Failed to set colour')) return;
     await refreshSilent();
     // A project's accent is its identity across the whole app, not just its
     // tile — the Floor room, its runs on the calendar and its rows in the
@@ -562,7 +575,7 @@ async function setProjectColor(projectId, color, bg) {
     if (typeof window.renderScheduleCalendar === 'function') window.renderScheduleCalendar();
     if (typeof window.refreshScheduleList === 'function') window.refreshScheduleList();
     if (typeof window.refreshFloor === 'function') window.refreshFloor();
-  } catch(e) {}
+  } catch(e) { console.warn('[project] colour write failed:', e); }
 }
 
 // Durable per-CONVERSATION pin toggle (chat-level — pins THIS chat, not the
@@ -636,15 +649,16 @@ async function setProjectStreamingMode(projectId, mode) {
   // '' clears the override (inherit global); 'a'/'b' pin an explicit mode.
   const value = mode === '' ? null : (mode === 'b');
   try {
-    await fetch(API_BASE + `/api/project/${projectId}`, {
+    const r = await fetch(API_BASE + `/api/project/${projectId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ use_streaming_agent: value })
     });
+    if (await _projectWriteRefused(r, 'Failed to set process mode')) return;
     if (value === null) showToast('Process mode follows the global default');
     else showToast(value ? 'Mode B (persistent process) for new sessions' : 'Mode A (spawn per turn) for new sessions');
     await refreshSilent();
-  } catch(e) {}
+  } catch(e) { console.warn('[project] process-mode write failed:', e); }
 }
 
 const EMOJI_CHOICES = [
@@ -680,11 +694,12 @@ async function pickEmoji(emoji) {
   closeEmojiPicker();
   if (!projectId) return;
   try {
-    await fetch(API_BASE + `/api/project/${projectId}`, {
+    const r = await fetch(API_BASE + `/api/project/${projectId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ emoji })
     });
+    if (await _projectWriteRefused(r, 'Failed to set emoji')) return;
     await refreshSilent();
     // The picker may have been opened from the profile dialog — sync its emoji button.
     // The dialog stayed open underneath and the rebuild is from the saved
@@ -695,7 +710,7 @@ async function pickEmoji(emoji) {
       _renderProfileDialog();
       ids.forEach((id, i) => { const el = document.getElementById(id); if (el && typed[i] != null) el.value = typed[i]; });
     }
-  } catch(e) {}
+  } catch(e) { console.warn('[project] emoji write failed:', e); }
 }
 
 async function generateProjectProfile(projectId, opts) {

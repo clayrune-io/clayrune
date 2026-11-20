@@ -55,6 +55,50 @@ try {
       assert.deepEqual(errors(), []);
     });
   });
+
+  // MM3: four project-record writes never read the reply. The process-mode
+  // one toasted success on any status; the other three looked like a click
+  // that did nothing when the server refused.
+  await t.step('MM3 a refused process-mode write does not toast success', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await page.route(`**/api/project/${pid}`, route =>
+        route.fulfill({ status: 403, json: { error: 'routing is a human-only setting' } }));
+      const toasts = await page.evaluate(async ({ pid }) => {
+        window.smokeToasts.length = 0;
+        await setProjectStreamingMode(pid, 'b');
+        return window.smokeToasts.slice();
+      }, { pid });
+      assert.deepEqual(toasts, ['routing is a human-only setting']);
+    });
+  });
+
+  await t.step('MM3 a refused status, colour or emoji write says so', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await page.route(`**/api/project/${pid}`, route => route.fulfill({ status: 500, json: {} }));
+      const toasts = await page.evaluate(async ({ pid }) => {
+        window.smokeToasts.length = 0;
+        await setProjectStatus(pid, 'paused');
+        await setProjectColor(pid, '#111', '#222');
+        editProjectEmoji(pid);
+        await pickEmoji('🎯');
+        return window.smokeToasts.slice();
+      }, { pid });
+      assert.deepEqual(toasts, ['Failed to set status', 'Failed to set colour', 'Failed to set emoji']);
+    });
+  });
+
+  await t.step('MM3 an accepted process-mode write toasts as before', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await page.route(`**/api/project/${pid}`, route => route.fulfill({ json: { ok: true } }));
+      const toasts = await page.evaluate(async ({ pid }) => {
+        window.smokeToasts.length = 0;
+        await setProjectStreamingMode(pid, 'b');
+        await setProjectStatus(pid, 'paused');
+        return window.smokeToasts.slice();
+      }, { pid });
+      assert.deepEqual(toasts, ['Mode B (persistent process) for new sessions']);
+    });
+  });
 } finally {
   t.done();
   await browser.close();
