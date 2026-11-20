@@ -687,7 +687,14 @@ async function pickEmoji(emoji) {
     });
     await refreshSilent();
     // The picker may have been opened from the profile dialog — sync its emoji button.
-    if (_profileDialogProjectId === projectId) _renderProfileDialog();
+    // The dialog stayed open underneath and the rebuild is from the saved
+    // record, so what was typed in its fields is carried across it.
+    if (_profileDialogProjectId === projectId) {
+      const ids = ['pfd-path', 'pfd-character', 'pfd-key', 'pfd-desc'];
+      const typed = ids.map(id => document.getElementById(id)?.value);
+      _renderProfileDialog();
+      ids.forEach((id, i) => { const el = document.getElementById(id); if (el && typed[i] != null) el.value = typed[i]; });
+    }
   } catch(e) {}
 }
 

@@ -35,6 +35,26 @@ try {
       assert.deepEqual(errors(), []);
     });
   });
+
+  // MM2: the emoji picker opens over the profile dialog, and pickEmoji then
+  // rebuilt the dialog from the saved record: a description, folder, backlog
+  // key or persona choice typed but not yet saved was replaced without a word.
+  await t.step('MM2 picking an emoji keeps what was typed in the profile dialog', async () => {
+    await scenario(browser, {}, async ({ page, errors }) => {
+      await page.route(`**/api/project/${pid}`, route => route.fulfill({ json: { ok: true } }));
+      const r = await page.evaluate(async ({ pid }) => {
+        openProjectProfileDialog(pid);
+        document.getElementById('pfd-desc').value = 'typed, not saved';
+        document.getElementById('pfd-key').value = 'ZZ';
+        document.getElementById('pfd-path').value = '/typed/path';
+        editProjectEmoji(pid);
+        await pickEmoji('🎯');
+        return ['pfd-desc', 'pfd-key', 'pfd-path'].map(id => document.getElementById(id).value);
+      }, { pid });
+      assert.deepEqual(r, ['typed, not saved', 'ZZ', '/typed/path']);
+      assert.deepEqual(errors(), []);
+    });
+  });
 } finally {
   t.done();
   await browser.close();
