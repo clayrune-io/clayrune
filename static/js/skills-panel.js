@@ -140,8 +140,9 @@ function _personasCreateNew() {
   }
 }
 
+let _allPersonasReloadWanted = false;   // same rule as _allSkillsReloadWanted (SK6)
 async function loadAllPersonas() {
-  if (_allPersonasCache.loading) return;
+  if (_allPersonasCache.loading) { _allPersonasReloadWanted = true; return; }
   _allPersonasCache.loading = true;
   try {
     const pid = _allPersonasFilter.project !== 'all' ? _allPersonasFilter.project : '';
@@ -168,6 +169,7 @@ async function loadAllPersonas() {
     _allPersonasCache = { items: [], loaded: true, loading: false };
   }
   renderAllPersonas();
+  if (_allPersonasReloadWanted) { _allPersonasReloadWanted = false; return loadAllPersonas(); }
 }
 
 // Rows reference personas BY INDEX into this array — a persona's identity is
@@ -311,8 +313,13 @@ function _allSkillsBodyHTML() {
     </div>`;
 }
 
+// A call that arrives while a load is in flight is not dropped (SK6): the
+// filter is read once at the start of a load, so the change that prompted the
+// call would be lost and the list would not match its own controls. It is
+// remembered and the load runs once more when the current one ends.
+let _allSkillsReloadWanted = false;
 async function loadAllSkills() {
-  if (_allSkillsCache.loading) return;
+  if (_allSkillsCache.loading) { _allSkillsReloadWanted = true; return; }
   _allSkillsCache.loading = true;
   try {
     // If a specific project is selected, we pass project_id so project-local skills + shadow flags appear
@@ -348,6 +355,7 @@ async function loadAllSkills() {
     _allSkillsCache = { items: [], loaded: true, loading: false };
     renderAllSkills();
   }
+  if (_allSkillsReloadWanted) { _allSkillsReloadWanted = false; return loadAllSkills(); }
 }
 
 async function loadSkillUsage() {
@@ -1562,9 +1570,14 @@ function openSkillImportBrowse() {
   if (defaultSource !== 'all') _doSkillImportBrowseSearch(modalId);
 }
 
+// Newest search wins (SK6): there is no in-flight guard here on purpose (each
+// keystroke pause starts a search), so a slow one that finishes after a later,
+// faster one must not paint its older results over the newer ones.
+let _sibSearchSeq = 0;
 async function _doSkillImportBrowseSearch(modalId) {
   const win = openModals.get(modalId)?.element;
   if (!win) return;
+  const seq = ++_sibSearchSeq;
   const q = (win.querySelector('#sib-query')?.value || '').trim();
   const source = win.querySelector('#sib-source')?.value || 'all';
   const resultsEl = win.querySelector('#sib-results');
@@ -1616,9 +1629,11 @@ async function _doSkillImportBrowseSearch(modalId) {
       all.sort((a, b) => (b.score || 0) - (a.score || 0));
     }
   } catch(e) {
+    if (seq !== _sibSearchSeq) return;
     resultsEl.innerHTML = `<div style="padding:24px;text-align:center;color:var(--red);font-size:12px">Search failed: ${esc(e.message)}</div>`;
     return;
   }
+  if (seq !== _sibSearchSeq) return;
 
   if (!all.length) {
     resultsEl.innerHTML = '<div style="padding:24px;text-align:center;color:var(--text-faint);font-size:12px">No skills found.</div>';
