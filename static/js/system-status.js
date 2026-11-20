@@ -1083,7 +1083,10 @@ function toggleSysStatusPopover(ev) {
     // showed whatever it had last fetched, however old. Unconditional, same
     // as fetchSystemStatus() above: reopening is itself the "give me current
     // data" signal.
-    if (_sysStatusActiveTab === 'usage') { fetchUsageBreakdown(); fetchUsageWindows(); }
+    // The Breakdown is drawn only in the Usage report modal now (see
+    // _ubReportOpen), so this popover refreshes it only for a report that is
+    // open behind it.
+    if (_sysStatusActiveTab === 'usage' && _ubReportOpen()) { fetchUsageBreakdown(); fetchUsageWindows(); }
   } else {
     pop.classList.remove('open');
   }
@@ -1111,8 +1114,10 @@ async function refreshSystemStatus(ev) {
     fetchSystemUsage();
     // Review finding #7: this global "Refresh" footer button updated the
     // old usage cache only, on every tab — Breakdown never moved.
-    fetchUsageBreakdown();
-    fetchUsageWindows();
+    if (_ubReportOpen()) {
+      fetchUsageBreakdown();
+      fetchUsageWindows();
+    }
   }
   _rerenderSysStatusSurfaces();
 }
@@ -1172,6 +1177,15 @@ function openSystemUsage() {
 // bars-and-windows glance. Same renderer (`_renderUsageBreakdownSection`),
 // own modal, own mount point (`#usage-report-surface`, handled in
 // `_rerenderSysStatusSurfaces`).
+// The Breakdown request is a multi-second compute on a busy box (see
+// _UB_FETCH_TIMEOUT_MS). Since the move it is drawn in this modal and nowhere
+// else, so the popover's open, its Refresh and the 60 s tick ask for it only
+// while this modal exists. A minimized report counts as open: restoring it
+// from the tray does not go through openUsageReport, so it has to stay current.
+function _ubReportOpen() {
+  return openModals.has('__usage_report');
+}
+
 function openUsageReport() {
   const modalId = '__usage_report';
   // Review finding #7 (carried over): refresh unconditionally on every open/
@@ -1230,7 +1244,16 @@ function _rerenderSysStatusSurfaces() {
   const surface = document.getElementById('sys-status-surface');
   if (surface) surface.innerHTML = renderSysStatusPanel();
   const reportSurface = document.getElementById('usage-report-surface');
-  if (reportSurface) reportSurface.innerHTML = _renderUsageBreakdownSection();
+  if (reportSurface) {
+    // Every status, usage and breakdown response lands here. Rewriting markup
+    // that has not changed rebuilt the report's six <select> controls and
+    // closed a dropdown the user had open.
+    const html = _renderUsageBreakdownSection();
+    if (reportSurface._ubHtml !== html) {
+      reportSurface.innerHTML = html;
+      reportSurface._ubHtml = html;
+    }
+  }
   _renderUsageBarStrip();
 }
 
@@ -1499,12 +1522,14 @@ fetchSystemUsage();
 // Review finding #7: the 60s tick refreshed the OLD usage cache only, so
 // Breakdown could sit stale indefinitely once loaded. Gated on
 // `systemUsageBreakdownCache` (not the active tab) -- once Breakdown has
-// been loaded at all this session it keeps ticking even if the user is
-// currently on another tab, same as the poll never stops for the usage bar.
+// been loaded it keeps ticking even if the user is currently on another tab,
+// for as long as the Usage report modal that draws it is open
+// (_ubReportOpen). Without that second gate one look at the report bought
+// the compute once a minute until the page was reloaded.
 setInterval(() => {
   fetchSystemStatus();
   fetchSystemUsage();
-  if (systemUsageBreakdownCache) { fetchUsageBreakdown(); fetchUsageWindows(); }
+  if (systemUsageBreakdownCache && _ubReportOpen()) { fetchUsageBreakdown(); fetchUsageWindows(); }
 }, 60000);
 
 // ── Interop: re-expose for inline / cross-module + region-generated on*=
