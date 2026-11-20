@@ -5,6 +5,14 @@ Status: **frozen draft for Dave's review; nothing here is built.** Written again
 Doc only: no key generated, no credential created, no deploy, no config change,
 no code change. Every "today" claim cites `file:line` at that base.
 
+> **Superseded transport (note added 2026-11-19, MC-1179 W7).** The
+> [pull contract](AGENT_MAIL_PULL_CONTRACT.md) section 1 supersedes the
+> tunnel/CP transport this document specifies. On `master` the Worker answers
+> `410 legacy_retired` for every `/v1/mail/lifecycle/*` route in section 5, and
+> for `/v1/mail/send` and `/v1/mail/reconcile`, and runs nothing behind them
+> (`workers/agent-mail/worker.js`, `legacy-paths.js`). The text below is the
+> record of the 7d-2 design, not a description of running code.
+
 Inputs: [7d preflight](AGENT_MAIL_UNIT7D_PREFLIGHT.md) (Dave chose **A**, 2026-11-10),
 [7d-1 decisions](AGENT_MAIL_UNIT7D1_DECISIONS.md) (remote lifecycle deferred here),
 [transport](AGENT_MAIL_TRANSPORT.md). Where the preflight says "proposed", this

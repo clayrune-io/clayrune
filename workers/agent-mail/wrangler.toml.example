@@ -1,8 +1,9 @@
 # Copy to wrangler.toml and fill in your own values. Never commit the copy.
 #
-# Candidate only. This template is disabled; no account or mail was touched.
-# Do not deploy/enable until enrollment, receiver, provider fixtures, retention,
-# domain namespace and privacy gates in docs/AGENT_MAIL_TRANSPORT.md are met.
+# This template is disabled (MAIL_ENABLED = "false"). Do not deploy or enable
+# until the provider-fixture, retention, domain-namespace and privacy gates are
+# met. The transport contract is docs/AGENT_MAIL_PULL_CONTRACT.md;
+# docs/AGENT_MAIL_TRANSPORT.md describes the retired push transport.
 name = "clayrune-agent-mail"
 main = "production.js"
 compatibility_date = "2026-11-01"
@@ -42,7 +43,9 @@ MAIL_SERVICE_KEY_ID = "mail-service-v1"
 binding = "MAIL_DB"
 database_name = "agent-mail"
 database_id = "REPLACE_ONLY_AFTER_DEPLOY_APPROVAL"
-# Apply schema.sql then migrations/0001 through 0004, in order, before enablement.
+# Apply schema.sql then every file in migrations/ (0001 through 0006), in order,
+# before enablement. Without 0005_pull.sql no pull table exists and every
+# /v1/pull/* request answers 503.
 
 [[send_email]]
 name = "MAIL_SEND"

@@ -6,6 +6,14 @@ Parent requirements: [AGENT_MAIL_SPEC.md](AGENT_MAIL_SPEC.md). Dave resolved D7'
 wire choice as **B, separate mail-only Ed25519 identities**, on 2026-11-09.
 This document is the shared contract for the receiver, reply extraction and enrollment.
 
+> **Superseded transport (note added 2026-11-19, MC-1179 W7).** The
+> [pull contract](AGENT_MAIL_PULL_CONTRACT.md) section 1 supersedes the push
+> transport specified here (signed `/v1/mail/send` and `/v1/mail/reconcile`,
+> enrollment, replay to an install callback). On `master` the Worker answers
+> `410 legacy_retired` for those routes and runs nothing behind them
+> (`workers/agent-mail/worker.js`, `legacy-paths.js`). Read this document as
+> the record of the push design, not as a description of running code.
+
 ## Signing contract v1
 
 Each install generates a dedicated Ed25519 keypair locally. Its private key
