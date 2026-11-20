@@ -30,6 +30,9 @@ MAX_PENDING = 256
 MAX_IDENTITIES = 4096
 MAX_TOMBSTONES = 65536
 MAX_COMMAND = 32768
+# Vendor tool names that run a shell command (shared with mc/test_run_masking.py).
+SHELL_TOOLS = frozenset({'bash', 'powershell', 'shell', 'run_shell_command',
+                         'exec_command', 'shell_command', 'run_terminal_cmd'})
 _observer: DetectionObserver | None = None
 
 
@@ -125,8 +128,7 @@ def observations(provider: str, raw: Any) -> Iterator[ToolObservation]:
 
 def candidate(name: str, command: Any) -> bool:
     """Conservative direct invocation recognition, never shell evaluation."""
-    if not isinstance(name, str) or name.lower() not in {'bash', 'powershell', 'shell', 'run_shell_command',
-                            'exec_command', 'shell_command', 'run_terminal_cmd'}:
+    if not isinstance(name, str) or name.lower() not in SHELL_TOOLS:
         return False
     if isinstance(command, str):
         if len(command) > MAX_COMMAND or any(c in command for c in '\n\r;&|<>`'):

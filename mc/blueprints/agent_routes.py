@@ -53,6 +53,7 @@ import contextlib
 import functools
 from mc import codex_run_error as _codex_run_error  # MC-1147: rollout error as the failure summary
 from mc import test_run_detection as _test_run_detection
+from mc import test_run_masking as _test_run_masking  # MC-1171: masked test verdict line
 from mc import empty_turn as _empty_turn
 from mc import stdin_ack_owner as _stdin_ack_owner  # MC-1216: a late-landing write clears its own uncertain flag
 from mc import agent_shim_adopt as _agent_shim_adopt  # MC-1150 P4: checkpoint + adoption (flag-gated)
@@ -1926,10 +1927,16 @@ def _job_on_complete(result):
     if sess is not None and sess.pop(_JOB_INTERIM_KEY, None):
         sess.pop('_notify_session_sent', None)
     status = 'timed out' if result['timed_out'] else 'exited'
+    # MC-1171: a masked test run's exit code is not its verdict. Say so once
+    # in the chat and in the text the agent receives; nothing else changes.
+    verdict_line = _test_run_masking.job_line(result)
+    if verdict_line and sess is not None and isinstance(sess.get('log_lines'), list):
+        sess['log_lines'].append(verdict_line)
     message = (
         f"[background job finished] job {result['job_id']} {status} "
         f"(shell: {result.get('shell', 'bash')}) "
         f"(exit code {result['exit_code']}) after {result['duration_s']:.1f}s.\n"
+        + (f"{verdict_line}\n" if verdict_line else '') +
         f"Command: {result['command']}\n\nLog: {result['log_path']}\n\n"
         f"Last output:\n{result['tail']}\n\nThis is the job you started with "
         "POST .../agent/<session_id>/job. Continue the work it was part of.")
@@ -6263,6 +6270,8 @@ def _read_agent_stream(proc, session):
                                 tool_input = {}
                             activity = _format_tool_activity(tool_name, tool_input)
                             session['log_lines'].append(activity)
+                            _test_run_masking.note_shell_call(
+                                session, tool_name, tool_input, block.get('id'))
                             session['last_output_time'] = _time.time()
                             _empty_turn.note_tool_call(session)
                             _observe_negation_interrupt(session, tool_name, tool_input)
@@ -6686,6 +6695,8 @@ def _read_agent_stream_b(proc, session):
                                 tool_input = {}
                             activity = _format_tool_activity(tool_name, tool_input)
                             session['log_lines'].append(activity)
+                            _test_run_masking.note_shell_call(
+                                session, tool_name, tool_input, block.get('id'))
                             session['last_output_time'] = _time.time()
                             _empty_turn.note_tool_call(session)
                             _observe_negation_interrupt(session, tool_name, tool_input)

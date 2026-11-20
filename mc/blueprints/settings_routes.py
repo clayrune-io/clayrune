@@ -240,6 +240,8 @@ _CONFIG_EDITABLE_KEYS = {
     'aider_restricted_adapter_enabled',
     # MC-1148 dark API, read live; existing human/passcode gates apply.
     'test_run_progress_enabled',
+    # MC-1171 masked test verdict line (mc/test_run_masking.py). Read live.
+    'masked_test_verdict_enabled',
     # MC-1179 SF30: retention window in days, read live by the daily sweep.
     'test_run_retention_days',
     # Codex unattended sandbox (UNATTENDED_AGENT_PERMISSIONS_AUDIT §4 risk #1).

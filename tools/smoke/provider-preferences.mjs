@@ -181,6 +181,9 @@ try {
     assert.equal(await testRunRow.count(),1,'Live test-run progress row renders');
     assert.equal(await page.locator('[data-modal-id="__floor_preferences"] .settings-label').filter({hasText:/^Live test-run progress$/}).count(),1);
     assert.equal(await testRunRow.isChecked(),false,'Row reflects cfg (off)');
+    // MC-1171: the masked_test_verdict_enabled row renders beside it.
+    assert.equal(await page.locator('#floor-pref-masked_test_verdict_enabled').count(),1,'Flag hidden test results row renders');
+    assert.equal(await page.locator('[data-modal-id="__floor_preferences"] .settings-label').filter({hasText:/^Flag hidden test results$/}).count(),1);
     await testRunRow.check();
     const beforeTestRun = puts.length;
     await page.getByRole('button',{name:'Save',exact:true}).click(); await proof(false);

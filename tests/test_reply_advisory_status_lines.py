@@ -24,6 +24,7 @@ state.CONFIG.setdefault('port', 5199)
 from mc import agent_runtime as art  # noqa: E402
 from mc import artifact_coverage as ac  # noqa: E402
 from mc import reply_line_kind as rlk  # noqa: E402
+from mc import test_run_masking as trm  # noqa: E402
 from mc.blueprints import agent_routes as ar  # noqa: E402
 from mc.core import TimestampedLines  # noqa: E402
 
@@ -168,6 +169,16 @@ def _helper_built_lines(monkeypatch):
     mcp_sync = []
     art._log_mcp_sync_result(mcp_sync, {'error': '[Errno 2] missing'})
     lines += mcp_sync
+    # MC-1171: one line per masked reason, through the real classifier and
+    # the real writers (a shell tool call, a finished job).
+    monkeypatch.setitem(state.CONFIG, trm.SETTING, True)
+    for command in ('pytest tests | tail -15', 'pytest tests; echo [done]',
+                    'pytest tests || true', 'bash run_tests.sh'):
+        called = {'log_lines': TimestampedLines()}
+        trm.note_shell_call(called, 'Bash', {'command': command})
+        assert len(called['log_lines']) == 1, command
+        lines += list(called['log_lines'])
+    lines.append(trm.job_line({'shell': 'sh', 'command': 'pytest tests | tail -15'}))
     return lines
 
 
@@ -181,4 +192,5 @@ def test_every_helper_built_labelled_line_is_a_status_line(monkeypatch):
         assert rlk.is_status_line(stripped), line
         assert art._collect_trailing_reply_text([REPLY, line]) == REPLY, line
         assert ar._last_reply_text(_session(REPLY, line)) == REPLY, line
-    assert labels == {'coverage', 'context trim', 'denied', 'tool', 'mcp-sync'}
+    assert labels == {'coverage', 'context trim', 'denied', 'tool', 'mcp-sync',
+                      'test verdict'}

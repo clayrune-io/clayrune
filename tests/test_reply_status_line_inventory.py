@@ -97,6 +97,10 @@ LABELLED = [
     '[claude warn] cli gate [x]',
     '[codex warn] rmcp AuthRequired',
     '[mcp-sync] failed (best-effort): [Errno 2] missing',
+    # mc/test_run_masking.py status_line (MC-1171)
+    "[test verdict] UNVERIFIED: the test command is piped into tail, so the exit code is tail's, "
+    "not the test run's. For the real pass or fail, run the tests through tools/test-run.py.",
+    '[test verdict] UNVERIFIED: odd [ payload',
 ]
 
 
@@ -161,6 +165,10 @@ def test_denied_line_does_not_become_the_reply():
     '[coverage: 91%] of lines are hit',
     '[context] matters here',
     '[context trimming] was discussed',
+    # Near the `test verdict` label, but not it.
+    '[test verdict: passed] on all three suites',
+    '[test verdicts] are listed below',
+    '[test] verdict pending',
     '[{"a": 1}, {"b": 2}] are the rows',
 ])
 def test_model_text_that_begins_with_a_bracket_is_reply_text(line):

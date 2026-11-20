@@ -341,6 +341,10 @@ def _load_config():
         'aider_restricted_adapter_enabled': False,
         # MC-1148 dark telemetry API; no ingest service until explicitly enabled.
         'test_run_progress_enabled': False,
+        # MC-1171: one chat status line when a test run's exit status is
+        # hidden from Clayrune (piped, followed by another command, || true,
+        # an unreadable script). Report only; read live, every engine.
+        'masked_test_verdict_enabled': True,
         # MC-1179 SF30: days a finished test run is kept before the daily
         # sweep deletes it (mc/test_run_retention.py). 0 keeps everything;
         # a run still active is never deleted by age.

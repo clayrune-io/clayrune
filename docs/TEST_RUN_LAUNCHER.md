@@ -77,6 +77,8 @@ Unexecuted units remain unexecuted, never skipped. There is no parsing or
 expansion of `npm test`, `&&`, aliases or nested shell commands into a guessed
 manifest. One opaque shell command is one unit, and its exit is the shell's
 exit; `pytest; echo done` can still mask pytest's failure by shell semantics.
+A test command run without the launcher whose exit status is hidden this way
+gets one `[test verdict] UNVERIFIED` chat line: see `docs/TEST_RUN_MASKING.md`.
 
 ## Ownership, units and finalization
 
