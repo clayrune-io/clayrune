@@ -269,6 +269,10 @@ _CONFIG_EDITABLE_KEYS = {
     # |'weekly', unset == off. 'backup_keep': int >=1, default 3, validated
     # below like backup_dest_dir so a bad value is refused, not persisted.
     'backup_schedule', 'backup_keep',
+    # Daily copy of every project's memory directory (mc/memory_snapshot.py).
+    # All three read live by its hourly tick: no respawn, no restart. Validated
+    # below, so a destination inside the repo or data/projects/ is refused.
+    'memory_snapshot_enabled', 'memory_snapshot_keep', 'memory_snapshot_dest_dir',
     # MEMORY_DESIGN_V2_SPEC.md §16 step 1 (MC-944), Condition 9. Four keys
     # already read live by mc/memory.py but missing from this set until now —
     # every PUT of one returned 200 {"updated": []} and silently changed
@@ -450,6 +454,26 @@ def update_config():
         except (TypeError, ValueError):
             return jsonify({'error': 'backup_keep must be an integer >= 1'}), 400
         data['backup_keep'] = keep
+    if 'memory_snapshot_enabled' in data and not isinstance(data['memory_snapshot_enabled'], bool):
+        return jsonify({'error': 'memory_snapshot_enabled must be true or false'}), 400
+    if 'memory_snapshot_keep' in data:
+        from mc import memory_snapshot as _memory_snapshot
+        try:
+            data['memory_snapshot_keep'] = _memory_snapshot.validate_keep(data['memory_snapshot_keep'])
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+    if 'memory_snapshot_dest_dir' in data:
+        from mc import memory_snapshot as _memory_snapshot
+        dest = data['memory_snapshot_dest_dir']
+        if dest is None:
+            dest = ''
+        if not isinstance(dest, str):
+            return jsonify({'error': 'memory_snapshot_dest_dir must be a path, or empty for the default'}), 400
+        dest = dest.strip()
+        refusal = _memory_snapshot.dest_refusal(dest) if dest else None
+        if refusal:
+            return jsonify({'error': refusal}), 400
+        data['memory_snapshot_dest_dir'] = dest
     if data.get('default_provider'):
         # Same reasoning as character_routes._validated_engine's provider
         # check: a saved default that isn't a registered runtime would

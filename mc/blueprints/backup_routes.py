@@ -115,6 +115,7 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request
 
 from mc import backup as _backup
+from mc import memory_snapshot as _memory_snapshot
 from mc import obs
 from mc import state as _state
 from mc.core import _log
@@ -556,7 +557,9 @@ def api_backup_restore():
         return jsonify({'error': 'path is required'}), 400
     categories = data.get('categories')  # None => restore every category present in the archive
     try:
-        report = _backup.restore_backup(Path(path), categories=categories)
+        # The daily memory copy (mc/memory_snapshot.py) stands off while this runs.
+        with _memory_snapshot.restoring('backup restore'):
+            report = _backup.restore_backup(Path(path), categories=categories)
     except _backup.BackupFormatError as e:
         return _err(e, 409)
     except _backup.BackupIntegrityError as e:
@@ -635,13 +638,14 @@ def api_backup_import():
         refusal = _require_human_passcode(data)
         if refusal is not None:
             return refusal
-        report = _backup.import_project(
-            Path(path),
-            project_resolution=data.get('project_resolution', 'skip'),
-            schedule_resolution=data.get('schedule_resolution', 'skip'),
-            new_project_path=data.get('new_project_path'),
-            vault_passphrase=data.get('vault_passphrase'),
-            unattended=False)
+        with _memory_snapshot.restoring('project import'):
+            report = _backup.import_project(
+                Path(path),
+                project_resolution=data.get('project_resolution', 'skip'),
+                schedule_resolution=data.get('schedule_resolution', 'skip'),
+                new_project_path=data.get('new_project_path'),
+                vault_passphrase=data.get('vault_passphrase'),
+                unattended=False)
     except _backup.BackupFormatError as e:
         return _err(e, 409)
     except _backup.BackupIntegrityError as e:
@@ -723,10 +727,17 @@ def api_backup_rollback(project_id, snap_id):
         if refusal is not None:
             return refusal
     try:
-        report = _backup.rollback(
-            project_id, snap_id,
-            restore_memory_index=bool(data.get('restore_memory_index')),
-            unattended=_is_unattended(project_id), dry_run=dry_run)
+        if dry_run:
+            report = _backup.rollback(
+                project_id, snap_id,
+                restore_memory_index=bool(data.get('restore_memory_index')),
+                unattended=_is_unattended(project_id), dry_run=True)
+        else:
+            with _memory_snapshot.restoring(f'rollback {project_id}'):
+                report = _backup.rollback(
+                    project_id, snap_id,
+                    restore_memory_index=bool(data.get('restore_memory_index')),
+                    unattended=_is_unattended(project_id), dry_run=False)
     except _backup.BackupIntegrityError as e:
         return _err(e, 422)
     except _backup.BackupError as e:

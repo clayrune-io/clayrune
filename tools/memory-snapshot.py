@@ -7,6 +7,12 @@ plan depends on this file being correct.
     python tools/memory-snapshot.py --verify <snapshot-dir>
     python tools/memory-snapshot.py --restore <snapshot-dir> --only foo.md bar.md
 
+The snapshot code itself (copy, manifest, verify) lives in `mc/memory_snapshot.py`
+so the server's daily job and this tool take the same snapshot. This file keeps
+the command line and the restore guard. The label prefix `auto-` belongs to the
+daily job, which prunes its own snapshots: `--label auto-...` is refused here so
+a manual snapshot can never be one the job deletes.
+
 WHERE SNAPSHOTS LIVE, and why it is not negotiable:
 
   * NOT `data/projects/` — `load_projects()` treats every `*.json` there as a
@@ -35,28 +41,24 @@ with your eyes open, having read the diff.
 """
 
 import argparse
-import hashlib
 import json
 import shutil
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'memory-eval'))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import _harness  # noqa: E402
+from mc import memory_snapshot as _snap  # noqa: E402
 
-SNAP_ROOT = Path.home() / '.clayrune' / 'memory-snapshots'
-PROTECTED = {'MEMORY.md', 'MEMORY_ARCHIVE.md'}
+SNAP_ROOT = _snap.default_root()
+PROTECTED = set(_snap.PROTECTED)
 # Windows and default macOS filesystems are case-insensitive: `memory.md` IS MEMORY.md.
 _PROTECTED_FOLDED = {n.casefold() for n in PROTECTED}
 
 
-def sha256(p):
-    h = hashlib.sha256()
-    with open(p, 'rb') as fh:
-        for chunk in iter(lambda: fh.read(65536), b''):
-            h.update(chunk)
-    return h.hexdigest()
+sha256 = _snap.sha256
+ordered_files = _snap.ordered_files
 
 
 def memory_dir():
@@ -64,60 +66,28 @@ def memory_dir():
     return m._get_memory_path(project).parent
 
 
-def ordered_files(src):
-    """MEMORY.md, then the archive, then everything else. See module docstring."""
-    files = sorted(src.glob('*.md'))
-    head = [f for f in files if f.name == 'MEMORY.md']
-    arch = [f for f in files if f.name == 'MEMORY_ARCHIVE.md']
-    rest = [f for f in files if f.name not in PROTECTED]
-    return head + arch + rest
-
-
 def create(label):
-    src = memory_dir()
-    if not (src / 'MEMORY.md').is_file():
-        # An empty or wrong directory (an agent worktree resolves its own empty
-        # slot, not the project's) would write a 0-file "rollback" and say ok.
-        raise SystemExit(f'refusing to snapshot {src}: it has no MEMORY.md, so it is '
-                         "not this project's memory directory")
-    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
-    dest = SNAP_ROOT / f'{stamp}-{label}'
-    (dest / 'memory').mkdir(parents=True)
-    entries = []
-    for f in ordered_files(src):
-        target = dest / 'memory' / f.name
-        shutil.copy2(f, target)
-        entries.append({'name': f.name, 'size': target.stat().st_size,
-                        'sha256': sha256(target)})
-    (dest / 'manifest.json').write_text(json.dumps({
-        'created': datetime.now(timezone.utc).isoformat(),
-        'label': label,
-        'source': str(src),
-        'count': len(entries),
-        'files': entries,
-    }, indent=2), encoding='utf-8')
+    if label.startswith(_snap.AUTO_LABEL_PREFIX):
+        raise SystemExit(f'refusing --label {label}: the prefix {_snap.AUTO_LABEL_PREFIX!r} is '
+                         'reserved for the daily job, which deletes its own old snapshots')
+    try:
+        dest, man = _snap.create_snapshot(memory_dir(), SNAP_ROOT, label)
+    except _snap.SnapshotError as e:
+        raise SystemExit(str(e))
     print(f'snapshot: {dest}')
-    print(f'  {len(entries)} files, {sum(e["size"] for e in entries)} bytes')
+    print(f'  {man["count"]} files, {sum(e["size"] for e in man["files"])} bytes')
     return dest
 
 
 def verify(snap):
     snap = Path(snap)
-    man = json.loads((snap / 'manifest.json').read_text(encoding='utf-8'))
-    ok = bad = missing = 0
-    for e in man['files']:
-        p = snap / 'memory' / e['name']
-        if not p.exists():
-            missing += 1
-            print(f'  MISSING {e["name"]}')
-            continue
-        if sha256(p) == e['sha256']:
-            ok += 1
-        else:
-            bad += 1
-            print(f'  SHA MISMATCH {e["name"]}')
-    print(f'verify {snap.name}: {ok}/{man["count"]} ok, {bad} mismatched, {missing} missing')
-    return bad == 0 and missing == 0 and ok == man['count']
+    r = _snap.verify_snapshot(snap)
+    for kind, name in r['problems']:
+        print(f'  {"MISSING" if kind == "missing" else "SHA MISMATCH"} {name}')
+    bad = sum(1 for kind, _ in r['problems'] if kind == 'mismatch')
+    missing = len(r['problems']) - bad
+    print(f'verify {snap.name}: {r["good"]}/{r["count"]} ok, {bad} mismatched, {missing} missing')
+    return r['ok']
 
 
 def restore(snap, only):
@@ -139,15 +109,17 @@ def restore(snap, only):
     man = json.loads((snap / 'manifest.json').read_text(encoding='utf-8'))
     hashes = {e['name']: e['sha256'] for e in man['files']}
     done = []
-    for name in only:
-        src = snap / 'memory' / name
-        if not src.exists():
-            raise SystemExit(f'{name} is not in {snap}')
-        if name in hashes and sha256(src) != hashes[name]:
-            raise SystemExit(f'{name} in {snap} no longer matches its recorded hash; '
-                             'run --verify. Nothing restored.')
-        shutil.copy2(src, dst / name)
-        done.append(name)
+    # The daily job does not copy a memory directory while a restore writes it.
+    with _snap.restoring(f'memory-snapshot --restore {snap.name}'):
+        for name in only:
+            src = snap / 'memory' / name
+            if not src.exists():
+                raise SystemExit(f'{name} is not in {snap}')
+            if name in hashes and sha256(src) != hashes[name]:
+                raise SystemExit(f'{name} in {snap} no longer matches its recorded hash; '
+                                 'run --verify. Nothing restored.')
+            shutil.copy2(src, dst / name)
+            done.append(name)
     print(f'restored {len(done)} file(s) into {dst}:')
     for n in done:
         print(f'  {n}')

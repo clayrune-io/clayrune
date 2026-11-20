@@ -203,6 +203,13 @@ def _load_config():
         'update_ping_disclosed': False,
         'update_ping_url': 'https://clayrune.io/api/ping',
 
+        # Daily copy of every project's memory directory (mc/memory_snapshot.py).
+        # ON by default; keeps the newest 14 automatic snapshots per project.
+        # An empty destination means ~/.clayrune/memory-snapshots. Read live.
+        'memory_snapshot_enabled': True,
+        'memory_snapshot_keep': 14,
+        'memory_snapshot_dest_dir': '',
+
         # Prevent automatic system sleep while Clayrune runs (mc/wake_lock.py).
         # The product runs agents on the user's own box; if it sleeps, the agent
         # stops. Off by default — opt-in per install.
@@ -3230,6 +3237,13 @@ _update_ping.wire(_DATA_ROOT / 'data' / 'update_ping_state.json',
 _bp_update_ping.wire(config_path=CONFIG_PATH)
 app.register_blueprint(_bp_update_ping.bp)
 
+# Daily copy of every project's memory directory (mc/memory_snapshot.py). The
+# thread itself is started in the boot sequence below.
+from mc import memory_snapshot as _memory_snapshot  # noqa: E402
+_memory_snapshot.wire(config_fn=lambda: CONFIG, projects_fn=_bp_projects.load_projects,
+                      memory_path_fn=memory._get_memory_path,
+                      forbidden_roots=(_APP_DIR, DATA_DIR))
+
 # ── Built-in agent-CLI update state (MC-1025) ───────────────────────────────
 # Same placement rule as allowance_state: beside data/, never in data/projects/.
 from mc import cli_update as _cli_update  # noqa: E402
@@ -3842,6 +3856,11 @@ def boot(check_port=True):
     # hourly tick, runs a full backup if overdue per config 'backup_schedule'.
     # Off by default (unset config == 'off', loop no-ops every tick).
     threading.Thread(target=_bp_backup._backup_schedule_loop, daemon=True, name='backup-schedule').start()
+    # Daily memory-directory copy (mc/memory_snapshot.py): hourly tick, one
+    # snapshot per project per day, newest memory_snapshot_keep kept. Off
+    # switch is config 'memory_snapshot_enabled' (default True), read inside
+    # every pass, so flipping it takes effect on the next tick.
+    _memory_snapshot.start()
     # MC-998 phase 4: Usage Breakdown allowance sampler (samples immediately
     # at startup, then on the spec's 60s-active/5min-idle cadence) + its
     # separate daily 90-day-retention prune. No off switch -- both loops are

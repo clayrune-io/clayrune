@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-19] - Daily copy of every project's memory directory
+
+- The server now copies each project's memory directory once a day to `~/.clayrune/memory-snapshots`, checks the copy against its hashes, and keeps the newest 14 automatic copies per project. Snapshots taken by hand with `tools/memory-snapshot.py` are never deleted.
+- Three settings, read live: `memory_snapshot_enabled` (on by default), `memory_snapshot_keep` (14) and `memory_snapshot_dest_dir` (empty means the default folder). A destination inside the repo or `data/projects/` is refused. A destination that is missing or cannot be written is logged once a day and nothing is written elsewhere. The settings are accepted by `PUT /api/config`; the Settings panel has no rows for them yet.
+- A copy that fails to write or verify is logged with the project id and the reason, removed, retried at the next hourly check, and never causes an older copy to be deleted. No copy is taken while a backup restore, project import, rollback or snapshot restore is running in the server or the snapshot tool.
+- `tools/memory-snapshot.py` now calls the same snapshot code as the daily job (`mc/memory_snapshot.py`) and refuses a `--label` starting with `auto-`, the prefix the job uses for its own copies.
+
 ## [2026-11-19] - Agent mail Worker reliability fixes (MC-1179 pass 05a)
 
 - W5, W12. Scheduled retention now deletes expired rate-limit buckets, and a short notification page ends the sweep pass without spending an extra tick.
