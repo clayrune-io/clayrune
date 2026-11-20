@@ -23,7 +23,12 @@ def test_storage_failure_returns_503_and_keeps_pin(ar, monkeypatch, fault):
         reads.append(True)
         if fault == 'read':
             raise PermissionError('storage unavailable')
-        return []
+        # One row that carries no attempt id yet. Since MC-1179 AP34 the
+        # snapshot is a plain read when every row is already claimed and only
+        # rewrites the log to claim one that is not, so without this row the
+        # snapshot-save stage this test is about never runs (an empty log made
+        # the choice save the first save, and all four cases went red).
+        return [{'session_id': 'other'}]
 
     def save(*args):
         saves.append(True)
@@ -48,5 +53,8 @@ def test_storage_failure_returns_503_and_keeps_pin(ar, monkeypatch, fault):
         assert response.get_json() == {'error': 'could not save model choice'}
         assert any('[model-pin] p1/s1: persistence failed: storage unavailable' in line
                    for line in logs)
-    assert len(reads) == (1 if fault == 'snapshot-save' else 2)
+    # Reads: the snapshot's own lock-free read, then one per log update. A
+    # failed read is swallowed by the snapshot, and its update rereads once
+    # before giving up (3). A failed snapshot save ends before the choice update (2).
+    assert len(reads) == (2 if fault == 'snapshot-save' else 3)
     assert len(saves) == {'read': 0, 'snapshot-save': 1, 'choice-save': 2, 'none': 2}[fault]
