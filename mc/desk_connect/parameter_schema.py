@@ -185,7 +185,9 @@ def runs_arbitrary_code(command: str | None, args: list[str]) -> bool:
         return True
     if base in _SHELLS or base in _DOWNLOADERS:
         return True
-    if base in _INTERPRETERS and any(a.lower() in _EVAL_FLAGS for a in args):
+    if base in _INTERPRETERS and any(a.lower() in _EVAL_FLAGS                  # `--eval code` and `--eval=code`
+                                     or (a.startswith('--') and a.lower().split('=', 1)[0] in _EVAL_FLAGS)
+                                     for a in args):
         return True
     return False
 

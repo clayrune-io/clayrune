@@ -907,3 +907,46 @@ def test_no_module_calls_a_tool_enabled_model_path():
                 assert not any(b in n.value for b in ('--dangerously', 'allowedTools', 'claude -p')), (name, n.value[:60])
             if isinstance(n, ast.Attribute):
                 assert n.attr not in ('oneshot', 'Popen', 'system', 'popen', 'urlopen', 'stream_text_transform'), (name, n.attr)
+
+
+# ── DCW-C14: smaller items ───────────────────────────────────────────────────
+
+def _clean_whole(text, limit):
+    """What `_clean` returned before it stopped reading at the limit: the whole text, then the cut."""
+    import unicodedata
+    s = ''.join(' ' if ch not in '\n\t' and unicodedata.category(ch) in ps._BAD_CATEGORIES else ch
+                for ch in str(text or ''))
+    return pc._RUN_EQ.sub('=', s)[:limit]
+
+
+def test_clean_gives_the_same_text_as_cleaning_all_of_it_first():
+    import random
+    rng = random.Random(1179)
+    alphabet = ['=', '=', '=', 'a', ' ', '\n', '\t', '​', '‮', 'é']
+    for _ in range(400):
+        text = ''.join(rng.choice(alphabet) for _ in range(rng.randrange(0, 300)))
+        for limit in (0, 1, 2, 7, 50, 400):
+            assert pc._clean(text, limit) == _clean_whole(text, limit), (text, limit)
+    for text in ('=' * 5000, 'ab' + '=' * 5000 + 'cd', '==' * 40 + 'x' * 200, None, 12, ''):
+        for limit in (1, 3, 64, 100):
+            assert pc._clean(text, limit) == _clean_whole(text, limit), (text, limit)
+
+
+def test_clean_reads_only_as_much_of_a_large_text_as_it_keeps(monkeypatch):
+    import unicodedata
+    looked = {'n': 0}
+    real = unicodedata.category
+
+    def category(ch):
+        looked['n'] += 1
+        return real(ch)
+    monkeypatch.setattr(pc.unicodedata, 'category', category)
+    out = pc._clean('word ' * 400_000, 20_000)
+    assert len(out) == 20_000 and looked['n'] < 200_000         # it was 2,000,000: every character of the text
+
+
+def test_an_interpreter_given_inline_code_as_one_flag_is_labelled():
+    assert ps.runs_arbitrary_code('node', ['--eval=require("child_process")'])
+    assert ps.runs_arbitrary_code('node', ['--print=1+1'])
+    assert not ps.runs_arbitrary_code('node', ['--evaluate-nothing=1', 'server.js'])
+    assert not ps.runs_arbitrary_code('python', ['-m', 'server', '--port=8000'])

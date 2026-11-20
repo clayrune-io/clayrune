@@ -80,10 +80,17 @@ def _fail(code: str) -> dict:
 def _clean(text: object, limit: int) -> str:
     """Untrusted text as the model sees it: control and format characters (bidi overrides,
     zero-width, BOM) out, any run of `=` (the fence the transform wraps data in)
-    collapsed so the text cannot close the fence."""
-    s = ''.join(' ' if ch not in '\n\t' and unicodedata.category(ch) in ps._BAD_CATEGORIES else ch
-                for ch in str(text or ''))
-    return _RUN_EQ.sub('=', s)[:limit]
+    collapsed so the text cannot close the fence. Reads only as much of `text` as the `limit`
+    characters it keeps need (the text may be 2 MB); the result is the same as cleaning all of it."""
+    raw = str(text or '')
+    n = max(limit, 1) + 64
+    while True:
+        s = _RUN_EQ.sub('=', ''.join(' ' if ch not in '\n\t' and unicodedata.category(ch) in ps._BAD_CATEGORIES
+                                     else ch for ch in raw[:n]))
+        # A run of `=` that touches the cut may go on past it, so only what comes before it is settled.
+        if n >= len(raw) or len(s.rstrip('=')) >= limit:
+            return s[:limit]
+        n *= 4
 
 
 def build_input(evidence: list[dict], label: str = '') -> tuple[str, dict[str, str]]:
