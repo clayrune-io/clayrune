@@ -183,8 +183,15 @@ def _parse_frontmatter(raw: str) -> dict[str, Any]:
     return out
 
 
+_DQ_ESCAPE = re.compile(r'\\(["\\])')
+
+
 def _strip_quotes(s: str) -> str:
     if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        if s[0] == '"':
+            # The inverse of dump_skill_md's quoting. Without it every
+            # read-then-write doubled the backslashes in the value (ML34).
+            return _DQ_ESCAPE.sub(r'\1', s[1:-1])
         return s[1:-1]
     return s
 
