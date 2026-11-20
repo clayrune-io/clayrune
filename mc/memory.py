@@ -1521,9 +1521,18 @@ def _parse_position(text):
     }
     warnings = _validate_position_record(rec)
     if warnings:
-        _log(f"[position] {rec['name'] or rec['subject'][:48]}: "
-             + '; '.join(warnings))
+        # Once per distinct warning, not once per parse: every corpus rebuild
+        # parses every position, so the same line used to repeat for ever.
+        _warn_key = (rec['name'] or rec['subject'][:48], '; '.join(warnings))
+        if _warn_key not in _position_warned:
+            _position_warned.add(_warn_key)
+            _log(f"[position] {_warn_key[0]}: {_warn_key[1]}")
     return rec
+
+
+# (name-or-subject, warning text) pairs `_parse_position` has already logged
+# in this process. Bounded by the number of distinct warnings on disk.
+_position_warned: set = set()
 
 
 # ── Continuity: what is in flight, and what we owe each other ───────────────
@@ -2387,7 +2396,13 @@ def list_positions(project):
         return []
     out = []
     for f in sorted(mem_dir.glob(f'{POSITION_PREFIX}*.md')):
-        rec = _parse_position(f.read_text(encoding='utf-8', errors='replace'))
+        try:
+            rec = _parse_position(f.read_text(encoding='utf-8', errors='replace'))
+        except OSError as e:
+            # One locked or vanished file must not take the whole list (and
+            # the position block of every prompt) down with it.
+            _log(f"[position] {f.name}: read failed, skipped: {e}", flush=True)
+            continue
         if rec:
             rec['file'] = f.name
             out.append(rec)
