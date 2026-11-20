@@ -826,7 +826,7 @@ def test_notify_operator_sends_no_recipient_argument(wf, monkeypatch):
     cmd = calls[0]
     assert '--to' not in cmd and '--cc' not in cmd and '--recipient' not in cmd
     assert 'someone@else.com' not in cmd
-    assert '--subject' in cmd and '--body' in cmd
+    assert '--subject' in cmd and '--body-file' in cmd
 
 
 def test_notify_operator_suppressed_under_pytest_by_default(wf):

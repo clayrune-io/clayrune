@@ -83,7 +83,7 @@ from typing import Any, Callable, Optional
 from mc import state
 from mc.core import _atomic_write_text, _log, now_iso
 from mc.workflow_action_ids import require_id
-from mc.workflow_mail import mail_context_args
+from mc.workflow_mail import body_file, mail_context_args
 from mc import engine_fallback as _engine_fallback  # MC-961: swap record + blocked-run pointer
 from mc.blueprints.push_mobile import _notify_push  # MC-961: same pointer, the notify/inbox surface
 
@@ -1950,10 +1950,11 @@ def _send_operator_notification(subject: str, body: str, *, run: Optional[dict] 
     try:
         import subprocess
         import sys
-        r = subprocess.run(
-            [sys.executable, str(mailer), '--subject', subject, '--body', body]
-            + mail_context_args(run or {}),
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
+        with body_file(body) as body_path:  # never argv: see workflow_mail.body_file
+            r = subprocess.run(
+                [sys.executable, str(mailer), '--subject', subject, '--body-file', body_path]
+                + mail_context_args(run or {}),
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
         if r.returncode != 0:
             return False, f'send_mail exited {r.returncode}: {(r.stderr or r.stdout or "").strip()[:200]}'
         via_agent_mail = '[send_mail] sent via agent-mail' in (r.stdout or '')

@@ -49,10 +49,16 @@ def test_context_without_completed_agent_has_no_flags(run):
 @pytest.fixture
 def mailer(monkeypatch):
     calls = []
-    result = SimpleNamespace(returncode=0, stdout='', stderr='')
+    result = SimpleNamespace(returncode=0, stdout='', stderr='', bodies=[], body_paths=[])
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
+        # The body file only exists for the length of the call: read it here.
+        if '--body-file' in cmd:
+            path = cmd[cmd.index('--body-file') + 1]
+            result.body_paths.append(path)
+            with open(path, encoding='utf-8', newline='') as f:
+                result.bodies.append(f.read())
         return result
 
     # Only opt into the mail call site AFTER replacing subprocess.run.
@@ -74,7 +80,7 @@ def test_notify_operator_passes_context_and_reports_actual_transport(mailer, via
         True, f'sent via {transport}', None)
     cmd, kwargs = calls[0]
     assert cmd[-4:] == ['--project', 'project-1', '--session', 'session-1']
-    assert cmd[cmd.index('--body') + 1] == 'result'
+    assert '--body' not in cmd and result.bodies == ['result']
     assert cmd[cmd.index('--subject') + 1] == '[Clayrune workflow] test: email'
     assert not {'--to', '--cc', '--recipient'} & set(cmd)
     assert kwargs == dict(capture_output=True, text=True, encoding='utf-8',
@@ -82,12 +88,27 @@ def test_notify_operator_passes_context_and_reports_actual_transport(mailer, via
 
 
 def test_sender_without_context_preserves_original_command(mailer):
-    calls, _ = mailer
+    calls, result = mailer
     assert workflows._send_operator_notification('subject', 'body') == (True, 'sent via Gmail')
     cmd, _ = calls[0]
     assert cmd == [sys.executable, str(workflows.Path(workflows.__file__).resolve().parent.parent
                                     / 'tools/night-review/send_mail.py'),
-                   '--subject', 'subject', '--body', 'body']
+                   '--subject', 'subject', '--body-file', result.body_paths[0]]
+    assert result.bodies == ['body']
+
+
+@pytest.mark.parametrize('body', ['x' * 40_000, '-starts-with-a-dash', 'line one\r\nline two\n'],
+                         ids=['long', 'leading-dash', 'crlf'])
+def test_body_travels_in_a_file_not_on_the_command_line(mailer, body):
+    """DCW-W4: a 33,000-character argument fails process creation on Windows and
+    a body starting with '-' is refused by argparse, so the body is never argv."""
+    calls, result = mailer
+    assert workflows._send_operator_notification('subject', body) == (True, 'sent via Gmail')
+    cmd, _ = calls[0]
+    assert '--body' not in cmd and body not in cmd
+    assert max(len(arg) for arg in cmd) < 1000
+    assert result.bodies == [body]
+    assert not workflows.os.path.exists(result.body_paths[0])  # removed after the send
 
 
 @pytest.mark.parametrize('with_context', [True, False])
@@ -107,7 +128,7 @@ def test_approval_uses_same_context_and_preserves_human_decision(
     if with_context:
         assert cmd[-4:] == ['--project', 'project-1', '--session', 'session-1']
     assert not {'--to', '--cc', '--recipient'} & set(cmd)
-    body = cmd[cmd.index('--body') + 1]
+    body = result.bodies[0]
     assert 'POST /api/workflow-runs/run-gate/decision' in body
     assert 'Options: go, stop' in body
     assert run['status'] == 'waiting'
@@ -143,10 +164,14 @@ def test_nonzero_exit_is_reported_even_with_agent_mail_marker(mailer, monkeypatc
 
 
 def test_subprocess_timeout_remains_a_send_failure(mailer, monkeypatch):
-    def timeout(*args, **kwargs):
+    paths = []
+
+    def timeout(cmd, **kwargs):
+        paths.append(cmd[cmd.index('--body-file') + 1])
         raise subprocess.TimeoutExpired('send_mail.py', 60)
 
     monkeypatch.setattr(subprocess, 'run', timeout)
     ok, info = workflows._send_operator_notification('subject', 'body')
     assert not ok
     assert 'timed out' in info
+    assert not workflows.os.path.exists(paths[0])  # the body file never outlives the send
