@@ -66,9 +66,10 @@ def _drop_expired() -> None:
     """Called under `_cache_lock` on every store. The age check on read alone never frees an entry,
     and a version-list document can be megabytes."""
     now = time.monotonic()
-    for cache in (_docs, _facts):
-        for k in [k for k, (at, _) in cache.items() if now - at >= CACHE_TTL_S]:
-            del cache[k]
+    for name in [k for k, (at, _) in _docs.items() if now - at >= CACHE_TTL_S]:
+        del _docs[name]
+    for key in [k for k, (at, _) in _facts.items() if now - at >= CACHE_TTL_S]:
+        del _facts[key]
 
 
 def _refuse(message: str, code: str, status: int = 422) -> ActivationError:
