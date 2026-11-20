@@ -49,6 +49,7 @@ import mc.memory_overlap_df as _overlap_df  # M4 corpus document-frequency stopl
 import mc.memory_gate_tap as _gate_tap  # G1 report-mode observer for mints (MC-964 step 10)
 import mc.memory_entry_line as _entry_line  # ML15: a managed entry is one physical line
 from mc.memory_note_slug import is_safe_note_slug as _is_safe_note_slug  # ML14
+from mc.memory_note_slug import subject_suffixed_slug as _subject_suffixed_slug  # ML14
 from mc.memory_note_frontmatter import topic_note_head as _topic_note_head  # ML13
 import mc.condense_agent_mode as _condense_agent_mode  # ML16: agent-mode "anything to do" test + prompt
 import mc.condense_mode as _condense_mode  # ML16: which executor a config selects; the one default
@@ -2269,6 +2270,7 @@ def write_position(project, subject, verdict, reason,
 
     mem_dir = _get_memory_path(project).parent
     mem_dir.mkdir(parents=True, exist_ok=True)
+    auto_slug = not (slug or '').strip()
     slug = (slug or '').strip() or _mem_link_key(subject)[:48] or 'unnamed'
     # The slug becomes a filename and the route passes the caller's through.
     if not _is_safe_note_slug(mem_dir, slug, POSITION_PREFIX):
@@ -2277,6 +2279,20 @@ def write_position(project, subject, verdict, reason,
     project_id = project.get('id', '') if isinstance(project, dict) else ''
 
     with _get_mem_write_lock(f'position:{project_id}'):
+        if auto_slug and path.exists():
+            # An auto slug is only 48 characters of the subject key, so two
+            # different subjects can share it; the second used to supersede
+            # the first (ML14). A caller's own slug is their choice of file
+            # and still supersedes whatever it names.
+            try:
+                held = _parse_position(
+                    path.read_text(encoding='utf-8', errors='replace')).get('subject')
+            except Exception as e:
+                _log(f'[position] could not read {path.name} for the subject check: {e}')
+                held = ''
+            if held and _mem_link_key(held) != _mem_link_key(subject):
+                slug = _subject_suffixed_slug(slug, _mem_link_key(subject))
+                path = mem_dir / f'{POSITION_PREFIX}{slug}.md'
         prior = ''
         if path.exists():
             try:

@@ -11,9 +11,24 @@ The rule is the one `delete_position` and `resolve_mint` already apply to a
 FILENAME, applied here to the slug before a file exists: one path component,
 and the path it builds must sit directly in the memory directory.
 """
+import hashlib
 from pathlib import Path
 
-__all__ = ['is_safe_note_slug']
+__all__ = ['is_safe_note_slug', 'subject_suffixed_slug']
+
+
+def subject_suffixed_slug(slug, subject_key):
+    """`slug` plus a short hash of the FULL subject key.
+
+    `write_position` names a file after the first 48 characters of the
+    subject key when the caller gives no slug, so two subjects that share
+    that prefix shared one file and the second superseded the first (ML14).
+    The writer uses this name instead when the plain one already holds a
+    different subject. The hash depends only on the subject key, so the same
+    subject always lands on the same file and supersedes itself in place.
+    """
+    digest = hashlib.sha256(str(subject_key).encode('utf-8')).hexdigest()[:8]
+    return f'{slug}-{digest}'
 
 
 def is_safe_note_slug(mem_dir, slug, prefix=''):
