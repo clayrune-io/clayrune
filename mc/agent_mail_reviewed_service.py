@@ -21,7 +21,9 @@ failed refresh never falls back to it or to any account key. Failure is always a
 ``EnrollmentRefused``/``ManifestRefused`` with a closed code; remote text is never kept.
 
 Precondition (not created here): the store must already hold ``mail_enrollment_manifests``. This
-module never writes schema; without the table every refresh fails closed.
+module never writes schema; without the table every refresh fails closed. On the pull path the
+table is created by ``agent_mail_service_review_schema.initialize`` (called from
+``MailFactory.bootstrap``), not by the retired ``agent_mail_enrollment_state.initialize``.
 """
 from __future__ import annotations
 

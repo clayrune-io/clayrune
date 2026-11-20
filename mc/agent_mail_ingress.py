@@ -1,6 +1,7 @@
 """Local pins, immutable transport bindings and atomic signed custody (unit 4).
 
-Enrollment/outbound code must call pin_service and bind_transport BEFORE send.
+Push-era seams: pin_service's only caller is the retired ``Enrollment.enable`` and
+bind_transport has none, so a pull install never holds a row in mail_service_pins.
 These are Python integration seams, never agent-facing credential/consent APIs.
 There is no laundering, follow-up, wake or permission change in this module.
 """

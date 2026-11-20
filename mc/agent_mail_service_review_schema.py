@@ -1,4 +1,5 @@
-"""Checked Q1-A service-review storage (pull contract 13.1), deliberately unwired.
+"""Checked Q1-A service-review storage (pull contract 13.1). ``MailFactory``
+calls ``initialize`` on the production bootstrap path.
 
 Supply the SAME guarded external MailStore used by the factory. Only explicit
 authorized initialize() installs absent objects; validate() never repairs them.
