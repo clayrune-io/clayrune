@@ -217,6 +217,40 @@ try {
       });
     });
   }
+  // CD3: nothing tied a stream to the conversation that started it. Switching
+  // mode (or closing and reopening) while an answer streamed emptied the
+  // history, and the old stream's `done` then pushed its answer into the NEW
+  // conversation, ran its navigation actions and saved the session.
+  await t.step('CD3 an answer that finishes after the conversation was reset is dropped', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await page.route('**/api/guide/stream', async (route) => {
+        await new Promise(r => setTimeout(r, 400));
+        return route.fulfill({ contentType: 'text/event-stream',
+          body: 'data: {"type":"done","answer":"An Ask-mode answer. [clayrune:goto settings]"}\n\n' });
+      });
+      const out = await page.evaluate(async () => {
+        await window.openClaydo();
+        window.smokeActions = 0;
+        document.getElementById('claydo-input').value = 'what is a steward';
+        const pending = window.submitClaydo();
+        await new Promise(r => setTimeout(r, 100));
+        window.setClaydoMode('prompt');             // "Help me write a prompt", mid-answer
+        await pending;
+        await new Promise(r => setTimeout(r, 100));
+        const saved = JSON.parse(localStorage.getItem('mc_claydo_session') || '{}');
+        return {
+          mode: saved.mode,
+          history: (saved.history || []).map(m => m.role + ':' + m.text),
+          bubbles: [...document.querySelectorAll('#claydo-history .claydo-msg')].map(e => e.textContent.trim().slice(0, 30)),
+          inputDisabled: document.getElementById('claydo-input').disabled,
+        };
+      });
+      assert.equal(out.mode, 'prompt');
+      assert.deepEqual(out.history, [], 'the old answer is not in the new conversation');
+      assert.equal(out.bubbles.some(b => /Ask-mode answer/.test(b)), false);
+      assert.equal(out.inputDisabled, false, 'the composer comes back');
+    });
+  });
 } finally {
   t.done();
   await browser.close();

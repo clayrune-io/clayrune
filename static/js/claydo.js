@@ -12,6 +12,12 @@
 // Cap at 6 messages (3 exchanges) — anything older falls off the front.
 let _claydoHistory = [];
 let _claydoMode = 'ask';
+// Bumped every time the conversation is replaced (a mode switch, Home, a
+// fresh open, a restore). A stream captures it at submit and its terminal
+// handlers stand down when it has moved on: the answer belongs to a
+// conversation that is no longer on screen (CD3).
+let _claydoEpoch = 0;
+let _claydoSubmitSeq = 0;
 
 // One-time localStorage migration from the previous "Playdo" name. Read the
 // old key, write to the new key if not already set, then delete the old.
@@ -267,6 +273,7 @@ async function openClaydo() {
   // from the DOM.)
   _claydoHistory = [];
   _claydoMode = 'ask';
+  _claydoEpoch++;
 
   const win = document.createElement('div');
   win.className = 'modal-window';
@@ -349,6 +356,7 @@ function _claydoResetConversation(mode) {
   if (!histDiv) return;
   _claydoHistory = [];
   _claydoMode = mode;
+  _claydoEpoch++;
   const ui = _CLAYDO_MODE_UI[mode] || _CLAYDO_MODE_UI.ask;
 
   const sub = document.getElementById('claydo-subtitle');
@@ -465,6 +473,9 @@ async function submitClaydo() {
   input.value = '';
   input.disabled = true;
   send.disabled = true;
+  const epoch = _claydoEpoch;
+  const submitSeq = ++_claydoSubmitSeq;
+  const stale = () => epoch !== _claydoEpoch;
 
   if (_mobileSend) {
     try { input.blur(); } catch (e) {}
@@ -589,6 +600,7 @@ async function submitClaydo() {
         } else if (payload.type === 'error') {
           terminalSeen = true;
           _cancelDeltaRender();
+          if (stale()) return;
           // Older servers discard stdout diagnostics on a nonzero CLI exit.
           // Keep the quota/auth message already streamed instead of hiding it.
           const message = /^claude exit \d+$/.test(payload.message || '') && assembled.trim()
@@ -599,6 +611,11 @@ async function submitClaydo() {
         } else if (payload.type === 'done') {
           terminalSeen = true;
           _cancelDeltaRender();
+          // The conversation this answered was reset while it streamed. Its
+          // bubble is gone; pushing the answer would make it the first entry
+          // of the NEW conversation, run its goto/open-modal actions and save
+          // it into the session.
+          if (stale()) return;
           // Final assembled answer — use it as ground truth in case any
           // delta got dropped. Then parse markers and dispatch.
           const finalText = (payload.answer || assembled).trim();
@@ -634,7 +651,7 @@ async function submitClaydo() {
         }
       }
     }
-    if (!terminalSeen) {
+    if (!terminalSeen && !stale()) {
       // Without this the bubble kept "Claydo is thinking" (or a partial
       // answer) for good while the input came back, so it read as still
       // working; and the next question left two user turns in a row in the
@@ -645,11 +662,16 @@ async function submitClaydo() {
     }
   } catch (e) {
     _cancelDeltaRender();
-    _claydoRenderError(botMsg, 'Network error: ' + (e.message || e), question);
-    errored = true;
+    if (!stale()) {
+      _claydoRenderError(botMsg, 'Network error: ' + (e.message || e), question);
+      errored = true;
+    }
   } finally {
     input.disabled = false;
     send.disabled = false;
+    // A newer question (asked after a close and reopen) owns the mascot and
+    // the focus now; this one only had to give its own composer back.
+    if (submitSeq !== _claydoSubmitSeq) return;
     input.focus();
     histDiv.scrollTop = histDiv.scrollHeight;
     // On error: hold the confused/error pose for ~3s so the user notices,
