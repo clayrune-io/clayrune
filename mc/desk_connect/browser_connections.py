@@ -82,6 +82,8 @@ def commit(request_id: str, clean: dict) -> tuple[dict, bool]:
         if pane_account.platform_of(clean):
             result = pane_account.save(clean)       # Instagram / YouTube / TikTok: an account, not a service
             _done[request_id] = (fp, result)
+            while len(_done) > 200:
+                _done.popitem(last=False)
             return dict(result), False
         with desk._store_lock:
             store = desk._read_store()
