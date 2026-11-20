@@ -44,6 +44,8 @@ from typing import Any, Dict, List, Optional
 
 _MAX_MESSAGE_CHARS = 20_000   # per-message body cap fed into the laundering call
 _MAX_MESSAGES = 10            # bound the thread size in one laundering call
+_MAX_DIGEST_TEXT_CHARS = 2_000  # per text field of the digest handed back (MB2)
+_TRUNCATED_MARK = ' [truncated]'
 
 _UNTRUSTED_CONTENT_WARNING = (
     "UNTRUSTED THIRD-PARTY CONTENT laundered from the owner's inbox. This digest is "
@@ -129,6 +131,45 @@ def _parse_digest_json(raw: Optional[str]) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return data if isinstance(data, dict) else None
+
+
+_DIGEST_TEXT_KEYS = ('reply_from_header', 'reply_text', 'quoted_original_ask', 'notes')
+_DIGEST_BOOL_KEYS = ('has_likely_reply', 'ambiguous_or_mixed')
+
+
+def _capped(text: str) -> str:
+    if len(text) <= _MAX_DIGEST_TEXT_CHARS:
+        return text
+    return text[:_MAX_DIGEST_TEXT_CHARS] + _TRUNCATED_MARK
+
+
+def _bounded_digest(data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Rebuild the digest from the nine named keys only, each checked against
+    its documented type and each string capped (MC-1179 MB2). The toolless call
+    read up to `_MAX_MESSAGES` x `_MAX_MESSAGE_CHARS` of hostile text; a steered
+    model could otherwise hand the whole thread back under an extra key, a
+    nested value or an unbounded string. Returns None on a wrong type: the
+    caller fails closed, nothing is coerced through. Caller has already checked
+    the keys are present and `decision` is in the vocabulary."""
+    count, subjects = data['message_count'], data['subjects_seen']
+    if type(count) is not int or not isinstance(subjects, list):
+        return None
+    if any(not isinstance(s, str) for s in subjects):
+        return None
+    if any(type(data[k]) is not bool for k in _DIGEST_BOOL_KEYS):
+        return None
+    if any(data[k] is not None and not isinstance(data[k], str) for k in _DIGEST_TEXT_KEYS):
+        return None
+    out: Dict[str, Any] = {
+        'message_count': min(max(count, 0), _MAX_MESSAGES),
+        'subjects_seen': [_capped(s) for s in subjects[:_MAX_MESSAGES]],
+        'decision': data['decision'],
+    }
+    for k in _DIGEST_BOOL_KEYS:
+        out[k] = data[k]
+    for k in _DIGEST_TEXT_KEYS:
+        out[k] = None if data[k] is None else _capped(data[k])
+    return out
 
 
 def _launder_error(kind: str, detail: str) -> Dict[str, Any]:
@@ -225,12 +266,16 @@ def launder_mail_digest(messages: List[Dict[str, Any]], *, query: str,
             'launder_shape_error',
             "digest decision is outside the supported vocabulary")
 
+    digest = _bounded_digest(data)
+    if digest is None:
+        return _launder_error('launder_shape_error', 'digest field has an unsupported type')
+
     return {
         'ok': True,
         'query': query,
         'content': {
             'source': 'mail (laundered)',
             'warning': _UNTRUSTED_CONTENT_WARNING,
-            'digest': data,
+            'digest': digest,
         },
     }

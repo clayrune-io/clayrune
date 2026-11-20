@@ -87,10 +87,14 @@ def test_legacy_unhashable_decision_raises_in_both_versions(legacy_baseline, dec
             module.launder_mail_digest([{'body': 'Friday works.'}], query='q', runtime=fake)
 
 
-def test_legacy_mistyped_flags_accepted_in_both_versions(legacy_baseline):
+def test_legacy_mistyped_flags_accepted_then_refused(legacy_baseline):
+    """The baseline handed a mistyped digest back whole. Since MC-1179 MB2 the
+    digest is rebuilt from typed fields and a wrong type fails closed."""
     fake = SimpleNamespace(oneshot=lambda **kw: SimpleNamespace(
         text=old_digest(ambiguous_or_mixed='false', reply_text=['not a string'])))
-    for module in (legacy_baseline, ml):
-        out = module.launder_mail_digest([{'body': 'Friday works.'}], query='q', runtime=fake)
-        assert out['ok'] is True
-        assert out['content']['digest']['ambiguous_or_mixed'] == 'false'
+    out = legacy_baseline.launder_mail_digest([{'body': 'Friday works.'}], query='q', runtime=fake)
+    assert out['ok'] is True
+    assert out['content']['digest']['ambiguous_or_mixed'] == 'false'
+    out = ml.launder_mail_digest([{'body': 'Friday works.'}], query='q', runtime=fake)
+    assert out['ok'] is False
+    assert out['error'] == 'launder_shape_error'
