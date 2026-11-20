@@ -3567,12 +3567,26 @@ async function reviewTopics(pid) {
 }
 async function setTopicState(pid, topicId, state) {
   const d = _topicsData[pid];
-  if (d && d.topics) { const t = d.topics.find(x => x.id === topicId); if (t) t.user_state = state; }
+  const t = (d && d.topics) ? d.topics.find(x => x.id === topicId) : null;
+  const prev = t ? t.user_state : undefined;
+  if (t) t.user_state = state;
   refreshThreadsBoard(pid);
+  // The write above is optimistic. A refused or failed POST puts the topic back
+  // and says so; it used to show as done/archived until the next reload.
+  const refused = (why) => {
+    if (t) t.user_state = prev;
+    refreshThreadsBoard(pid);
+    if (typeof showToast === 'function') showToast('Could not update the topic' + (why ? ': ' + why : ''), 3500);
+  };
   try {
-    await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/topics/${encodeURIComponent(topicId)}/state`,
+    const r = await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/topics/${encodeURIComponent(topicId)}/state`,
       { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state }) });
-  } catch (e) {}
+    if (!r.ok) {
+      let why = '';
+      try { why = ((await r.json()) || {}).error || ''; } catch (e) {}
+      refused(why);
+    }
+  } catch (e) { refused(''); }
 }
 function toggleTopic(pid, topicId) { const k = pid + '/' + topicId; _topicsExpanded[k] = !_topicsExpanded[k]; refreshThreadsBoard(pid); }
 function toggleTopicsArchived(pid) { _topicsShowArchived[pid] = !_topicsShowArchived[pid]; refreshThreadsBoard(pid); }

@@ -228,6 +228,39 @@ try {
       await page.waitForFunction(({ pid }) => activeAgentTab[pid] === 'mc-slow', { pid });
     });
   });
+
+  // CV19 (setTopicState half): the topic was marked done locally and the POST's
+  // result and error were both thrown away, so a refused write showed as done
+  // until the next reload. approvePlan, the other half of CV19, is not changed.
+  await t.step('CV19 a refused topic state change is rolled back and reported', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await page.route('**/topics', route => route.fulfill({ json: { topics: [
+        { id: 't1', title: 'Topic one', gist: 'g', status: 'open', user_state: 'open', chats: [] }], generated_at: '2026-11-10T00:00:00Z' } }));
+      await page.route('**/topics/t1/state', route => route.fulfill({ status: 500, json: { error: 'disk full' } }));
+      await page.evaluate(({ pid }) => window.openThreadsBoard(pid), { pid });
+      await page.waitForSelector('.tb-topic');
+      await page.evaluate(({ pid }) => window.setTopicState(pid, 't1', 'done'), { pid });
+      await page.waitForTimeout(400);
+      assert.equal(await page.locator('.tb-topic .tb-us.done').count(), 0, 'the topic is not left showing Done');
+      assert.equal(await page.locator('.tb-topic.tb-topic-muted').count(), 0);
+      const toasts = await page.evaluate(() => smokeToasts);
+      assert.ok(toasts.some(x => /disk full/.test(x)), `the refusal is reported, got ${JSON.stringify(toasts)}`);
+    });
+  });
+
+  await t.step('CV19 an accepted topic state change stays', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await page.route('**/topics', route => route.fulfill({ json: { topics: [
+        { id: 't1', title: 'Topic one', gist: 'g', status: 'open', user_state: 'open', chats: [] }], generated_at: '2026-11-10T00:00:00Z' } }));
+      await page.route('**/topics/t1/state', route => route.fulfill({ json: { ok: true } }));
+      await page.evaluate(({ pid }) => window.openThreadsBoard(pid), { pid });
+      await page.waitForSelector('.tb-topic');
+      await page.evaluate(({ pid }) => window.setTopicState(pid, 't1', 'done'), { pid });
+      await page.waitForTimeout(400);
+      assert.equal(await page.locator('.tb-topic .tb-us.done').count(), 1);
+      assert.deepEqual(await page.evaluate(() => smokeToasts), []);
+    });
+  });
 } finally {
   t.done();
   await browser.close();
