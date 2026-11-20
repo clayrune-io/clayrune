@@ -171,6 +171,20 @@ async def signin_start(
     return {"ok": True, "expires_at": expires.isoformat(timespec="seconds").replace("+00:00", "Z")}
 
 
+def _intent_expired(expires_at) -> bool:
+    """True unless `expires_at` is a timestamp still in the future.
+
+    /signin/start always writes one (now + 15 minutes), so a row without a
+    readable timestamp is not one this code wrote and is refused with the rest.
+    A naive value is read as UTC.
+    """
+    if not isinstance(expires_at, _dt.datetime):
+        return True
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=_dt.timezone.utc)
+    return expires_at <= _dt.datetime.now(_dt.timezone.utc)
+
+
 @router.post("/signin/complete", tags=["public"])
 async def signin_complete(
     request: Request,
@@ -239,6 +253,12 @@ async def signin_complete(
             "request_id": "x",
         })
     intent = doc.to_dict() or {}
+    if _intent_expired(intent.get("expires_at")):
+        raise HTTPException(status_code=400, detail={
+            "code": "enrollment_intent_invalid",
+            "message": "Sign-in expired. Click 'Enable Remote Access' again from MC.",
+            "request_id": "x",
+        })
     if intent.get("device_pub_hash") != pub_hash:
         raise HTTPException(status_code=400, detail={
             "code": "enrollment_intent_mismatch",
