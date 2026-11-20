@@ -52,7 +52,7 @@ export function offerFrameBytes(e) {
   return { decoded, encoded: bytes(JSON.stringify(shell)).length + Math.ceil(decoded * 4 / 3) };
 }
 
-/** Internal API for units 08/09/10/13, deliberately unwired.
+/** Internal API for units 08/09/10/13, reached through Ledger.pull().queue.
  * new PullLedger({db,clock?}); scope={install_id,generation,owner_generation,epoch}.
  * A SessionAuth attachment can also be passed; if supplied key/connection ids
  * must match. SMTP adapters must read the current epoch too (zero before a

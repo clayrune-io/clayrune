@@ -1,4 +1,4 @@
-// Pull contract 6.2 / 8.1. Unwired hosted lifecycle transactions, no provider.
+// Pull contract 6.2 / 8.1. Hosted lifecycle transactions, no provider. Routed by worker.js.
 // Unit 14 dispatches new_owner links here (stepup/signup stay in their modules).
 // Config and trustedSource follow OwnerManagementHTTP; no install-key shortcut.
 import { OwnerManagementHTTP } from './owner-management.js';

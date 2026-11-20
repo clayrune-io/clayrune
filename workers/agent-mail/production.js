@@ -1,3 +1,3 @@
-// Deployment entry only. Unit 14 owns wiring pull dispatch into worker.js.
+// Deployment entry only. Pull dispatch is wired in worker.js (unit 14).
 export { default } from './worker.js';
 export { PullSocketMailbox } from './pull-socket-mailbox.js';

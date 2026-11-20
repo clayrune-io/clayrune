@@ -1,4 +1,4 @@
-// MC-1166 unit 13: trusted, bounded scheduled maintenance; no route wiring.
+// MC-1166 unit 13: trusted, bounded scheduled maintenance; run by worker.js scheduled(), no route.
 import { randomId } from './signing.js';
 import { SQL_NOW } from './sql-clock.js';
 

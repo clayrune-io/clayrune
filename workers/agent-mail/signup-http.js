@@ -1,4 +1,4 @@
-// Pull signup HTTP only (contract v1.0 sections 2-4, 6.1). Not wired into
+// Pull signup HTTP only (contract v1.0 sections 2-4, 6.1). Routed by
 // worker.js. No provider, control-plane, tunnel, activation or management calls.
 // Caller supplies reviewed service signing material and trusted edge source;
 // NEVER derive trustedSource from a caller-selected forwarding header.

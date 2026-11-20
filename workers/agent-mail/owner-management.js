@@ -1,4 +1,4 @@
-// Pull contract v1 sections 4, 6-8: old-mailbox step-up only. Unwired.
+// Pull contract v1 sections 4, 6-8: old-mailbox step-up only. Routed by worker.js.
 // No owner/key mutation, provider call or local human/passcode substitute here.
 // Construction uses SignupHTTP's reviewed configuration and shared abuse limits;
 // its generation-1 signup authorization/response methods are overridden below.

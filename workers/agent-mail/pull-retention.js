@@ -1,4 +1,4 @@
-// MC-1166 W03. Trusted metadata maintenance only; W30 owns scheduled wiring.
+// MC-1166 W03. Trusted metadata maintenance only; worker.js scheduled() runs one slice per tick.
 import { SQL_NOW } from './sql-clock.js';
 
 const DAY = 86400000, MONTH = 30 * DAY, YEAR = 365 * DAY, LIMIT = 100;
