@@ -117,9 +117,19 @@ def s(tmp_data_dir, monkeypatch):
     monkeypatch.setitem(state.CONFIG, "condense_enabled", True)
     m._condense_triggered_at.clear()
     m._condensing_projects.clear()
+    sessions_before = set(state.agent_sessions)
     yield m
     m._condense_triggered_at.clear()
     m._condensing_projects.clear()
+    # The run registers a housekeeping session with status 'running', and the
+    # real stream reader is what ends it. _run_condense stubs that reader, so
+    # the record stayed 'running' with no trigger_type for the rest of the
+    # pytest process, and mc.unattended then took every later Origin-less
+    # request for an unattended agent's (26 Desk tests answered 403 in the
+    # default order).
+    for sid in set(state.agent_sessions) - sessions_before:
+        left = state.agent_sessions.pop(sid, None) or {}
+        m.get_manager(left.get("project_id")).session_ids.discard(sid)
 
 
 class _Proc:
