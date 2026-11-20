@@ -138,6 +138,24 @@ try {
     });
   });
 
+  // SS3: Refresh dropped the usage cache and refetched it only on the Usage
+  // tab; on any other tab the bottom usage strip emptied until the next tick.
+  await t.step('SS3 the popover Refresh on the Status tab keeps the bottom usage strip', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await usageRoutes(page);
+      await minuteTick(page);            // loads /api/system/usage through the real tick
+      await page.waitForSelector('#usage-bar-strip .usage-bar-item', { state: 'attached' });
+      const during = await page.evaluate(async () => {
+        window._sysStatusSwitchTab('status');
+        await window.refreshSystemStatus();
+        return document.querySelectorAll('#usage-bar-strip .usage-bar-item').length;
+      });
+      assert.equal(during, 2, 'the strip was emptied by Refresh');
+      await sleep(300);
+      assert.equal(await page.locator('#usage-bar-strip .usage-bar-item').count(), 2);
+    });
+  });
+
 } finally {
   t.done();
   await real.close();

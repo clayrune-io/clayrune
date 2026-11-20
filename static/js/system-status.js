@@ -1108,10 +1108,12 @@ async function refreshSystemStatus(ev) {
   } catch { /* surface as no-update */ }
   _sysStatusRefreshing = false;
   renderSysStatusPill();
-  // Drop the usage cache too so the next render re-fetches stats-cache.json.
-  systemUsageCache = null;
+  // Re-fetch usage on every tab, and keep the cache until the answer lands.
+  // This used to null the cache and re-fetch only on the Usage tab; on any
+  // other tab the bottom usage strip, which reads the same cache, went empty
+  // until the next 60 s tick.
+  fetchSystemUsage();
   if (_sysStatusActiveTab === 'usage') {
-    fetchSystemUsage();
     // Review finding #7: this global "Refresh" footer button updated the
     // old usage cache only, on every tab — Breakdown never moved.
     if (_ubReportOpen()) {
