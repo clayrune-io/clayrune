@@ -33,16 +33,23 @@ def _sig(ts_epoch: float, phrase: str) -> dict:
             'phrase': phrase, 'exact': 'e' * 16, 'coarse': 'c' * 16}
 
 
-def _setup(tmp_path):
-    distiller._data_root = tmp_path / 'projects'
-    distiller._data_root.mkdir(parents=True, exist_ok=True)
-    distiller._atomic_write_text = lambda p, t: Path(p).write_text(
-        t, encoding='utf-8')
-    distiller._now_iso = lambda: '2026-07-15T00:00:00Z'
+def _setup(tmp_path, monkeypatch):
+    # monkeypatch, not plain assignment: these three are process-wide module
+    # globals. Assigned directly they stayed for the rest of the pytest run:
+    # a non-atomic writer, a clock frozen at 2026-07-15, and (from the last
+    # test below) a data root of Path('.'), so a later test that bumped a
+    # distiller counter wrote <cwd>/p1_skill_stats.json into the checkout
+    # (MC-1212).
+    root = tmp_path / 'projects'
+    root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(distiller, '_data_root', root)
+    monkeypatch.setattr(distiller, '_atomic_write_text',
+                        lambda p, t: Path(p).write_text(t, encoding='utf-8'))
+    monkeypatch.setattr(distiller, '_now_iso', lambda: '2026-07-15T00:00:00Z')
 
 
-def test_old_signals_move_to_archive_verbatim(tmp_path):
-    _setup(tmp_path)
+def test_old_signals_move_to_archive_verbatim(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
     now = time.time()
     old = _sig(now - 200 * 86400, 'ancient-topic')
     fresh = _sig(now - 5 * 86400, 'fresh-topic')
@@ -62,8 +69,8 @@ def test_old_signals_move_to_archive_verbatim(tmp_path):
     assert lines[0] == old, 'archived signal must be byte-equivalent (no loss)'
 
 
-def test_within_retention_stays_hot(tmp_path):
-    _setup(tmp_path)
+def test_within_retention_stays_hot(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
     now = time.time()
     # 60 days old: outside the 30d read window but inside 3× retention —
     # stays hot so a window_days config increase can still see it.
@@ -77,8 +84,8 @@ def test_within_retention_stays_hot(tmp_path):
                 / 'proj_b_skill_stats_archive.jsonl').exists()
 
 
-def test_archive_appends_across_passes(tmp_path):
-    _setup(tmp_path)
+def test_archive_appends_across_passes(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
     now = time.time()
     distiller._commit_signals('proj_c', [_sig(now - 200 * 86400, 'first')])
     distiller._commit_signals('proj_c', [_sig(now - 150 * 86400, 'second'),
@@ -93,8 +100,8 @@ def test_archive_appends_across_passes(tmp_path):
     assert [s['phrase'] for s in stats['signals']] == ['live']
 
 
-def test_archive_failure_leaves_hot_file_untouched(tmp_path):
-    _setup(tmp_path)
+def test_archive_failure_leaves_hot_file_untouched(tmp_path, monkeypatch):
+    _setup(tmp_path, monkeypatch)
     now = time.time()
     old = _sig(now - 200 * 86400, 'stuck-but-safe')
     # Make the archive path unopenable: create a DIRECTORY where the
@@ -109,7 +116,7 @@ def test_archive_failure_leaves_hot_file_untouched(tmp_path):
     assert [s['phrase'] for s in stats['signals']] == ['stuck-but-safe']
 
 
-def test_archive_extension_cannot_match_project_glob():
+def test_archive_extension_cannot_match_project_glob(monkeypatch):
     """The archive is kept out of load_projects() by its EXTENSION, not by
     the suffix tuple (the exclusion test enforces tuple entries are
     glob-matchable, so a .jsonl entry there is dead config). Pin the real
@@ -118,7 +125,7 @@ def test_archive_extension_cannot_match_project_glob():
     assert not name.endswith('.json')
     # And the helper actually derives that name from the stats path.
     from pathlib import Path
-    distiller._data_root = Path('.')
+    monkeypatch.setattr(distiller, '_data_root', Path('.'))
     p = distiller._skill_stats_path('x').with_name(
         distiller._skill_stats_path('x').name.replace(
             '_skill_stats.json', '_skill_stats_archive.jsonl'))
