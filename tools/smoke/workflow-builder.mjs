@@ -402,6 +402,7 @@ try {
   // needed since _wfEnsureProviderAuthFresh caches per-provider and this
   // route is read fresh on every request.
   const providerAuthResponses = {};
+  let charactersOverride = null;    // WB9: a roster that changes after the first read
   const providerAuthDelayMs = {};   // WB6: hold one provider's probe so a test can type while it is pending
   await page.route('**/*', async (route) => {
     const req = route.request();
@@ -428,7 +429,7 @@ try {
     }
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/local-auth/status') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"configured":true}' });
-    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: charactersOverride || CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     const authMatch = path.match(/^\/api\/agent\/provider\/([^/]+)\/auth$/);
@@ -1659,6 +1660,35 @@ try {
         : fail(`WB6: the warning re-render dropped typed text or never drew: ${JSON.stringify(wb6)}`);
     }
   }
+
+  // WB9 (MC-1179 pass 04): the persona list is cached per project and was
+  // never cleared, so a person hired after the first editor was opened was
+  // missing from the picker. The picker fell back to "Project default", and
+  // closing the editor wrote that fallback over the step's persona.
+  charactersOverride = JSON.stringify(JSON.parse(CHARACTERS_JSON).concat([
+    { name: 'newbie', display_name: 'newbie', agent_name: 'Nova', scope: 'global',
+      avatar: '', description: '', engine: { provider: 'claude', model: 'claude-sonnet-5' } }]));
+  await page.evaluate(({ pid }) => {
+    window.dispatchEvent(new CustomEvent('clayrune:characters-changed'));
+    const st = window._wfEntry()._wf;
+    st.bench = st.bench.concat([{ name: 'newbie', scope: 'global', display: 'Nova', avatar: '',
+      description: '', skills: [], provider: 'claude', model: '', effort: '',
+      project_id: '', project_name: '', rooms: [] }]);
+    st.def.nodes = (st.def.nodes || []).concat([{ type: 'agent', name: 'wb9-new-hire', x: -1500, y: -900,
+      project_id: pid, character: 'global:newbie', prompt: 'test', outcomes: [] }]);
+    window._wfMarkDirty();
+    window._wfSetTriggerType(st.def.trigger.type || 'manual');
+  }, { pid: PID });
+  await openInspector(page, 'wb9-new-hire');
+  await page.waitForFunction(() => {
+    const sel = document.querySelector('#wfb-inspector .wfb-persona');
+    return sel && sel.dataset.loading !== '1';
+  }, { timeout: 4000 }).catch(() => {});
+  await closeInspector(page);
+  const wb9 = await page.evaluate(() => (window._wfEntry()._wf.def.nodes.find(n => n.name === 'wb9-new-hire') || {}).character);
+  wb9 === 'global:newbie'
+    ? ok('WB9: a person hired after the persona list was first read keeps their step (the list is re-read)')
+    : fail(`WB9: opening and closing the editor rewrote the new hire's persona to ${JSON.stringify(wb9)}`);
 
   // ── Mobile viewport: palette becomes a bottom sheet, canvas still present ─
   await ctx.close();

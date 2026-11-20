@@ -2021,6 +2021,10 @@ function _wfBindCharacterChangeListener() {
   if (_wfCharacterListenerBound) return;
   _wfCharacterListenerBound = true;
   window.addEventListener('clayrune:characters-changed', () => {
+    // WB9: the persona pickers read this per-project cache. Left stale, a new
+    // hire is missing from the picker, which falls back to "Project default",
+    // and the next sync writes that fallback over the step's persona.
+    _wfCharCache.clear();
     const entry = _wfEntry();
     if (!entry || !entry._wf) return;
     _wfRefreshBench(entry._wf);
