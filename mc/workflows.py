@@ -1545,6 +1545,10 @@ def _advance_run(run_id: str, *, only_if_idle: bool = False,
                 if not ok:
                     _fail_run(run, f"action step '{name}' failed: {err}")
                     return
+                # Saved before anything else runs: a step left 'pending' on
+                # disk is executed again by restart adoption (a second backlog
+                # item, a second operator mail).
+                _write_run(run)
                 continue  # recompute skips/frontier -- may unlock more work
 
             _fail_run(run, f"unrunnable node type '{t}' at '{name}'")

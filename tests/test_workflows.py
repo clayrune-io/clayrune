@@ -749,6 +749,32 @@ def test_action_step_runs_synchronously_then_continues(wf, monkeypatch):
     assert run['frontier'] == []
 
 
+def test_action_result_is_saved_before_the_next_step_starts(wf, monkeypatch):
+    """DCW-W7: an action's side effect used to happen before its result reached
+    disk. A crash on the way to the next step left it 'pending', and restart
+    adoption re-ran it: a second backlog item, a second operator mail."""
+    monkeypatch.setattr(wf.m, '_http_json',
+                        lambda method, path, payload=None: {'item': {'key': 'MC-99'}})
+    real = wf.m._execute_action
+    on_disk = []
+
+    def second_action_dies(run, node, workflow=None):
+        if node['name'] == 'second':
+            # What a restart would find for the step that already ran.
+            on_disk.append(wf.m._read_run(run['id'])['steps']['first']['status'])
+            raise RuntimeError('the process died here')
+        return real(run, node, workflow)
+
+    monkeypatch.setattr(wf.m, '_execute_action', second_action_dies)
+    record = wf.m.create_workflow(_doc('two-actions', [
+        _action('first', 'backlog_create', config={'project_id': 'p1', 'text': 'hi'}),
+        _action('second', 'backlog_create', config={'project_id': 'p1', 'text': 'again'}),
+    ], edges=[_edge('first', 'second')]))
+    with pytest.raises(RuntimeError):
+        wf.m.start_run(record['id'])
+    assert on_disk == ['completed']
+
+
 def test_unknown_action_rejected_at_validation(wf):
     doc = _doc('bad-action', [_action('x', 'send_email')])
     errors = wf.m.validate_workflow(doc)
