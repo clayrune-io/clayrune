@@ -216,6 +216,16 @@ def post_distiller_promote():
 def post_distiller_reject():
     """Reject a _proposed/ artifact: write a suppression marker (Distiller
     won't re-propose) + move it to _rejected/. Body: {directory}."""
+    if is_unattended_caller():
+        # Rail 3 makes this "no" durable, and global for a cross-project
+        # artifact. Without the check an unattended session could empty the
+        # human's review queue and suppress patterns the human never saw
+        # (ML11). Same check and status as the promote route above; no
+        # passcode, since a rejection is undone by editing the sidecar.
+        return jsonify({'ok': False, 'error':
+                        'this action needs a human — an unattended agent '
+                        'session cannot reject a proposed artifact; ask the '
+                        'user to reject it from the UI'}), 403
     body = request.get_json(silent=True) or {}
     directory = body.get('directory', '')
     try:

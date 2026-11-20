@@ -40,6 +40,7 @@ from contextvars import ContextVar
 
 import mc.agent_runtime as _agent_runtime  # multi-provider runtime (transcript + oneshot)
 from mc import continuity_threads as _cont_threads
+from mc import continuity_authority as _cont_authority  # S2.5: authority screen on extracted lines
 from mc import scribe_user_turn as _scribe_user_turn
 import mc.skills as _skills                # frontmatter parse for position notes
 import mc.distiller as _distiller          # Phase 4 learning observer (best-effort)
@@ -48,7 +49,10 @@ import mc.memory_overlap_df as _overlap_df  # M4 corpus document-frequency stopl
 import mc.memory_gate_tap as _gate_tap  # G1 report-mode observer for mints (MC-964 step 10)
 import mc.memory_entry_line as _entry_line  # ML15: a managed entry is one physical line
 from mc.memory_note_slug import is_safe_note_slug as _is_safe_note_slug  # ML14
+from mc.memory_note_slug import subject_suffixed_slug as _subject_suffixed_slug  # ML14
+from mc.memory_note_frontmatter import topic_note_head as _topic_note_head  # ML13
 import mc.condense_agent_mode as _condense_agent_mode  # ML16: agent-mode "anything to do" test + prompt
+import mc.condense_restore as _condense_restore  # ML21: locked, conditional restore/heal after an agent run
 import mc.condense_mode as _condense_mode  # ML16: which executor a config selects; the one default
 
 from mc import state
@@ -2167,12 +2171,21 @@ def _extract_continuity(project, delta, model, owner=None, *, provider=None,
         d = json.loads(txt[i:j + 1])
         if not isinstance(d, dict):
             return None
+        # Rail 1 (S2.5): this record goes into every later system prompt as
+        # something the agent committed to. A line that expands the agent's
+        # own authority is dropped; the rest of the record is still written.
+        d, refused = _cont_authority.screen(d, _distiller._authority_violation)
+        project_id = project.get('id', '') if isinstance(project, dict) else ''
+        for slot, line, phrase in refused:
+            _scribe_stat(project_id, 'continuity_line_refused_authority')
+            _log(f'[continuity] {slot} line refused (authority guard hit '
+                 f'{phrase!r}): {line[:120]!r}')
         return write_continuity(
             project,
-            threads=d.get('threads') or [],
-            commitments=d.get('commitments') or [],
-            understanding=d.get('understanding') or '',
-            owner=owner, confirmed_threads=d.get('confirmed_threads') or [])
+            threads=d['threads'],
+            commitments=d['commitments'],
+            understanding=d['understanding'],
+            owner=owner, confirmed_threads=d['confirmed_threads'])
     except Exception as e:
         _log(f"[continuity] extraction failed: {e}")
         return None
@@ -2258,6 +2271,7 @@ def write_position(project, subject, verdict, reason,
 
     mem_dir = _get_memory_path(project).parent
     mem_dir.mkdir(parents=True, exist_ok=True)
+    auto_slug = not (slug or '').strip()
     slug = (slug or '').strip() or _mem_link_key(subject)[:48] or 'unnamed'
     # The slug becomes a filename and the route passes the caller's through.
     if not _is_safe_note_slug(mem_dir, slug, POSITION_PREFIX):
@@ -2266,6 +2280,20 @@ def write_position(project, subject, verdict, reason,
     project_id = project.get('id', '') if isinstance(project, dict) else ''
 
     with _get_mem_write_lock(f'position:{project_id}'):
+        if auto_slug and path.exists():
+            # An auto slug is only 48 characters of the subject key, so two
+            # different subjects can share it; the second used to supersede
+            # the first (ML14). A caller's own slug is their choice of file
+            # and still supersedes whatever it names.
+            try:
+                held = _parse_position(
+                    path.read_text(encoding='utf-8', errors='replace')).get('subject')
+            except Exception as e:
+                _log(f'[position] could not read {path.name} for the subject check: {e}')
+                held = ''
+            if held and _mem_link_key(held) != _mem_link_key(subject):
+                slug = _subject_suffixed_slug(slug, _mem_link_key(subject))
+                path = mem_dir / f'{POSITION_PREFIX}{slug}.md'
         prior = ''
         if path.exists():
             try:
@@ -2367,22 +2395,18 @@ def write_topic_note(project, slug, description, body, *, note_type='project',
     origin = _stamp_origin(task, trigger_type)
     generated = _stamp_generated(actor)
     project_id = project.get('id', '') if isinstance(project, dict) else ''
-    lines = ['---', f"name: {slug.replace('_', '-')}",
-             f'description: "{description.replace(chr(34), chr(92)+chr(34))}"',
-             'metadata:', f'  type: {note_type}']
-    if triggers:
-        lines.append(f'triggers: {triggers.strip()}')
-    if supersedes:
-        lines.append(f'supersedes: {supersedes.strip()}')
-    if supersedes.strip() == 'unresolved' and mint_candidates:
-        lines.append(f'mint_candidates: {mint_candidates.strip()}')
-    lines.append(f'origin: {origin}')
-    lines.append('generated:')
-    lines.append(f"  by: {generated['by']}")
-    lines.append(f"  at: {generated['at']}")
-    lines.append('---')
-    lines.append('')
-    text = '\n'.join(lines) + (body or '').strip() + '\n'
+    # Built by the dumper `write_position` uses, never by concatenation: a
+    # `---` line in the description used to close the block early and drop
+    # the origin stamp below it (ML13). See mc/memory_note_frontmatter.py.
+    supersedes = (supersedes or '').strip()
+    text = _topic_note_head(
+        name=slug.replace('_', '-'), description=description,
+        note_type=note_type, origin=origin,
+        generated_by=generated['by'], generated_at=generated['at'],
+        triggers=(triggers or '').strip(), supersedes=supersedes,
+        mint_candidates=((mint_candidates or '').strip()
+                         if supersedes == 'unresolved' else ''),
+    ) + (body or '').strip() + '\n'
     # G1 report-mode tap: observes, never refuses or alters `text`. Evaluated
     # BEFORE the lock: it reads the head of every note in the vault (and of
     # every sibling vault for an unresolved link), and nothing it reads is
@@ -2791,7 +2815,8 @@ def _memory_search(project, query, topk=3, expand=None, record=None,
     # collapsed by dedupe is backfilled from the next-ranked candidate rather
     # than shrinking the slot budget — see `_mem_apply_supersession`.
     _by_topic_file = {u['file']: u for u in units if u.get('cls') == 'topic'}
-    scored = _mem_apply_supersession(scored, _mem_supersede_graph(units), _by_topic_file)
+    scored = _mem_apply_supersession(scored, _mem_supersede_graph(units), _by_topic_file,
+                                     consumer_unattended=consumer_unattended)
 
     # Positions are pulled out BEFORE the quota/top-k cut and re-inserted at the
     # front. A position that matches its own subject must reach the prompt even
@@ -2907,18 +2932,30 @@ def _mem_supersede_guard_blocks(predecessor_file, head_file, by_topic_file):
     return False
 
 
-def _mem_negation_entries(head_file, edges, by_topic_file):
+def _mem_negation_entries(head_file, edges, by_topic_file, *,
+                          consumer_unattended=False):
     """Every node whose supersede chain resolves to `head_file` (direct or
     transitive), rendered one-per-line for the materialised negation block
     (§6.4). Capped at 7 entries; beyond that, one `(+N more, see <head>)`
     line — Condition 19's bound, ~120 chars/entry so the whole block stays
     near the ~900B the spec budgets.
+
+    `consumer_unattended`: a node `_mem_unit_allowed` would withhold from
+    this consumer is left out whole — no line, no count, no overflow slot.
+    The scored hits were already filtered that way; this list is built from
+    the graph, so without the same test a steward cycle that matched an
+    attended predecessor was handed the description of every unattended
+    node in its chain (S3.4, learning rail 2).
     """
     preds = sorted(f for f in edges
                     if f != head_file and _mem_supersede_head(edges, f)[0] == head_file)
     lines = []
     overflow = 0
     for f in preds:
+        node = by_topic_file.get(f)
+        if node is not None and not _mem_unit_allowed(
+                node, consumer_unattended=consumer_unattended):
+            continue
         if len(lines) >= _SUPERSEDE_NEGATION_CAP:
             overflow += 1
             continue
@@ -2930,7 +2967,8 @@ def _mem_negation_entries(head_file, edges, by_topic_file):
     return lines
 
 
-def _mem_redirect_hit(r, head_file, edges, by_topic_file):
+def _mem_redirect_hit(r, head_file, edges, by_topic_file, *,
+                      consumer_unattended=False):
     """Build the redirect stub (§6.3) that replaces an OUTPACED hit's
     delivered snippet. The hit keeps its own score/rank (`r['score']` is
     untouched by the caller) — only `file`/`snippet`/`uid`/`head` change, plus
@@ -2940,7 +2978,8 @@ def _mem_redirect_hit(r, head_file, edges, by_topic_file):
     head_u = by_topic_file.get(head_file) or {}
     head_text = str(head_u.get('text') or '')
     conclusion = str(head_u.get('fm_description') or '').strip() or _head(head_text)
-    negations = _mem_negation_entries(head_file, edges, by_topic_file)
+    negations = _mem_negation_entries(head_file, edges, by_topic_file,
+                                      consumer_unattended=consumer_unattended)
     neg_str = ' | '.join(negations) if negations else 'none'
     stub = (f'SUPERSEDED by {head_file}.\n'
             f'CONCLUSION: {conclusion}\n'
@@ -2955,7 +2994,8 @@ def _mem_redirect_hit(r, head_file, edges, by_topic_file):
     return out
 
 
-def _mem_apply_supersession(scored, edges, by_topic_file):
+def _mem_apply_supersession(scored, edges, by_topic_file, *,
+                            consumer_unattended=False):
     """Head-substitute OUTPACED topic hits, dedupe by head, backfill from the
     next-ranked candidate — Condition 19/20 (§6.3-6.4, MC-944 step 6).
 
@@ -2991,7 +3031,9 @@ def _mem_apply_supersession(scored, edges, by_topic_file):
             continue  # dedupe: drop, next-ranked candidate fills the slot
         used.add(head_file)
         if head_file != r['file']:
-            out.append(_mem_redirect_hit(r, head_file, edges, by_topic_file))
+            out.append(_mem_redirect_hit(
+                r, head_file, edges, by_topic_file,
+                consumer_unattended=consumer_unattended))
         else:
             out.append(r)
     return out
@@ -6452,7 +6494,7 @@ def _scribe_summarize_text(text, model, want_why=False):
     return out, 'extracted'
 
 
-def _condense_integrity_check(mem_path, pre_mem, pre_wm, rc):
+def _condense_integrity_check(mem_path, pre_mem, pre_wm, rc, post_reader=None):
     """Post-condense safety net for MEMORY.md.
 
     A condense run is an external `claude` subprocess that rewrites MEMORY.md
@@ -6470,6 +6512,11 @@ def _condense_integrity_check(mem_path, pre_mem, pre_wm, rc):
     Returns (action, reason, status_kw). status_kw is merged into the per-
     project condense status so chronic turn-cap failures stay visible in
     telemetry instead of silently self-healing on the next trigger.
+
+    `post_reader` (ML21): a callable giving the post-run text, or raising
+    what the read raised. The agent-mode caller passes the one read it took
+    when the run ended, so the verdict and the repair that follows are about
+    the same text. Default: read `mem_path` here, as before.
     """
     if pre_mem is None:
         # No pre-image captured — can only trust the exit code.
@@ -6480,7 +6527,10 @@ def _condense_integrity_check(mem_path, pre_mem, pre_wm, rc):
                          'no pre-image captured to verify integrity'}
         return 'ok', '', {}
     try:
-        post = mem_path.read_text(encoding='utf-8') if mem_path.exists() else ''
+        if post_reader is not None:
+            post = post_reader()
+        else:
+            post = mem_path.read_text(encoding='utf-8') if mem_path.exists() else ''
     except Exception as e:
         return 'restore', f'post-read failed ({e})', {
             'state': 'error',
@@ -7000,33 +7050,48 @@ def _dispatch_condense(project):
             # before the write step) must never leave MEMORY.md corrupted or
             # drop a live-session watermark.
             rc = proc.returncode
+            # ML21: one read of MEMORY.md, taken now. The check judges it, and
+            # the repair below writes (under the write lock, atomically) only
+            # if the file still holds it; a commit that landed since is kept.
+            end_image = _condense_restore.EndImage(mem_path)
             action, reason, kw = _condense_integrity_check(
-                mem_path, pre_mem, pre_wm, rc)
+                mem_path, pre_mem, pre_wm, rc, post_reader=end_image.replay)
+
+            def _left_changed(what):
+                _scribe_stat(pid, 'condense_restore_skipped_changed')
+                _log(f"[condense] {pid}: integrity FAIL ({reason}) but "
+                     f"MEMORY.md changed after the run ended; {what} skipped, "
+                     f"file left as it is")
+                return {'state': 'error',
+                        'error': f'condense integrity check failed ({reason}); '
+                                 f'MEMORY.md changed after the run ended, so '
+                                 f'the {what} was skipped and the pre-image '
+                                 f'was not restored'}
+
             if action == 'restore':
                 try:
-                    mem_path.write_text(pre_mem, encoding='utf-8')  # pyright: ignore[reportArgumentType]  # moved-verbatim typing debt (mop)
-                    _log(f"[condense] {pid}: integrity FAIL ({reason}) — "
-                         f"restored pre-image")
+                    if _condense_restore.restore(pid, mem_path, pre_mem, end_image):  # pyright: ignore[reportArgumentType]  # moved-verbatim typing debt (mop)
+                        _log(f"[condense] {pid}: integrity FAIL ({reason}) — "
+                             f"restored pre-image")
+                    else:
+                        kw = _left_changed('restore')
                 except Exception as e:
                     _log(f"[condense] {pid}: RESTORE FAILED ({e}) — {reason}")
             elif action == 'heal':
                 try:
-                    cur, ent, wm = _mem_split_full(
-                        mem_path.read_text(encoding='utf-8'))
-                    have = set(wm)
-                    for w in pre_wm:
-                        if w not in have:
-                            wm.append(w)
-                            have.add(w)
-                    mem_path.write_text(_mem_compose(cur, ent, wm),
-                                        encoding='utf-8')
-                    _log(f"[condense] {pid}: healed ({reason}) — re-injected "
-                         f"dropped watermark(s), kept agent curation")
+                    if _condense_restore.heal(pid, mem_path, pre_wm, end_image,
+                                              _mem_split_full, _mem_compose):
+                        _log(f"[condense] {pid}: healed ({reason}) — re-injected "
+                             f"dropped watermark(s), kept agent curation")
+                    else:
+                        kw = _left_changed('heal')
                 except Exception as e:
                     # Heal failed — fall back to full restore to protect the
                     # load-bearing watermark over the agent's curation.
                     try:
-                        mem_path.write_text(pre_mem, encoding='utf-8')  # pyright: ignore[reportArgumentType]  # moved-verbatim typing debt (mop)
+                        if not _condense_restore.restore(pid, mem_path, pre_mem, end_image):  # pyright: ignore[reportArgumentType]  # moved-verbatim typing debt (mop)
+                            _scribe_stat(pid, 'condense_restore_skipped_changed')
+                            _log(f'[condense] {pid}: MEMORY.md changed after the run ended; pre-image restore skipped')
                     except Exception as restore_error:
                         _log(f'[condense] {pid}: restoring memory pre-image failed: {restore_error}')
                     _log(f"[condense] {pid}: heal FAILED ({e}) — attempted "

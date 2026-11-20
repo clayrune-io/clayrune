@@ -1361,8 +1361,12 @@ def _evaluate_candidate(*, kind: str, exact: str, coarse: str,
                         new_signals: list[dict],
                         pref_min_rec: int = 1) -> dict | None:
     """One candidate decision. Returns None if NOT a candidate (gated)."""
-    # Suppression check
-    supp_key = f"{exact}:{kind}"
+    # Suppression check. Keyed by the ARTIFACT kind, as every writer keys it
+    # (outbox marker, _suppress_artifact, record_push): a topic signal becomes
+    # a `skill` artifact. Looking up `<exact>:topic` matched nothing, so a
+    # rejected skill pattern cost a model call per recurrence and the dedupe
+    # below never bound (ML10).
+    supp_key = f"{exact}:{'skill' if kind == 'topic' else kind}"
     supp = suppressions.get(supp_key)
     if supp and supp.get('decision') == 'no':
         return None
