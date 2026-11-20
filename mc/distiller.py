@@ -533,8 +533,10 @@ def _increment_counters(project_id: str, deltas: dict[str, int]) -> None:
     try:
         with _get_skill_stats_lock(project_id):
             stats = _read_skill_stats_for_update(project_id)
+            # An empty file is a valid sidecar and reads as {} (no 'counters').
+            counters = stats.setdefault('counters', {})
             for key, n in deltas.items():
-                stats['counters'][key] = int(stats['counters'].get(key, 0)) + n
+                counters[key] = int(counters.get(key, 0)) + n
                 if ('error' in key or 'skip' in key or 'refuse' in key):
                     stats.setdefault('counters_last', {})[key] = (
                         _now_iso() if _now_iso else '')
