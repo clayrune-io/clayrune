@@ -2469,11 +2469,16 @@ def _unit_uid(label, text, cls):
     return label
 
 
+# (path, error text) pairs already logged by `_mem_file_units`, so a file that
+# stays unreadable logs once per process instead of once per search.
+_mem_read_failed: set = set()
+
+
 def _mem_file_units(f, mem_name, arch_name, session_log_name=SESSION_LOG_FILE):
     """The raw (label, text, cls) triples ONE file on disk contributes to the
     corpus, before tokenization. Split out of `_mem_corpus` so the per-file
     cache (Condition 53) can invalidate a single file without re-deriving the
-    rest of the vault.
+    rest of the vault. Returns None (not []) when the file could not be read.
 
     `session_log_name` (§16 step 4): SESSION_LOG.md carries the SAME managed
     format (`_mem_split`) as MEMORY.md's pre-split managed block did, just in
@@ -2490,8 +2495,15 @@ def _mem_file_units(f, mem_name, arch_name, session_log_name=SESSION_LOG_FILE):
         return []
     try:
         txt = f.read_text(encoding='utf-8', errors='replace')
-    except Exception:
-        return []
+    except Exception as e:
+        # None, not []: the caller must not cache a failed read as an empty
+        # file, or the note stays out of search until someone edits it.
+        _fail = (str(f), str(e))
+        if _fail not in _mem_read_failed:
+            _mem_read_failed.add(_fail)
+            _log(f"[memsearch] {f.name}: read failed, left out of this "
+                 f"search and retried on the next: {e}", flush=True)
+        return None
     if f.name == mem_name or f.name == session_log_name:
         return [(f'{f.name}#managed', e, 'managed')
                 for e in _mem_split(txt)[1]]
@@ -2594,9 +2606,11 @@ def _mem_corpus(mem_dir, mem_name, arch_name, session_log_name=SESSION_LOG_FILE)
             fresh[name] = hit
             out.extend(hit[1])
             continue
+        raw = _mem_file_units(f, mem_name, arch_name, session_log_name)
+        if raw is None:      # read failed (logged there): no cache entry
+            continue
         units = [_mem_tokenize_unit(label, text, cls)
-                 for label, text, cls in
-                 _mem_file_units(f, mem_name, arch_name, session_log_name)]
+                 for label, text, cls in raw]
         units = [u for u in units if u is not None]
         fresh[name] = (st, units)
         out.extend(units)
