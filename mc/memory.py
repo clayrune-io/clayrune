@@ -2788,7 +2788,8 @@ def _memory_search(project, query, topk=3, expand=None, record=None,
     # collapsed by dedupe is backfilled from the next-ranked candidate rather
     # than shrinking the slot budget — see `_mem_apply_supersession`.
     _by_topic_file = {u['file']: u for u in units if u.get('cls') == 'topic'}
-    scored = _mem_apply_supersession(scored, _mem_supersede_graph(units), _by_topic_file)
+    scored = _mem_apply_supersession(scored, _mem_supersede_graph(units), _by_topic_file,
+                                     consumer_unattended=consumer_unattended)
 
     # Positions are pulled out BEFORE the quota/top-k cut and re-inserted at the
     # front. A position that matches its own subject must reach the prompt even
@@ -2904,18 +2905,30 @@ def _mem_supersede_guard_blocks(predecessor_file, head_file, by_topic_file):
     return False
 
 
-def _mem_negation_entries(head_file, edges, by_topic_file):
+def _mem_negation_entries(head_file, edges, by_topic_file, *,
+                          consumer_unattended=False):
     """Every node whose supersede chain resolves to `head_file` (direct or
     transitive), rendered one-per-line for the materialised negation block
     (§6.4). Capped at 7 entries; beyond that, one `(+N more, see <head>)`
     line — Condition 19's bound, ~120 chars/entry so the whole block stays
     near the ~900B the spec budgets.
+
+    `consumer_unattended`: a node `_mem_unit_allowed` would withhold from
+    this consumer is left out whole — no line, no count, no overflow slot.
+    The scored hits were already filtered that way; this list is built from
+    the graph, so without the same test a steward cycle that matched an
+    attended predecessor was handed the description of every unattended
+    node in its chain (S3.4, learning rail 2).
     """
     preds = sorted(f for f in edges
                     if f != head_file and _mem_supersede_head(edges, f)[0] == head_file)
     lines = []
     overflow = 0
     for f in preds:
+        node = by_topic_file.get(f)
+        if node is not None and not _mem_unit_allowed(
+                node, consumer_unattended=consumer_unattended):
+            continue
         if len(lines) >= _SUPERSEDE_NEGATION_CAP:
             overflow += 1
             continue
@@ -2927,7 +2940,8 @@ def _mem_negation_entries(head_file, edges, by_topic_file):
     return lines
 
 
-def _mem_redirect_hit(r, head_file, edges, by_topic_file):
+def _mem_redirect_hit(r, head_file, edges, by_topic_file, *,
+                      consumer_unattended=False):
     """Build the redirect stub (§6.3) that replaces an OUTPACED hit's
     delivered snippet. The hit keeps its own score/rank (`r['score']` is
     untouched by the caller) — only `file`/`snippet`/`uid`/`head` change, plus
@@ -2937,7 +2951,8 @@ def _mem_redirect_hit(r, head_file, edges, by_topic_file):
     head_u = by_topic_file.get(head_file) or {}
     head_text = str(head_u.get('text') or '')
     conclusion = str(head_u.get('fm_description') or '').strip() or _head(head_text)
-    negations = _mem_negation_entries(head_file, edges, by_topic_file)
+    negations = _mem_negation_entries(head_file, edges, by_topic_file,
+                                      consumer_unattended=consumer_unattended)
     neg_str = ' | '.join(negations) if negations else 'none'
     stub = (f'SUPERSEDED by {head_file}.\n'
             f'CONCLUSION: {conclusion}\n'
@@ -2952,7 +2967,8 @@ def _mem_redirect_hit(r, head_file, edges, by_topic_file):
     return out
 
 
-def _mem_apply_supersession(scored, edges, by_topic_file):
+def _mem_apply_supersession(scored, edges, by_topic_file, *,
+                            consumer_unattended=False):
     """Head-substitute OUTPACED topic hits, dedupe by head, backfill from the
     next-ranked candidate — Condition 19/20 (§6.3-6.4, MC-944 step 6).
 
@@ -2988,7 +3004,9 @@ def _mem_apply_supersession(scored, edges, by_topic_file):
             continue  # dedupe: drop, next-ranked candidate fills the slot
         used.add(head_file)
         if head_file != r['file']:
-            out.append(_mem_redirect_hit(r, head_file, edges, by_topic_file))
+            out.append(_mem_redirect_hit(
+                r, head_file, edges, by_topic_file,
+                consumer_unattended=consumer_unattended))
         else:
             out.append(r)
     return out
