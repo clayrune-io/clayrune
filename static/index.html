@@ -1503,7 +1503,7 @@ document.addEventListener('DOMContentLoaded', () => {
   _mcDomReady = true;
   if (_mcRenderQueued) { _mcRenderQueued = false; render(); }
 }, { once: true });
-function render() { if (!_mcDomReady) { _mcRenderQueued = true; return; } renderStats(); renderProjects(); renderListView(); renderFeed(); if (typeof renderBeacon === 'function') renderBeacon(); renderSidebarProjects(); applyViewMode(); renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); if (openModals.has('__all_backlog')) renderAllBacklog(); if (openModals.has('__all_social')) renderAllSocial(); if (openModals.has('__all_hivemind')) renderAllHiveminds(); }
+function render() { if (!_mcDomReady) { _mcRenderQueued = true; return; } renderStats(); renderProjects(); if (currentView === 'list') renderListView(); renderFeed(); if (typeof renderBeacon === 'function') renderBeacon(); renderSidebarProjects(); applyViewMode(); renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); if (openModals.has('__all_backlog')) renderAllBacklog(); if (openModals.has('__all_social')) renderAllSocial(); if (openModals.has('__all_hivemind')) renderAllHiveminds(); }
 
 window.addEventListener('resize', () => { if (!_mcDomReady) return; renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); renderProjects(); });
 
@@ -1845,6 +1845,9 @@ function setView(mode) {
   currentView = mode;
   localStorage.setItem('mc_view', mode);
   applyViewMode();
+  // render() builds the list only while it is the view on screen, so the
+  // switch to it is what fills it.
+  if (currentView === 'list') renderListView();
 }
 
 function applyViewMode() {

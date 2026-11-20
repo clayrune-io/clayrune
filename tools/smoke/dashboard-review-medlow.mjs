@@ -71,6 +71,34 @@ try {
       assert.deepEqual(errors(), [], 'the one-second countdown no longer throws on the missing #refresh-timer');
     });
   });
+
+  // FE18: render() runs on the 30 s refresh and on every refreshSilent, and
+  // rebuilt the list view (every row, one listener per row) even while the
+  // grid was the view on screen.
+  await t.step('FE18 render() leaves the hidden list view alone and the view switch fills it', async () => {
+    await scenario(browser, {}, async ({ page, errors }) => {
+      const hidden = await page.evaluate(() => {
+        setView('grid');
+        const el = document.getElementById('list-view');
+        el.innerHTML = '<i id="smoke-marker"></i>';
+        render();
+        return !!document.getElementById('smoke-marker');
+      });
+      assert.equal(hidden, true, 'in grid view the list is not rebuilt');
+      const shown = await page.evaluate(() => {
+        setView('list');
+        const el = document.getElementById('list-view');
+        const rows = el.querySelectorAll('.list-row').length;
+        el.insertAdjacentHTML('beforeend', '<i id="smoke-marker2"></i>');
+        render();
+        return { rows, marker: !!document.getElementById('smoke-marker'), rebuilt: !document.getElementById('smoke-marker2') };
+      });
+      assert.ok(shown.rows > 0, 'switching to the list view builds its rows');
+      assert.equal(shown.marker, false);
+      assert.equal(shown.rebuilt, true, 'in list view render() still rebuilds it');
+      assert.deepEqual(errors(), []);
+    });
+  });
 } finally {
   t.done();
   await browser.close();
