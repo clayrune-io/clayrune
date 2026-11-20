@@ -4,7 +4,7 @@
 // step per finding; each step names the id it pins. Hermetic: the real SPA
 // served from memory, no request leaves the page.
 import assert from 'node:assert/strict';
-import { launch, scenario, runner, pid } from './_send-harness.mjs';
+import { launch, scenario, runner, pid, sid } from './_send-harness.mjs';
 
 const browser = await launch();
 const t = runner('dashboard-review-medlow');
@@ -96,6 +96,60 @@ try {
       assert.ok(shown.rows > 0, 'switching to the list view builds its rows');
       assert.equal(shown.marker, false);
       assert.equal(shown.rebuilt, true, 'in list view render() still rebuilds it');
+      assert.deepEqual(errors(), []);
+    });
+  });
+
+  // FE19: the top-level refresh paths took any reply. An error body is JSON but
+  // not the shape each of them goes on to use.
+  await t.step('FE19 refreshSilent keeps the project list when /api/projects is refused', async () => {
+    await scenario(browser, {}, async ({ page, errors }) => {
+      await page.route('**/api/projects', route => route.fulfill({ status: 500, json: { error: 'boom' } }));
+      const r = await page.evaluate(async () => {
+        let threw = '';
+        try { await refreshSilent(); } catch (e) { threw = String(e.message || e); }
+        return { threw, isArray: Array.isArray(allProjects), n: Array.isArray(allProjects) ? allProjects.length : -1 };
+      });
+      assert.deepEqual(r, { threw: '', isArray: true, n: 1 }, 'an error body does not become the project list');
+      assert.deepEqual(errors(), []);
+    });
+  });
+
+  await t.step('FE19 fetchDomains falls back to the built-in domains on an error reply', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await page.route('**/api/settings/domains', route => route.fulfill({ status: 500, json: { error: 'boom' } }));
+      const r = await page.evaluate(async () => {
+        await fetchDomains();
+        return { isArray: Array.isArray(domainsList), label: Array.isArray(domainsList) ? getDomainConfig('general').label : '' };
+      });
+      assert.deepEqual(r, { isArray: true, label: 'General' });
+    });
+  });
+
+  await t.step('FE19 a refused guardian reset says so and leaves the session as it was', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await page.route('**/agent/guardian-reset', route => route.fulfill({ status: 500, json: { error: 'boom' } }));
+      const r = await page.evaluate(async ({ pid, sid }) => {
+        agentStatusCache[sid].guardianState = 'stalled';
+        await guardianReset(pid, sid, 'dismiss');
+        return { state: agentStatusCache[sid].guardianState, toasts: window.smokeToasts.slice() };
+      }, { pid, sid });
+      assert.equal(r.state, 'stalled', 'the local guardian state is not cleared on a refusal');
+      assert.deepEqual(r.toasts, ['Guardian reset failed']);
+    });
+  });
+
+  await t.step('FE19 an error reply to the 15 s completion poll does not stop the open chats', async () => {
+    await scenario(browser, {}, async ({ page, errors }) => {
+      await page.route('**/agent/status', route => route.fulfill({ status: 401, json: { error: 'auth_required' } }));
+      await page.evaluate(({ sid }) => {
+        agentStatusCache[sid].status = 'idle';
+        agentHistory.find(h => h.sessionId === sid).status = 'idle';
+      }, { sid });
+      await page.waitForTimeout(16000);
+      const status = await page.evaluate(({ sid }) =>
+        [agentStatusCache[sid].status, agentHistory.find(h => h.sessionId === sid).status], { sid });
+      assert.deepEqual(status, ['idle', 'idle'], 'an auth error is not "the session vanished from the server"');
       assert.deepEqual(errors(), []);
     });
   });

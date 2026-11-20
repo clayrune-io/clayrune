@@ -1317,8 +1317,11 @@ let newProjDomain = 'general';
 async function fetchDomains() {
   try {
     const res = await fetch(API_BASE + '/api/settings/domains');
-    domainsList = await res.json();
+    const rows = res.ok ? await res.json() : null;
+    if (!Array.isArray(rows)) throw new Error('HTTP ' + res.status);
+    domainsList = rows;
   } catch(e) {
+    console.warn('[domains] load failed, using the built-in list:', e);
     domainsList = [
       {id:'general', label:'General', color:'var(--text-dim)', bg:'var(--surface3)'},
       {id:'trading', label:'Trading', color:'var(--accent)', bg:'var(--accent-dim)'},
@@ -2182,11 +2185,12 @@ function updateStopButtonUI(sessionId, status) {
 
 async function guardianReset(projectId, sessionId, action) {
   try {
-    await fetch(API_BASE + `/api/project/${projectId}/agent/guardian-reset`, {
+    const res = await fetch(API_BASE + `/api/project/${projectId}/agent/guardian-reset`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ session_id: sessionId, action })
     });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
     const cached = agentStatusCache[sessionId];
     if (cached) {
       if (action === 'retry') {
@@ -2728,7 +2732,12 @@ function showActionToast(message, actions, opts = {}) {
 
 async function refreshSilent() {
   const res = await fetch(API_BASE + '/api/projects');
-  allProjects = _preserveOpenSocial(_preserveOpenBacklogs(await res.json()));
+  // An error reply is JSON but not the project list: taken as one it replaced
+  // allProjects with an object and every later allProjects.find threw. Keep
+  // the list on screen, as fetchProjects does, and let the next refresh retry.
+  const rows = res.ok ? await res.json().catch(() => null) : null;
+  if (!Array.isArray(rows)) { console.warn('[refresh] /api/projects refused, keeping the current list:', res.status); return; }
+  allProjects = _preserveOpenSocial(_preserveOpenBacklogs(rows));
   // Refresh global config cache so per-project menu labels reflect the effective mode
   try {
     const cfgRes = await fetch(API_BASE + '/api/config');
@@ -3873,7 +3882,12 @@ setInterval(async () => {
     const h = { projectId: pid };
     try {
       const res = await fetch(API_BASE + `/api/project/${h.projectId}/agent/status`);
+      // An error body has no sessions array; read as "no sessions" it marked
+      // every running or idle chat of the project stopped (same guard as
+      // fetchAgentStatus).
+      if (!res.ok) continue;
       const data = await res.json();
+      if (!data || !Array.isArray(data.sessions)) continue;
       window.updateAgentMailHoldNotices?.(pid, data.agent_mail_holds);
       if (window.discoverNewSessions?.(pid, data.sessions)) continue;
       const serverMap = {};
@@ -3914,7 +3928,7 @@ setInterval(async () => {
           connectAgentStream(h.projectId, rh.sessionId);
         }
       }
-    } catch(e) {}
+    } catch(e) { console.warn('[agent-status] 15s completion poll failed:', e); }
   }
 }, 15000);
 
