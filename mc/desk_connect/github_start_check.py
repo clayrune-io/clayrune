@@ -99,6 +99,18 @@ def _stop(proc: subprocess.Popen) -> None:
         _log(f'[desk-connect] start check server {proc.pid} did not exit', flush=True)
 
 
+def _obj(value) -> dict:
+    """`value` when the server sent an object there, else {}: its answers are JSON of any shape."""
+    return value if isinstance(value, dict) else {}
+
+
+def _error_text(msg: dict) -> str:
+    """The server's own error text from one answer: `error.message`, or `error` itself when it is
+    a bare string; '' for any other shape."""
+    error = msg.get('error')
+    return error if isinstance(error, str) else str(_obj(error).get('message', ''))
+
+
 def handshake(argv: list[str], cwd: str | None, deadline_s: float = DEADLINE_S, scrub=lambda text: text) -> dict:
     """Run `argv` as an MCP stdio server: `{'ok': True, 'tools': n, 'server': name}` or
     `{'ok': False, 'code', 'reason'}`; `reason` is the server's stderr tail, possibly empty. Every
@@ -183,8 +195,8 @@ def handshake(argv: list[str], cwd: str | None, deadline_s: float = DEADLINE_S, 
         if init is None:
             return failed('no_answer')
         if 'result' not in init:
-            return {'ok': False, 'code': 'refused', 'reason': _printable(scrub(str((init.get('error') or {}).get('message', ''))), _REASON_CHARS)}
-        server = _printable(scrub(str(((init['result'] or {}).get('serverInfo') or {}).get('name', ''))), 80)
+            return {'ok': False, 'code': 'refused', 'reason': _printable(scrub(_error_text(init)), _REASON_CHARS)}
+        server = _printable(scrub(str(_obj(_obj(init['result']).get('serverInfo')).get('name', ''))), 80)
         send({'jsonrpc': '2.0', 'method': 'notifications/initialized'})
         count, cursor = 0, None
         for page in range(MAX_PAGES):
@@ -194,7 +206,7 @@ def handshake(argv: list[str], cwd: str | None, deadline_s: float = DEADLINE_S, 
                 return failed('no_tools')
             result = reply.get('result') if isinstance(reply.get('result'), dict) else None
             if result is None or not isinstance(result.get('tools'), list):
-                return {'ok': False, 'code': 'no_tools', 'reason': _printable(scrub(str((reply.get('error') or {}).get('message', ''))), _REASON_CHARS)}
+                return {'ok': False, 'code': 'no_tools', 'reason': _printable(scrub(_error_text(reply)), _REASON_CHARS)}
             count += len(result['tools'])
             cursor = result.get('nextCursor')
             if not isinstance(cursor, str) or not cursor:
