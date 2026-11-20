@@ -15,6 +15,28 @@ _AGENT_BRANCH = re.compile(rf'\bclayrune/agent/({_ID})(?![0-9a-f])', re.I)
 _BRANCH = re.compile(r'\bbranch\s+[`\"\']?([\w][\w./-]*)', re.I)
 
 
+# Hyphenated English that follows "branch" in prose and names nothing.
+_NOT_A_BRANCH = frozenset({
+    'up-to-date', 'out-of-date', 'fast-forward', 'fast-forwarded', 'non-existent'})
+
+
+def _named_branches(text: str) -> list[str]:
+    """Branch names the text states after the word "branch".
+
+    `_BRANCH` matches any word there, and continuity text is prose: "the
+    branch is pushed" used to send `is` to git and label a consistent thread
+    STATE MISMATCH (ML35). Only a path-like token (it has a `/` or a `-`)
+    is taken as a name. A one-word branch is therefore not probed, which can
+    only leave a thread unlabelled, never mislabel it.
+    """
+    out = []
+    for m in _BRANCH.finditer(text):
+        name = m.group(1).rstrip('./-')
+        if ('/' in name or '-' in name) and name.lower() not in _NOT_A_BRANCH:
+            out.append(name)
+    return out
+
+
 def _branch_exists(project: dict[str, Any], branch: str) -> bool | None:
     path = project.get('project_path')
     if not path:
@@ -56,7 +78,7 @@ def render_thread(project: dict[str, Any], text: str, age: str,
                             for m in regex.finditer(text)))
     if not ids:
         return f'{prefix}{text} ({age})'
-    branches = [m.group(1).rstrip('./-') for m in _BRANCH.finditer(text)]
+    branches = _named_branches(text)
     branches.extend(m.group(0) for m in _AGENT_BRANCH.finditer(text))
     # Legacy wording: "fixing on branch (938e81dbb116)" names the branch
     # through its worktree session id, using the existing branch convention.

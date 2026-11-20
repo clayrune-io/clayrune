@@ -85,15 +85,21 @@ def _slug(title):
 def _load_json(path, default):
     try:
         return json.loads(path.read_text(encoding='utf-8'))
-    except Exception:
+    except FileNotFoundError:
+        return default      # not written yet: the ordinary first read
+    except Exception as e:
+        _log(f"[topics] {path.name} could not be read, using the default: {e}")
         return default
 
 
 def _atomic_write(path, obj):
+    """Best-effort save. Never raises; False (and a log line) when it failed."""
     try:
         write_json_atomic(path, obj, ensure_ascii=False)
-    except Exception:
-        pass
+        return True
+    except Exception as e:
+        _log(f"[topics] {path.name} could not be written: {e}")
+        return False
 
 
 def _gather_signals(project_id, limit=50):
@@ -513,11 +519,16 @@ def set_topic_state(project_id, topic_id):
     new = data.get('state', 'open')
     if new not in ('open', 'done', 'archived'):
         return jsonify({'error': 'bad state'}), 400
+    # The id goes into a filename: only a project that exists gets a state file.
+    if not _load_project(project_id):
+        return jsonify({'error': 'project not found'}), 404
     with _lock:
         state = _load_json(_state_path(project_id), {})
         if new == 'open':
             state.pop(topic_id, None)
         else:
             state[topic_id] = {'state': new, 'at': datetime.now(timezone.utc).isoformat()}
-        _atomic_write(_state_path(project_id), state)
+        saved = _atomic_write(_state_path(project_id), state)
+    if not saved:
+        return jsonify({'error': 'topic state was not saved'}), 500
     return jsonify({'ok': True, 'state': new})

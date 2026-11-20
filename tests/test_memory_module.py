@@ -92,6 +92,32 @@ def test_mem_migrate_wraps_legacy_bare_header(tmp_data_dir):
     assert m._mem_migrate(migrated) == migrated
 
 
+def test_legacy_header_inside_prose_is_not_a_managed_region(tmp_data_dir):
+    """ML18: a sentinel-free index (every MEMORY.md since the SESSION_LOG.md
+    split) that merely MENTIONS the heading keeps everything after it. Only a
+    line that is the heading and nothing else starts the legacy region."""
+    m = _mem(tmp_data_dir)
+    index = ("# Curated index\n\n"
+             "- [Log format](log.md) — entries used to sit under `## Session Log` inline.\n"
+             "- [Second](second.md) — must survive\n\n"
+             "## Decisions\nplain prose that is not a pointer line")
+    cur, ents, wm = m._mem_split_full(index)
+    assert cur == index
+    assert ents == [] and wm == []
+    # and the commit path's migrate + split keeps the curated text whole
+    cur2, ents2, _ = m._mem_split_full(m._mem_migrate(index))
+    assert cur2 == index and ents2 == []
+
+
+def test_legacy_header_with_trailing_space_or_crlf_still_migrates(tmp_data_dir):
+    m = _mem(tmp_data_dir)
+    legacy = ("# Curated index\r\n\r\n## Session Log  \r\n"
+              "- [2026-06-01] **old** — legacy entry\r\n")
+    cur, ents = m._mem_split(legacy)
+    assert cur == "# Curated index"
+    assert ents == ["- [2026-06-01] **old** — legacy entry"]
+
+
 # ── _commit_managed_entry: leaf-locked atomic write preserves sentinels + wm ──
 # §16 step 4 (MC-944): entries + wm markers live in SESSION_LOG.md now, not
 # inline in MEMORY.md — MEMORY.md is curated-only after this write path runs.
@@ -128,6 +154,30 @@ def test_commit_managed_entry_preserves_sentinel_and_watermark(tmp_data_dir):
     assert gotwm == wm
     rec = m._wm_find(gotwm, "sidLIVE")
     assert rec and rec.get("running_summary") == "in flight"
+
+
+def test_commit_keeps_inline_entries_until_session_log_is_written(
+        tmp_data_dir, monkeypatch):
+    """ML19: on a project not yet migrated to the split, the inline entries
+    and watermarks leave MEMORY.md only AFTER SESSION_LOG.md holds them. The
+    curated strip used to run first, so a failed session-log write lost both
+    (and a live session's watermark, so its next checkpoint started at 0)."""
+    m = _mem(tmp_data_dir)
+    p = {"id": "memproj-order"}
+    mp = m._get_memory_path(p)
+    mp.parent.mkdir(parents=True, exist_ok=True)
+    wm = ['<!-- clayrune:wm:sidLIVE {"session_id":"sidLIVE",'
+          '"running_summary":"in flight"} -->']
+    inline = m._mem_compose("# Idx", ["- [2026-06-01] **old** — inline entry"], wm)
+    mp.write_text(inline, encoding="utf-8")
+
+    def boom(*a, **k):
+        raise OSError("simulated full disk")
+
+    monkeypatch.setattr(m, "_write_session_log", boom)
+    with pytest.raises(OSError):
+        m._commit_managed_entry(p, mem_entry="- [2026-06-10] **new** — x")
+    assert mp.read_text(encoding="utf-8") == inline
 
 
 def test_commit_managed_entry_wm_remove_on_teardown(tmp_data_dir):
@@ -193,6 +243,36 @@ def test_gc_stale_watermarks_noop_when_all_live(tmp_data_dir):
 
     m.agent_sessions.clear()
     m.agent_sessions["sidA"] = {"session_id": "sidA", "status": "idle"}
+    try:
+        assert m._gc_stale_watermarks([p]) == 0
+    finally:
+        m.agent_sessions.clear()
+    assert mp.read_text(encoding="utf-8") == before
+
+
+def test_gc_reads_live_sessions_inside_the_lock(tmp_data_dir, monkeypatch):
+    """MC-1179 pass 3: the docstring promises the liveness test is done
+    inside the lock, so a session revived while the sweep waits for the lock
+    keeps its marker. `live` used to be taken before the lock."""
+    m = _mem(tmp_data_dir)
+    p = {"id": "gcproj3"}
+    mp = m._get_memory_path(p)
+    mp.parent.mkdir(parents=True, exist_ok=True)
+    mp.write_text(m._mem_compose("# Idx", [], [_seed_wm("sidREVIVED", "x")]),
+                  encoding="utf-8")
+    before = mp.read_text(encoding="utf-8")
+
+    class RevivesWhileWaiting:
+        """Stands in for the leaf lock: the session comes back to life in the
+        window between the sweep asking for the lock and getting it."""
+        def __enter__(self):
+            m.agent_sessions["sidREVIVED"] = {"session_id": "sidREVIVED"}
+
+        def __exit__(self, *exc):
+            return False
+
+    m.agent_sessions.clear()
+    monkeypatch.setattr(m, "_get_mem_write_lock", lambda pid: RevivesWhileWaiting())
     try:
         assert m._gc_stale_watermarks([p]) == 0
     finally:

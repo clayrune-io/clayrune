@@ -269,3 +269,42 @@ def test_write_position_serializes_concurrent_supersession(tmp_path, monkeypatch
     # a '## Previously' row. Neither write is silently dropped.
     assert '## Previously' in final_text, \
         'the loser of the race must still be recorded, not overwritten silently'
+
+
+def test_a_failed_read_is_logged_and_not_cached_as_an_empty_file(tmp_path, monkeypatch):
+    """MC-1179 pass 3 (lesser, memory.py:2432). A read that failed was cached
+    as `[]` under the stat taken before it, so the note stayed invisible to
+    search until someone edited it, and nothing was logged. A transient
+    failure (a Windows sharing violation) must cost one search, not all of
+    them."""
+    import server  # noqa: F401
+    from mc import memory as mem
+
+    mem_dir = tmp_path
+    (mem_dir / 'MEMORY.md').write_text('# index\n', encoding='utf-8')
+    note = mem_dir / 'note_a.md'
+    note.write_text('alpha content here', encoding='utf-8')
+    logs = []
+    monkeypatch.setattr(mem, '_log', lambda message, *a, **k: logs.append(message))
+    real_read = Path.read_text
+    failing = {'on': True}
+
+    def flaky_read(self, *a, **k):
+        if failing['on'] and self == note:
+            raise PermissionError('simulated sharing violation')
+        return real_read(self, *a, **k)
+
+    monkeypatch.setattr(Path, 'read_text', flaky_read)
+    units = mem._mem_corpus(mem_dir, 'MEMORY.md', 'MEMORY_ARCHIVE.md')
+    assert not any(u['file'] == 'note_a.md' for u in units)
+    assert 'note_a.md' not in mem._memsearch_cache[str(mem_dir)]
+    assert len([l for l in logs if 'note_a.md' in l and 'simulated' in l]) == 1
+
+    # Same failure again: still retried, not logged a second time.
+    mem._mem_corpus(mem_dir, 'MEMORY.md', 'MEMORY_ARCHIVE.md')
+    assert len([l for l in logs if 'note_a.md' in l]) == 1
+
+    # The file did not change; the read now works; the note is back.
+    failing['on'] = False
+    units = mem._mem_corpus(mem_dir, 'MEMORY.md', 'MEMORY_ARCHIVE.md')
+    assert any(u['file'] == 'note_a.md' for u in units)

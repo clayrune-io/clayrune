@@ -164,3 +164,28 @@ def test_duplicate_identity_is_recorded_not_refused(env):
                               trigger_type='manual', actor='tester') == 'arch_x.md'
     rows = _rows(tmp, 'p1')
     assert [r['classes'] for r in rows] == [[], ['duplicate_identity']]
+
+
+# ── MC-1179 pass 3, ML28: the evaluation is not done under the write lock ────
+
+def test_the_tap_evaluates_outside_the_topic_write_lock(env):
+    """`begin` reads the head of every note in the vault and, for an unresolved
+    link, of every sibling vault (898 ms measured). It used to run inside the
+    per-project topic write lock, so every other note write on the project
+    waited for it. The bytes written and the row recorded are unchanged."""
+    from mc import memory_gate_tap as tap
+    from mc import state
+    m, tmp, mp = env
+    lock = state._get_mem_write_lock('topic:p1')
+    seen = []
+    real_begin = tap.begin
+
+    def watching_begin(*a, **k):
+        seen.append(lock.locked())
+        return real_begin(*a, **k)
+
+    mp.setattr(tap, 'begin', watching_begin)
+    assert _mint(m, 'p1', 'see [[no-such-note]] for context\n') == 'habit_x.md'
+    assert seen == [False]
+    (r,) = _rows(tmp, 'p1')
+    assert (r['result'], r['classes']) == ('written', ['class_d_unresolved'])

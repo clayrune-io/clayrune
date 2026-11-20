@@ -327,3 +327,40 @@ def test_forget_refuses_anything_that_is_not_a_position(env):
             mem.delete_position(P, bad)
     assert (tmp / 'topic_keep.md').exists()
     assert (tmp / 'MEMORY.md').exists()
+
+
+# ── MC-1179 pass 3 (lesser, memory.py:2355): one bad file, one noisy log ─────
+
+def test_one_unreadable_position_does_not_fail_the_whole_list(env, monkeypatch):
+    mem, root = env
+    mem.write_position(P, 'adopt obsidian', 'declined', 'we already have the vault')
+    bad_name = mem.write_position(P, 'rewrite in rust', 'declined', 'no measured need')
+    bad = root / bad_name
+    logs = []
+    monkeypatch.setattr(mem, '_log', lambda message, *a, **k: logs.append(message))
+    original_read = Path.read_text
+
+    def failed_read(self, *args, **kwargs):
+        if self == bad:
+            raise PermissionError('simulated locked position file')
+        return original_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'read_text', failed_read)
+    recs = mem.list_positions(P)
+    assert [r['subject'] for r in recs] == ['adopt obsidian']
+    assert any(bad_name in line and 'simulated locked' in line for line in logs)
+
+
+def test_a_position_warning_is_logged_once_not_on_every_parse(env, monkeypatch):
+    mem, _ = env
+    logs = []
+    monkeypatch.setattr(mem, '_log', lambda message, *a, **k: logs.append(message))
+    monkeypatch.setattr(mem, '_position_warned', set())
+    text = ('---\nname: warn-once\nsubject: warn once\nposition: declined\n'
+            'reason: r\ndurability: not-a-durability\n---\n')
+    first = mem._parse_position(text)
+    assert first['subject'] == 'warn once'
+    assert len([l for l in logs if 'warn-once' in l]) == 1
+    for _ in range(5):
+        assert mem._parse_position(text) == first
+    assert len([l for l in logs if 'warn-once' in l]) == 1

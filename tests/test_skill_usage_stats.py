@@ -86,3 +86,22 @@ def test_days_cutoff_still_applies_to_nested_transcripts(tmp_path, monkeypatch):
 
     stats = skills.skill_usage_stats(days=30)
     assert 'stale-skill' not in stats
+
+
+def test_a_transcript_that_vanishes_mid_scan_is_skipped(tmp_path, monkeypatch):
+    """MC-1179 pass 3 (lesser, skills.py:1310). `stat()` ran outside the try
+    that guards the read, so one transcript deleted between the listing and
+    the stat (a session being cleaned up) failed the whole usage report."""
+    root = tmp_path / 'claude_projects'
+    root.mkdir()
+    monkeypatch.setattr(skills, '_claude_projects_root', lambda: root)
+    proj_dir = root / '-Users-me-proj'
+    proj_dir.mkdir()
+    kept = proj_dir / 'kept.jsonl'
+    kept.write_text(_skill_call_line('mc-project-status') + '\n', encoding='utf-8')
+    gone = proj_dir / 'gone.jsonl'
+
+    monkeypatch.setattr(skills._agent_runtime, 'iter_transcript_files_in_dir',
+                        lambda d: [gone, kept])
+    stats = skills.skill_usage_stats(days=30)
+    assert stats['mc-project-status']['invocations'] == 1

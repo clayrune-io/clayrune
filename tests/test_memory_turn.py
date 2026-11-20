@@ -474,3 +474,35 @@ def test_preamble_seen_ledger_fails_toward_full():
     ps.forget(s)
     assert not ps.is_seen(s, 'a.md', 'h1')
     assert ps.seed(None, [{'file': 'a.md'}], lambda h: 'x') == 0
+
+
+def test_dropping_a_line_for_budget_is_logged(tmp_data_dir, monkeypatch):
+    """MC-1179 pass 3 (lesser, memory_turn.py:493). The truncation log compared
+    the offered LINES' bytes with the kept block's bytes, and the block also
+    counts its section header, so a dropped line was hidden by the header and
+    the log stayed silent."""
+    m = _mem(tmp_data_dir)
+    mt = _turn(m)
+
+    lines = ["  - " + ("x" * 40), "  - " + ("y" * 40)]
+    offered = sum(len(l.encode("utf-8")) + 1 for l in lines)
+    block, cost, dropped = mt._fit_lines([], lines, 180)   # header + one line
+    assert dropped == 1 and lines[0] in block and lines[1] not in block
+    assert cost > offered        # the case the old comparison could not see
+    assert mt._fit_lines([], lines, 10_000)[2] == 0
+    assert mt._fit_lines(lines, lines, 10_000, "ledger")[2] == 0
+    assert mt._fit_lines(lines, [], 10)[2] == 2      # header did not fit
+    assert mt._fit_lines([], lines[:1], 180, "L" * 500)[2] == 1   # the ledger
+
+    p = {"id": "budgetlogproj"}
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, 'memory_turn_budget_bytes', 300)
+    long_body = ("memory design redesign wikilink negation index prompt budget " * 30)
+    _seed(m, p, {f"note_{i}.md": f"memory design note {i}. {long_body}"
+                 for i in range(8)})
+    logs = []
+    monkeypatch.setattr(mt, '_log', lambda message, *a, **k: logs.append(message))
+    result = mt.refresh_for_turn(p, {"trigger_type": "manual"},
+                                 "memory design redesign prompt budget")
+    assert result["bytes"] <= 300
+    assert any("truncated" in l and "dropped" in l for l in logs), logs

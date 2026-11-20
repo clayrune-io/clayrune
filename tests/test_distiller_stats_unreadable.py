@@ -240,3 +240,20 @@ def test_the_stats_view_of_a_healthy_store_is_not_labelled_unreadable(store):
     store.put(GOOD_TEXT.encode('utf-8'))
     view = d.get_distiller_stats('p1')
     assert view['stats_unreadable'] == '' and view['suppressions'] == 1
+
+
+# ── MC-1179 pass 3 (lesser): an EMPTY sidecar is valid, and has no counters ──
+
+@pytest.mark.parametrize('raw', [b'', b'{}', b'{"suppressions": {"x:skill": {}}}'])
+def test_a_counter_bump_works_on_a_sidecar_with_no_counters_key(store, raw):
+    """An empty file reads as `{}` by design. `stats['counters']` then raised
+    KeyError on every bump, so every counter stopped for good (and, since
+    ML25, logged a line per dispatch saying so)."""
+    store.put(raw)
+    d._increment_counter('p1', 'read_floor_calls')
+    d._increment_counter('p1', 'read_floor_calls', 2)
+    saved = json.loads(store.path().read_text(encoding='utf-8'))
+    assert saved['counters'] == {'read_floor_calls': 3}
+    assert saved.get('suppressions', {}) == json.loads(raw or b'{}').get('suppressions', {})
+    assert store.quarantined() == []
+    assert not [l for l in store.logs if 'counter bump' in l]

@@ -183,8 +183,15 @@ def _parse_frontmatter(raw: str) -> dict[str, Any]:
     return out
 
 
+_DQ_ESCAPE = re.compile(r'\\(["\\])')
+
+
 def _strip_quotes(s: str) -> str:
     if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        if s[0] == '"':
+            # The inverse of dump_skill_md's quoting. Without it every
+            # read-then-write doubled the backslashes in the value (ML34).
+            return _DQ_ESCAPE.sub(r'\1', s[1:-1])
         return s[1:-1]
     return s
 
@@ -1334,8 +1341,11 @@ def skill_usage_stats(days: int = 30) -> dict[str, dict[str, Any]]:
         if not proj_dir.is_dir():
             continue
         for transcript in _agent_runtime.iter_transcript_files_in_dir(proj_dir):
-            if transcript.stat().st_mtime < cutoff_ts:
-                continue
+            try:
+                if transcript.stat().st_mtime < cutoff_ts:
+                    continue
+            except OSError:
+                continue    # gone or locked since the listing: not this run's
             try:
                 with transcript.open('r', encoding='utf-8') as f:
                     for line in f:

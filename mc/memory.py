@@ -47,6 +47,7 @@ import mc.allowance_state as _allowance_state  # live vendor exhaustion state (M
 import mc.memory_overlap_df as _overlap_df  # M4 corpus document-frequency stoplist (MC-964 fix A2)
 import mc.memory_gate_tap as _gate_tap  # G1 report-mode observer for mints (MC-964 step 10)
 import mc.memory_entry_line as _entry_line  # ML15: a managed entry is one physical line
+from mc.memory_note_slug import is_safe_note_slug as _is_safe_note_slug  # ML14
 import mc.condense_agent_mode as _condense_agent_mode  # ML16: agent-mode "anything to do" test + prompt
 import mc.condense_mode as _condense_mode  # ML16: which executor a config selects; the one default
 
@@ -572,13 +573,22 @@ _MEM_END = '<!-- clayrune:managed:end -->'
 _MEM_LOG_HEADER = '## Session Log'
 
 
+# The LEGACY (sentinel-free) managed region starts at a line that is the
+# heading and nothing else. A substring test read a curated sentence that
+# merely mentions the heading as the start of the region, and since the
+# SESSION_LOG.md split every MEMORY.md is sentinel-free (ML18).
+_MEM_LOG_HEADER_LINE_RE = re.compile(
+    r'^' + re.escape(_MEM_LOG_HEADER) + r'[ \t]*\r?$', re.M)
+
+
 _MEM_WM_PREFIX = '<!-- clayrune:wm:'
 
 
 def _mem_split_full(content):
     """Split MEMORY.md into (curated_text, [entry_lines], [wm_marker_lines]).
 
-    Managed region = sentinel-delimited (or a legacy bare '## Session Log').
+    Managed region = sentinel-delimited (or a legacy bare '## Session Log'
+    on a line of its own).
     `entries` = lines starting with '- [' (curated pointer lines, also
     '- [...]', are never collected — they're above the sentinel).
     `wm_markers` = full lines starting with the Step-6 watermark prefix.
@@ -590,12 +600,12 @@ def _mem_split_full(content):
         j = content.index(_MEM_END, i)
         curated = content[:i].rstrip()
         mid = content[i + len(_MEM_BEGIN):j]
-    elif _MEM_LOG_HEADER in content:
-        i = content.index(_MEM_LOG_HEADER)
-        curated = content[:i].rstrip()
-        mid = content[i + len(_MEM_LOG_HEADER):]
     else:
-        return content.rstrip(), [], []
+        m = _MEM_LOG_HEADER_LINE_RE.search(content)
+        if not m:
+            return content.rstrip(), [], []
+        curated = content[:m.start()].rstrip()
+        mid = content[m.end():]
     entries, wm = [], []
     for ln in mid.splitlines():
         s = ln.strip()
@@ -785,7 +795,6 @@ def _mem_tokens(text):
     query of "memory system" has to reach a note whose text says
     `project_memory_system_redesign`.
     """
-    import re  # module has no top-level `re` import (see _re_auth pattern)
     return [t for t in re.findall(r'[a-z0-9]+', (text or '').lower())
             if len(t) >= 3]
 
@@ -806,7 +815,6 @@ def _mem_link_key(s):
     filename stem. Resolution bug fix, not a new authoring convention: no
     note or link needs to change for this to repair itself.
     """
-    import re  # module has no top-level `re` import (see _re_auth pattern)
     s = (s or '').strip()
     if s.lower().endswith('.md'):
         s = s[:-3]
@@ -1514,9 +1522,18 @@ def _parse_position(text):
     }
     warnings = _validate_position_record(rec)
     if warnings:
-        _log(f"[position] {rec['name'] or rec['subject'][:48]}: "
-             + '; '.join(warnings))
+        # Once per distinct warning, not once per parse: every corpus rebuild
+        # parses every position, so the same line used to repeat for ever.
+        _warn_key = (rec['name'] or rec['subject'][:48], '; '.join(warnings))
+        if _warn_key not in _position_warned:
+            _position_warned.add(_warn_key)
+            _log(f"[position] {_warn_key[0]}: {_warn_key[1]}")
     return rec
+
+
+# (name-or-subject, warning text) pairs `_parse_position` has already logged
+# in this process. Bounded by the number of distinct warnings on disk.
+_position_warned: set = set()
 
 
 # ── Continuity: what is in flight, and what we owe each other ───────────────
@@ -1740,8 +1757,13 @@ def _cont_empty_slots():
             'thread_confirmed': {}}
 
 
-def read_continuity(project, owner=None, reader_owns=True):
+def read_continuity(project, owner=None, reader_owns=True, *, strict=False):
     """The continuity record. `owner=None` merges every agent's slots.
+
+    `strict=True` is for a WRITER: a read that failed is raised instead of
+    being returned as the empty record, same split as `_session_log_read`.
+    The write that follows a failed read would otherwise persist a file
+    holding only the caller's bucket.
 
     `reader_owns=False` is for a named reader that keeps no bucket of its own
     (a dispatched global helper — see `_session_owner`): none of the named
@@ -1763,6 +1785,8 @@ def read_continuity(project, owner=None, reader_owns=True):
             fp.read_text(encoding='utf-8', errors='replace'))
     except Exception as e:
         _log(f'[continuity] read failed: {e}')
+        if strict:
+            raise
         return empty
     if not isinstance(meta, dict):
         meta = {}
@@ -1845,9 +1869,26 @@ def write_continuity(project, threads=None, commitments=None,
     agent's write silently replaced the others'. Measured on this project the
     day this shipped: five threads from four different sessions, none marked
     done, two of them describing work that had already landed.
+
+    Leaf-locked, same reason as `write_position`: read, replace one bucket,
+    write the whole file back is a read-modify-write over a file every agent
+    on the project shares, and two agents finishing a turn together lost the
+    first one's update. The read is strict, so an unreadable file raises
+    here (an OSError for the route, logged by the extractor) and is left as
+    it was.
     """
+    project_id = project.get('id', '') if isinstance(project, dict) else ''
+    with _get_mem_write_lock(f'continuity:{project_id}'):
+        return _write_continuity_locked(
+            project, threads, commitments, understanding, owner,
+            confirmed_threads)
+
+
+def _write_continuity_locked(project, threads, commitments, understanding,
+                             owner, confirmed_threads):
+    """`write_continuity`'s read-modify-write. Caller holds the leaf lock."""
     key = _cont_owner_key(owner)
-    cur = read_continuity(project)
+    cur = read_continuity(project, strict=True)
     by_owner = dict(cur.get('by_owner') or {})
     mine = by_owner.get(key) or _cont_empty_slots()
     rec = {
@@ -2218,6 +2259,9 @@ def write_position(project, subject, verdict, reason,
     mem_dir = _get_memory_path(project).parent
     mem_dir.mkdir(parents=True, exist_ok=True)
     slug = (slug or '').strip() or _mem_link_key(subject)[:48] or 'unnamed'
+    # The slug becomes a filename and the route passes the caller's through.
+    if not _is_safe_note_slug(mem_dir, slug, POSITION_PREFIX):
+        raise ValueError('slug must be a plain name, not a path')
     path = mem_dir / f'{POSITION_PREFIX}{slug}.md'
     project_id = project.get('id', '') if isinstance(project, dict) else ''
 
@@ -2313,6 +2357,9 @@ def write_topic_note(project, slug, description, body, *, note_type='project',
         return ''
     mem_dir = _get_memory_path(project).parent
     mem_dir.mkdir(parents=True, exist_ok=True)
+    if not _is_safe_note_slug(mem_dir, slug):
+        _log(f'[memory] write_topic_note skip (bad slug): {slug[:80]!r}')
+        return ''
     path = mem_dir / f'{slug}.md'
     if path.exists():
         _log(f'[memory] write_topic_note skip (exists): {path.name}')
@@ -2320,27 +2367,30 @@ def write_topic_note(project, slug, description, body, *, note_type='project',
     origin = _stamp_origin(task, trigger_type)
     generated = _stamp_generated(actor)
     project_id = project.get('id', '') if isinstance(project, dict) else ''
+    lines = ['---', f"name: {slug.replace('_', '-')}",
+             f'description: "{description.replace(chr(34), chr(92)+chr(34))}"',
+             'metadata:', f'  type: {note_type}']
+    if triggers:
+        lines.append(f'triggers: {triggers.strip()}')
+    if supersedes:
+        lines.append(f'supersedes: {supersedes.strip()}')
+    if supersedes.strip() == 'unresolved' and mint_candidates:
+        lines.append(f'mint_candidates: {mint_candidates.strip()}')
+    lines.append(f'origin: {origin}')
+    lines.append('generated:')
+    lines.append(f"  by: {generated['by']}")
+    lines.append(f"  at: {generated['at']}")
+    lines.append('---')
+    lines.append('')
+    text = '\n'.join(lines) + (body or '').strip() + '\n'
+    # G1 report-mode tap: observes, never refuses or alters `text`. Evaluated
+    # BEFORE the lock: it reads the head of every note in the vault (and of
+    # every sibling vault for an unresolved link), and nothing it reads is
+    # guarded by this lock, so holding it only made other writers wait.
+    gate_pending = _gate_tap.begin(project_id, mem_dir, slug, text, origin)
     with _get_mem_write_lock(f'topic:{project_id}'):
         if path.exists():   # re-check inside the lock — TOCTOU
             return ''
-        lines = ['---', f"name: {slug.replace('_', '-')}",
-                 f'description: "{description.replace(chr(34), chr(92)+chr(34))}"',
-                 'metadata:', f'  type: {note_type}']
-        if triggers:
-            lines.append(f'triggers: {triggers.strip()}')
-        if supersedes:
-            lines.append(f'supersedes: {supersedes.strip()}')
-        if supersedes.strip() == 'unresolved' and mint_candidates:
-            lines.append(f'mint_candidates: {mint_candidates.strip()}')
-        lines.append(f'origin: {origin}')
-        lines.append('generated:')
-        lines.append(f"  by: {generated['by']}")
-        lines.append(f"  at: {generated['at']}")
-        lines.append('---')
-        lines.append('')
-        text = '\n'.join(lines) + (body or '').strip() + '\n'
-        # G1 report-mode tap: observes, never refuses or alters `text`.
-        gate_pending = _gate_tap.begin(project_id, mem_dir, slug, text, origin)
         _atomic_write_text(path, text)
     _gate_tap.finish(gate_pending)
     return path.name
@@ -2356,7 +2406,13 @@ def list_positions(project):
         return []
     out = []
     for f in sorted(mem_dir.glob(f'{POSITION_PREFIX}*.md')):
-        rec = _parse_position(f.read_text(encoding='utf-8', errors='replace'))
+        try:
+            rec = _parse_position(f.read_text(encoding='utf-8', errors='replace'))
+        except OSError as e:
+            # One locked or vanished file must not take the whole list (and
+            # the position block of every prompt) down with it.
+            _log(f"[position] {f.name}: read failed, skipped: {e}", flush=True)
+            continue
         if rec:
             rec['file'] = f.name
             out.append(rec)
@@ -2413,11 +2469,16 @@ def _unit_uid(label, text, cls):
     return label
 
 
+# (path, error text) pairs already logged by `_mem_file_units`, so a file that
+# stays unreadable logs once per process instead of once per search.
+_mem_read_failed: set = set()
+
+
 def _mem_file_units(f, mem_name, arch_name, session_log_name=SESSION_LOG_FILE):
     """The raw (label, text, cls) triples ONE file on disk contributes to the
     corpus, before tokenization. Split out of `_mem_corpus` so the per-file
     cache (Condition 53) can invalidate a single file without re-deriving the
-    rest of the vault.
+    rest of the vault. Returns None (not []) when the file could not be read.
 
     `session_log_name` (§16 step 4): SESSION_LOG.md carries the SAME managed
     format (`_mem_split`) as MEMORY.md's pre-split managed block did, just in
@@ -2434,8 +2495,15 @@ def _mem_file_units(f, mem_name, arch_name, session_log_name=SESSION_LOG_FILE):
         return []
     try:
         txt = f.read_text(encoding='utf-8', errors='replace')
-    except Exception:
-        return []
+    except Exception as e:
+        # None, not []: the caller must not cache a failed read as an empty
+        # file, or the note stays out of search until someone edits it.
+        _fail = (str(f), str(e))
+        if _fail not in _mem_read_failed:
+            _mem_read_failed.add(_fail)
+            _log(f"[memsearch] {f.name}: read failed, left out of this "
+                 f"search and retried on the next: {e}", flush=True)
+        return None
     if f.name == mem_name or f.name == session_log_name:
         return [(f'{f.name}#managed', e, 'managed')
                 for e in _mem_split(txt)[1]]
@@ -2538,9 +2606,11 @@ def _mem_corpus(mem_dir, mem_name, arch_name, session_log_name=SESSION_LOG_FILE)
             fresh[name] = hit
             out.extend(hit[1])
             continue
+        raw = _mem_file_units(f, mem_name, arch_name, session_log_name)
+        if raw is None:      # read failed (logged there): no cache entry
+            continue
         units = [_mem_tokenize_unit(label, text, cls)
-                 for label, text, cls in
-                 _mem_file_units(f, mem_name, arch_name, session_log_name)]
+                 for label, text, cls in raw]
         units = [u for u in units if u is not None]
         fresh[name] = (st, units)
         out.extend(units)
@@ -4675,7 +4745,6 @@ def _entry_group_key(line):
     the byte-preservation guarantee on existing entries holds. It folds legacy
     boilerplate titles onto the compact label so pre-fix and post-fix steward
     entries collapse into one group instead of two."""
-    import re  # module has no top-level `re` import (see _re_auth pattern)
     m = re.match(_ENTRY_HEAD_PAT, line or '')
     if not m:
         return None
@@ -4881,9 +4950,17 @@ def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None,
             _log(f"[mem-log] {project_id}: over ring cap "
                  f"({len(mem_entries)}/{ring}) with {_skipped} live "
                  f"entr{'y' if _skipped == 1 else 'ies'} protected from eviction")
+        # Three files, three atomic writes, no rollback, so the order is
+        # chosen so that a failure between any two DUPLICATES and never
+        # loses (ML19): the archive takes the evicted lines before they
+        # leave the log, and MEMORY.md gives up an unmigrated project's
+        # inline entries and watermarks only after SESSION_LOG.md holds
+        # them. A repeat is collapsed by the next commit or by the archive
+        # reader's dedupe; a line stripped before its destination was
+        # written is gone.
         _append_to_archive(p, overflow)
-        _write_curated_only(mem_path, curated)
         _write_session_log(p, mem_entries, wm_markers)
+        _write_curated_only(mem_path, curated)
         return _should_condense(p, include_claude_md=True)
 
 
@@ -4917,10 +4994,12 @@ def _gc_stale_watermarks(projects):
         project_id = p.get('id', '')
         if not project_id:
             continue
-        live = {s.get('session_id') or s.get('id')
-                for s in agent_sessions.values()}
         try:
             with _get_mem_write_lock(project_id):
+                # Taken INSIDE the lock, as the docstring says: a session
+                # revived while this sweep waited must keep its marker.
+                live = {s.get('session_id') or s.get('id')
+                        for s in list(agent_sessions.values())}
                 log_path = _get_session_log_path(p)
                 if log_path.exists():
                     _c, log_entries, log_wm = _mem_split_full(
@@ -4962,7 +5041,14 @@ def _write_session_memory(p, session, status, summary_fallback, ts_date):
     Scribe over the full .jsonl → brief (fallback to summary, then a
     guaranteed breadcrumb) → _commit_managed_entry (which also drops this
     session's Step-6 wm marker = clean teardown) → condense trigger. Returns
-    True iff a memory entry was written. Never raises.
+    True iff a memory entry was written. A failed file write in
+    `_commit_managed_entry` PROPAGATES (a failed write must not be
+    acknowledged); both callers catch and log it and leave the row
+    unscribed, so the startup reconciler runs this function again. The
+    best-effort steps after the commit (Distiller, Beacon, topics, mint)
+    never raise, and are skipped when the commit does: running them here
+    would run the Distiller twice for one session, once now and once when
+    the reconciler retries.
     SPEC docs/MEMORY_SYSTEM_SPEC.md §3 Leg A/0/C.
     """
     project_id = p.get('id', '')
@@ -5118,7 +5204,8 @@ def _checkpoint_watermark(p, sid):
         _c, _e, legacy_wm = _mem_split_full(mp.read_text(encoding='utf-8'))
         r = _wm_find(legacy_wm, sid)
         return r or {}
-    except Exception:
+    except Exception as e:
+        _log(f"[scribe] checkpoint watermark read failed for {sid}: {e}")
         return {}
 
 
@@ -5148,6 +5235,11 @@ def _maybe_checkpoint(session, force=False):
     the roll proceeds; returns that as a bool. The non-forced path keeps
     firing the worker on a daemon thread and returns False unconditionally
     (no caller used `_maybe_checkpoint`'s return value until now)."""
+    # The session id this call put in `_checkpoint_inflight` and has not yet
+    # handed to a worker. The worker gives the slot back when it finishes; a
+    # launch that fails before the worker has it must give it back here, or
+    # every later boundary for the session coalesces for ever (ML20).
+    _claimed = None
     try:
         if not force and not state.CONFIG.get('scribe_checkpoint_enabled', False):
             return False
@@ -5204,6 +5296,7 @@ def _maybe_checkpoint(session, force=False):
                     _scribe_stat(pid, 'checkpoint_coalesced')
                     return False
                 _checkpoint_inflight.add(sid)
+                _claimed = sid
             snap = {'pid': pid, 'sid': sid, 'csid': csid,
                     'provider_session_id': provider_sid,
                     'provider': provider,
@@ -5213,9 +5306,11 @@ def _maybe_checkpoint(session, force=False):
                     'canonical_lines': canonical_lines,
                     'canonical_sequence': canonical_sequence}
             if force:
+                _claimed = None
                 return bool(_checkpoint_worker(snap))
             threading.Thread(target=_checkpoint_worker, args=(snap,),
                              daemon=True).start()
+            _claimed = None
             return False
         pp = p.get('project_path', '')
         if provider in ('', 'claude'):
@@ -5240,6 +5335,7 @@ def _maybe_checkpoint(session, force=False):
                 _scribe_stat(pid, 'checkpoint_coalesced')
                 return False  # previous worker still running; next boundary covers more
             _checkpoint_inflight.add(sid)
+            _claimed = sid
         snap = {'pid': pid, 'sid': sid, 'csid': csid,
                 'provider_session_id': provider_sid,
                 'provider': provider,
@@ -5251,11 +5347,17 @@ def _maybe_checkpoint(session, force=False):
                 'owner': _session_owner(session),
                 'tf': str(tf)}
         if force:
+            _claimed = None
             return bool(_checkpoint_worker(snap))
         threading.Thread(target=_checkpoint_worker, args=(snap,),
                          daemon=True).start()
+        _claimed = None
         return False
-    except Exception:
+    except Exception as e:
+        if _claimed is not None:
+            with _checkpoint_guard:
+                _checkpoint_inflight.discard(_claimed)
+        _log(f"[scribe] checkpoint launch failed: {type(e).__name__}: {e}")
         return False
 
 
@@ -5528,7 +5630,9 @@ def _scribe_stat(project_id, key, n=1):
             if fp.exists():
                 try:
                     stats = json.loads(fp.read_text(encoding='utf-8') or '{}')
-                except Exception:
+                except Exception as e:
+                    _log(f"[scribe-stat] {fp.name} unreadable, counters "
+                         f"restart from zero: {e}")
                     stats = {}          # corrupt file: restart, don't die
             if not isinstance(stats, dict):
                 stats = {}
@@ -5543,8 +5647,8 @@ def _scribe_stat(project_id, key, n=1):
             stats['_updated'] = now_iso()
             _atomic_write_text(fp, json.dumps(stats, indent=2,
                                               ensure_ascii=False))
-    except Exception:
-        pass
+    except Exception as e:
+        _log(f"[scribe-stat] {project_id} bump of {key} failed: {e}")
 
 
 def _scribe_render_lines(lines):
@@ -5846,6 +5950,11 @@ def _extract_transcript_telemetry_multi(paths):
                         m = json.loads(line)
                     except Exception:
                         continue
+                    if not isinstance(m, dict):
+                        # A JSON line that is not an object (a bare list or
+                        # string) used to raise here, and the handler below
+                        # abandoned the rest of this transcript's usage.
+                        continue
                     msg = m.get('message') if isinstance(m.get('message'), dict) else None
                     if not msg:
                         continue
@@ -5888,7 +5997,8 @@ def _extract_transcript_telemetry_multi(paths):
                             ttl_ok = False
                     elif cw_tok:
                         ttl_ok = False
-        except Exception:
+        except Exception as e:
+            _log(f"[telemetry] transcript read failed for {path}: {e}")
             continue
     if not model_tokens:
         return {}
@@ -6035,16 +6145,16 @@ def _scribe_classify_habits(project, session, statements):
 
     Origin stamping / unattended-loop rail: unlike `write_topic_note` (which
     stamps honestly either way — see its own docstring), THIS caller gates on
-    it. `_memory_search`'s corpus has no `origin` filter anywhere (verified:
-    `grep -n "'origin'" mc/memory.py` outside this section returns nothing) —
-    the origin-stamped read-floor the rail relies on is a different
-    subsystem's (`mc.distiller`'s `exploration_read_floor
-    (consumer_unattended=True)`, scoped to learning artifacts, not the
-    general topic-note corpus every session's memory search reads from. A
-    note minted here reaches EVERY consumer, attended or not, the moment it
-    exists — so an unattended session's habit statement must never mint at
-    all, or it silently becomes exactly the autonomous-output-as-input the
-    rail exists to prevent. Checked with `_stamp_origin` itself, off the same
+    it. When this gate was written `_memory_search`'s corpus had no `origin`
+    filter at all, so a note minted here reached EVERY consumer, attended or
+    not, the moment it existed. It has one now: `_mem_unit_allowed` withholds
+    an `origin: unattended` topic note or position from an unattended
+    consumer. This gate is NOT made redundant by that and must stay: the
+    filter is on the read side and passes unstamped notes, and a habit note
+    claims "the operator said this", which only a human's own statement can
+    back. So an unattended session's habit statement must never mint at
+    all, or it becomes exactly the autonomous-output-as-input the rail
+    exists to prevent. Checked with `_stamp_origin` itself, off the same
     `task`/`trigger_type` `write_topic_note` will stamp with, so the gate and
     the stamp can never disagree.
 
@@ -6202,7 +6312,9 @@ def _scribe_extract(project, session):
                         return None, 'no_transcript'
                     transcript = _render_log_lines_as_transcript(log_lines)
                     from_log = True
-        except Exception:
+        except Exception as e:
+            _log(f"[scribe] transcript render failed for {pid}: "
+                 f"{type(e).__name__}: {e}")
             return None, 'parse_empty'
         model = _model_for_provider('scribe_model', provider)
         # want_why: terminal entries only — see _SCRIBE_WHY_SUFFIX.
@@ -6545,8 +6657,8 @@ def _condense_plan(project):
             try:
                 blob = ap.read_text(encoding='utf-8')
                 archive_tail = blob[-_CONDENSE_ARCHIVE_TAIL_KB * 1024:]
-            except Exception:
-                pass
+            except Exception as e:
+                _log(f"[condense] archive tail read failed for {ap}: {e}")
         body = json.dumps({
             'curated_headings': valid_headings,
             'entries': in_entries,

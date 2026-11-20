@@ -533,8 +533,10 @@ def _increment_counters(project_id: str, deltas: dict[str, int]) -> None:
     try:
         with _get_skill_stats_lock(project_id):
             stats = _read_skill_stats_for_update(project_id)
+            # An empty file is a valid sidecar and reads as {} (no 'counters').
+            counters = stats.setdefault('counters', {})
             for key, n in deltas.items():
-                stats['counters'][key] = int(stats['counters'].get(key, 0)) + n
+                counters[key] = int(counters.get(key, 0)) + n
                 if ('error' in key or 'skip' in key or 'refuse' in key):
                     stats.setdefault('counters_last', {})[key] = (
                         _now_iso() if _now_iso else '')
@@ -1075,6 +1077,42 @@ def _normalize_phrase(phrase: str) -> str:
     return s
 
 
+# Cap on one `paths_tried` / `tools_used` item. They are model output, stored
+# in the sidecar and replayed into the exploration render prompt; the same
+# bound the neighbouring `summary` and `question` fields already have.
+_SIGNAL_LIST_ITEM_CHARS = 500
+
+
+def _signal_items(signals: dict, section: str) -> list[dict]:
+    """The object items of one section of extraction output. The model's
+    answer is not trusted to have the documented shape (ML32): a section that
+    is not a list, or an item that is not an object, is left out so the
+    well-formed items beside it survive."""
+    items = signals.get(section)
+    if not isinstance(items, list):
+        return []
+    return [sig for sig in items if isinstance(sig, dict)]
+
+
+def _signal_phrase(sig: dict) -> str:
+    phrase = sig.get('phrase', '')
+    return _normalize_phrase(phrase if isinstance(phrase, str) else '')
+
+
+def _signal_str_list(value) -> list[str]:
+    """Up to 20 short strings from a model-supplied list (anything else: [])."""
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value:
+        if item is None:
+            continue
+        text = str(item).strip()[:_SIGNAL_LIST_ITEM_CHARS]
+        if text:
+            out.append(text)
+    return out[:20]
+
+
 def _normalize_signals(project_id: str, sid: str, parsed: dict,
                        unattended: bool = False) -> list[dict]:
     """Apply fingerprint + telemetry. Returns the list of valid signals
@@ -1085,10 +1123,12 @@ def _normalize_signals(project_id: str, sid: str, parsed: dict,
     if scope_tag not in ('cross-project', 'project-specific', 'ambiguous'):
         scope_tag = 'cross-project'
     signals = parsed.get('signals', {}) or {}
+    if not isinstance(signals, dict):
+        signals = {}
     ts = _now_iso() if _now_iso else ''
     # Topics
-    for sig in (signals.get('topics') or []):
-        phrase = _normalize_phrase(sig.get('phrase', ''))
+    for sig in _signal_items(signals, 'topics'):
+        phrase = _signal_phrase(sig)
         fp = fingerprint(phrase)
         if fp is None:
             _record_vocab_miss(project_id, phrase)
@@ -1107,8 +1147,8 @@ def _normalize_signals(project_id: str, sid: str, parsed: dict,
             'resolution': str(sig.get('resolution', '') or '').strip()[:2000],
         })
     # Preferences
-    for sig in (signals.get('preferences') or []):
-        phrase = _normalize_phrase(sig.get('phrase', ''))
+    for sig in _signal_items(signals, 'preferences'):
+        phrase = _signal_phrase(sig)
         fp = fingerprint(phrase)
         if fp is None:
             _record_vocab_miss(project_id, phrase)
@@ -1124,8 +1164,8 @@ def _normalize_signals(project_id: str, sid: str, parsed: dict,
                 .strip()[:2000],
         })
     # Explorations
-    for sig in (signals.get('explorations') or []):
-        phrase = _normalize_phrase(sig.get('phrase', ''))
+    for sig in _signal_items(signals, 'explorations'):
+        phrase = _signal_phrase(sig)
         fp = fingerprint(phrase)
         if fp is None:
             _record_vocab_miss(project_id, phrase)
@@ -1137,9 +1177,9 @@ def _normalize_signals(project_id: str, sid: str, parsed: dict,
             'kind': 'exploration', 'phrase': phrase,
             'exact': exact, 'coarse': coarse,
             'question': str(sig.get('question', '') or '').strip()[:500],
-            'paths_tried': list(sig.get('paths_tried') or [])[:20],
+            'paths_tried': _signal_str_list(sig.get('paths_tried')),
             'outcome': str(sig.get('outcome', '') or '').strip()[:2000],
-            'tools_used': list(sig.get('tools_used') or [])[:20],
+            'tools_used': _signal_str_list(sig.get('tools_used')),
         })
     return out
 
@@ -1987,7 +2027,13 @@ def _render_skill(project_id: str, project: dict,
     )
     try:
         out = _model_call(provider, project, model, instruction, body_in)
-    except Exception:
+    except Exception as e:
+        # Swallowed (the caller counts None as a refusal), but a timeout,
+        # a quota error and a missing CLI must not look like the model
+        # declining: say which it was.
+        if _log:
+            _log(f"[distiller] render skill model call failed for "
+                 f"{project_id} ({candidate['exact'][:8]}): {e}", flush=True)
         return None, Path()
     if _is_refusal(out):
         return None, Path()
@@ -2013,7 +2059,13 @@ def _render_exploration(project_id: str, project: dict,
     )
     try:
         out = _model_call(provider, project, model, instruction, body_in)
-    except Exception:
+    except Exception as e:
+        # Swallowed (the caller counts None as a refusal), but a timeout,
+        # a quota error and a missing CLI must not look like the model
+        # declining: say which it was.
+        if _log:
+            _log(f"[distiller] render exploration model call failed for "
+                 f"{project_id} ({candidate['exact'][:8]}): {e}", flush=True)
         return None, Path()
     if _is_refusal(out):
         return None, Path()
@@ -2048,7 +2100,13 @@ def _render_preference(project_id: str, project: dict,
     )
     try:
         out = _model_call(provider, project, model, instruction, body_in)
-    except Exception:
+    except Exception as e:
+        # Swallowed (the caller counts None as a refusal), but a timeout,
+        # a quota error and a missing CLI must not look like the model
+        # declining: say which it was.
+        if _log:
+            _log(f"[distiller] render preference model call failed for "
+                 f"{project_id} ({candidate['exact'][:8]}): {e}", flush=True)
         return None, Path()
     if _is_refusal(out):
         return None, Path()
@@ -2091,7 +2149,10 @@ def reframe_exploration_to_skill(directory: str) -> dict | None:
     try:
         out = cast(Callable[[str, str, str], str], _scribe_call)(
             model, _REFRAME_EXPLORATION_TO_SKILL_PREAMBLE, body_in)
-    except Exception:
+    except Exception as e:
+        if _log:
+            _log(f"[distiller] reframe model call failed for {directory}: {e}",
+                 flush=True)
         return None
     if _is_refusal(out):
         return None

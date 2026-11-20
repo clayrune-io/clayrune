@@ -127,3 +127,18 @@ def test_multi_transcript_empty_list_or_all_missing_returns_empty_dict(tmp_path)
     assert _extract_transcript_telemetry_multi([]) == {}
     assert _extract_transcript_telemetry_multi([str(tmp_path / 'nope1.jsonl'),
                                                  str(tmp_path / 'nope2.jsonl')]) == {}
+
+
+def test_a_non_object_json_line_does_not_abandon_the_rest_of_the_transcript(tmp_path):
+    """MC-1179 pass 3: a line that parses as JSON but is not an object (a bare
+    list, a string, a number) raised AttributeError, and the per-file handler
+    then dropped every usage line after it."""
+    usage = ('{"timestamp": "t", "message": {"id": "%s", "model": "claude-sonnet-5", '
+             '"usage": {"input_tokens": 3, "output_tokens": 7}}}')
+    path = _write(tmp_path, [usage % 'msg_A', '[1, 2, 3]', '"just a string"', '42',
+                             usage % 'msg_B'])
+
+    tel = _extract_transcript_telemetry(path)
+
+    assert tel['input_tokens'] == 6
+    assert tel['output_tokens'] == 14

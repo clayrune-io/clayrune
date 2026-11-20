@@ -167,10 +167,10 @@ def patch_memory_note(project_id):
                         existing_text=existing)
     if new_slug:
         ok = gate.rename_file(project_id, mem_dir, f'{slug}.md',
-                              f'{new_slug}.md', text)
+                              f'{new_slug}.md', text, expected_text=existing)
     else:
         ok = gate.atomic_write(project_id, mem_dir, f'{slug}.md', text,
-                               must_exist=True)
+                               must_exist=True, expected_text=existing)
     if not ok:
         gate.record(project_id, op='patch', slug=slug, mode=mode, origin=origin,
                     result='refused', refusal='concurrent_change')

@@ -517,3 +517,68 @@ def test_routes_are_registered_on_the_server_app():
     assert {r.endpoint for r in rules} == {
         'memory_note_routes.post_memory_note',
         'memory_note_routes.patch_memory_note'}
+
+
+# ── MC-1179 pass 3, ML29: a PATCH must not write over a change it never read ─
+
+_RACED = ('---\nname: alpha\ndescription: d\norigin: unattended\n---\n'
+          'written by someone else meanwhile\n')
+
+
+def _race_a_writer_in(env, stem='alpha'):
+    """Make another writer land between the route's read and its locked write."""
+    from mc import memory_note_gate as g
+    real = g.evaluate
+
+    def evaluate_then_lose_the_race(*a, **k):
+        out = real(*a, **k)
+        env.seed('p1', stem, _RACED)
+        return out
+
+    env.mp.setattr(g, 'evaluate', evaluate_then_lose_the_race)
+
+
+def test_patch_refuses_when_the_note_changed_after_it_was_read(env):
+    env.seed('p1', 'alpha', '---\nname: alpha\ndescription: d\n---\nold\n')
+    _race_a_writer_in(env)
+    r = env.patch('alpha', note('alpha', body='my edit'))
+    assert r.status_code == 409
+    # The other writer's text, and its `origin: unattended`, survive.
+    assert env.read('p1', 'alpha') == _RACED
+
+
+def test_rename_refuses_when_the_note_changed_after_it_was_read(env):
+    env.seed('p1', 'alpha', '---\nname: alpha\ndescription: d\n---\nold\n')
+    _race_a_writer_in(env)
+    r = env.patch('alpha', note('beta', extra='aka: [alpha]\n', body='my edit'),
+                  new_slug='beta')
+    assert r.status_code == 409
+    assert env.read('p1', 'alpha') == _RACED
+    assert not env.exists('p1', 'beta')
+
+
+def test_a_rename_whose_old_file_cannot_be_removed_leaves_one_note_not_two(env):
+    """MC-1179 pass 3 (lesser, memory_note_gate.py:438). Rename is write-new
+    then unlink-old. A failed unlink (the old file open in an editor on
+    Windows) used to leave BOTH files, two notes with one link identity, and
+    a 500 with no gate row. It now takes the new file back and refuses."""
+    original = '---\nname: alpha\ndescription: d\n---\nold\n'
+    env.seed('p1', 'alpha', original)
+    old_path = env.vault('p1') / 'alpha.md'
+    real_unlink = Path.unlink
+
+    def locked_unlink(self, *a, **k):
+        if self == old_path:
+            raise PermissionError('simulated: file is open elsewhere')
+        return real_unlink(self, *a, **k)
+
+    env.mp.setattr(Path, 'unlink', locked_unlink)
+    r = env.patch('alpha', note('beta', extra='aka: [alpha]\n', body='my edit'),
+                  new_slug='beta')
+    assert r.status_code == 409
+    assert env.read('p1', 'alpha') == original
+    assert not env.exists('p1', 'beta')
+    from mc import memory_note_gate as g
+    rows = [json.loads(ln) for ln in
+            g._log_path('p1').read_text(encoding='utf-8').splitlines() if ln.strip()]
+    assert rows[-1]['result'] == 'refused'
