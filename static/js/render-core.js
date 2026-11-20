@@ -789,6 +789,9 @@ function modalContentHTML(p) {
           <button class="modal-menu-item" onclick="_mcMenuClose();openAgentSettingsDialog('${window.jsAttr(p.id)}')" title="Provider-specific project defaults for new work">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-settings"/></svg></span> Providers
           </button>
+          <button class="modal-menu-item" onclick="_mcMenuClose();openProjectSafetyDialog('${window.jsAttr(p.id)}')" title="Merge review, verify command and worktree controls (human-only)">
+            <span class="menu-icon"><svg class="menu-svg"><use href="#ic-secrets"/></svg></span> Safety&#8230;
+          </button>
           ${(() => {
             // Providers not fetched yet — kick a load and refresh this modal
             // when it lands. The composer's provider picker renders in this

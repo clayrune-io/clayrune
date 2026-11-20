@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-19] - Project Safety dialog: the merge gate, cold reviewer and worktree controls can be set from the product (backlog ecc5a845, MC-1179 B14/BX4)
+
+- Seven project safety settings had no control anywhere in the UI, so the review requirement (MC-1075), the merge gate and landing check (MC-1164) and the cold reviewer (MC-1165) could only be switched on by editing `data/projects/<id>.json`. The project window's menu now has **Safety…** (under Providers) with one dialog for all seven: `merge_requires_review`, `cold_review_required`, `verify_command` (one command per line), `verify_timeout_seconds`, `worktree_isolation`, `worktree_base_branch`, `worktree_shared_runtime`.
+- Each control shows the value the server actually uses and says in one line what it does: gates are on only when stored as exactly `true`, the timeout defaults to 1200, isolation also needs the global worktree switch (the dialog says when that switch is off), the merge-back branch falls back to the sync branch and then `master`, and an empty shared-runtime list means the default paths. Only the keys you changed are sent, through the existing `POST /api/project/<id>`, so the human-only refusal for agent callers is unchanged. No route was added.
+- Not included: `context_rollover_by_character`, `midturn_rollover_enabled`, `agent_survive_restart_enabled` and `aider_restricted_adapter_enabled` are global config keys, not project keys, so they are left out. `worktree_isolation_enabled` (the global switch the isolation control depends on) also has no Settings control yet.
+- New `static/js/project-safety-settings.js`; hook-in is one menu item in `static/js/render-core.js` and one script tag. Smoke `tools/smoke/project-safety-settings.mjs` (42 checks); `tests/test_project_safety_settings_ui.py` pins the two defaults the dialog copies from the server. Needs a hard reload of an open tab; no server restart.
+
 ## [2026-11-19] - A test run whose pass or fail is hidden gets one UNVERIFIED line (MC-1171)
 
 - An agent ran `pytest ... | tail -15` inside a job script. The job reported exit 0, which was `tail`'s exit, and nothing said pytest's own verdict never arrived. A command ending in `; true` or `|| true` hides it the same way.
