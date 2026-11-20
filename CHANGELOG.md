@@ -1,5 +1,14 @@
 # Clayrune — Changelog
 
+## [2026-11-19] - Mail backend and control plane: medium and low findings (MC-1179 pass 05b)
+
+- MB2, MB7, MB11. The laundered mail digest is rebuilt from nine typed, length-capped fields instead of being returned whole. A mail pipe write produces one receipt instead of two. The pull worker logs the type of an unexpected exception.
+- MB27, MB30. The sign-in page refuses a `return_to` whose host a browser reads differently from the server, and the value can no longer close the page's script. A sign-in intent stops working when its 15 minutes are up.
+- MB28, MB33. A re-enroll that fails mid-provisioning keeps a username the account already holds, and a re-enroll no longer resets the account's creation date or usage counter. A failed suspension lookup in the verify chain is logged.
+- MB35. The phone-pairing error no longer returns the control plane's response body, which can hold a one-time pairing token.
+- MB21, MB34. Six agent-mail file headers and four control plane comments now describe the code as it is. Two control plane auth stubs with no caller are removed.
+- The control plane changes reach users when the control plane is next deployed.
+
 ## [2026-11-19] - Desk planners can pick a child's model and effort
 
 - Campaign, storyboard, and article planners see the models and effort levels each hired agent's provider offers. Dispatch cards show the launch settings, and invalid picks leave the attempt budget intact.
