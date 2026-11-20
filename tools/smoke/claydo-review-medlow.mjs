@@ -190,6 +190,33 @@ try {
       assert.equal(await page.locator('.persona-editor').count(), 1);
     });
   });
+  // CD4: when the stream ended without `done` or `error` (server restart, a
+  // proxy cutting the response) nothing ran after the read loop. The bubble
+  // kept "Claydo is thinking" or a partial answer for good, with no Retry.
+  for (const [label, body] of [
+    ['before the first token', ''],
+    ['part way through an answer', 'data: {"type":"delta","text":"A partial ans"}\n\n'],
+  ]) {
+    await t.step(`CD4 a stream cut off ${label} ends in an error bubble with Retry`, async () => {
+      await scenario(browser, {}, async ({ page }) => {
+        await page.route('**/api/guide/stream', route => route.fulfill({ contentType: 'text/event-stream', body }));
+        await page.evaluate(async () => {
+          await window.openClaydo();
+          document.getElementById('claydo-input').value = 'what is a steward';
+          await window.submitClaydo();
+        });
+        await page.waitForTimeout(100);   // a frame, in case a delta render was still queued
+        const out = await page.evaluate(() => {
+          const err = document.querySelector('#claydo-history .claydo-msg.error');
+          return { text: err ? err.textContent : null, retry: !!(err && err.querySelector('.claydo-retry-btn')),
+            thinking: !!document.querySelector('#claydo-history .claydo-msg.bot .claydo-thinking, #claydo-history .claydo-msg.bot [class*="thinking"]') };
+        });
+        assert.match(out.text || '', /cut off/i);
+        assert.equal(out.retry, true);
+        assert.equal(out.thinking, false, 'no bubble is left "thinking"');
+      });
+    });
+  }
 } finally {
   t.done();
   await browser.close();

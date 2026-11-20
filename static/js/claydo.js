@@ -501,6 +501,10 @@ async function submitClaydo() {
   let assembled = '';
   let firstChunk = true;
   let errored = false;
+  // Set by the `done` and `error` events. A stream that ends without either
+  // (the server restarted, a proxy cut the response) is handled after the
+  // read loop (CD4).
+  let terminalSeen = false;
 
   // Rendering `assembled` was previously synchronous on EVERY SSE delta —
   // full innerHTML rebuild (re-parsing the whole reply's markers/markdown
@@ -583,6 +587,7 @@ async function submitClaydo() {
           // Batched to one paint per frame — see _scheduleDeltaRender above.
           _scheduleDeltaRender();
         } else if (payload.type === 'error') {
+          terminalSeen = true;
           _cancelDeltaRender();
           // Older servers discard stdout diagnostics on a nonzero CLI exit.
           // Keep the quota/auth message already streamed instead of hiding it.
@@ -592,6 +597,7 @@ async function submitClaydo() {
           errored = true;
           return;
         } else if (payload.type === 'done') {
+          terminalSeen = true;
           _cancelDeltaRender();
           // Final assembled answer — use it as ground truth in case any
           // delta got dropped. Then parse markers and dispatch.
@@ -627,6 +633,15 @@ async function submitClaydo() {
           _claydoSaveSession();
         }
       }
+    }
+    if (!terminalSeen) {
+      // Without this the bubble kept "Claydo is thinking" (or a partial
+      // answer) for good while the input came back, so it read as still
+      // working; and the next question left two user turns in a row in the
+      // history. Retry drops the unanswered turn.
+      _cancelDeltaRender();
+      _claydoRenderError(botMsg, 'The answer was cut off.', question);
+      errored = true;
     }
   } catch (e) {
     _cancelDeltaRender();
