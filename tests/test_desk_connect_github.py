@@ -66,6 +66,24 @@ def test_second_stage_never_replaces_first(staged):
     second=github.stage({'url':URL})
     assert before!=github._stages[second['stage_id']]['install_dir'] and Path(before).is_dir()
 
+@pytest.mark.parametrize('failure',['scan','pin'])
+def test_a_stage_that_fails_after_the_clone_leaves_no_folder(staged,monkeypatch,tmp_path,failure):
+    """DCW-C5: a failed stage is never returned to the person, so nothing can name its clone again;
+    it used to stay on disk for good. A stage that succeeded is not touched."""
+    answer,_,_=staged
+    kept=Path(github._stages[answer['stage_id']]['install_dir'])
+    if failure=='scan':
+        def boom(*a,**k):
+            raise RuntimeError('the scan broke')
+        monkeypatch.setattr(installer,'security_scan',boom)
+    else:
+        real=installer._run
+        monkeypatch.setattr(installer,'_run',lambda argv,cwd=None,**kw:(0,'not-a-sha','') if argv[-1]=='HEAD' and 'rev-parse' in argv and '--abbrev-ref' not in argv else real(argv,cwd,**kw))
+    with pytest.raises(ActivationError):
+        github.stage({'url':URL})
+    assert [p.name for p in (tmp_path/'installs').iterdir()]==[kept.name]
+    assert list(github._stages)==[answer['stage_id']] and (kept/'server.js').is_file()
+
 def test_existing_preview_directory_is_never_deleted(staged):
     answer,_,_=staged
     directory=Path(github._stages[answer['stage_id']]['install_dir'])
