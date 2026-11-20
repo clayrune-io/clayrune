@@ -2367,27 +2367,30 @@ def write_topic_note(project, slug, description, body, *, note_type='project',
     origin = _stamp_origin(task, trigger_type)
     generated = _stamp_generated(actor)
     project_id = project.get('id', '') if isinstance(project, dict) else ''
+    lines = ['---', f"name: {slug.replace('_', '-')}",
+             f'description: "{description.replace(chr(34), chr(92)+chr(34))}"',
+             'metadata:', f'  type: {note_type}']
+    if triggers:
+        lines.append(f'triggers: {triggers.strip()}')
+    if supersedes:
+        lines.append(f'supersedes: {supersedes.strip()}')
+    if supersedes.strip() == 'unresolved' and mint_candidates:
+        lines.append(f'mint_candidates: {mint_candidates.strip()}')
+    lines.append(f'origin: {origin}')
+    lines.append('generated:')
+    lines.append(f"  by: {generated['by']}")
+    lines.append(f"  at: {generated['at']}")
+    lines.append('---')
+    lines.append('')
+    text = '\n'.join(lines) + (body or '').strip() + '\n'
+    # G1 report-mode tap: observes, never refuses or alters `text`. Evaluated
+    # BEFORE the lock: it reads the head of every note in the vault (and of
+    # every sibling vault for an unresolved link), and nothing it reads is
+    # guarded by this lock, so holding it only made other writers wait.
+    gate_pending = _gate_tap.begin(project_id, mem_dir, slug, text, origin)
     with _get_mem_write_lock(f'topic:{project_id}'):
         if path.exists():   # re-check inside the lock — TOCTOU
             return ''
-        lines = ['---', f"name: {slug.replace('_', '-')}",
-                 f'description: "{description.replace(chr(34), chr(92)+chr(34))}"',
-                 'metadata:', f'  type: {note_type}']
-        if triggers:
-            lines.append(f'triggers: {triggers.strip()}')
-        if supersedes:
-            lines.append(f'supersedes: {supersedes.strip()}')
-        if supersedes.strip() == 'unresolved' and mint_candidates:
-            lines.append(f'mint_candidates: {mint_candidates.strip()}')
-        lines.append(f'origin: {origin}')
-        lines.append('generated:')
-        lines.append(f"  by: {generated['by']}")
-        lines.append(f"  at: {generated['at']}")
-        lines.append('---')
-        lines.append('')
-        text = '\n'.join(lines) + (body or '').strip() + '\n'
-        # G1 report-mode tap: observes, never refuses or alters `text`.
-        gate_pending = _gate_tap.begin(project_id, mem_dir, slug, text, origin)
         _atomic_write_text(path, text)
     _gate_tap.finish(gate_pending)
     return path.name
