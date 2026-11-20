@@ -16,7 +16,9 @@ A page's own "Is this one of ours?" question is answered by the same function th
 guards the typed address, so the pane cannot be walked to a private service by a
 redirect the typed address would have been refused for. The proxy is read-only plumbing:
 it never inspects, stores or alters traffic, and caps what one discovery can pull
-(`max_bytes` across all tunnels, `max_tunnels` at once). `close()` drops every open
+(`max_bytes` across all tunnels, `max_tunnels` connections to port 443 in total: the
+count is never lowered when one closes, and one refused by the address check still
+counts). `close()` drops every open
 socket; discovery always calls it.
 
 Refusals are kept (`refused`) so the reader can tell "the page was blocked by Clayrune"
