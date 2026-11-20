@@ -365,7 +365,7 @@ function closeModalById(modalId) {
   if (entry._statusBarObserver) { entry._statusBarObserver.disconnect(); delete entry._statusBarObserver; }
   window.ProjectTestRuns?.detach(modalId);
   entry.element.remove();
-  const chip = document.getElementById('chip-' + CSS.escape(modalId));
+  const chip = document.getElementById('chip-' + modalId);
   if (chip) chip.remove();
   openModals.delete(modalId);
   window._syncMaximizedBodyClass && window._syncMaximizedBodyClass();
@@ -1071,7 +1071,7 @@ function restoreModal(modalId) {
   entry.minimized = false;
   entry.element.classList.remove('minimized');
   window._syncMaximizedBodyClass && window._syncMaximizedBodyClass();
-  const chip = document.getElementById('chip-' + CSS.escape(modalId));
+  const chip = document.getElementById('chip-' + modalId);
   if (chip) chip.remove();
   if (entry.projectId && !modalId.startsWith('__hivemind_')) refreshModalById(modalId);
   const scrollBody = entry.element.querySelector('.modal-scroll-body');
