@@ -942,3 +942,67 @@ def test_a_save_replay_is_recognised_for_both_kinds_of_server(env):
     assert activation.matches(servers(env.proj_cfg)[NAME], service._prepared[card['request_id']]['op'])
     assert not npm_activation.matches(servers(env.proj_cfg)[NAME], service._prepared[card['request_id']]['op'])
     threading.Event().set()
+
+
+# ── DCW-C11: a late answer is not "could not reach"; a record that would not open is kept ──────────
+
+def test_a_request_that_was_sent_and_not_answered_in_time_is_a_timeout_not_a_failed_connect(env, monkeypatch):
+    approved(env)
+
+    class Late(_FakeConn):
+        def getresponse(self):
+            raise TimeoutError('timed out')
+    monkeypatch.setattr(transport, '_Connection', lambda target, addr, timeout: Late(env.fake, addr))
+    r = run_check(env)
+    assert r.status_code == 502 and r.get_json()['code'] == 'timeout'
+    assert 'was sent' in r.get_json()['error'] and 'reach' not in r.get_json()['error']
+
+
+def test_a_connection_that_never_opened_is_still_a_failed_connect(env, monkeypatch):
+    approved(env)
+
+    class Dead(_FakeConn):
+        def request(self, *a, **k):
+            raise TimeoutError('timed out')
+    monkeypatch.setattr(transport, '_Connection', lambda target, addr, timeout: Dead(env.fake, addr))
+    r = run_check(env)
+    assert r.status_code == 502 and r.get_json()['code'] == 'connect_failed'
+
+
+def _unopenable():
+    """The observation record exists and cannot be opened right now (locked by another program)."""
+    target, patch = observed.path(), pytest.MonkeyPatch()
+    for name in ('read_bytes', 'read_text'):
+        def read(self, *a, _real=getattr(Path, name), **k):
+            if self == target:
+                raise PermissionError('in use')
+            return _real(self, *a, **k)
+        patch.setattr(Path, name, read)
+    return patch
+
+
+def test_a_record_that_will_not_open_is_left_in_place_and_its_baseline_survives(env):
+    approved(env)
+    assert run_check(env).get_json()['status'] == 'baseline_recorded'
+    before = observed.path().read_text(encoding='utf-8')
+    patch = _unopenable()
+    try:
+        listed = service.connections(lambda pid: str(env.proj_dir))[0]         # the list path: reads, never moves
+        assert listed['observation']['status'] == 'never_checked'
+        assert run_check(env).status_code == 500                                # the check refuses; no new baseline
+    finally:
+        patch.undo()
+    assert not list(observed.path().parent.glob('desk_remote_mcp_observed.json.corrupt-*'))
+    assert observed.path().read_text(encoding='utf-8') == before
+    assert run_check(env).get_json()['status'] == 'unchanged'
+
+
+def test_listing_a_damaged_record_does_not_use_up_the_notice_the_next_check_gives(env):
+    approved(env)
+    run_check(env)
+    observed.path().write_text('{not json', encoding='utf-8')
+    service.connections(lambda pid: str(env.proj_dir))
+    assert not list(observed.path().parent.glob('desk_remote_mcp_observed.json.corrupt-*'))
+    out = run_check(env).get_json()
+    assert out['status'] == 'baseline_recorded' and 'could not be read' in out['note']
+    assert list(observed.path().parent.glob('desk_remote_mcp_observed.json.corrupt-*'))

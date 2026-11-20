@@ -147,14 +147,19 @@ def _open(target: Target, method: str, url_path: str, headers: dict, body: bytes
     """Send one request; returns `(connection, response)` for a 2xx. Raises TransportError."""
     addr = _addresses(target, resolver)[0]
     conn = _Connection(target, addr, timeout)
+    sent = False
     try:
         conn.request(method, url_path, body=body, headers=headers)
+        sent = True
         resp = conn.getresponse()
     except TransportError:
         conn.close()
         raise
     except (OSError, http.client.HTTPException) as e:
         conn.close()
+        if sent and isinstance(e, TimeoutError):    # delivered, then silence: not "could not reach"
+            raise TransportError('timeout', 'The request was sent and the server did not answer in time. It may '
+                                            'still have acted on it.') from e
         raise TransportError('connect_failed', f'Could not reach the server ({type(e).__name__}).') from e
     s = resp.status
     if 300 <= s < 400:
