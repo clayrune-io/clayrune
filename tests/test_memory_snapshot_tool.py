@@ -24,8 +24,6 @@ def snap(tmp_path, monkeypatch):
     (live / 'topic.md').write_text('now')
     monkeypatch.setattr(tool, 'memory_dir', lambda: live)
     monkeypatch.setattr(tool, 'SNAP_ROOT', tmp_path / 'snaps')
-    # restore() marks a restore in progress under the home directory.
-    monkeypatch.setattr(tool._snap, '_marker_dir', lambda: tmp_path / 'restore-active')
     d = tool.create('t')
     (live / 'topic.md').write_text('changed since')
     return live, d
