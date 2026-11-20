@@ -38,12 +38,14 @@ further every hour); it is never counted and never causes a prune. Manual
 snapshots, and every directory the job did not name, are never touched.
 
 NOT WHILE A RESTORE RUNS. `restoring()` marks a restore in progress, in this
-process and (through a marker file under `~/.clayrune/`) across processes. The
+process and (through a marker file under the Clayrune home) across processes. The
 job checks it before the pass and again before each project. A marker older
 than `RESTORE_MARKER_STALE_S` is a crashed restore's leftover: it is logged and
 ignored, so one crash cannot switch the nightly copy off for good.
 
-STATE. `~/.clayrune/memory_snapshot_state.json`: per project, the last attempt,
+STATE. `memory_snapshot_state.json` in the Clayrune home, next to the restore
+markers (`~/.clayrune` unless CLAYRUNE_HOME says otherwise: both paths go
+through `mc.secrets_store.clayrune_home()`): per project, the last attempt,
 the last success and the last error. Due is computed from the last SUCCESS, so a
 failed run is retried at the next hourly tick, not a day later.
 
@@ -58,6 +60,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import threading
 import time
 import uuid
@@ -87,8 +90,21 @@ class SnapshotError(Exception):
 def _say(msg: str) -> None:
     # Imported here, not at the top: mc.core pulls in Flask, and the tool must
     # be able to list and verify snapshots without it.
-    from mc.core import _log
+    try:
+        from mc.core import _log
+    except Exception:
+        print(f"[memory-snapshot] {msg}", file=sys.stderr, flush=True)
+        return
     _log(f"[memory-snapshot] {msg}", flush=True)
+
+
+def _clayrune_home() -> Path:
+    """The operator-state directory, through the one resolver every reader in
+    mc/ uses. It honours CLAYRUNE_HOME, which is how tests/conftest.py keeps the
+    whole suite out of the real one. The restore markers and the job's state
+    file live here. Imported late for the same reason as in _say."""
+    from mc.secrets_store import clayrune_home
+    return clayrune_home()
 
 
 # ── the snapshot code (shared with tools/memory-snapshot.py) ─────────────────
@@ -180,7 +196,7 @@ _stale_marker_logged: set[str] = set()
 
 
 def _marker_dir() -> Path:
-    return Path.home() / '.clayrune' / 'memory-restore-active'
+    return _clayrune_home() / 'memory-restore-active'
 
 
 @contextmanager
@@ -402,7 +418,7 @@ def wire(config_fn: Callable[[], dict], projects_fn: Callable[[], Iterable[dict]
 
 
 def state_path() -> Path:
-    return Path.home() / '.clayrune' / 'memory_snapshot_state.json'
+    return _clayrune_home() / 'memory_snapshot_state.json'
 
 
 def load_state() -> dict:

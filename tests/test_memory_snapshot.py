@@ -41,6 +41,9 @@ def env(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv('USERPROFILE', str(home))
     monkeypatch.setenv('HOME', str(home))
+    # The restore markers and the state file follow CLAYRUNE_HOME, which
+    # tests/conftest.py points at one directory for the whole session.
+    monkeypatch.setenv('CLAYRUNE_HOME', str(home / '.clayrune'))
     monkeypatch.delenv('MC_DATA_DIR', raising=False)
     assert Path.home() == home
     logs: list[str] = []
@@ -366,6 +369,17 @@ def test_a_route_restore_that_fails_clears_the_mark(backup_client, monkeypatch):
     monkeypatch.setattr(backup_routes._backup, 'restore_backup', boom)
     assert client.post('/api/backup/restore', json={'path': 'x.crbackup'}).status_code == 400
     assert ms.restore_in_progress() is False
+
+
+def test_markers_and_state_follow_the_clayrune_home(env, monkeypatch):
+    """What keeps every other test file out of the real home: tests/conftest.py
+    sets CLAYRUNE_HOME for the whole session, and both paths resolve through it."""
+    elsewhere = env.tmp / 'suite-home'
+    monkeypatch.setenv('CLAYRUNE_HOME', str(elsewhere))
+    assert ms.state_path() == elsewhere / 'memory_snapshot_state.json'
+    with ms.restoring('t'):
+        assert len(list((elsewhere / 'memory-restore-active').iterdir())) == 1
+    assert _tree(env.home) == []
 
 
 # ── never raises ─────────────────────────────────────────────────────────────
