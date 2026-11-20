@@ -206,6 +206,10 @@ try {
       const win = openModals.get(id).element;
       const radioNames = [...win.querySelectorAll('input[type=radio]')].map(e => e.name);
       if (!radioNames.every(n => n === 'se-scope-' + id)) throw Error('SK1 radio name escaped incorrectly');
+      // Save is disabled until the skill has loaded (SK4, 1a868a90), and a click
+      // on a disabled button calls nothing.
+      for (let i = 0; i < 150 && win.querySelector('#se-save').disabled; i++) await new Promise(r => setTimeout(r, 20));
+      if (win.querySelector('#se-save').disabled) throw Error('SK1 editor Save never enabled: the fixture skill did not load');
       await clickAndCapture(win, 'button[onclick^="saveSkillFromEditor"]', 'saveSkillFromEditor', [id, false, 'global', name, null]);
       let request;
       window.humanProofFetch = async (url, options) => {
