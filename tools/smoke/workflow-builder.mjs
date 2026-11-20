@@ -3038,6 +3038,7 @@ try {
   // the toast must say the cancel FAILED.
   const RUN8 = { ...RUN7, id: 'run-5de9dfa5',
     steps: { 'us-stock-investor': { status: 'running', project_id: PID, session_id: '3ee1e9fa0865' } } };
+  let runs8 = [RUN8];   // WB7 swaps this while the tab is away
   const ctx8 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page8 = await ctx8.newPage();
   const page8Errors = [];
@@ -3065,7 +3066,7 @@ try {
     if (path === '/api/schedules') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([WF7]) });
-    if (path === `/api/workflows/${WF7.id}/runs`) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([RUN8]) });
+    if (path === `/api/workflows/${WF7.id}/runs`) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(runs8) });
     if (path === `/api/workflow-runs/${RUN8.id}/cancel` && req.method() === 'POST') {
       return route.fulfill({ status: 404, contentType: 'text/html; charset=utf-8', body: '<!doctype html><title>404 Not Found</title><h1>Not Found</h1>' });
     }
@@ -3089,6 +3090,28 @@ try {
   if (!strip8) {
     fail('expected the live-run strip for run-5de9dfa5 before cancelling');
   } else {
+    // WB7 (MC-1179 pass 04): leave the tab for longer than one poll tick (the
+    // tick stops itself when the canvas is gone), let the run end meanwhile,
+    // and come back. The strip used to be redrawn from the run as last seen,
+    // with nothing left to refresh it.
+    await page8.evaluate((pid) => { switchModalTab(pid, 'agent'); }, PID);
+    runs8 = [];
+    await page8.waitForTimeout(4400);
+    await page8.evaluate((pid) => { switchModalTab(pid, 'workflows'); }, PID);
+    await page8.waitForSelector('#wfb-live-run-slot', { state: 'attached', timeout: 5000 });
+    await page8.waitForTimeout(500);
+    (await page8.$('.wfb-live-run'))
+      ? fail('WB7: back on the Workflows tab, the strip still shows a run that ended while the tab was away')
+      : ok('WB7: returning to the Workflows tab re-reads the run, so a run that ended while away is cleared');
+    // And the other way round: a run that started while away shows on return
+    // (this also puts the strip back for the cancel check below).
+    await page8.evaluate((pid) => { switchModalTab(pid, 'agent'); }, PID);
+    runs8 = [RUN8];
+    await page8.waitForTimeout(150);
+    await page8.evaluate((pid) => { switchModalTab(pid, 'workflows'); }, PID);
+    (await page8.waitForSelector('.wfb-live-run', { timeout: 5000 }).catch(() => null))
+      ? ok('WB7: a run that started while the tab was away shows on return')
+      : fail('WB7: a run that started while the tab was away did not show on return');
     await page8.click('.wfb-live-run-cancel');
     await answerHumanProofModalIfShown(page8);
     await page8.waitForTimeout(250);

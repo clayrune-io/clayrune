@@ -649,6 +649,21 @@ function _wfRemountDom(projectId) {
   // browser tab or the phone. One cheap GET; patches in place once it
   // resolves (see _wfRefreshBench), same as the in-tab listener.
   _wfRefreshBench(_wfState._wf);
+  _wfRefreshLiveRunOnRemount(_wfState._wf);
+}
+
+// WB7: the render above drew the live-run strip from the run as last seen,
+// and the poll stops itself while the canvas is off screen
+// (_wfPollLiveRunTick). Coming back to the tab therefore re-reads the run and
+// restarts the poll, or a run that ended meanwhile stays "running" until the
+// user presses Run now or Cancel. Patched in place, like the poll tick.
+async function _wfRefreshLiveRunOnRemount(st) {
+  if (!st || !st.workflowId) return;
+  await _wfLoadLiveRun(st);
+  const entry = _wfEntry();
+  if (!entry || entry._wf !== st || !document.getElementById('wfb-live-run-slot')) return;
+  _wfApplyLiveRunToDom(st);
+  _wfStartLivePollIfNeeded(st);
 }
 
 function _wfFreshState(def, workflowId, error, hintProjectId) {
