@@ -467,7 +467,19 @@ def rename_file(project_id, mem_dir, old_name, new_name, text, *,
         if expected_text is not None and not _still_reads(old, expected_text):
             return False
         _atomic_write_text(new, text)
-        old.unlink()
+        try:
+            old.unlink()
+        except OSError as e:
+            # Two files with one link identity is worse than no rename: take
+            # the new one back and refuse, so the caller records a gate row.
+            _log(f'[memory-gate] rename {old_name} -> {new_name}: old file '
+                 f'not removed ({e}); rename undone', flush=True)
+            try:
+                new.unlink()
+            except OSError as undo_error:
+                _log(f'[memory-gate] rename {old_name} -> {new_name}: could '
+                     f'not undo, BOTH files remain: {undo_error}', flush=True)
+            return False
     return True
 
 
