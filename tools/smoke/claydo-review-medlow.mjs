@@ -48,6 +48,18 @@ async function openSavePanel(page, posts) {
   await page.waitForSelector('.claydo-save-panel #claydo-save-go', { state: 'attached' });
 }
 
+// Open the persona editor on a stored global persona.
+async function openEditor(page, record) {
+  const rec = record || { name: 'reviewer', scope: 'global', agent_name: 'Rex', avatar: '',
+    description: 'reviews diffs', skills: [], body: 'You review diffs.', emojis: '',
+    engine: { provider: '', model: '', effort: '' } };
+  await page.route('**/api/characters/global/reviewer', route => route.fulfill({ json: rec }));
+  await page.route('**/api/avatars', route => route.fulfill({ json: { figures: [], prefix: 'fig:' } }));
+  await page.route('**/api/skills**', route => route.fulfill({ json: [] }));
+  await page.evaluate(() => { window.openPersonaEditor(null, 'global', 'reviewer', () => {}); });
+  await page.waitForSelector('.persona-editor #pe-cancel', { state: 'attached' });
+}
+
 // Save, then answer the human-proof passcode prompt the save goes through.
 async function pressSave(page, expectedPosts, posts) {
   await page.evaluate(() => document.querySelector('.claydo-save-panel #claydo-save-go').click());
@@ -93,6 +105,66 @@ try {
       await pressSave(page, 3, posts);
       assert.equal(posts[2].name, 'auditor');
       assert.equal(posts[2].overwrite, true, 'saving the same name again still overwrites');
+    });
+  });
+
+  // CD2: the persona editor's unsaved-changes check left out the emoji select
+  // and the three engine pins, so changing one and clicking Cancel (or Move)
+  // lost the change with no "Discard your changes?" prompt.
+  for (const field of ['#pe-emojis', '#pe-provider', '#pe-model', '#pe-effort']) {
+    await t.step(`CD2 a changed ${field} counts as an unsaved change on Cancel`, async () => {
+      await scenario(browser, {}, async ({ page }) => {
+        await openEditor(page);
+        const dialogs = [];
+        page.on('dialog', (d) => { dialogs.push(d.message()); d.dismiss(); });
+        await page.evaluate((q) => {
+          const sel = document.querySelector('.persona-editor ' + q);
+          // Any value other than the selected one; add one if the list is a single entry.
+          if (sel.options.length < 2) sel.add(new Option('other', 'smoke-other'));
+          sel.selectedIndex = sel.selectedIndex === 0 ? 1 : 0;
+          document.querySelector('.persona-editor #pe-cancel').click();
+        }, field);
+        await page.waitForTimeout(150);
+        assert.equal(dialogs.length, 1, 'Cancel asks before discarding');
+        assert.match(dialogs[0], /Discard your changes/);
+        assert.equal(await page.locator('.persona-editor').count(), 1, 'a dismissed prompt keeps the editor open');
+      });
+    });
+  }
+
+  await t.step('CD2 an untouched editor still closes on Cancel without a prompt', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await openEditor(page);
+      const dialogs = [];
+      page.on('dialog', (d) => { dialogs.push(d.message()); d.dismiss(); });
+      await page.evaluate(() => document.querySelector('.persona-editor #pe-cancel').click());
+      await page.waitForTimeout(150);
+      assert.deepEqual(dialogs, []);
+      assert.equal(await page.locator('.persona-editor').count(), 0);
+    });
+  });
+
+  // CD2, related: "Let it choose" persists the name server-side. The editor
+  // then asked to discard a change that was already saved.
+  await t.step('CD2 a name the persona chose for itself is not an unsaved change', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await openEditor(page);
+      await page.route('**/api/local-auth/status', route => route.fulfill({ json: { configured: true } }));
+      await page.route('**/api/characters/global/reviewer/name', route => route.fulfill({ json: { agent_name: 'Nova' } }));
+      await page.evaluate(() => document.querySelector('.persona-editor #pe-name-pick').click());
+      await page.waitForSelector('[data-modal-id^="__human-proof-"]', { state: 'attached' });
+      await page.evaluate(() => {
+        const id = document.querySelector('[data-modal-id^="__human-proof-"]').dataset.modalId;
+        document.getElementById(`hp-passcode-${id}`).value = 'smoke-dash-passcode';
+        window._hpSubmit(id);
+      });
+      await page.waitForFunction(() => document.querySelector('.persona-editor #pe-agent-name').value === 'Nova');
+      const dialogs = [];
+      page.on('dialog', (d) => { dialogs.push(d.message()); d.dismiss(); });
+      await page.evaluate(() => document.querySelector('.persona-editor #pe-cancel').click());
+      await page.waitForTimeout(150);
+      assert.deepEqual(dialogs, [], 'nothing is unsaved');
+      assert.equal(await page.locator('.persona-editor').count(), 0);
     });
   });
 } finally {

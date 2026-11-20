@@ -1813,14 +1813,29 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
   // A dirty check on the backdrop click. Ron lost an edit to exactly this: the
   // Save button was off the bottom of the panel, so clicking away looked like
   // the only exit and threw the work away without a word.
-  const _initial = () => JSON.stringify([
+  // Every field Save sends is in here (CD2): the emoji select and the three
+  // engine pins were left out, so changing one and clicking away, or pressing
+  // Move, lost it without a word.
+  const _fields = () => [
     panel.querySelector('#pe-agent-name').value,
     panel.querySelector('#pe-avatar').value,
     panel.querySelector('#pe-desc').value,
     panel.querySelector('#pe-skills').value,
     bodyEl.value,
-  ]);
-  const _snapshot = _initial();
+    panel.querySelector('#pe-emojis').value,
+    panel.querySelector('#pe-provider').value,
+    panel.querySelector('#pe-model').value,
+    panel.querySelector('#pe-effort').value,
+  ];
+  const _initial = () => JSON.stringify(_fields());
+  let _snapshot = _initial();
+  // "Let it choose" persists one field server-side. That field is then saved,
+  // so it stops counting as a change; the other fields keep their own state.
+  const _markFieldSaved = (i) => {
+    const saved = JSON.parse(_snapshot);
+    saved[i] = _fields()[i];
+    _snapshot = JSON.stringify(saved);
+  };
   const closeIfClean = () => {
     if (_initial() !== _snapshot
         && !confirm('Discard your changes to this persona?')) return;
@@ -1981,6 +1996,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       // The endpoint already persisted it; reflect that in the field so a
       // subsequent Save does not send a stale value back over it.
       nameEl.value = data.agent_name || '';
+      _markFieldSaved(0);
       showPickedNote(data);
       if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
       _announceCharacterChange(scope, name, 'rename');
@@ -2015,6 +2031,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       // Already persisted server-side; mirror it into the field so a later
       // Save does not push a stale value back over it.
       setFace(data.avatar || '');
+      _markFieldSaved(1);
       showPickedNote(data);
       if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
       _announceCharacterChange(scope, name, 'avatar');
