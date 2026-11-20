@@ -573,19 +573,34 @@ function _positionChatModelMenu(pillEl) {
 async function switchChatModel(projectId, sid, model) {
   _closeChatModelMenu();
   const s = agentStatusCache[sid];
+  const prevPin = s ? s.pinnedModel : undefined;
   if (s) s.pinnedModel = model;
   refreshModalById(projectId);
+  // The pin above is optimistic. A refused request (404 session not found for a
+  // detached or transcript-keyed tab, 400 invalid model id) or a network error
+  // puts the old pin back, so the pill never shows a model the server did not take.
+  const refused = (why) => {
+    if (s) s.pinnedModel = prevPin;
+    refreshModalById(projectId);
+    if (typeof showToast === 'function') showToast('Could not change model' + (why ? ': ' + why : ''), 3500);
+  };
   try {
-    await fetch(`${API_BASE}/api/project/${projectId}/agent/${sid}/model`, {
+    const res = await fetch(`${API_BASE}/api/project/${projectId}/agent/${sid}/model`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model }),
     });
+    if (!res.ok) {
+      let why = '';
+      try { why = ((await res.json()) || {}).error || ''; } catch (e) {}
+      refused(why);
+      return;
+    }
     if (typeof showToast === 'function') {
       showToast(model ? `Model pinned — applies on your next message` : `Following the default model again`, 2600);
     }
   } catch (e) {
-    if (typeof showToast === 'function') showToast('Could not change model', 2500);
+    refused('');
   }
 }
 
