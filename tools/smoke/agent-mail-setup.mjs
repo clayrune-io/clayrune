@@ -75,6 +75,11 @@ const fresh = async (width, settingsOnly) => {
     if (STATIC[path]) return route.fulfill({ status: 200, contentType: STATIC[path][0], body: STATIC[path][1] });
     // mobile.js posts /api/diag/viewport on its own timer; it is not part of the flow under test
     if (path.startsWith('/api/diag/')) return json({ ok: true });
+    // update-power.js seeds its restart check with one heartbeat 1.5 s after
+    // boot, and the 15 s completion poll repeats it. Both are page timers, so
+    // one landing inside a "sends no request" window says nothing about the
+    // click under test (failed "@390 invalid owner sends no request" 5 runs in 7).
+    if (path === '/api/system/heartbeat') return json({ ok: true, started_at: 'smoke' });
     reqs.push({ method: req.method(), path, search: url.search, body: req.postData() || '' });
     if (path === '/api/agent-mail/enrollment') {
       if (req.method() === 'GET') return json(enr.body, enr.status);
