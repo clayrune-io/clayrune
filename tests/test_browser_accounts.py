@@ -204,3 +204,33 @@ def test_bad_methods_refused_before_save(store, method):
     with pytest.raises(SetupError):
         browser_connections.clean_draft({'name':'test','url':'https://example.org','browser_profile':'main','signin_method':method})
     assert desk.STORE_PATH.read_bytes() == before
+
+
+def _pane_clean(name='new-person', profile='new-profile'):
+    return browser_connections.clean_draft({'name':name,'url':'https://tiktok.com','browser_profile':profile,'signin_method':'google'})
+
+
+@pytest.mark.parametrize('error', ['refused', 'crashed'])
+def test_pane_account_save_that_fails_midway_leaves_no_account_and_the_retry_works(store, monkeypatch, error):
+    """DCW-C12: the account is created, then a later write fails. Nothing of that Save stays."""
+    from mc import desk_accounts
+    real = desk_accounts.update_account
+
+    def fail(*a, **k):
+        raise desk_accounts.AccountError('fixture refusal') if error == 'refused' else OSError('fixture disk error')
+    monkeypatch.setattr(desk_accounts, 'update_account', fail)
+    with pytest.raises(SetupError if error == 'refused' else OSError):
+        browser_connections.commit('request-midway-1', _pane_clean())
+    assert not [a for a in desk_accounts.list_accounts() if a['identity'] == 'new-person']
+    monkeypatch.setattr(desk_accounts, 'update_account', real)
+    result, replay = browser_connections.commit('request-midway-2', _pane_clean())
+    assert not replay and result['browser_profile'] == 'new-profile' and result['signin_method'] == 'google'
+
+
+def test_pane_account_saves_trim_the_remembered_requests(store):
+    """DCW-C12: the pane branch returned before the trim, so each such Save grew the memory by one."""
+    for i in range(200):
+        browser_connections._done[f'request-old-{i}'] = ('fp', {})
+    browser_connections.commit('request-trim-1', _pane_clean())
+    assert len(browser_connections._done) == 200 and 'request-old-0' not in browser_connections._done
+    assert 'request-trim-1' in browser_connections._done

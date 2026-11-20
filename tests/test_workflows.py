@@ -165,6 +165,42 @@ def test_create_rejects_invalid_definition(wf):
         wf.m.create_workflow(_doc('bad', []))
 
 
+# DCW-W8: validate_workflow is documented "Never raises". Each of these used to
+# raise TypeError/AttributeError instead, which the routes (they catch ValueError
+# only) turned into a 500.
+_MALFORMED_DOCS = {
+    'definition is a list': [1],
+    'outcomes hold an object': _doc('m', [_agent('a', outcomes=[{'x': 1}])]),
+    'outcomes hold numbers': _doc('m', [_agent('a', outcomes=[1, 2])]),
+    'outcomes is a string': _doc('m', [_agent('a', outcomes='yes')]),
+    'prompt is a number': _doc('m', [{**_agent('a'), 'prompt': 7}]),
+    'options hold an object': _doc('m', [_approval('g', [{'x': 1}])]),
+    'options hold numbers': _doc('m', [_approval('g', [1, 2])]),
+    'wait config is a list': _doc('m', [_wait('w', ['delay'])]),
+    'action config is a list': _doc('m', [_action('x', 'journal_append', config=['item_id'])]),
+    'edge from is an object': _doc('m', [_agent('a'), _agent('b')],
+                                   edges=[{'from': {'n': 'a'}, 'to': 'b'}]),
+    'edge to is a list': _doc('m', [_agent('a'), _agent('b')],
+                              edges=[{'from': 'a', 'to': ['b']}]),
+}
+
+
+@pytest.mark.parametrize('label', sorted(_MALFORMED_DOCS))
+def test_validate_reports_a_malformed_shape_instead_of_raising(wf, label):
+    errors = wf.m.validate_workflow(_MALFORMED_DOCS[label])
+    assert errors and all(isinstance(e, str) for e in errors)
+
+
+def test_a_malformed_definition_is_a_400_not_a_500(wf, monkeypatch):
+    monkeypatch.setattr(wf.m, '_model_review_findings', lambda doc: ([], None))  # no model call
+    r = wf.client.post('/api/workflows', headers=UI_HEADERS,
+                       json=_MALFORMED_DOCS['wait config is a list'])
+    assert r.status_code == 400 and 'config' in r.get_json()['error']
+    r = wf.client.post('/api/workflows/review', headers=UI_HEADERS,
+                       json={'definition': _MALFORMED_DOCS['edge from is an object']})
+    assert r.status_code == 200 and r.get_json()['errors']
+
+
 # ── R2-D1: v1 -> v2 migration on read ────────────────────────────────────────
 
 def test_v1_record_migrates_to_format2_on_read(wf):
@@ -749,6 +785,32 @@ def test_action_step_runs_synchronously_then_continues(wf, monkeypatch):
     assert run['frontier'] == []
 
 
+def test_action_result_is_saved_before_the_next_step_starts(wf, monkeypatch):
+    """DCW-W7: an action's side effect used to happen before its result reached
+    disk. A crash on the way to the next step left it 'pending', and restart
+    adoption re-ran it: a second backlog item, a second operator mail."""
+    monkeypatch.setattr(wf.m, '_http_json',
+                        lambda method, path, payload=None: {'item': {'key': 'MC-99'}})
+    real = wf.m._execute_action
+    on_disk = []
+
+    def second_action_dies(run, node, workflow=None):
+        if node['name'] == 'second':
+            # What a restart would find for the step that already ran.
+            on_disk.append(wf.m._read_run(run['id'])['steps']['first']['status'])
+            raise RuntimeError('the process died here')
+        return real(run, node, workflow)
+
+    monkeypatch.setattr(wf.m, '_execute_action', second_action_dies)
+    record = wf.m.create_workflow(_doc('two-actions', [
+        _action('first', 'backlog_create', config={'project_id': 'p1', 'text': 'hi'}),
+        _action('second', 'backlog_create', config={'project_id': 'p1', 'text': 'again'}),
+    ], edges=[_edge('first', 'second')]))
+    with pytest.raises(RuntimeError):
+        wf.m.start_run(record['id'])
+    assert on_disk == ['completed']
+
+
 def test_unknown_action_rejected_at_validation(wf):
     doc = _doc('bad-action', [_action('x', 'send_email')])
     errors = wf.m.validate_workflow(doc)
@@ -826,7 +888,7 @@ def test_notify_operator_sends_no_recipient_argument(wf, monkeypatch):
     cmd = calls[0]
     assert '--to' not in cmd and '--cc' not in cmd and '--recipient' not in cmd
     assert 'someone@else.com' not in cmd
-    assert '--subject' in cmd and '--body' in cmd
+    assert '--subject' in cmd and '--body-file' in cmd
 
 
 def test_notify_operator_suppressed_under_pytest_by_default(wf):

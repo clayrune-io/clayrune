@@ -91,7 +91,9 @@ def status(service_id, method, account_id=None, *, provider=None) -> dict:
     if cs.get('reason'):
         out['message'] = cs['reason']
     if cs['state'] in ('key_stored', 'signed_in', 'probe_ready'):
-        rec = _records.get((service_id, method, account_id or ''))
+        with _lock:                 # `verify` writes a record in two steps under this lock: never read between them
+            rec = _records.get((service_id, method, account_id or ''))
+            rec = dict(rec) if rec else None
         current_stamp = cs['stamp'] if 'stamp' in cs else _stamp(cs.get('entry'))
         if rec and rec['entry'] == cs.get('entry') and rec['stamp'] == current_stamp:
             # A person's own "I'm signed in" (no probe exists to observe it) is not a sign-in Clayrune saw.

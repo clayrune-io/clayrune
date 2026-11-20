@@ -88,3 +88,18 @@ def test_failed_step_names_plain_reason_without_package_pin(staged, monkeypatch,
     assert out['state'] == 'setup_failed'
     assert out['message'] == f'The {label} failed; the connection was not saved.'
     assert URL not in out['message'] and op['version'] not in out['message']
+
+
+@pytest.mark.parametrize('rc,how', [(1, 'exit 1'), (None, 'timed out')])
+def test_a_failed_dependency_step_leaves_its_output_in_the_log(staged, monkeypatch, rc, how):
+    """DCW-C10: the step's output was thrown away, and the log line repeated "See the server log"."""
+    card = prepare(staged[0])
+    op = service.check_submission(card['request_id'],card['fingerprint'])['op']
+    op['install_steps'] = [{'id':'dependencies:0','argv':['npm','ci','--ignore-scripts']}]
+    tail = b'npm ERR! code ERESOLVE\x1b[0m\nnpm ERR! could not resolve dependency'
+    monkeypatch.setattr(activation.scripts, 'spawn', lambda *a: (rc, tail))
+    logs = []
+    monkeypatch.setattr(activation, '_log', lambda text, **k: logs.append(text))
+    assert activation.provision(op, '/project')['state'] == 'setup_failed'
+    line = next(text for text in logs if 'dependencies:0' in text and 'ERESOLVE' in text)
+    assert how in line and 'could not resolve dependency' in line and '\x1b' not in line

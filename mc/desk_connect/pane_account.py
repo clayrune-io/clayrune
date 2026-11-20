@@ -14,6 +14,7 @@ read setting is changed (absent means the browser pane) and no post is made or a
 from __future__ import annotations
 
 from mc import desk, desk_accounts as _accounts
+from mc.core import _log
 from mc.desk_connect.browser_check import status_for
 from mc.desk_connect.browser_setup import SetupError, _profile_state
 from mc.desk_pane_pages import PANE_ONLY_PLATFORMS
@@ -64,13 +65,28 @@ def save(clean: dict) -> dict:
         return view(held, clean['url'], True)
     try:
         created = _accounts.create_account(platform, handle)
-        if created.get('browser_profile') != clean['browser_profile']:
-            created = _accounts.update_account(created['id'], {'browser_profile': clean['browser_profile']})
     except _accounts.AccountError as e:
         raise SetupError(str(e), getattr(e, 'status', 400)) from e
-    with desk._store_lock:
-        store = desk._read_store()
-        rec = store['accounts'][created['id']]
-        rec['signin_method'] = clean.get('signin_method', 'other')
-        desk._write_store(store)
+    try:
+        if created.get('browser_profile') != clean['browser_profile']:
+            created = _accounts.update_account(created['id'], {'browser_profile': clean['browser_profile']})
+        with desk._store_lock:
+            store = desk._read_store()
+            rec = store['accounts'][created['id']]
+            rec['signin_method'] = clean.get('signin_method', 'other')
+            desk._write_store(store)
+    except Exception as e:
+        _take_back(created['id'])       # a half-made account has the wrong profile and refuses the retry (409)
+        if isinstance(e, _accounts.AccountError):
+            raise SetupError(str(e), getattr(e, 'status', 400)) from e
+        raise
     return view(rec, clean['url'], False)
+
+
+def _take_back(account_id: str) -> None:
+    """Remove the account a failed `save` created a moment ago. Never raises."""
+    try:
+        _accounts.delete_account(account_id)
+    except Exception as e:
+        _log(f'[desk_connect] pane account {account_id} of a failed Save could not be removed: {type(e).__name__}',
+             flush=True)

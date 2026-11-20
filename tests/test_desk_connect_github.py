@@ -66,6 +66,24 @@ def test_second_stage_never_replaces_first(staged):
     second=github.stage({'url':URL})
     assert before!=github._stages[second['stage_id']]['install_dir'] and Path(before).is_dir()
 
+@pytest.mark.parametrize('failure',['scan','pin'])
+def test_a_stage_that_fails_after_the_clone_leaves_no_folder(staged,monkeypatch,tmp_path,failure):
+    """DCW-C5: a failed stage is never returned to the person, so nothing can name its clone again;
+    it used to stay on disk for good. A stage that succeeded is not touched."""
+    answer,_,_=staged
+    kept=Path(github._stages[answer['stage_id']]['install_dir'])
+    if failure=='scan':
+        def boom(*a,**k):
+            raise RuntimeError('the scan broke')
+        monkeypatch.setattr(installer,'security_scan',boom)
+    else:
+        real=installer._run
+        monkeypatch.setattr(installer,'_run',lambda argv,cwd=None,**kw:(0,'not-a-sha','') if argv[-1]=='HEAD' and 'rev-parse' in argv and '--abbrev-ref' not in argv else real(argv,cwd,**kw))
+    with pytest.raises(ActivationError):
+        github.stage({'url':URL})
+    assert [p.name for p in (tmp_path/'installs').iterdir()]==[kept.name]
+    assert list(github._stages)==[answer['stage_id']] and (kept/'server.js').is_file()
+
 def test_existing_preview_directory_is_never_deleted(staged):
     answer,_,_=staged
     directory=Path(github._stages[answer['stage_id']]['install_dir'])
@@ -148,6 +166,27 @@ def test_toolless_security_scan_uses_only_transform(staged,monkeypatch):
     directory=github._stages[staged[0]['stage_id']]['install_dir']
     assert REAL_SCAN(directory,SHA,toolless=True)['available']
     assert 'stdin_text' in called[0]
+
+def test_a_start_check_that_raises_does_not_turn_a_saved_connection_into_a_failed_save(staged,monkeypatch,tmp_path):
+    """DCW-C3: the record is registered and the config written before the check runs. An exception
+    there used to reach the route as a 500, and the retry was refused as "repository changed"."""
+    from mc.desk_connect import custom_connection_store as store
+    from mc.desk_connect import github_start_check
+    from mc import mcp
+    monkeypatch.setattr(store,'path',lambda:tmp_path/'approvals.json')
+    configs={}
+    monkeypatch.setattr(mcp,'_write_project_servers',lambda path,mutate:mutate(configs))
+    monkeypatch.setattr(activation.npm,'_read',lambda scope,pid,name,path:configs.get(name))
+    monkeypatch.setattr(activation,'_manifest_path',lambda op:tmp_path/'approved-files.json')
+    def boom(*a,**k):
+        raise RuntimeError('the check itself broke')
+    monkeypatch.setattr(github_start_check,'handshake',boom)
+    card=prepare(staged[0])
+    result,duplicate=service.commit(card['request_id'],card['fingerprint'])
+    assert result['state']=='registered' and not duplicate
+    assert result['message'].startswith('Registered; not checked.')
+    again,duplicate=service.commit(card['request_id'],card['fingerprint'])
+    assert duplicate and again['state']=='registered'
 
 def test_save_and_launch_gate_keep_files_and_credentials_bound(staged,monkeypatch,tmp_path):
     from mc.desk_connect import custom_connection_store as store

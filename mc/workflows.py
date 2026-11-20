@@ -83,7 +83,7 @@ from typing import Any, Callable, Optional
 from mc import state
 from mc.core import _atomic_write_text, _log, now_iso
 from mc.workflow_action_ids import require_id
-from mc.workflow_mail import mail_context_args
+from mc.workflow_mail import body_file, mail_context_args
 from mc import engine_fallback as _engine_fallback  # MC-961: swap record + blocked-run pointer
 from mc.blueprints.push_mobile import _notify_push  # MC-961: same pointer, the notify/inbox surface
 
@@ -417,6 +417,10 @@ def _compute_dominators(order: list, parents_map: dict) -> dict:
     return dom
 
 
+def _is_string_list(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(v, str) for v in value)
+
+
 def validate_workflow(doc: dict) -> list:
     """Return a list of error strings; empty = valid. Never raises.
 
@@ -427,6 +431,8 @@ def validate_workflow(doc: dict) -> list:
     implemented here.
     """
     errors: list = []
+    if not isinstance(doc, dict):
+        return ['workflow definition must be an object']
     trigger = doc.get('trigger') or {'type': 'manual'}
     if not isinstance(trigger, dict) or trigger.get('type') not in TRIGGER_TYPES:
         errors.append(f"trigger.type must be one of {TRIGGER_TYPES}")
@@ -465,16 +471,25 @@ def validate_workflow(doc: dict) -> list:
         if t == 'agent':
             if not node.get('project_id'):
                 errors.append(f"agent step '{name}' missing project_id")
-            if not (node.get('prompt') or '').strip():
+            prompt = node.get('prompt') or ''
+            if not isinstance(prompt, str):
+                errors.append(f"agent step '{name}' prompt must be text")
+            elif not prompt.strip():
                 errors.append(f"agent step '{name}' missing prompt")
             errors.extend(engine_field_errors(node, f"agent step '{name}'"))
             outcomes = node.get('outcomes') or []
+            if not _is_string_list(outcomes):
+                errors.append(f"agent step '{name}' outcomes must be a list of text labels")
+                continue
             if RESERVED_WHEN in outcomes:
                 errors.append(f"agent step '{name}': '{RESERVED_WHEN}' is reserved, not a declared outcome")
             if len(set(outcomes)) != len(outcomes):
                 errors.append(f"agent step '{name}' has duplicate outcomes")
         elif t == 'approval':
             options = node.get('options') or []
+            if not _is_string_list(options):
+                errors.append(f"approval node '{name}' options must be a list of text labels")
+                continue
             if not options:
                 errors.append(f"approval node '{name}' has no options")
             if RESERVED_WHEN in options:
@@ -484,8 +499,13 @@ def validate_workflow(doc: dict) -> list:
         elif t == 'action':
             if node.get('action') not in ACTION_ALLOWLIST:
                 errors.append(f"action step '{name}' action must be one of {ACTION_ALLOWLIST}")
+            if not isinstance(node.get('config') or {}, dict):
+                errors.append(f"action step '{name}' config must be an object")
         elif t == 'wait':
             config = node.get('config') or {}
+            if not isinstance(config, dict):
+                errors.append(f"wait step '{name}' config must be an object")
+                continue
             mode = config.get('mode')
             if mode not in WAIT_MODES:
                 errors.append(f"wait step '{name}' config.mode must be one of {WAIT_MODES}")
@@ -512,6 +532,9 @@ def validate_workflow(doc: dict) -> list:
             errors.append('edge is not an object')
             continue
         frm, to, when = e.get('from'), e.get('to'), e.get('when')
+        if not isinstance(frm, str) or not isinstance(to, str):
+            errors.append("edge 'from' and 'to' must be step names")
+            continue
         if frm not in nodes_by_name:
             errors.append(f"edge references unknown node '{frm}'")
             continue
@@ -1175,7 +1198,10 @@ def _strip_wf_result(text: str) -> str:
 
 
 def _parse_wf_result(text: str) -> Optional[dict]:
-    """The LAST well-formed ```wf:result``` block in text, or None."""
+    """The LAST ```wf:result``` block in text, parsed; None when there is no
+    block or that last block is not a JSON object. An earlier well-formed
+    block is not used in its place; the caller then routes the step to
+    "otherwise"."""
     matches = list(_WF_RESULT_RE.finditer(text or ''))
     if not matches:
         return None
@@ -1545,6 +1571,10 @@ def _advance_run(run_id: str, *, only_if_idle: bool = False,
                 if not ok:
                     _fail_run(run, f"action step '{name}' failed: {err}")
                     return
+                # Saved before anything else runs: a step left 'pending' on
+                # disk is executed again by restart adoption (a second backlog
+                # item, a second operator mail).
+                _write_run(run)
                 continue  # recompute skips/frontier -- may unlock more work
 
             _fail_run(run, f"unrunnable node type '{t}' at '{name}'")
@@ -1950,10 +1980,11 @@ def _send_operator_notification(subject: str, body: str, *, run: Optional[dict] 
     try:
         import subprocess
         import sys
-        r = subprocess.run(
-            [sys.executable, str(mailer), '--subject', subject, '--body', body]
-            + mail_context_args(run or {}),
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
+        with body_file(body) as body_path:  # never argv: see workflow_mail.body_file
+            r = subprocess.run(
+                [sys.executable, str(mailer), '--subject', subject, '--body-file', body_path]
+                + mail_context_args(run or {}),
+                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
         if r.returncode != 0:
             return False, f'send_mail exited {r.returncode}: {(r.stderr or r.stdout or "").strip()[:200]}'
         via_agent_mail = '[send_mail] sent via agent-mail' in (r.stdout or '')

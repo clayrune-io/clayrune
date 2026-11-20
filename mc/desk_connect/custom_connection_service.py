@@ -301,7 +301,10 @@ def commit(request_id: str, fingerprint: str) -> tuple[dict, bool]:
                          outcome['state'], outcome.get('code', ''))
         after = getattr(kind_of(op), 'after_registered', None)
         if outcome['state'] == 'registered' and after is not None:
-            outcome = after(op, outcome)                 # a real start, now the gate will accept it
+            try:
+                outcome = after(op, outcome)             # a real start, now the gate will accept it
+            except Exception as e:                       # it IS saved and registered: say so, unchecked
+                _log(f'[desk_connect] start check after Save failed: {type(e).__name__}', flush=True)
         result = {'ok': True, 'approved': True, 'fingerprint': fingerprint, 'server_name': op['server_name'],
                   'scope': op['scope']['kind'], 'project_id': op['scope']['project_id'], **outcome}
         if _activation._base.passphrase_backed():

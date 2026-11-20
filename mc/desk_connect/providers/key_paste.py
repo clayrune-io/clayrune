@@ -69,7 +69,10 @@ class KeyPaste:
     def apply(self, clean: dict, undo, names) -> None:
         if clean.get('edit_saved') is True:
             from mc.desk_connect import saved_key_update
-            saved_key_update.apply(self.vault, clean, undo)
+            try:
+                saved_key_update.apply(self.vault, clean, undo)
+            except secret_field_refs.FieldRefError as e:    # the picked entry is gone or locked: say so, not a 500
+                raise base.ProviderError(str(e), 409, e.code) from None
             return
         referenced = isinstance(clean['secret'], dict) or isinstance(clean['username'], dict)
         if self.vault in names and not referenced:
@@ -80,9 +83,12 @@ class KeyPaste:
                                     allow_unattended=clean['allow_unattended'], entry_type=self.entry_type, undo=undo,
                                     confirm_replace=clean.get('confirm_replace') is True)
             else:
+                # create_only: the names check above is a courtesy message; this is the guard (it holds the vault lock).
                 _vault.set_secret(self.vault, clean['secret'], username=clean['username'], description=DESCRIPTION,
                                   scope='global', allow_unattended=clean['allow_unattended'],
-                                  entry_type=self.entry_type)
+                                  entry_type=self.entry_type, create_only=True)
+        except _vault.SecretExists as e:
+            raise self.exists() from e
         except _vault.SecretsError as e:
             raise base.ProviderError(f'the credential could not be stored: {e}', 400, 'vault_refused') from e
         if not referenced:

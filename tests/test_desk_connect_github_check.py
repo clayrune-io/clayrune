@@ -133,7 +133,12 @@ for line in sys.stdin:
     m = json.loads(line)
     if m.get('method') == 'initialize':
         out = ({'error': {'code': -32600, 'message': 'unsupported client'}} if mode == 'refuse'
+               else {'error': 'bad key'} if mode == 'error_string'
+               else {'result': 'ready'} if mode == 'result_string'
+               else {'result': {'serverInfo': ['fixture']}} if mode == 'serverinfo_list'
                else {'result': {'protocolVersion': '2025-06-18', 'capabilities': {}, 'serverInfo': {'name': 'fixture'}}})
+    elif m.get('method') == 'tools/list' and mode == 'tools_error_string':
+        out = {'error': 'no tools for you'}
     elif m.get('method') == 'tools/list':
         page2 = (m.get('params') or {}).get('cursor') == 'p2'
         out = {'result': {'tools': [{'name': 'c'}]} if page2 else {'tools': [{'name': 'a'}, {'name': 'b'}], 'nextCursor': 'p2'}}
@@ -174,6 +179,17 @@ def test_silent_server_times_out_and_is_stopped(fake):
 def test_initialize_error_is_a_refusal(fake):
     raw = REAL_HANDSHAKE(fake('refuse'), None, 20)
     assert raw['code'] == 'refused' and raw['reason'] == 'unsupported client'
+
+
+@pytest.mark.parametrize('mode,expected', [
+    ('error_string', {'ok': False, 'code': 'refused', 'reason': 'bad key'}),
+    ('result_string', {'ok': True, 'tools': 3, 'server': ''}),
+    ('serverinfo_list', {'ok': True, 'tools': 3, 'server': ''}),
+    ('tools_error_string', {'ok': False, 'code': 'no_tools', 'reason': 'no tools for you'}),
+])
+def test_a_wrong_shaped_answer_is_a_result_not_an_exception(fake, mode, expected):
+    """DCW-C3: these are valid JSON, and each raised AttributeError after the connection was saved."""
+    assert REAL_HANDSHAKE(fake(mode), None, 20) == expected
 
 
 def test_missing_program_is_a_launch_failure(tmp_path):

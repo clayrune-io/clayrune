@@ -62,6 +62,16 @@ def _forget_all_for_tests() -> None:
         _facts.clear()
 
 
+def _drop_expired() -> None:
+    """Called under `_cache_lock` on every store. The age check on read alone never frees an entry,
+    and a version-list document can be megabytes."""
+    now = time.monotonic()
+    for name in [k for k, (at, _) in _docs.items() if now - at >= CACHE_TTL_S]:
+        del _docs[name]
+    for key in [k for k, (at, _) in _facts.items() if now - at >= CACHE_TTL_S]:
+        del _facts[key]
+
+
 def _refuse(message: str, code: str, status: int = 422) -> ActivationError:
     return ActivationError(message, code, status)
 
@@ -79,6 +89,7 @@ def _doc(name: str) -> dict:
             return hit[1]
     doc = _registry.fetch(name)
     with _cache_lock:
+        _drop_expired()
         _docs[name] = (time.monotonic(), doc)
     return doc
 
@@ -115,6 +126,7 @@ def _fact(name: str, version: str, meta: dict) -> dict:
             'occupied': sorted(_edges.occupied_names(seen['files'])), 'licence': _artifact._licence(manifest),
             'stated': stated is not None and stated.startswith('sha512-'), 'deprecated': meta['deprecated']}
     with _cache_lock:
+        _drop_expired()
         _facts[(name, version)] = (time.monotonic(), fact)
     return fact
 

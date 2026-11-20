@@ -70,8 +70,9 @@ def provision(op: dict, project_path: str | None) -> dict:
                 try:
                     if step.get('argv'):
                         env=scripts.script_env({'script':step['id'],'package':op['package'],'version':op['version']},Path(temporary),str(Path(shutil.which('node') or sys.executable).parent),cwd)
-                        rc,_=scripts.spawn(step['argv'],cwd,env,120)
+                        rc,tail=scripts.spawn(step['argv'],cwd,env,120)
                         if rc != 0:
+                            _log(f'[desk-connect] repository step {step["id"]} output: {scripts.failure_note(rc,tail)}',flush=True)
                             raise ActivationError('A selected install step failed. See the server log.', 'install_failed',400)
                     else:
                         scripts.run(step,cwd,Path(temporary),node_dir=str(Path(shutil.which('node') or sys.executable).parent))

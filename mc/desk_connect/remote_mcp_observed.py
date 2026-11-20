@@ -53,18 +53,29 @@ def digest_of(observed: dict) -> str:
                                       .encode('ascii')).hexdigest()
 
 
-def _read() -> tuple[dict, bool]:
-    """`(records, reset)`; `reset` is True when a damaged file was set aside."""
+def _read(set_aside: bool = True) -> tuple[dict, bool]:
+    """`(records, reset)`; `reset` is True when a damaged file was set aside. Only a file whose CONTENT
+    is damaged is set aside, and only for a caller that will write (`set_aside`). A file that could not
+    be opened (in use, a passing error) stays where it is and the OSError is raised: the baseline in it
+    is what a later check compares against, so it is never dropped for a read that may work next time."""
     p = path()
     try:
-        doc = json.loads(p.read_text(encoding='utf-8'))
+        raw = p.read_bytes()
+    except FileNotFoundError:
+        return {}, False
+    except OSError as e:
+        _log(f'[desk_connect] remote MCP observation record could not be opened ({type(e).__name__}); left in place',
+             flush=True)
+        raise
+    try:
+        doc = json.loads(raw.decode('utf-8'))
         recs = doc.get('records') if isinstance(doc, dict) else None
         if isinstance(recs, dict):
             return recs, False
         raise ValueError('not a record file')
-    except FileNotFoundError:
-        return {}, False
-    except (OSError, ValueError) as e:
+    except ValueError as e:
+        if not set_aside:
+            raise
         aside = p.with_name(f'{p.name}.corrupt-{datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")}')
         try:
             os.replace(p, aside)
@@ -83,9 +94,18 @@ def _write(recs: dict) -> None:
 
 
 def get(scope: str, project_id: str | None, server_name: str, fingerprint: str | None = None) -> dict | None:
-    """The record for this approval (None when there is none, or it belongs to another fingerprint)."""
-    with _lock:
-        recs, _ = _read()
+    """The record for this approval (None when there is none, it belongs to another fingerprint, or
+    the file cannot be read now). Read only: a damaged file is left for the next check to set aside
+    and say so."""
+    try:
+        with _lock:
+            recs, _ = _read(set_aside=False)
+    except OSError:
+        return None                                     # logged by `_read`
+    except ValueError as e:
+        _log(f'[desk_connect] remote MCP observation record unreadable ({type(e).__name__}); the next check sets it '
+             f'aside', flush=True)
+        return None
     rec = recs.get(_store.key(scope, project_id, server_name))
     if not isinstance(rec, dict) or (fingerprint is not None and rec.get('fingerprint') != fingerprint):
         return None

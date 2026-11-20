@@ -13,6 +13,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 from mc import mcp_installer as installer
+from mc.core import _log
 from mc.desk_connect import custom_connection_operation as operation
 from mc.desk_connect import custom_connection_store as store
 from mc.desk_connect import github_manifest as manifest
@@ -32,6 +33,7 @@ def stage(body: object) -> dict:
     if classified.get('kind') != 'git' or not classified.get('owner') or not classified.get('repo'):
         raise ActivationError('Enter a GitHub repository web address.', 'bad_repository', 400)
     token = secrets.token_hex(16)
+    clone = None
     try:
         clone = installer.stage_clone(classified['url'], classified['owner'], classified['repo'],
                                       classified.get('ref'), staging_id=token)
@@ -75,11 +77,25 @@ def stage(body: object) -> dict:
                 'build_required': inferred.get('build_required', False),
                 'required_steps': inferred.get('required_steps', [])}
     except ActivationError:
+        _discard(token, clone)
         raise
     except Exception as e:
-        from mc.core import _log
+        _discard(token, clone)
         _log(f'[desk-connect] repository staging failed: {type(e).__name__}', flush=True)
         raise ActivationError('The repository could not be checked; see the server log.', 'stage_failed', 400) from e
+
+def _discard(token: str, clone: dict | None) -> None:
+    """Forget a stage that failed and remove its clone. Its id was never returned to the person, so
+    no Review and no saved connection can name that folder. A stage that succeeded is never removed
+    here: its folder is the one a saved connection runs from."""
+    with _lock:
+        _stages.pop(token, None)
+    if not clone:
+        return
+    try:
+        installer.cleanup_staged(clone['install_dir'])
+    except Exception as e:
+        _log(f'[desk-connect] failed repository stage could not be removed: {type(e).__name__}', flush=True)
 
 def checked_stage(stage_id: object) -> dict:
     """Return only a live, unchanged stage for read-only setup/review consumers."""
