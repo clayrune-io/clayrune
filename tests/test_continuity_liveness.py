@@ -157,3 +157,38 @@ def test_context_builder_injects_origin_and_labels_legacy_activity(env, monkeypa
     provenance.note_rollover(P['id'], 'current', 'prior-native')
     ctx = ar._build_agent_context(project, session_id='current', source='ui')
     assert 'Session origin: auto-fresh rollover from predecessor session prior-native' in ctx
+
+
+# ── MC-1179 pass 3, ML35: prose after "branch" is not a branch name ─────────
+
+@pytest.mark.parametrize('prose', [
+    'on a branch of the worktree',
+    'the branch is pushed',
+    'branch was merged, nothing left',
+    'that branch up-to-date with master',
+    'branch fast-forward done',
+])
+def test_an_ordinary_word_after_branch_is_not_probed_as_a_branch(env, monkeypatch, prose):
+    """`_BRANCH` took whatever word followed "branch ". With a session id on
+    the same line, "the branch is pushed" sent `is` to `git show-ref` and a
+    live, consistent thread was rendered STATE MISMATCH ... branch absent in
+    every later system prompt, at one git subprocess per render."""
+    state.agent_sessions[SID] = dict(project_id=P['id'], status='running')
+    probed = []
+    monkeypatch.setattr(live, '_branch_exists',
+                        lambda p, b: (probed.append(b), False)[1])
+    text = f'Tobin session {SID}: {prose}'
+    assert live.render_thread(P, text, 'age') == f'IN FLIGHT — {text} (age)'
+    assert probed == []
+
+
+@pytest.mark.parametrize('named', ['fix/ticket', 'mc1166-u7d1', 'clayrune/mc-1179',
+                                   '`feature/x`'])
+def test_a_path_like_name_after_branch_is_still_probed(env, monkeypatch, named):
+    state.agent_sessions[SID] = dict(project_id=P['id'], status='running')
+    probed = []
+    monkeypatch.setattr(live, '_branch_exists',
+                        lambda p, b: (probed.append(b), False)[1])
+    rendered = live.render_thread(P, f'session {SID} on branch {named}', 'age')
+    assert probed == [named.strip('`')]
+    assert rendered.startswith('STATE MISMATCH:') and 'branch absent' in rendered
