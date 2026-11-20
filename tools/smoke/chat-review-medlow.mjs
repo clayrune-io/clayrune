@@ -154,6 +154,30 @@ try {
       assert.equal(notes.filter(n => n.includes('bl-kept')).length, 1);
     });
   });
+
+  // CV13: the chat header fetched the plan file for its title from inside the
+  // render, with no in-flight guard and no record of a miss, so a plan with no
+  // `# ` heading (or a deleted one, 404) was refetched on every modal rebuild.
+  await t.step('CV13 a plan file with no title is fetched once, not on every rebuild', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      let hits = 0;
+      await page.route('**/agent/plan-file*', route => { hits++; return route.fulfill({ status: 404, json: { error: 'gone' } }); });
+      for (let i = 0; i < 4; i++) {
+        await page.evaluate(({ sid }) => { agentStatusCache[sid].planFile = '/smoke/plans/no-heading.md'; refreshModal(); }, { sid });
+        await page.waitForTimeout(150);
+      }
+      assert.equal(await page.locator('.btn-plan-file').count(), 1, 'the plan button is drawn');
+      assert.equal(hits, 1, 'one title probe for one plan file across four rebuilds');
+      // A different plan file for the same chat is a new question.
+      await page.evaluate(({ sid }) => { agentStatusCache[sid].planFile = '/smoke/plans/second.md'; refreshModal(); }, { sid });
+      await page.waitForTimeout(150);
+      assert.equal(hits, 2, 'a changed plan file is probed again');
+      // The hit path is unchanged: a heading becomes the button's label.
+      await page.route('**/agent/plan-file*', route => route.fulfill({ json: { content: ['# Ship the fix', '', 'body'].join(String.fromCharCode(10)) } }));
+      await page.evaluate(({ sid }) => { agentStatusCache[sid].planFile = '/smoke/plans/third.md'; refreshModal(); }, { sid });
+      await page.waitForFunction(() => /Ship the fix/.test(document.querySelector('.btn-plan-file')?.textContent || ''));
+    });
+  });
 } finally {
   t.done();
   await browser.close();

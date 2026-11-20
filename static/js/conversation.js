@@ -23,6 +23,7 @@ let pendingDispatchProvider = {};  // project_id → provider chosen in the new-
 let pendingDispatchCharacter = {}; // project_id → "scope:name" persona chosen in the new-chat composer (Prompt Builder Phase 2)
 let characterCache = {};           // project_id → array of available characters (lazy-loaded for the composer picker)
 let characterCacheLoading = {};    // project_id → true while a fetch is in flight (dedupe)
+const _planTitleProbed = {};       // session_id → 'sid|planFile' once the header's title probe has been sent (CV13)
 
 // ── Speaker attribution (MC-937 Phase 2a — channel model spec §4) ───────────
 // One persona per session today (multi-speaker sessions are the rest of
@@ -1807,9 +1808,14 @@ function agentPanelHTML(p) {
       ? (() => {
           const fname = activeSession.planFile.split(/[/\\]/).pop();
           const label = planFileTitle[activeSessionId] || planFileLabel(activeSession.task || fname);
-          // Lazy-fetch heading if not cached yet
-          if (!planFileTitle[activeSessionId]) {
-            fetch(API_BASE + `/api/project/${esc(p.id)}/agent/plan-file?session=${esc(activeSessionId)}`)
+          // Lazy-fetch heading if not cached yet. One probe per (chat, plan file):
+          // this runs inside the render, and a plan with no `# ` heading or a
+          // deleted file (404) never fills planFileTitle, so without the record
+          // every modal rebuild sent the request again.
+          const _probeKey = activeSessionId + '|' + activeSession.planFile;
+          if (!planFileTitle[activeSessionId] && _planTitleProbed[activeSessionId] !== _probeKey) {
+            _planTitleProbed[activeSessionId] = _probeKey;
+            fetch(API_BASE + `/api/project/${encodeURIComponent(p.id)}/agent/plan-file?session=${encodeURIComponent(activeSessionId)}`)
               .then(r => r.ok ? r.json() : null)
               .then(d => {
                 if (d && d.content) {
@@ -1819,9 +1825,6 @@ function agentPanelHTML(p) {
                     if (t.length > 40) t = t.slice(0, 37) + '...';
                     planFileTitle[activeSessionId] = t;
                     const c = document.getElementById(`plan-file-btn-${activeSessionId}`);
-                    if (c) c.querySelector('.btn-plan-file')?.childNodes?.forEach?.((n, i) => {
-                      if (i > 0) n.textContent = ' ' + t;
-                    });
                     if (c && c.querySelector('.btn-plan-file')) {
                       c.querySelector('.btn-plan-file').innerHTML = `&#128196; ${esc(t)}`;
                     }
