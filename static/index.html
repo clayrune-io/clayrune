@@ -3504,8 +3504,12 @@ async function openTranscriptViewer(projectId, csid, label, provider) {
 function startRefresh() {
   refreshCountdown = 30;
   clearInterval(refreshInterval); clearInterval(countdownInterval);
-  refreshInterval = setInterval(() => { fetchProjects(); refreshCountdown = 30; }, 30000);
+  // A duplicate tab (the single-instance script at the top of this file) has
+  // replaced its body with an "already open" notice and cannot unload what is
+  // already running, so each timer here stands down on its flag.
+  refreshInterval = setInterval(() => { if (window._clayruneDuplicateTab) return; fetchProjects(); refreshCountdown = 30; }, 30000);
   countdownInterval = setInterval(() => {
+    if (window._clayruneDuplicateTab) return;
     refreshCountdown--;
     document.getElementById('refresh-timer').textContent = `refresh in ${refreshCountdown}s`;
   }, 1000);
@@ -3851,6 +3855,7 @@ startRefresh();
 
 // ── Fallback: poll for missed agent completions every 15s ───────────────────
 setInterval(async () => {
+  if (window._clayruneDuplicateTab) return;
   // Piggyback a server-restart check here so dashboards with no live SSE still
   // notice a restart within ~15s. _checkServerRestart triggers the reload
   // overlay if the server's start time changed since first load.
@@ -3932,7 +3937,7 @@ setInterval(async () => {
 // here, so the slot discipline the 15s poll protects is preserved.
 const FRESHNESS_TICK_MS = 5000;
 setInterval(() => {
-  if (document.visibilityState !== 'visible') return;
+  if (document.visibilityState !== 'visible' || window._clayruneDuplicateTab) return;
   for (const [, entry] of openModals) {
     if (!entry || entry.minimized || !entry.projectId) continue;
     const pid = entry.projectId;

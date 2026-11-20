@@ -56,6 +56,21 @@ try {
         'with nothing focused the Backlog tab is rebuilt as before');
     });
   });
+
+  // FE17: a second tab replaces its body with an "already open" notice and
+  // sets window._clayruneDuplicateTab, "a global flag the SPA can check".
+  // Nothing checked it: the tab kept every timer, and the countdown threw a
+  // TypeError each second because #refresh-timer was gone with the body.
+  await t.step('FE17 the timers of a duplicate tab stand down instead of throwing each second', async () => {
+    await scenario(browser, {}, async ({ page, errors }) => {
+      await page.evaluate(() => {
+        window._clayruneDuplicateTab = true;
+        document.body.innerHTML = '<div>Clayrune is already open</div>';
+      });
+      await page.waitForTimeout(2300);
+      assert.deepEqual(errors(), [], 'the one-second countdown no longer throws on the missing #refresh-timer');
+    });
+  });
 } finally {
   t.done();
   await browser.close();
