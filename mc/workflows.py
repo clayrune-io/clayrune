@@ -1198,7 +1198,10 @@ def _strip_wf_result(text: str) -> str:
 
 
 def _parse_wf_result(text: str) -> Optional[dict]:
-    """The LAST well-formed ```wf:result``` block in text, or None."""
+    """The LAST ```wf:result``` block in text, parsed; None when there is no
+    block or that last block is not a JSON object. An earlier well-formed
+    block is not used in its place; the caller then routes the step to
+    "otherwise"."""
     matches = list(_WF_RESULT_RE.finditer(text or ''))
     if not matches:
         return None
