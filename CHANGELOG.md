@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-19] - Second-review follow-ups to the agent fixes (MC-1179 R34, P95, X1)
+
+- R34. A chat restored after a server restart remembers which lines of its buffer are user prompts. A child's report to its spawner no longer joins the previous reply, a queued follow-up prompt and the new reply into one. A reply that itself begins with a quoted line is still reported whole.
+- P95. The Windows installer stops CLI setup when a running Claude process cannot be identified, for example an elevated one. It names the process ID and asks you to close it or run the installer elevated. It also recognises an npm folder that is a junction or symlink, as nvm-windows sets up.
+- X1. Codex and Qwen follow-ups detach a previous process that has already exited, as the other per-turn providers do, so its late output cannot end the new turn.
+- Tests added for the pending-context refusal through `/agent/send` (R39) and the failed-resume re-check in Mode B (R27).
+
 ## [2026-11-19] - Desk planners can pick a child's model and effort
 
 - Campaign, storyboard, and article planners see the models and effort levels each hired agent's provider offers. Dispatch cards show the launch settings, and invalid picks leave the attempt budget intact.
