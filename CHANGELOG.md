@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-19] - The weekly memory health check tells a person when memory degrades
+
+- `tools/memory-eval/eval.py` prints the unreachable-note count split by who wrote the note (hand-written, positions, mints, and the memory system's own two files) and keeps the old total.
+- Four fixed rules decide what is a finding: any hand-written note unreachable, planted-fact recall more than 10 points under the stored baseline in two consecutive runs, a contradiction pass rate of 0, and a newest memory snapshot older than 26 hours or missing.
+- With `--notify` each new finding is mailed once through the existing mailer with the drafted fix, and stays quiet until it clears and recurs. Without it the run prints what it would send. Nothing in the memory directory is written.
+- Rule (b) needs a baseline stored once with `python tools/memory-eval/memory_health.py --set-recall-baseline <percent>`.
+
 ## [2026-11-19] - Agent mail Worker reliability fixes (MC-1179 pass 05a)
 
 - W5, W12. Scheduled retention now deletes expired rate-limit buckets, and a short notification page ends the sweep pass without spending an extra tick.

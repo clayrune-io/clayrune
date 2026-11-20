@@ -164,6 +164,19 @@ def run_contradictions(m, project, pairs, topk, expand):
     return out
 
 
+def effectiveness_of(results):
+    """(delivered, pairs, percent) over every (canary, query) pair. One
+    definition, shared with the health rules in memory_health.py."""
+    pairs = [q for r in results for q in r['queries']]
+    delivered = sum(1 for q in pairs if q['delivered'])
+    return delivered, len(pairs), 100.0 * delivered / max(1, len(pairs))
+
+
+def contradiction_passes(contradictions):
+    """(passed, total) for the pinned contradiction pairs."""
+    return sum(1 for c in contradictions if c['passed']), len(contradictions)
+
+
 _HEADER_RE = re.compile(r'^---.*---\s*$')
 
 
@@ -322,13 +335,11 @@ def main():
     contradictions = run_contradictions(m, project, pairs, topk, expand) if pairs else []
 
     # ---- 1. EFFECTIVENESS ----
-    all_pairs = [(r, q) for r in results for q in r['queries']]
-    n_delivered = sum(1 for _, q in all_pairs if q['delivered'])
-    effectiveness = 100.0 * n_delivered / max(1, len(all_pairs))
+    n_delivered, n_pairs, effectiveness = effectiveness_of(results)
     canaries_any = sum(1 for r in results if r['any_delivered'])
 
     print(f'\n== EFFECTIVENESS ==')
-    print(f'{n_delivered}/{len(all_pairs)} (canary, query) pairs delivered in top {depth}'
+    print(f'{n_delivered}/{n_pairs} (canary, query) pairs delivered in top {depth}'
           f' ({effectiveness:.1f}%)')
     print(f'{canaries_any}/{len(results)} canaries reached by at least one query')
 
@@ -379,7 +390,7 @@ def main():
     if not contradictions:
         print('  none pinned yet')
     else:
-        n_pass = sum(1 for c in contradictions if c['passed'])
+        n_pass, _ = contradiction_passes(contradictions)
         print(f'{n_pass}/{len(contradictions)} pass '
               f'({100.0 * n_pass / len(contradictions):.0f}%)')
         for c in contradictions:
