@@ -5189,6 +5189,11 @@ def _maybe_checkpoint(session, force=False):
     the roll proceeds; returns that as a bool. The non-forced path keeps
     firing the worker on a daemon thread and returns False unconditionally
     (no caller used `_maybe_checkpoint`'s return value until now)."""
+    # The session id this call put in `_checkpoint_inflight` and has not yet
+    # handed to a worker. The worker gives the slot back when it finishes; a
+    # launch that fails before the worker has it must give it back here, or
+    # every later boundary for the session coalesces for ever (ML20).
+    _claimed = None
     try:
         if not force and not state.CONFIG.get('scribe_checkpoint_enabled', False):
             return False
@@ -5245,6 +5250,7 @@ def _maybe_checkpoint(session, force=False):
                     _scribe_stat(pid, 'checkpoint_coalesced')
                     return False
                 _checkpoint_inflight.add(sid)
+                _claimed = sid
             snap = {'pid': pid, 'sid': sid, 'csid': csid,
                     'provider_session_id': provider_sid,
                     'provider': provider,
@@ -5254,9 +5260,11 @@ def _maybe_checkpoint(session, force=False):
                     'canonical_lines': canonical_lines,
                     'canonical_sequence': canonical_sequence}
             if force:
+                _claimed = None
                 return bool(_checkpoint_worker(snap))
             threading.Thread(target=_checkpoint_worker, args=(snap,),
                              daemon=True).start()
+            _claimed = None
             return False
         pp = p.get('project_path', '')
         if provider in ('', 'claude'):
@@ -5281,6 +5289,7 @@ def _maybe_checkpoint(session, force=False):
                 _scribe_stat(pid, 'checkpoint_coalesced')
                 return False  # previous worker still running; next boundary covers more
             _checkpoint_inflight.add(sid)
+            _claimed = sid
         snap = {'pid': pid, 'sid': sid, 'csid': csid,
                 'provider_session_id': provider_sid,
                 'provider': provider,
@@ -5292,11 +5301,17 @@ def _maybe_checkpoint(session, force=False):
                 'owner': _session_owner(session),
                 'tf': str(tf)}
         if force:
+            _claimed = None
             return bool(_checkpoint_worker(snap))
         threading.Thread(target=_checkpoint_worker, args=(snap,),
                          daemon=True).start()
+        _claimed = None
         return False
-    except Exception:
+    except Exception as e:
+        if _claimed is not None:
+            with _checkpoint_guard:
+                _checkpoint_inflight.discard(_claimed)
+        _log(f"[scribe] checkpoint launch failed: {type(e).__name__}: {e}")
         return False
 
 
