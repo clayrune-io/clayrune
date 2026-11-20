@@ -425,10 +425,23 @@ def identity_check(mem_dir, stem, *, ignore_stem=None):
     return False, None
 
 
-def atomic_write(project_id, mem_dir, name, text, *, must_exist=None):
+def _still_reads(path, expected_text):
+    """True when `path` still holds the text the caller composed its write
+    from (read the same way the route reads it). Call inside the topic lock.
+    An unreadable file is a changed file: refuse rather than write blind."""
+    try:
+        return path.read_text(encoding='utf-8', errors='replace') == expected_text
+    except OSError:
+        return False
+
+
+def atomic_write(project_id, mem_dir, name, text, *, must_exist=None,
+                 expected_text=None):
     """Write under the per-project topic lock (same lock write_topic_note /
     resolve_mint use). `must_exist` re-checks inside the lock: False = the
-    file must NOT exist (POST), True = it must (PATCH). Returns False when the
+    file must NOT exist (POST), True = it must (PATCH). `expected_text` (PATCH)
+    is what the caller read before composing `text`; a file that no longer
+    holds it was written by someone else in between. Returns False when a
     re-check fails — a racing writer won."""
     path = mem_dir / name
     with _mem._get_mem_write_lock(f'topic:{project_id}'):
@@ -436,16 +449,22 @@ def atomic_write(project_id, mem_dir, name, text, *, must_exist=None):
             return False
         if must_exist is True and not path.is_file():
             return False
+        if expected_text is not None and not _still_reads(path, expected_text):
+            return False
         mem_dir.mkdir(parents=True, exist_ok=True)
         _atomic_write_text(path, text)
     return True
 
 
-def rename_file(project_id, mem_dir, old_name, new_name, text):
-    """Write `new_name`, then remove `old_name`, in one locked section."""
+def rename_file(project_id, mem_dir, old_name, new_name, text, *,
+                expected_text=None):
+    """Write `new_name`, then remove `old_name`, in one locked section.
+    `expected_text`: as `atomic_write`, checked against `old_name`."""
     old, new = mem_dir / old_name, mem_dir / new_name
     with _mem._get_mem_write_lock(f'topic:{project_id}'):
         if new.exists() or not old.is_file():
+            return False
+        if expected_text is not None and not _still_reads(old, expected_text):
             return False
         _atomic_write_text(new, text)
         old.unlink()
