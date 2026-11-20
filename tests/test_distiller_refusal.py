@@ -91,3 +91,56 @@ def test_wrapped_refusal_no_longer_passes_caller_guard(monkeypatch):
     assert wrapped.strip() != 'REFUSE'
     # New guard checks the raw output — it catches it.
     assert distiller._is_refusal('REFUSE') is True
+
+
+# ── MC-1179 pass 3, ML31: a failed model call is not a silent refusal ───────
+
+import pytest  # noqa: E402
+
+_CANDIDATE = {
+    'exact': 'abcdef0123456789', 'coarse': 'fedcba9876543210', 'kind': 'skill',
+    'phrase': 'fix-route', 'recurrence_exact': 3, 'recurrence_coarse': 3,
+    'scope_tag': 'cross-project', 'sids': ['s1', 's2', 's3'],
+    'evidence_signals': [{
+        'sid': 's1', 'phrase': 'fix-route', 'summary': 'a summary',
+        'problem': 'a problem', 'resolution': 'a resolution',
+        'evidence_quote': 'a quote', 'question': 'a question',
+        'paths_tried': ['a.py'], 'outcome': 'an outcome',
+        'tools_used': ['Grep']}],
+}
+
+
+@pytest.mark.parametrize('renderer', ['_render_skill', '_render_exploration',
+                                      '_render_preference'])
+def test_a_render_transport_error_is_logged(monkeypatch, renderer):
+    """Each renderer swallowed any exception from the model call and returned
+    None, which the caller counts as `render_refuse`. A timeout, a quota error
+    and a missing CLI all looked like the model declining, with no log
+    (project exception policy: a swallowed network failure must log)."""
+    logs = []
+    monkeypatch.setattr(distiller, '_log', lambda msg, *a, **k: logs.append(str(msg)))
+
+    def broken(*a, **k):
+        raise RuntimeError('quota exhausted for today')
+
+    monkeypatch.setattr(distiller, '_model_call', broken)
+    monkeypatch.setattr(distiller, '_provider_model', lambda provider: 'cheap')
+    body, _path = getattr(distiller, renderer)('p1', {'id': 'p1'}, dict(_CANDIDATE))
+    assert body is None                     # still swallowed, still no artifact
+    hits = [l for l in logs if 'quota exhausted for today' in l]
+    assert len(hits) == 1 and 'p1' in hits[0] and 'abcdef01' in hits[0]
+
+
+def test_a_reframe_transport_error_is_logged(monkeypatch):
+    logs = []
+    monkeypatch.setattr(distiller, '_log', lambda msg, *a, **k: logs.append(str(msg)))
+    monkeypatch.setattr(distiller, 'read_proposed_artifact', lambda directory: {
+        'kind': 'exploration', 'description': 'd', 'body': 'b'})
+    monkeypatch.setattr(distiller, '_provider_model', lambda provider: 'cheap')
+
+    def broken(*a, **k):
+        raise RuntimeError('CLI not found')
+
+    monkeypatch.setattr(distiller, '_scribe_call', broken)
+    assert distiller.reframe_exploration_to_skill('some-dir') is None
+    assert len([l for l in logs if 'CLI not found' in l and 'some-dir' in l]) == 1

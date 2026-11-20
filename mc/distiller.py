@@ -2027,7 +2027,13 @@ def _render_skill(project_id: str, project: dict,
     )
     try:
         out = _model_call(provider, project, model, instruction, body_in)
-    except Exception:
+    except Exception as e:
+        # Swallowed (the caller counts None as a refusal), but a timeout,
+        # a quota error and a missing CLI must not look like the model
+        # declining: say which it was.
+        if _log:
+            _log(f"[distiller] render skill model call failed for "
+                 f"{project_id} ({candidate['exact'][:8]}): {e}", flush=True)
         return None, Path()
     if _is_refusal(out):
         return None, Path()
@@ -2053,7 +2059,13 @@ def _render_exploration(project_id: str, project: dict,
     )
     try:
         out = _model_call(provider, project, model, instruction, body_in)
-    except Exception:
+    except Exception as e:
+        # Swallowed (the caller counts None as a refusal), but a timeout,
+        # a quota error and a missing CLI must not look like the model
+        # declining: say which it was.
+        if _log:
+            _log(f"[distiller] render exploration model call failed for "
+                 f"{project_id} ({candidate['exact'][:8]}): {e}", flush=True)
         return None, Path()
     if _is_refusal(out):
         return None, Path()
@@ -2088,7 +2100,13 @@ def _render_preference(project_id: str, project: dict,
     )
     try:
         out = _model_call(provider, project, model, instruction, body_in)
-    except Exception:
+    except Exception as e:
+        # Swallowed (the caller counts None as a refusal), but a timeout,
+        # a quota error and a missing CLI must not look like the model
+        # declining: say which it was.
+        if _log:
+            _log(f"[distiller] render preference model call failed for "
+                 f"{project_id} ({candidate['exact'][:8]}): {e}", flush=True)
         return None, Path()
     if _is_refusal(out):
         return None, Path()
@@ -2131,7 +2149,10 @@ def reframe_exploration_to_skill(directory: str) -> dict | None:
     try:
         out = cast(Callable[[str, str, str], str], _scribe_call)(
             model, _REFRAME_EXPLORATION_TO_SKILL_PREAMBLE, body_in)
-    except Exception:
+    except Exception as e:
+        if _log:
+            _log(f"[distiller] reframe model call failed for {directory}: {e}",
+                 flush=True)
         return None
     if _is_refusal(out):
         return None
