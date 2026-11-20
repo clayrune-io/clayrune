@@ -422,8 +422,8 @@ test('scheduled runs metadata retention as its own job: one family per tick, a f
   assert.deepEqual(first.notify, { claimed: 0, woken: 0 });
   assert.ok(f.sql.prepare("SELECT 1 FROM pull_sweep_cursors WHERE task='metadata'").get(), 'retention cursor persisted');
   const seen = [first.retention.family];
-  for (let n = 1; n < 16; n++) seen.push((await f.worker.scheduled({}, f.env)).retention.family);
-  assert.equal(new Set(seen).size, 16, 'sixteen ticks visit sixteen distinct families');
+  for (let n = 1; n < 17; n++) seen.push((await f.worker.scheduled({}, f.env)).retention.family);
+  assert.equal(new Set(seen).size, 17, 'seventeen ticks visit seventeen distinct families');
   const nonces = f.sql.prepare('SELECT nonce FROM pull_nonces').all().map((r) => r.nonce);
   assert.ok(!nonces.includes('dead-nonce'), 'expired nonce deleted by the scheduled handler');
   assert.ok(nonces.includes('live-nonce'), 'unexpired nonce kept');

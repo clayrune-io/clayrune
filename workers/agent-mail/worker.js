@@ -119,8 +119,8 @@ export function createWorker({ clock = Date.now, bodyTimeoutMs = BODY_TIMEOUT_MS
         }
       }
       // One bounded slice (<=100 rows of one family) per tick, every tick: the
-      // cursor visits each of its 16 families once per 16 ticks. Gating it to
-      // hourly would cut that to ~150 rows/day/family, below the nonce growth rate.
+      // cursor visits each of its 17 families once per 17 ticks. Gating it to
+      // hourly would cut that to ~140 rows/day/family, below the nonce growth rate.
       try {
         retention = await retain({ ledger: new Ledger(env.MAIL_DB).pull({ clock }) });
       } catch {

@@ -151,6 +151,33 @@ test('budget, nonce, ticket and owner-slot deadlines never release active scope 
   assert.equal(one(f,'pull_owner_slots').role,'active');
 });
 
+// MC-1179 W5: Ledger.limit adds one rate_limits row per bucket per window on the
+// live path (per-source, per-minute) and nothing in the pull Worker deleted them.
+test('expired rate-limit buckets are deleted at their own deadline; live buckets keep their count', async (t) => {
+  const f = fixture(t);
+  insert(f,'rate_limits',{bucket:'pull:http:source:aa:30000000',count:30,expires_at:NOW+1});
+  insert(f,'rate_limits',{bucket:'http:unauthenticated:30000000',count:7,expires_at:NOW+120000});
+  assert.deepEqual(await family(f,'limits'),{family:'limits',scanned:2,changed:0});
+  assert.equal(rows(f,'rate_limits').length,2);
+  f.time++;
+  assert.deepEqual(await family(f,'limits'),{family:'limits',scanned:2,changed:1});
+  assert.deepEqual(rows(f,'rate_limits').map((r)=>[r.bucket,r.count]),[['http:unauthenticated:30000000',7]]);
+});
+
+test('a cursor saved before a family was appended resumes; a cursor with unknown families fails closed', async (t) => {
+  const f = fixture(t);
+  await run(f);
+  const saved = JSON.parse(one(f,'pull_sweep_cursors').cursor_id);
+  // The 16-family cursor a Worker deployed before `limits` existed left behind.
+  f.db.sql.prepare("UPDATE pull_sweep_cursors SET cursor_id=? WHERE task='metadata'").run(JSON.stringify(saved.slice(0,16)));
+  insert(f,'rate_limits',{bucket:'expired:1',count:1,expires_at:NOW});
+  assert.equal((await run(f)).family,'changes');
+  assert.equal((await family(f,'limits')).changed,1);
+  assert.equal(JSON.parse(one(f,'pull_sweep_cursors').cursor_id).length,saved.length);
+  f.db.sql.prepare("UPDATE pull_sweep_cursors SET cursor_id=? WHERE task='metadata'").run(JSON.stringify([...saved,[0,0]]));
+  await assert.rejects(() => run(f), /storage_unavailable/);
+});
+
 test('lost sending lease stays uncertain, never requeued/refunded; expiry removes only the envelope', async (t) => {
   const f = fixture(t); control(f,1,{state:'sending',lease_id:id(8),lease_until_ms:NOW+1,expires_ms:NOW+1000,attempts:1});
   insert(f,'pull_budgets',{bucket:'charged',count:1,expires_ms:NOW+DAY});
@@ -351,7 +378,7 @@ test('audit expiry/cap compaction is bounded, preserves newest10000 and keeps da
 
 test('actual generated reference checks and FK plans never scan state tables', async (t) => {
   const f=fixture(t);
-  for(let n=0;n<16;n++) await run(f);
+  for(let n=0;n<17;n++) await run(f);
   for(const sql of f.db.queries.filter((s)=>/^(?:DELETE|UPDATE|INSERT INTO pull_audit_overflow)/.test(s))) {
     // Thread/intent DELETE has one bounded json_each list parameter.
     const args = Array.from({length:(sql.match(/\?/g)??[]).length},()=> '[]');
@@ -369,7 +396,7 @@ test('Miniflare D1 executes the real module with0006, persisted cursors and fore
   for(const source of sources) await db.exec(source.replace(/--[^\n]*/g,'').replace(/[\r\n]/g,' '));
   const ledger=new PullLedger({db});
   await db.prepare("INSERT INTO pull_budgets VALUES('expired',2,0)").run();
-  for(let n=0;n<16;n++) await retain({ledger});
+  for(let n=0;n<17;n++) await retain({ledger});
   assert.equal(await db.prepare('SELECT * FROM pull_budgets').first(),null);
   assert.equal((await db.prepare("SELECT * FROM pull_sweep_cursors WHERE task='metadata'").first()).cursor_ms,0);
   assert.deepEqual((await db.prepare('PRAGMA foreign_key_check').all()).results,[]);
