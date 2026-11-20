@@ -19,6 +19,7 @@ can reach a network or run npm):
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -527,3 +528,16 @@ def test_the_self_contained_check_never_calls_a_closure_installed(env):
         artifact.install(op)
     from mc.desk_connect import custom_npm_install as inst
     assert inst.is_installed(op) is True
+
+
+def test_expired_registry_documents_and_facts_are_dropped_not_kept_for_the_life_of_the_server(monkeypatch):
+    """DCW-C13: the age was checked on read only, so every package ever resolved stayed in memory."""
+    old = time.monotonic() - closure.CACHE_TTL_S - 1
+    fresh = time.monotonic()
+    with closure._cache_lock:
+        closure._docs.update({'old-doc': (old, {'big': 'x'}), 'fresh-doc': (fresh, {})})
+        closure._facts.update({('old-pkg', '1.0.0'): (old, {}), ('fresh-pkg', '1.0.0'): (fresh, {})})
+    monkeypatch.setattr(closure._registry, 'fetch', lambda name: {'name': name})
+    assert closure._doc('new-doc') == {'name': 'new-doc'}
+    assert set(closure._docs) == {'fresh-doc', 'new-doc'}
+    assert set(closure._facts) == {('fresh-pkg', '1.0.0')}
