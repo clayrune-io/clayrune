@@ -75,6 +75,22 @@ try {
       assert.equal(status, 'stopped', 'the keep-window-open detach is unchanged for a genuine empty list');
     });
   });
+
+  // CV9: 250 lines of fetchAgentStatus ran inside `catch(e) {}`. A TypeError on
+  // one session row ended the pass with nothing logged anywhere.
+  await t.step('CV9 a throw inside the status poll is logged, not swallowed whole', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      const warnings = [];
+      page.on('console', m => { if (m.type() === 'warning') warnings.push(m.text()); });
+      await page.route('**/agent/status', route => route.fulfill({ json: { sessions: [] } }));
+      await page.evaluate(async ({ pid }) => {
+        window.updateAgentMailHoldNotices = () => { throw new Error('boom-cv9'); };
+        await window.fetchAgentStatus(pid);
+      }, { pid });
+      assert.ok(warnings.some(w => /agent\/status/.test(w) && /boom-cv9/.test(w)),
+        `the failure reaches the console, got ${JSON.stringify(warnings)}`);
+    });
+  });
 } finally {
   t.done();
   await browser.close();

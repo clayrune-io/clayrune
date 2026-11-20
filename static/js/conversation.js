@@ -6403,7 +6403,12 @@ async function fetchAgentStatus(projectId) {
     else _subagentPollStop(projectId);
     if (_attendOnceAnyPassOpen(sessions)) _attendOncePollStart(projectId);
     else _attendOncePollStop(projectId);
-  } catch(e) {}
+  } catch(e) {
+    // Everything above runs in this one try. Silent, a throw on one session row
+    // skipped the rest of the pass (later rows, detach, the timer decisions)
+    // with no trace. Still swallowed: the next poll retries.
+    console.warn(`[Clayrune] agent/status poll failed for ${projectId}:`, e);
+  }
 }
 
 
