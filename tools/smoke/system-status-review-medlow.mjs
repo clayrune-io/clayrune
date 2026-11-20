@@ -156,6 +156,30 @@ try {
     });
   });
 
+  // SS4: one sequence counter for every provider's hover popup. Entering the
+  // second bar while the first was loading threw the first one's answer away
+  // and left it marked "fetching", so the next pass fetched it all again.
+  await t.step('SS4 hovering a second provider bar keeps the answer the first one was waiting for', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      const calls = await usageRoutes(page, { delay: 250 });
+      await minuteTick(page);
+      await page.waitForSelector('#usage-bar-strip .usage-bar-item', { state: 'attached' });
+      await page.evaluate(() => {
+        const bars = document.querySelectorAll('#usage-bar-strip .usage-bar-item');
+        window._ubBarMouseEnter('claude', { currentTarget: bars[0] });
+        window._ubBarMouseEnter('codex', { currentTarget: bars[1] });
+      });
+      await sleep(900);
+      assert.equal(calls.breakdown.length, 4, 'two providers, two requests each');
+      await page.evaluate(() => {
+        const bars = document.querySelectorAll('#usage-bar-strip .usage-bar-item');
+        window._ubBarMouseEnter('claude', { currentTarget: bars[0] });
+      });
+      await sleep(600);
+      const claude = calls.breakdown.filter(q => /provider=claude/.test(q)).length;
+      assert.equal(claude, 2, `the first provider's answer was thrown away and fetched again (${claude} requests)`);
+    });
+  });
 } finally {
   t.done();
   await real.close();

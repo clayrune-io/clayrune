@@ -61,7 +61,10 @@ let _ubRangeKey = '';  // '' = current window (server default); else 'range_star
 // whatever provider/window_kind the report page happens to have selected).
 let _ubPopupProvider = null;      // which provider's popup is open, or null
 const _ubPopupData = {};          // provider -> {ts, character, model, error}
-let _ubPopupReqSeq = 0;
+// provider -> sequence number of its latest popup fetch. One counter per
+// provider: a single shared one meant entering a second bar discarded the
+// first bar's answer in flight and left its entry marked `fetching`.
+const _ubPopupReqSeq = {};
 const _UB_POPUP_TTL_MS = 60000;
 const _UB_POPUP_MIN_SAMPLES = 5;  // mirrors _MIN_ELIGIBLE_INTERVALS, mc/usage_breakdown_aggregate.py
 
@@ -1295,16 +1298,16 @@ function _ubPopupStale(provider) {
 }
 
 async function _ubFetchBarPopup(provider) {
-  const seq = ++_ubPopupReqSeq;
+  const seq = _ubPopupReqSeq[provider] = (_ubPopupReqSeq[provider] || 0) + 1;
   _ubPopupData[provider] = { ..._ubPopupData[provider], fetching: true };
   const qs = `provider=${encodeURIComponent(provider)}&window_kind=7d&window_scope=all`;
   let charData = null, modelData = null, error = false;
   try {
     const [charRes, modelRes] = await Promise.all([
       _ubFetchBreakdownRetry(API_BASE + '/api/system/usage/breakdown?' + qs + '&dimension=character',
-                             () => seq === _ubPopupReqSeq),
+                             () => seq === _ubPopupReqSeq[provider]),
       _ubFetchBreakdownRetry(API_BASE + '/api/system/usage/breakdown?' + qs + '&dimension=model',
-                             () => seq === _ubPopupReqSeq),
+                             () => seq === _ubPopupReqSeq[provider]),
     ]);
     if (!charRes.ok || !modelRes.ok) throw new Error('bad status');
     charData = await charRes.json();
@@ -1312,7 +1315,7 @@ async function _ubFetchBarPopup(provider) {
   } catch {
     error = true;
   }
-  if (seq !== _ubPopupReqSeq) return; // superseded by a newer open meanwhile
+  if (seq !== _ubPopupReqSeq[provider]) return; // superseded by a newer fetch for this provider
   _ubPopupData[provider] = { ts: Date.now(), fetching: false, charData, modelData, error };
   if (_ubPopupProvider === provider) _ubRerenderBarPopup();
 }
