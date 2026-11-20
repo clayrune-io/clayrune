@@ -318,7 +318,7 @@ function openProjectModal(projectId, restoreState) {
   // Re-size agent chat when modal is resized + persist size pref. Skip the
   // size-persist while snapped — snap-driven resizes shouldn't clobber the
   // user's saved "free" size (which we want back when they unsnap).
-  new ResizeObserver(() => {
+  const _sizeObserver = new ResizeObserver(() => {
     const entry = openModals.get(projectId);
     if (!entry || entry.minimized) return;
     const sid = activeAgentTab[projectId];
@@ -328,7 +328,11 @@ function openProjectModal(projectId, restoreState) {
     if (!entry.snap) {
       _setModalPref(projectId, { width: content.offsetWidth, height: content.offsetHeight });
     }
-  }).observe(content);
+  });
+  _sizeObserver.observe(content);
+  // Kept on the entry so closeModalById can disconnect it.
+  const _opened = openModals.get(projectId);
+  if (_opened) _opened._sizeObserver = _sizeObserver;
 }
 
 function closeModalById(modalId) {
@@ -363,6 +367,7 @@ function closeModalById(modalId) {
   // Clean up terminal pop-out resources
   cleanupTerminalModal(modalId);
   if (entry._statusBarObserver) { entry._statusBarObserver.disconnect(); delete entry._statusBarObserver; }
+  if (entry._sizeObserver) { entry._sizeObserver.disconnect(); delete entry._sizeObserver; }
   window.ProjectTestRuns?.detach(modalId);
   entry.element.remove();
   const chip = document.getElementById('chip-' + modalId);
@@ -504,7 +509,9 @@ function _fitModalMenu(dd) {
   // 8px of air above the window edge; never collapse below ~3 rows.
   dd.style.maxHeight = Math.max(120, Math.floor(bottom - ddTop - 8)) + 'px';
   if (box && !dd._fitRO && typeof ResizeObserver === 'function') {
-    dd._fitRO = new ResizeObserver(() => _fitModalMenu(dd));
+    // The dropdown is rebuilt with the modal; an observer whose dropdown has
+    // left the document lets go of it on its next fire.
+    dd._fitRO = new ResizeObserver(() => { if (!dd.isConnected) { dd._fitRO.disconnect(); return; } _fitModalMenu(dd); });
     dd._fitRO.observe(box);
   }
 }

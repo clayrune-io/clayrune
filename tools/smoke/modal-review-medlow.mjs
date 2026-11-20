@@ -99,6 +99,32 @@ try {
       assert.deepEqual(toasts, ['Mode B (persistent process) for new sessions']);
     });
   });
+
+  // MM5: openProjectModal created one ResizeObserver per opened modal and kept
+  // no handle, so closeModalById could not disconnect it; each open and close
+  // left the observer, its closure and the modal node behind.
+  await t.step('MM5 closing a project modal disconnects the observer it opened with', async () => {
+    await scenario(browser, {}, async ({ page, errors }) => {
+      const r = await page.evaluate(({ pid }) => {
+        const made = [];
+        const Real = window.ResizeObserver;
+        window.ResizeObserver = class extends Real {
+          constructor(cb) { super(cb); this.smoke = { targets: [], off: false }; made.push(this); }
+          observe(el, o) { this.smoke.targets.push(el); return super.observe(el, o); }
+          disconnect() { this.smoke.off = true; return super.disconnect(); }
+        };
+        const id = 'second_project';
+        allProjects.push({ ...allProjects.find(p => p.id === pid), id, name: 'Second' });
+        openProjectModal(id);
+        const mine = made.filter(o => o.smoke.targets.some(el => el.classList && el.classList.contains('modal-content')));
+        closeModalById(id);
+        window.ResizeObserver = Real;
+        return { opened: mine.length, stillObserving: mine.filter(o => !o.smoke.off).length };
+      }, { pid });
+      assert.deepEqual(r, { opened: 1, stillObserving: 0 });
+      assert.deepEqual(errors(), []);
+    });
+  });
 } finally {
   t.done();
   await browser.close();
