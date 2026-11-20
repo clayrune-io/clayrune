@@ -1406,13 +1406,29 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
   // generating anything, same graceful-degradation contract as a failed gen.
   goBtn.disabled = false;
 
-  let overwrite = false;
+  // CD1: a 409 arms the overwrite for the name and scope that collided, and
+  // for nothing else. Armed for the whole panel, retyping the name (or picking
+  // another Where) and saving replaced a different existing character with no
+  // second warning.
+  let overwriteFor = null;
+  const goLabel = goBtn.textContent;
+  const nameEl = panel.querySelector('#claydo-save-name');
+  const whereEl = panel.querySelector('#claydo-save-scope');
+  const saveKey = () => nameEl.value.trim().toLowerCase() + '|' + whereEl.value;
+  const disarmIfMoved = () => {
+    if (overwriteFor !== null && overwriteFor !== saveKey()) { overwriteFor = null; goBtn.textContent = goLabel; }
+  };
+  nameEl.addEventListener('input', disarmIfMoved);
+  whereEl.addEventListener('change', disarmIfMoved);
   goBtn.onclick = async () => {
     const nameVal = panel.querySelector('#claydo-save-name').value.trim().toLowerCase();
     const descVal = panel.querySelector('#claydo-save-desc').value.trim();
     // 'global' → global scope; any other value is a project id.
     const whereVal = panel.querySelector('#claydo-save-scope').value;
     const isGlobal = whereVal === 'global';
+    disarmIfMoved();
+    const key = saveKey();
+    const overwrite = overwriteFor === key;
     if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(nameVal)) {
       return showErr('Name must be kebab-case: letters, digits, hyphens.');
     }
@@ -1442,7 +1458,7 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
       const res = { ok: result.ok, status: result.status };
       const data = result.body;
       if (res.status === 409 && !overwrite) {
-        overwrite = true;
+        overwriteFor = key;
         goBtn.disabled = false;
         goBtn.textContent = 'Overwrite existing';
         return showErr(`"${nameVal}" already exists in that scope — save again to overwrite.`);
