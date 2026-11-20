@@ -105,9 +105,10 @@ async def attest(
     the exact bytes the client signed (Pydantic round-trip would change
     them by adding nulls for optional missing fields).
 
-    v1 simplification: tunnel_token in the response is currently a placeholder
-    string. When the real CF tunnel provisioning lands (per `03-` §5.1),
-    this is replaced with a real CF-issued tunnel token.
+    tunnel_token in the response is the Cloudflare tunnel token minted at
+    enrollment and stored on the device row (`cf_tunnel_token`). A
+    `PLACEHOLDER_TOKEN_...` string is returned only for a device row that has
+    none.
     """
     started = time.monotonic()
     rid = _request_id(request)

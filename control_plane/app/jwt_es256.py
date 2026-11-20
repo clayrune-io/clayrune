@@ -27,10 +27,11 @@ TTL), then drop it.
 
 Single-key convenience: `CLAYRUNE_JWT_SIGNING_KEY_PEM` + `CLAYRUNE_JWT_KID`.
 
-Dev/test: with neither set, an ephemeral key is generated in-process. Sessions
-do not survive a restart — which is the honest behaviour for a key that lives
-only in RAM. Production is guarded: `_load_keys()` refuses to generate one when
-`K_SERVICE` (Cloud Run) is present.
+Dev/test: with neither set, an ephemeral key is generated in-process, but only
+when `CLAYRUNE_ALLOW_EPHEMERAL_KEY=1`. Sessions do not survive a restart —
+which is the honest behaviour for a key that lives only in RAM. Without that
+flag `_load_keys()` refuses to generate one, on every host (it used to refuse
+only when `K_SERVICE`, Cloud Run, was present).
 
 Generate a key:
 

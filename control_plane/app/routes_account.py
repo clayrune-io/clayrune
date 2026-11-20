@@ -6,7 +6,9 @@ Copyright (c) 2026 Clayrune. All rights reserved.
 Implemented:
   POST /v1/enroll                   — provisions a CF tunnel + DNS, persists user +
                                       device, returns enrollment_token
-  GET/POST /v1/sessions*            — our sessions (app/sessions.py), NOT CF Access's
+  GET  /v1/devices                  — the caller's devices
+  POST /v1/devices/{id}/revoke      — disconnect one device
+  GET/POST /v1/sessions*           — our sessions (app/sessions.py), NOT CF Access's
   */devices/{id}/mobile-tokens      — phone pairing, now a long-lived mobile session
 
 **No Cloudflare Access anywhere in this file's provisioning paths.** Access was
@@ -15,18 +17,15 @@ product. It is replaced by the edge Worker + our session JWT. The Access-deletin
 calls that remain exist only to tear down what we already created for existing
 users — see `control_plane/teardown_access.py`.
 
-Pending:
+Not implemented:
   GET    /v1/account
   DELETE /v1/account
   POST   /v1/account/username
-  GET    /v1/devices
   POST   /v1/devices/{id}/rename
-  POST   /v1/devices/{id}/revoke
 
-Auth: in v1 dev (MC_CP_DEV_AUTH=1), X-Dev-User-Email header authorizes the
-caller as that email (no signin verification). When Firebase Auth is wired
-(SETUP_CHECKLIST.md §3), the dev shim is gated off and Firebase ID token
-verification kicks in.
+Auth: a Firebase ID token, verified by `_verify_firebase_token`. In dev
+(MC_CP_DEV_AUTH=1) the X-Dev-User-Email header authorizes the caller as that
+email with no sign-in verification.
 """
 from __future__ import annotations
 

@@ -288,9 +288,8 @@ async def signin_complete(
             "request_id": "x",
         })
 
-    # Call the enrollment helper (we need a synthetic request-like object).
-    # Easier: refactor /v1/enroll to expose a `_do_enroll` callable. For
-    # now, replicate the post-auth path inline — small enough to be clear.
+    # Run the post-auth half of /v1/enroll, which routes_account exposes as
+    # `_do_enroll_after_auth` so this route does not replicate it.
     from .routes_account import _do_enroll_after_auth
     try:
         result = await _do_enroll_after_auth(
