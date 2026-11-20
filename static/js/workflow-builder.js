@@ -4347,7 +4347,16 @@ async function _wfSaveLinkedSchedule(st) {
   const isSchedule = st.def.trigger && st.def.trigger.type === 'schedule';
   if (!isSchedule) {
     if (st.linkedSchedule && st.linkedSchedule.id) {
-      try { await fetch(`${API_BASE}/api/schedules/${encodeURIComponent(st.linkedSchedule.id)}`, { method: 'DELETE' }); } catch (e) {}
+      // WB8: a refused DELETE leaves the row alive, and the scheduler starts
+      // runs from it whatever the trigger type says. Keep its id so the next
+      // save tries again, and say so. 404 is "already gone".
+      try {
+        const res = await fetch(`${API_BASE}/api/schedules/${encodeURIComponent(st.linkedSchedule.id)}`, { method: 'DELETE' });
+        if (!res.ok && res.status !== 404) throw new Error('HTTP ' + res.status);
+      } catch (e) {
+        showToast('Workflow saved, but its schedule could not be removed and will keep firing (' + e.message + '). Save again to retry.', 8000);
+        return;
+      }
       st.linkedSchedule = null;
     }
     return;

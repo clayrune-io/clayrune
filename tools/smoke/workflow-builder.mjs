@@ -2159,6 +2159,7 @@ try {
   page3.on('pageerror', (e) => page3Errors.push(e.message || String(e)));
   let savedWorkflow3 = null;
   let savedSchedule3 = null;
+  let scheduleDeleteStatus3 = 200, scheduleDeletes3 = 0;   // WB8
   await page3.route('**/*', (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -2199,6 +2200,18 @@ try {
       const body = JSON.parse(req.postData() || '{}');
       savedSchedule3 = { ...savedSchedule3, ...body };
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedSchedule3) });
+    }
+    // WB8: the schedule DELETE can be refused, and the workflow itself re-saved.
+    if (path.startsWith('/api/schedules/') && req.method() === 'DELETE') {
+      scheduleDeletes3 += 1;
+      if (scheduleDeleteStatus3 !== 200) return route.fulfill({ status: scheduleDeleteStatus3, contentType: 'application/json', body: '{"error":"refused"}' });
+      savedSchedule3 = null;
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+    }
+    if (path === '/api/workflows/wf-smoke3' && req.method() === 'PUT') {
+      const body = JSON.parse(req.postData() || '{}');
+      savedWorkflow3 = { ...savedWorkflow3, ...body };
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, workflow: savedWorkflow3 }) });
     }
     if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
     // Unmocked, these abort forever and agent-log.js's rail poller retries
@@ -2346,6 +2359,38 @@ try {
   (reopenActiveDays.length === 1 && reopenActiveDays[0] === '3')
     ? ok('reopening highlights the previously-picked day (Wed) and no others')
     : fail(`expected only day 3 highlighted on reopen, got ${JSON.stringify(reopenActiveDays)}`);
+
+  // WB8 (MC-1179 pass 04): switching the trigger back to Manual deletes the
+  // linked schedule. A refused DELETE used to be swallowed and the builder
+  // forgot the schedule's id, so the row stayed alive and kept starting runs
+  // with nothing on screen to say so and no way to retry.
+  await page3.evaluate(() => {
+    window.__toasts = [];
+    const orig = window.showToast;
+    window.showToast = (msg, ms) => { window.__toasts.push(String(msg)); if (orig) orig(msg, ms); };
+    window._wfSetTriggerType('manual');
+  });
+  scheduleDeleteStatus3 = 500;
+  await page3.click('.wfb-toolbar .btn-sched-save');
+  await answerHumanProofModalIfShown(page3);
+  await page3.waitForFunction(() => (window.__toasts || []).length > 0, { timeout: 4000 }).catch(() => {});
+  await page3.waitForTimeout(200);
+  const wb8 = await page3.evaluate(() => ({
+    id: (window._wfEntry()._wf.linkedSchedule || {}).id || null, toasts: window.__toasts.slice() }));
+  (scheduleDeletes3 === 1 && wb8.id === 'sched-smoke3' && wb8.toasts.some(t => /schedule could not be removed/i.test(t)))
+    ? ok('WB8: a refused schedule DELETE is reported and the builder keeps the schedule it could not remove')
+    : fail(`WB8: a refused schedule DELETE was swallowed: deletes=${scheduleDeletes3} ${JSON.stringify(wb8)}`);
+  // The retry: the id was kept, so marking the canvas changed and saving again removes it.
+  scheduleDeleteStatus3 = 200;
+  await page3.evaluate(() => { window.__toasts = []; window._wfMarkDirty(); });
+  await page3.click('.wfb-toolbar .btn-sched-save');
+  await answerHumanProofModalIfShown(page3);
+  await page3.waitForFunction(() => (window.__toasts || []).length > 0, { timeout: 4000 }).catch(() => {});
+  await page3.waitForTimeout(200);
+  const wb8b = await page3.evaluate(() => window._wfEntry()._wf.linkedSchedule);
+  (scheduleDeletes3 === 2 && savedSchedule3 === null && wb8b === null)
+    ? ok('WB8: the next save retries the DELETE and the schedule is gone')
+    : fail(`WB8: the retry did not remove the schedule: deletes=${scheduleDeletes3} linked=${JSON.stringify(wb8b)}`);
 
   const uncaught3 = page3Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught3.length) uncaught3.forEach((e) => fail('uncaught exception in the cadence trigger flow: ' + e));
