@@ -402,6 +402,7 @@ try {
   // needed since _wfEnsureProviderAuthFresh caches per-provider and this
   // route is read fresh on every request.
   const providerAuthResponses = {};
+  const providerAuthDelayMs = {};   // WB6: hold one provider's probe so a test can type while it is pending
   await page.route('**/*', async (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -433,6 +434,7 @@ try {
     const authMatch = path.match(/^\/api\/agent\/provider\/([^/]+)\/auth$/);
     if (authMatch) {
       const name = authMatch[1];
+      if (providerAuthDelayMs[name]) await new Promise((r) => setTimeout(r, providerAuthDelayMs[name]));
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
         name, installed: true, version: null, binary_path: null,
         auth_status: providerAuthResponses[name] || 'unknown', auth_method: null,
@@ -1608,6 +1610,55 @@ try {
   (!c13UnknownState.warningClass && !c13UnknownState.inlineWarning)
     ? ok('an `unknown` auth status never trips the warning — "unknown is not unauthenticated"')
     : fail(`expected no warning for an unknown auth status, got ${JSON.stringify(c13UnknownState)}`);
+
+  // WB6 (MC-1179 pass 04): the auth probe is started from inside a render and
+  // its answer re-rendered the whole body, straight from the model. Text typed
+  // into the inspector while the probe was pending was gone when it landed.
+  // A probe that changes nothing on screen must not re-render; one that does
+  // (a definite negative, which draws the warning) must sync the fields first.
+  for (const [prov, status] of [['wb6ok', 'ok'], ['wb6bad', 'not_logged_in']]) {
+    providerAuthResponses[prov] = status;
+    providerAuthDelayMs[prov] = 600;
+    const nodeName = `c13-${prov}`;
+    // The step uses a persona the inspector's select really offers (global
+    // "builder"): the sync reads that select, so a persona it does not list
+    // would be written back as "Project default" and take the provider with
+    // it. Its bench row (the bench was replaced by an earlier section) carries
+    // the fake provider and is taken out again below.
+    await page.evaluate(({ pid, prov, nodeName }) => {
+      const st = window._wfEntry()._wf;
+      st.bench = st.bench.concat([{ name: 'builder', scope: 'global', display: 'Tobin', avatar: '',
+        description: '', skills: [], provider: prov, model: `${prov}-1`, effort: '',
+        project_id: '', project_name: '', rooms: [], _wb6: true }]);
+      st.def.nodes = (st.def.nodes || []).concat([{ type: 'agent', name: nodeName, x: -1300, y: -900,
+        project_id: pid, character: 'global:builder', prompt: '', outcomes: [] }]);
+      window._wfMarkDirty();
+      window._wfSetTriggerType(st.def.trigger.type || 'manual');
+    }, { pid: PID, prov, nodeName });
+    await openInspector(page, nodeName);
+    await setValue(page, '#wfb-inspector .wfb-prompt', 'typed while the probe is pending');
+    await page.evaluate(() => { document.querySelector('#wfb-inspector .wfb-prompt').dataset.wb6 = 'original'; });
+    await page.waitForTimeout(1100);
+    const wb6 = await page.evaluate(() => {
+      const el = document.querySelector('#wfb-inspector .wfb-prompt');
+      return { value: el ? el.value : null, sameNode: !!el && el.dataset.wb6 === 'original',
+        warned: !!document.querySelector('#wfb-inspector .wfb-node-inline-warning') };
+    });
+    await closeInspector(page);
+    await page.evaluate(() => {
+      const st = window._wfEntry()._wf;
+      st.bench = st.bench.filter(x => !x._wb6);
+    });
+    if (status === 'ok') {
+      (wb6.sameNode && wb6.value === 'typed while the probe is pending')
+        ? ok('WB6: an auth probe that changes nothing does not rebuild the inspector being typed in')
+        : fail(`WB6: the probe's answer rebuilt the inspector mid-typing: ${JSON.stringify(wb6)}`);
+    } else {
+      (wb6.warned && wb6.value === 'typed while the probe is pending')
+        ? ok('WB6: an auth probe that adds a warning keeps the text typed while it was pending')
+        : fail(`WB6: the warning re-render dropped typed text or never drew: ${JSON.stringify(wb6)}`);
+    }
+  }
 
   // ── Mobile viewport: palette becomes a bottom sheet, canvas still present ─
   await ctx.close();

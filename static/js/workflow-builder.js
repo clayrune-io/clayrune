@@ -417,11 +417,32 @@ function _wfEnsureProviderAuthFresh(provider) {
       // touch-drag smoke case: an aborted probe's unconditional re-render
       // detached the very node the next gesture was about to grab).
       if (d && d.name) {
+        // WB6: the only thing this cache draws is the warning line, so an
+        // answer that leaves that line as it was (the common ok/unknown)
+        // re-renders nothing. One that changes it goes through the sync, or
+        // the rebuild drops whatever was typed while the probe was pending.
+        const before = _wfAuthWarnStatus(d.name);
         _wfAuthCache[d.name] = { status: d.auth_status || 'unknown', fetchedAt: Date.now() };
-        if (_wfEntry()) _wfRender();
+        if (_wfAuthWarnStatus(d.name) !== before) _wfSyncThenRender();
       }
     })
     .catch(() => { _wfAuthFetching.delete(provider); });
+}
+
+// The status the warning below would name for this provider, or '' when it
+// draws nothing (never probed, ok, unknown).
+function _wfAuthWarnStatus(provider) {
+  const rec = _wfAuthCache[provider];
+  return (!rec || rec.status === 'ok' || rec.status === 'unknown') ? '' : String(rec.status);
+}
+
+// A re-render that is NOT the direct result of an edit on this canvas (a
+// network answer, a button outside the inspector) still replaces the open
+// inspector, so it takes the typed fields into the model first (WB6).
+function _wfSyncThenRender() {
+  const entry = _wfEntry(); if (!entry || !entry._wf) return;
+  _wfSyncDomToModel(entry);
+  _wfRender();
 }
 
 // Definite-negative statuses only. Confirmed against every
@@ -438,9 +459,9 @@ function _wfEnsureProviderAuthFresh(provider) {
 function _wfProviderAuthWarning(provider) {
   if (!provider) return '';
   _wfEnsureProviderAuthFresh(provider);
-  const rec = _wfAuthCache[provider];
-  if (!rec || rec.status === 'ok' || rec.status === 'unknown') return '';
-  return `This step will fail when the workflow runs — ${provider} is not authenticated (${String(rec.status).replace(/_/g, ' ')}).`;
+  const status = _wfAuthWarnStatus(provider);
+  if (!status) return '';
+  return `This step will fail when the workflow runs — ${provider} is not authenticated (${status.replace(/_/g, ' ')}).`;
 }
 
 // The single warning line an agent card shows, highest-signal first. Every
@@ -4683,7 +4704,7 @@ function _wfDismissUnassignedFinding(i) {
   const entry = _wfEntry(); if (!entry) return;
   const st = entry._wf;
   (st.reviewUnassigned || []).splice(i, 1);
-  _wfRender();
+  _wfSyncThenRender();
 }
 window._wfDismissUnassignedFinding = _wfDismissUnassignedFinding;
 
@@ -4806,7 +4827,7 @@ async function _wfCancelRun() {
   if (!run || st.cancellingRun) return;
   if (!confirm(`Cancel run ${run.id}? Its remaining steps will not run. An agent already working on a step keeps going until you stop it from its chat.`)) return;
   st.cancellingRun = true;
-  _wfRender();
+  _wfSyncThenRender();
   try {
     const result = await humanProofFetch(`${API_BASE}/api/workflow-runs/${encodeURIComponent(run.id)}/cancel`, {
       method: 'POST',
@@ -4814,7 +4835,7 @@ async function _wfCancelRun() {
       title: 'Cancel run',
       description: 'Re-enter your dashboard passcode to cancel this run.',
     });
-    if (result === null) { st.cancellingRun = false; _wfRender(); return; }
+    if (result === null) { st.cancellingRun = false; _wfSyncThenRender(); return; }
     const res = { ok: result.ok, status: result.status };
     const data = result.body;
     if (!res.ok || !data || !data.ok) {
@@ -4847,7 +4868,7 @@ async function _wfCancelRun() {
     // null on both cancel-succeeded paths above, so this stops the timer;
     // a genuine network failure leaves liveRun set and the poll running.
     _wfStartLivePollIfNeeded(st);
-    _wfRender();
+    _wfSyncThenRender();
   }
 }
 
