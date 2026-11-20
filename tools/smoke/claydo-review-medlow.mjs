@@ -167,6 +167,29 @@ try {
       assert.equal(await page.locator('.persona-editor').count(), 0);
     });
   });
+
+  // CD5: openPersonaEditor removed any open editor BEFORE awaiting the load,
+  // so two calls inside the request window both appended a panel. Closing the
+  // top one revealed a second holding an older record.
+  await t.step('CD5 a double-click on Edit leaves one persona editor', async () => {
+    await scenario(browser, {}, async ({ page }) => {
+      await page.route('**/api/characters/global/reviewer', async (route) => {
+        await new Promise(r => setTimeout(r, 200));
+        return route.fulfill({ json: { name: 'reviewer', scope: 'global', agent_name: 'Rex', avatar: '',
+          description: 'reviews diffs', skills: [], body: 'You review diffs.', emojis: '',
+          engine: { provider: '', model: '', effort: '' } } });
+      });
+      await page.route('**/api/avatars', route => route.fulfill({ json: { figures: [], prefix: 'fig:' } }));
+      await page.route('**/api/skills**', route => route.fulfill({ json: [] }));
+      await page.evaluate(async () => {
+        await Promise.all([
+          window.openPersonaEditor(null, 'global', 'reviewer', () => {}),
+          window.openPersonaEditor(null, 'global', 'reviewer', () => {}),
+        ]);
+      });
+      assert.equal(await page.locator('.persona-editor').count(), 1);
+    });
+  });
 } finally {
   t.done();
   await browser.close();

@@ -1583,6 +1583,9 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
     alert('Could not load that persona: ' + (e.message || e));
     return;
   }
+  // Again, after the await (CD5): a second call that started while this one
+  // was loading passed the remove() at the top too, and both would append.
+  document.querySelector('.persona-editor')?.remove();
 
   const panel = document.createElement('div');
   panel.className = 'claydo-save-panel persona-editor';
