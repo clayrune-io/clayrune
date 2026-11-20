@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-19] - A test run whose pass or fail is hidden gets one UNVERIFIED line (MC-1171)
+
+- An agent ran `pytest ... | tail -15` inside a job script. The job reported exit 0, which was `tail`'s exit, and nothing said pytest's own verdict never arrived. A command ending in `; true` or `|| true` hides it the same way.
+- New module `mc/test_run_masking.py`. For an agent's shell tool call (Claude, Codex, Gemini, Qwen) and for a finished background job, a recognised test runner whose exit status is not the command's adds one chat line: `[test verdict] UNVERIFIED: ...`, with the reason and a pointer to `tools/test-run.py`. A job's callback text carries the same sentence. Rules and examples are in the module docstring and `docs/TEST_RUN_MASKING.md`.
+- It only reports. No command is rewritten, blocked or rerun and no exit code changes. A shape the parser does not recognise is "unknown" and gets no line.
+- Setting `masked_test_verdict_enabled`, default on, in Floor Preferences ("Flag hidden test results"). `[test verdict]` is registered as a status label in `mc/reply_line_kind.py`, so the line is never taken as an agent's reply.
+- Not changed: which runs get a test-run card. No masked run has a card, so cards show nothing new. Takes effect when the server next restarts.
+
 ## [2026-11-19] - A dispatched agent's final message reaches its spawner again (MC-1179 A1/R34 follow-up)
 
 - When a dispatched agent's last turn had a refused tool call and a `[coverage]` advisory, the spawner received the advisory line and nothing else. With no refused call, the advisory was glued onto the end of the reply. The same text went to the agent-log summary and to a workflow step's result.

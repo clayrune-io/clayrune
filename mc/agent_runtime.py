@@ -47,6 +47,7 @@ from mc import incognito_registry as _incognito_registry
 from mc import runtime_turn_ownership as _runtime_turn_ownership
 from mc import vendor_fence
 from mc import test_run_detection as _test_run_detection
+from mc import test_run_masking as _test_run_masking  # MC-1171: masked test verdict line
 from mc.core import TimestampedLines, _log
 from mc import doc_write_cache_store as _doc_cache_store
 from mc.unix_path import nvm_bin_dirs as _nvm_bin_dirs
@@ -5047,6 +5048,8 @@ class GeminiRuntime(AgentRuntime):
                         # toggle could not hide Gemini's tool lines).
                         session['log_lines'].append(
                             f"[tool: {name}]" if name else "[tool: call]")
+                        _test_run_masking.note_shell_call(
+                            session, name, blocks[0].get('input') if blocks else None, tid)
                         tool_calls += 1
                         session['last_output_time'] = _time.time()
                     elif ev and ev.type == EventType.TOOL_RESULT:
@@ -6613,6 +6616,9 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                     # and Ron's transcript (six indistinguishable
                     # `[codex tool: shell]` lines with no command shown).
                     session['log_lines'].append(_format_tool_activity(tname, tinput))
+                    _test_run_masking.note_shell_call(
+                        session, tname, blocks[0].get('input') if blocks else None,
+                        blocks[0].get('tool_use_id') if blocks else None)
                     tool_calls += 1
                     session['last_output_time'] = _time.time()
                     # Codex workspace-write sandbox denial (UNATTENDED_AGENT_

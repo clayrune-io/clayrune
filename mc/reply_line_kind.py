@@ -22,7 +22,7 @@ and is one of:
   2. A label Clayrune writes itself, then a payload that may hold anything:
      `[tool: X] path`, `[denied: X] command`, `[hint] text`,
      `[<engine> error|warn|...] text`, `[mcp-sync] text`,
-     `[coverage] text`, `[context trim] text`.
+     `[coverage] text`, `[context trim] text`, `[test verdict] text`.
   3. A `[<known status head> ...]` line that ends in ']' but whose embedded
      exception text has an unbalanced bracket (`[stream error: bad [ here]`),
      which rule 1 cannot see. The heads are the forms that interpolate
@@ -54,13 +54,15 @@ MARKER_ONLY_RE = re.compile(r'^\[[^\[\]]*\]$')
 # and the context-trim notice (`_check_context_budget`). The last two were
 # missing: the advisory, appended after a `[denied: ...]` line, was collected
 # as the reply and the scan stopped there, so a spawner got the advisory and
-# nothing else (MC-1179 A1/R34 follow-up).
+# nothing else (MC-1179 A1/R34 follow-up). `test verdict` is the masked test
+# run line (`mc.test_run_masking.status_line`, MC-1171).
 _LABELLED_RE = re.compile(
     r'^\[(?:tool: [^\[\]]*'
     r'|denied: [^\[\]]*'
     r'|hint'
     r'|coverage'
     r'|context trim'
+    r'|test verdict'
     r'|mcp-sync'
     r'|[a-z][a-z0-9_.-]* (?:error|warn|warning|notice|info))\]')
 
