@@ -781,7 +781,7 @@ function _renderProviderRow(p, opts) {
     ? `<input type="checkbox" name="setup-provider" class="prov-row-select" value="${n}" ${opts.selected ? 'checked' : ''}
          onchange="setupSelectProvider('${n}',this.checked)"
          style="width:15px;height:15px;accent-color:var(--accent)">`
-    : (installed ? '' : `<input type="checkbox" class="prov-row-select settings-prov-install-sel" value="${n}"
+    : ((installed || opts.selectInHeader) ? '' : `<input type="checkbox" class="prov-row-select settings-prov-install-sel" value="${n}"
          aria-label="Select ${esc(p.display_name)} for batch install"
          style="width:15px;height:15px;accent-color:var(--accent)">`);
   // Setup never shows the filled-accent .btn-add look on anything but the
@@ -1060,6 +1060,7 @@ async function providerRefreshAll() {
 //    (_authBannerDismissed / _authBannerLastReason) + _renderAuthBanner /
 //    _authBannerMessage / _renderClaudeAuthStatusLine / refreshProviderAuthStatus
 //    are module-private. ──
+window._providerStateLabel = _providerStateLabel;                // provider-collapse.js card header pill: same vocabulary as the row
 window._renderProviderRow = _renderProviderRow;                  // Settings -> Providers (provider-settings.js) + first-run setup render rows with it
 window._repaintProviderRows = _repaintProviderRows;               // first-run.js's install-watch calls this cross-module (ES modules don't share top-level scope)
 window.providerCheckStatus = providerCheckStatus;               // per-row Check status button onclick

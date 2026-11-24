@@ -32,6 +32,7 @@ try {
     const ctx = await browser.newContext({viewport:{width, height:1000}});
     const page = await ctx.newPage();
     await page.addInitScript(() => localStorage.setItem('walkthrough_done','1'));
+    await page.addInitScript(() => sessionStorage.setItem('mc.providerCardsOpen.v1', JSON.stringify({claude:true,codex:true,gemini:true,qwen:true,opencode:true,aider:true}))); // cards start collapsed
     page.on('pageerror', error => errors.push(error.message));
     const fixtureView = projectId => ({default_provider:config.default_provider, project_provider:projectId ? project.provider : '',
       providers:registry.map(provider => {

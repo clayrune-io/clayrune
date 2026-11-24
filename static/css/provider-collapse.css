@@ -1,0 +1,40 @@
+/* Settings > Connections: one collapsible card per vendor (provider-collapse.js).
+   Settings only; first-run setup keeps its own .prov-row-card look. */
+#settings-providers-section .prov-rows { gap: 12px !important; }
+#settings-providers-section .prov-card {
+  border: 1px solid var(--border); border-radius: 12px; background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .06); min-width: 0; overflow: hidden;
+}
+#settings-providers-section .prov-card.is-open { border-color: var(--accent-soft, var(--accent)); }
+.prov-card-head { display: flex; align-items: center; gap: 10px; padding: 0 12px; background: var(--surface2); }
+.prov-card-tick { flex-shrink: 0; margin: 0; }
+.prov-card-toggle {
+  flex: 1; min-width: 0; min-height: 48px; display: flex; align-items: center; gap: 10px;
+  padding: 8px 0; background: none; border: 0; color: var(--text); font: inherit; text-align: left; cursor: pointer;
+}
+.prov-card-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.prov-card-main { flex: 1; min-width: 0; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.prov-card-name { font-weight: 600; color: var(--text); }
+.prov-card-state { font-size: 11px; font-weight: 600; }
+.prov-card-badge {
+  font-size: 10px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+  padding: 1px 7px; border-radius: 999px; background: var(--accent-dim); color: var(--accent);
+}
+.prov-card-model {
+  font-size: 11px; color: var(--text-faint); min-width: 0; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.prov-card-chev { flex-shrink: 0; display: inline-flex; color: var(--text-faint); transition: transform .15s ease; }
+.prov-card.is-open .prov-card-chev { transform: rotate(180deg); }
+.prov-card:not(.is-open) > .prov-card-body { display: none; }
+.prov-card.is-open > .prov-card-head { border-bottom: 1px solid var(--border); }
+.prov-card-body { padding: 8px 12px 12px; min-width: 0; }
+.prov-card-body .prov-row { min-width: 0; }
+/* API credits used to be its own bordered sibling card; inside Claude's body it
+   is a section of that card, so it takes a divider instead of a second frame. */
+.prov-card-body > #api-credits-card { border: 0 !important; border-top: 1px solid var(--border) !important; border-radius: 0 !important; margin: 12px 0 0 !important; padding: 12px 0 0 !important; }
+#settings-providers-section .prov-row .engine-vendor-defaults { padding: 4px 8px; }
+@media (max-width: 960px) {
+  .prov-card-toggle { min-height: 52px; }
+  .prov-card-tick { width: 20px; height: 20px; }
+}
