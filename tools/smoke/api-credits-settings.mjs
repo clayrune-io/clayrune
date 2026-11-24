@@ -57,6 +57,8 @@ const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1000, height: 900 } });
 const page = await ctx.newPage();
 await page.addInitScript(() => localStorage.setItem('walkthrough_done', '1'));
+// Connections cards start collapsed (provider-collapse.js); these checks drive controls inside the vendor bodies, so open them all.
+await page.addInitScript(() => sessionStorage.setItem('mc.providerCardsOpen.v1', JSON.stringify({claude:true,codex:true,gemini:true,qwen:true,opencode:true,aider:true})));
 const pageErrors = [];
 page.on('console', (m) => { if (process.env.MC_SMOKE_DEBUG && m.type() === 'error') console.error('console:', m.text(), m.location().url); });
 page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
@@ -132,10 +134,11 @@ try {
     const card = document.getElementById('api-credits-card');
     const claude = document.querySelector('#settings-providers-section .prov-row[data-provider="claude"]');
     return { cards: document.querySelectorAll('#api-credits-card').length,
-      insideRow: !!card.closest('.prov-row'), follows: !!claude && claude.nextElementSibling === card };
+      insideRow: !!card.closest('.prov-row'), follows: !!claude && claude.nextElementSibling === card,
+      inClaudeBody: !!card.closest('.prov-card[data-prov-card="claude"] > .prov-card-body') };
   });
-  check(place.cards === 1 && !place.insideRow && place.follows,
-    'one card, directly after the Claude row, not inside any .prov-row', `placement wrong: ${JSON.stringify(place)}`);
+  check(place.cards === 1 && !place.insideRow && place.follows && place.inClaudeBody,
+    'one card, inside the Claude card body directly after the Claude row (not inside .prov-row, not a sibling card)', `placement wrong: ${JSON.stringify(place)}`);
 
   const field = await page.evaluate(() => {
     const i = document.getElementById('apc-key-value');

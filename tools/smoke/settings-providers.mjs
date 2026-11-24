@@ -69,6 +69,8 @@ const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1000, height: 900 } });
 const page = await ctx.newPage();
 await page.addInitScript(() => localStorage.setItem('walkthrough_done', '1'));
+// Connections cards start collapsed (provider-collapse.js); these checks drive controls inside the vendor bodies, so open them all.
+await page.addInitScript(() => sessionStorage.setItem('mc.providerCardsOpen.v1', JSON.stringify({claude:true,codex:true,gemini:true,qwen:true,opencode:true,aider:true})));
 const pageErrors = [];
 page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
 
@@ -170,7 +172,8 @@ const readRows = () => page.evaluate(() => {
     signIn: !!row.querySelector('.prov-sign-in'),
     check: !!row.querySelector('.prov-check'),
     install: !!row.querySelector('.prov-install'),
-    select: !!row.querySelector('.prov-row-select'),
+    // the batch-install tick lives on the card header (provider-collapse.js), so it stays reachable while collapsed
+    select: !!row.closest('.prov-card').querySelector('.prov-card-head .prov-row-select') && !row.querySelector('.prov-row-select'),
   });
   return [...document.querySelectorAll('#settings-providers-section .prov-row')].map(norm);
 });
@@ -250,7 +253,7 @@ try {
   check(calls.passcodes[0] === 'smoke-pass-1', 'Install request carries the retyped passcode',
     `passcodes: ${calls.passcodes}`);
 
-  await page.check('#settings-providers-section .prov-row[data-provider="qwen"] .settings-prov-install-sel');
+  await page.check('#settings-providers-section .prov-card[data-prov-card="qwen"] .prov-card-head .settings-prov-install-sel');
   await page.click('#settings-prov-install-selected');
   await answerPasscode('smoke-pass-2');
   await page.waitForFunction(() => document.getElementById('prov-install-msg-qwen')?.textContent.includes('terminal opened'));

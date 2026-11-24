@@ -7,7 +7,6 @@
 .engine-role-override { padding-top: 8px; }
 .engine-effective { overflow-wrap: anywhere; }
 #settings-providers-section .prov-row .engine-vendor-defaults { padding: 4px 8px; }
-#settings-providers-section .prov-rows > .prov-row { border: 1px solid var(--border); border-radius: 12px; padding: 8px; min-width: 0; }
 .engine-provider-advanced { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 4px; }
 .engine-provider-advanced > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; }
 .engine-provider-advanced > summary::after { content: '⌄'; margin-left: auto; }

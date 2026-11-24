@@ -142,6 +142,13 @@ function renderConnection(provider) {
     : '<p class="settings-hint">Model preferences are unavailable. Close and reopen Settings to retry.</p>';
 }
 
+// Read-only look at the cached global view. Unlike effective() it never expires
+// or reloads the cache, so a card header can call it mid-render without making
+// renderConnection() see an empty cache.
+function peek(provider) {
+  return views.get('')?.providers.find(p => p.name === provider)?.effective || null;
+}
+
 function render(projectId = '') {
   const data = views.get(projectId);
   if (!data) return '<div class="settings-hint">Provider preferences are unavailable. Close and reopen to retry.</div>';
@@ -257,4 +264,4 @@ async function openProject(projectId) {
 }
 
 function dismissProject() { projectRequest++; activeProject = ''; }
-window.EnginePreferences = {load, effective, preview, invalidate, render, renderConnection, modelLabel, choose, saveField, resetTasks, repaint, saveProjectProvider, saveProjectMode, openProject, dismissProject};
+window.EnginePreferences = {load, effective, peek, preview, invalidate, render, renderConnection, modelLabel, choose, saveField, resetTasks, repaint, saveProjectProvider, saveProjectMode, openProject, dismissProject};

@@ -7,13 +7,22 @@
 function _renderProviderSettings(cfg) {
   const provs = _agentProviders || [];
   const defProv = cfg.default_provider || '';
-  const rows = provs.map(p => window._renderProviderRow(p, {
-    mode: 'settings',
+  // Each vendor is one collapsible card (provider-collapse.js): a header line,
+  // and the unchanged shared row as the body. Claude's API-credits block rides
+  // inside Claude's body. The batch-install tick moves to the header so it
+  // stays reachable while the card is collapsed.
+  const rows = provs.map(p => window.ProviderCollapse.card(p, {
     defaultName: defProv,
-    signInWhenOk: true,   // Settings keeps re-sign-in / account switching
-    keyEntry: true,       // API-key vendors get their key field in the row
-    preferencesHTML: EnginePreferences.renderConnection(p.name),
-  }) + (p.name === 'claude' && window.ApiCredits ? window.ApiCredits.render() : '')).join('');
+    rowHTML: window._renderProviderRow(p, {
+      mode: 'settings',
+      defaultName: defProv,
+      signInWhenOk: true,   // Settings keeps re-sign-in / account switching
+      keyEntry: true,       // API-key vendors get their key field in the row
+      selectInHeader: true, // the batch-install tick lives on the card header
+      preferencesHTML: EnginePreferences.renderConnection(p.name),
+    }),
+    extraHTML: p.name === 'claude' && window.ApiCredits ? window.ApiCredits.render() : '',
+  })).join('');
 
   // Section toolbar: batch install of the ticked not-installed rows (one
   // terminal, prerequisite handled once — F7) and a forced re-probe of every
