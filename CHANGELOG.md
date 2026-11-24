@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-23] - tools/film-export: an HTML promo film becomes an mp4 with its sound (campaign gate G2)
+
+- New `tools/film-export/export.cjs`: `node tools/film-export/export.cjs <film.html> <out.mp4> [--fps 30] [--width 1920 --height 1080]`, and `--all <dir> <out-dir>` for a folder. Picture is frame-stepped (`window.__render(n/fps)`, one screenshot per frame, piped to ffmpeg as H.264 `yuv420p`), never a screen recording, so an export is exact and repeatable.
+- Sound is the film's own Web Audio schedule rendered offline: `AudioContext` is replaced before the film runs with an `OfflineAudioContext` of `DUR` seconds, the film's play prompt is clicked so its normal start schedules everything, then the result is rendered, trimmed by the films' 0.08 s scheduling lead, faded over the last 0.15 s, and muxed as AAC. A film that never creates an `AudioContext`, or renders all zeros, fails the export instead of shipping a silent file; `--no-audio` is the explicit opt-out.
+- Playwright is not installed by the tool. It is looked up in `FILM_EXPORT_PLAYWRIGHT`, then the repo's `tools/smoke/node_modules`, then a plain require; the error says how to point it at the main checkout from a worktree. ffmpeg missing stops with a clear message.
+- `tools/film-export/selfcheck.cjs` exports `fixture.html` (2 s, one tone) and asserts with ffprobe/volumedetect: video and audio streams, durations within 0.1 s of 2.0, 60 frames at 30 fps, mean volume above -60 dB, first and last frame differ. Usage and the film contract are in `tools/film-export/README.md`.
+- No film is edited and no vertical (9:16) cut is built. New files only; nothing in the app changes and no restart is needed.
+
 ## [2026-11-19] - Project Safety dialog: the merge gate, cold reviewer and worktree controls can be set from the product (backlog ecc5a845, MC-1179 B14/BX4)
 
 - Seven project safety settings had no control anywhere in the UI, so the review requirement (MC-1075), the merge gate and landing check (MC-1164) and the cold reviewer (MC-1165) could only be switched on by editing `data/projects/<id>.json`. The project window's menu now has **Safety…** (under Providers) with one dialog for all seven: `merge_requires_review`, `cold_review_required`, `verify_command` (one command per line), `verify_timeout_seconds`, `worktree_isolation`, `worktree_base_branch`, `worktree_shared_runtime`.

@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>film-export fixture</title>
+<style>
+html,body{margin:0;background:#111;overflow:hidden}
+#fit{position:absolute;left:50%;top:50%;width:1920px;height:1080px;transform-origin:0 0}
+#stage{position:absolute;inset:0;background:#1b2330;font:700 120px system-ui,sans-serif;color:#eef2f7}
+#bar{position:absolute;left:0;top:700px;height:80px;background:#e8833a}
+#lbl{position:absolute;left:120px;top:260px}
+#prompt{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(10,14,20,.82);color:#eef2f7;font-size:44px;font-weight:700;cursor:pointer}
+</style></head><body>
+<div id="fit"><div id="stage"><div id="lbl"></div><div id="bar"></div></div>
+<div id="prompt">Click or press Space to play</div></div>
+<script>
+/* Fixture for tools/film-export. Same contract as the promo films: 2 s, one tone,
+   ?freeze&t=0 loads paused, window.__render(t) draws t, window.__t() returns the clock,
+   ?mute silences it, sound is Web Audio scheduled ahead on one AudioContext at start. */
+(function(){
+var W=1920,H=1080,DUR=2;
+var q=new URLSearchParams(location.search);
+var fit=document.getElementById('fit'),bar=document.getElementById('bar'),lbl=document.getElementById('lbl'),promptEl=document.getElementById('prompt');
+var T=0;
+function render(t){T=t;bar.style.width=Math.round(W*Math.min(1,t/DUR))+'px';lbl.textContent='t = '+t.toFixed(3)+' s';}
+var AC=null,master=null,NOAUDIO=q.has('mute');
+function sched(){
+  if(NOAUDIO)return;
+  if(AC){try{AC.close();}catch(e){}}
+  var Ctor=window.AudioContext||window.webkitAudioContext;if(!Ctor)return;
+  AC=new Ctor();master=AC.createGain();master.gain.value=.5;master.connect(AC.destination);
+  var base=AC.currentTime+.08;
+  var os=AC.createOscillator(),v=AC.createGain();os.type='sine';os.frequency.value=440;
+  v.gain.setValueAtTime(0.0001,base);v.gain.linearRampToValueAtTime(.4,base+.01);v.gain.setValueAtTime(.4,base+1.8);v.gain.linearRampToValueAtTime(0.0001,base+1.9);
+  os.connect(v);v.connect(master);os.start(base);os.stop(base+1.95);
+}
+var playing=false,t0=0,raf=0;
+function frame(){if(!playing)return;var t=Math.min(DUR,(performance.now()-t0)/1000);render(t);if(t>=DUR){playing=false;return;}raf=requestAnimationFrame(frame);}
+function start(){cancelAnimationFrame(raf);promptEl.style.display='none';sched();t0=performance.now();playing=true;raf=requestAnimationFrame(frame);}
+function fitStage(){var s=Math.min(innerWidth/W,innerHeight/H);fit.style.transform='translate('+(-W/2*s)+'px,'+(-H/2*s)+'px) scale('+s+')';}
+addEventListener('resize',fitStage);fitStage();
+window.__t=function(){return T;};
+window.__render=render;
+render(0);
+if(q.has('freeze')){promptEl.style.display='none';}
+else if(NOAUDIO){start();}
+else{promptEl.addEventListener('click',start);}
+addEventListener('keydown',function(e){if(e.key===' '){e.preventDefault();if(!playing&&promptEl.style.display!=='none')start();}});
+})();
+</script>
+</body></html>
