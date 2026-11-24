@@ -26,6 +26,23 @@ write access, which the share mode already grants, so a foreign holder cannot
 block it. A foreign holder that WRITES would keep its own file position and
 could leave a hole of zeros after a truncate; the redirector never writes.
 
+A LAUNCHER THAT DENIES WRITE SHARING (measured 2026-11-24, first start.bat
+launch since the takeover shipped). `installer/start.bat` runs
+`python server.py >> clayrune.log 2>&1`, and cmd.exe keeps that handle open for
+the server's life WITHOUT sharing write or delete. Then this process cannot
+open the file for writing at all (PermissionError 13) and cannot rename it
+(WinError 32); it can only read it. The old takeover pointed fd 1/2 at NUL,
+failed to reopen, and left every byte of server output on NUL for two days.
+Now:
+
+- `open()` keeps a dup of each original std fd until it succeeds, and on ANY
+  failure points fd 1/2 back at them. Output never ends on NUL.
+- When a write-open is denied, the inherited handle is ADOPTED (inherited
+  mode): a dup of it is the active fd and fd 1/2 stay on it. Rotation there is
+  copy-out through a separate read open (cmd shares read) to the next
+  generation, then ftruncate + seek to 0 on the inherited handle. No rename.
+- One `[log-rotate] mode:` line at takeover says which mode engaged.
+
 WHAT IS CAPTURED. `sys.stdout` / `sys.stderr` are replaced by line-buffered
 streams that write through one lock, and fd 1/2 are left on the same file so a
 child process that inherits them, or a C-level write, still lands in the log.
@@ -116,6 +133,9 @@ class RotatingLog:
         self._warned = False
         self._legacy_pending = False  # a file from before the bound still to be kept
         self._notes: list = []        # announcements waiting for a file to land in
+        # True when the active fd is a dup of the handle the launcher passed
+        # in, because this process may not open the file for writing itself.
+        self.inherited = False
 
     # -- open / close -------------------------------------------------------
     def _open_active(self) -> None:
@@ -127,8 +147,11 @@ class RotatingLog:
             _os.dup2(self._fd, std)
 
     def _release_active(self) -> None:
-        """Drop every handle this process holds on the file (fd 1/2 go to NUL)."""
-        if self._std_fds and self._nul_fd >= 0:
+        """Drop every handle this process holds on the file (fd 1/2 go to NUL).
+
+        In inherited mode only the private dup is closed: fd 1/2 stay on the
+        launcher's handle, which this process could never reopen."""
+        if self._std_fds and self._nul_fd >= 0 and not self.inherited:
             for std in self._std_fds:
                 _os.dup2(self._nul_fd, std)
         if self._fd >= 0:
@@ -139,30 +162,127 @@ class RotatingLog:
 
     def open(self, std_fds=()) -> None:
         """Open the file for appending, first moving a file written before the
-        bound out of the way. `std_fds` are repointed at the file."""
+        bound out of the way. `std_fds` are repointed at the file.
+
+        A dup of each original std fd is held until this succeeds; on any
+        failure fd 1/2 are pointed back at the originals and the error is
+        re-raised, so output never ends on NUL."""
         with self._lock:
             self._std_fds = list(std_fds)
-            if self._std_fds and self._nul_fd < 0:
-                self._nul_fd = _os.open(_os.devnull, _os.O_RDWR
-                                        | getattr(_os, 'O_BINARY', 0))
-            if self._std_fds:
-                # Release the inherited handle so the file can be renamed.
-                for std in self._std_fds:
-                    _os.dup2(self._nul_fd, std)
+            saved: list = []
+            adopted = -1
             try:
-                size = _os.path.getsize(self.path)
-            except OSError:
-                size = 0
-            if size >= self.max_bytes:
-                try:
-                    self._note(self._shift_files(size, pre_cap=True))
-                except OSError as e:
-                    self._legacy_pending = True
-                    self._next_try = self._clock() + RETRY_SECONDS
-                    self._announce_failure(size, e)
-            if self._fd < 0:
-                self._open_active()
+                saved = [(std, _os.dup(std)) for std in self._std_fds]
+                denied = self._write_open_denied() if saved else None
+                if denied is not None:
+                    adopted = saved[0][1]
+                    self._adopt_inherited(adopted, denied)
+                else:
+                    self._open_own()
+            except BaseException:
+                self._restore(saved)
+                adopted = -1
+                raise
+            finally:
+                for _std, fd in saved:
+                    if fd != adopted:
+                        try:
+                            _os.close(fd)
+                        except OSError:
+                            pass
             self._flush_notes()
+
+    def _write_open_denied(self):
+        """The PermissionError a write-open of the file gets, or None when this
+        process may open it for writing (the probe handle is closed again).
+
+        Asked while fd 1/2 still hold the inherited handle: a launcher handle
+        that denies write sharing (cmd.exe `>>`) fails this, one that shares
+        it (Python 'ab', Start-Process) does not."""
+        try:
+            fd = _os.open(str(self.path), _os.O_WRONLY | _os.O_APPEND
+                          | getattr(_os, 'O_BINARY', 0))
+        except PermissionError as e:
+            return e
+        except OSError:
+            return None          # missing etc.: the own-handle path handles it
+        _os.close(fd)
+        return None
+
+    def _open_own(self) -> None:
+        """Own-handle mode: release the inherited handle, move a pre-bound file
+        aside, open the file ourselves."""
+        if self._std_fds and self._nul_fd < 0:
+            self._nul_fd = _os.open(_os.devnull, _os.O_RDWR
+                                    | getattr(_os, 'O_BINARY', 0))
+        if self._std_fds:
+            # Release the inherited handle so the file can be renamed.
+            for std in self._std_fds:
+                _os.dup2(self._nul_fd, std)
+        try:
+            size = _os.path.getsize(self.path)
+        except OSError:
+            size = 0
+        if size >= self.max_bytes:
+            try:
+                self._note(self._shift_files(size, pre_cap=True))
+            except OSError as e:
+                self._legacy_pending = True
+                self._next_try = self._clock() + RETRY_SECONDS
+                self._announce_failure(size, e)
+        if self._fd < 0:
+            self._open_active()
+        if self._std_fds:
+            self._notes.insert(0, f"[log-rotate] mode: own handle on "
+                               f"{self.path.name} (pid {_os.getpid()}); "
+                               f"rotation renames generations")
+
+    def _adopt_inherited(self, fd: int, denied: Exception) -> None:
+        """Inherited mode: `fd` (a dup of the launcher's handle) becomes the
+        active fd, and every std fd is pointed at it so they share one file
+        position (a truncate then resets them all)."""
+        if _sys.platform == 'win32':
+            import msvcrt
+            msvcrt.setmode(fd, _os.O_BINARY)
+        self._fd = fd
+        self.inherited = True
+        for std in self._std_fds:
+            _os.dup2(fd, std)
+        _os.lseek(fd, 0, _os.SEEK_END)
+        self._note(f"[log-rotate] mode: inherited handle on {self.path.name} "
+                   f"(pid {_os.getpid()}); the launcher holds it without write "
+                   f"sharing ({denied}), so rotation copies the file out and "
+                   f"truncates it in place")
+        size = _os.fstat(fd).st_size
+        if size >= self.max_bytes:
+            try:
+                self._note(self._shift_files(size, pre_cap=True))
+            except OSError as e:
+                self._legacy_pending = True
+                self._next_try = self._clock() + RETRY_SECONDS
+                self._announce_failure(size, e)
+
+    def _restore(self, saved: list) -> None:
+        """Point each std fd back at its original after a failed open()."""
+        for std, orig in saved:
+            try:
+                _os.dup2(orig, std)
+            except OSError:
+                pass
+        if self._fd >= 0 and all(self._fd != o for _s, o in saved):
+            try:
+                _os.close(self._fd)
+            except OSError:
+                pass
+        self._fd = -1
+        self.inherited = False
+        self._std_fds = []
+        if self._nul_fd >= 0:
+            try:
+                _os.close(self._nul_fd)
+            except OSError:
+                pass
+            self._nul_fd = -1
 
     def close(self) -> None:
         with self._lock:
@@ -209,7 +329,14 @@ class RotatingLog:
         none of our handles open. Returns '' for a rename, else a note saying
         it was a copy-truncate. Raises OSError,
         with the active file in place and `target` absent, when both ways fail.
+
+        In inherited mode the active fd stays open and no rename is tried: the
+        launcher's handle blocks it, and the file could not be reopened.
         """
+        if self.inherited:
+            self._copy_truncate(target)
+            return ('; copied then truncated through the inherited handle, '
+                    'because the launcher holds the file without write sharing')
         try:
             _os.replace(self.path, target)
             return ''
@@ -263,8 +390,12 @@ class RotatingLog:
         A file more than twice the bound cannot have been written under it (a
         rotation that kept failing is the only other way), and neither can the
         file whose boot-time move failed. Both are kept, not shifted into the
-        generation chain where they would eventually be dropped."""
-        self._release_active()
+        generation chain where they would eventually be dropped.
+
+        In inherited mode nothing is closed: the copy-truncate works through
+        the open handle."""
+        if not self.inherited:
+            self._release_active()
         err = None
         try:
             self._note(self._shift_files(
@@ -412,15 +543,18 @@ def _flush_std() -> None:
 def _take_over(path: _Path, std: list, max_bytes: int, generations: int):
     """Point `std` (fd numbers that are already `path`) at a RotatingLog for it
     and swap the matching `sys.stdout`/`sys.stderr`. Returns the RotatingLog, or
-    None on failure (output is left on the file, never on NUL)."""
+    None on failure. On failure `open()` has already pointed `std` back at the
+    launcher's handles (output stays on the file, unbounded, never on NUL);
+    one line saying so is written there."""
     rl = RotatingLog(path, max_bytes, generations)
     try:
         rl.open(std_fds=std)
-    except Exception:
-        # Output must not stay on NUL because the takeover failed halfway.
+    except Exception as e:
         try:
-            rl._open_active()
-        except Exception:
+            _os.write(std[-1], (f"[log-rotate] could not take over {path.name} "
+                                f"({e}); output stays on the launcher's handle, "
+                                f"unbounded\n").encode('utf-8', 'backslashreplace'))
+        except OSError:
             pass
         return None
     if 1 in std:

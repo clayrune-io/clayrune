@@ -512,3 +512,124 @@ def test_a_file_outside_the_log_dir_is_left_alone(tmp_path):
         'child.py', 'elsewhere.log', 'go', 'logs']                    # no .1, no .pre-cap
     text = _read(tmp_path / 'elsewhere.log')
     assert text.startswith('before\n' * 4000) and 'done' in text      # grew unbounded
+
+
+# -- a launcher that denies write sharing (cmd.exe `>>`, installer/start.bat) --
+
+_CMD_CHILD = textwrap.dedent('''
+    import os, subprocess, sys
+    sys.path.insert(0, {repo!r})
+    from mc import server_log_rotation as slr
+    slr.RETRY_SECONDS = 0.1
+    {setup}
+    made = slr.install_std_logs({logdir!r}, max_bytes=20000, generations=2)
+    print('installed', len(made), made and made[0].inherited, flush=True)
+    for i in range({lines}):
+        print('line %04d ' % i + 'x' * 80)
+        if i == 150:
+            subprocess.run([sys.executable, '-c', 'print("GRANDCHILD-OUT")'])
+        if i == 160:
+            os.write(1, b'RAW-FD1\\n')
+            os.write(2, b'RAW-FD2\\n')
+    sys.stderr.write('STDERR-LINE\\n')
+    print('done', flush=True)
+''')
+
+
+def _cmd_child_script(tmp_path, logdir, setup='', lines=400):
+    script = tmp_path / 'child.py'
+    script.write_text(_CMD_CHILD.format(repo=str(REPO), logdir=str(logdir),
+                                        setup=setup, lines=lines),
+                      encoding='utf-8')
+    return script
+
+
+def _assert_rotated_and_complete(files, lines, markers=('GRANDCHILD-OUT', 'RAW-FD1',
+                                                         'RAW-FD2', 'STDERR-LINE', 'done')):
+    assert 'clayrune.log.1' in files                                  # it rotated
+    assert set(files) <= {'clayrune.log', 'clayrune.log.1', 'clayrune.log.2',
+                          'clayrune.pre-cap.log'}
+    for k, v in files.items():
+        assert '\0' not in v, k                   # a truncate left no hole of zeros
+        if k != 'clayrune.pre-cap.log':
+            assert len(v.encode()) < 20000 + 400, k                   # each file bounded
+    combined = ''.join(files.values())
+    for marker in markers:
+        assert marker in combined, marker
+    # the newest lines are all there, in order, none lost to a rotation
+    newest = ''.join(files.get(k, '') for k in ('clayrune.log.1', 'clayrune.log'))
+    tail = [ln for ln in newest.splitlines() if ln.startswith('line ')]
+    nums = [int(ln.split()[1]) for ln in tail]
+    assert nums == list(range(nums[0], lines)) and nums[-1] == lines - 1
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='cmd.exe share mode is Windows-only')
+def test_output_reaches_a_log_held_by_cmd_redirect(tmp_path):
+    """installer/start.bat: `python server.py >> clayrune.log 2>&1`. cmd.exe
+    holds that handle for the child's whole life and denies write sharing, so
+    the child can neither reopen nor rename the file. Before the fix every byte
+    after install_std_logs went to NUL. Output must land in the file, the
+    pre-bound file must be kept, and rotation must work through the inherited
+    handle."""
+    logdir = tmp_path / 'logs'
+    logdir.mkdir()
+    log = logdir / 'clayrune.log'
+    log.write_bytes(b'legacy\n' * 4000)          # 28000 bytes, over the 20000 bound
+    script = _cmd_child_script(tmp_path, logdir)
+    cmdline = f'cmd /d /s /c ""{sys.executable}" "{script}" >> "{log}" 2>&1"'
+    r = subprocess.run(cmdline, timeout=120)
+    assert r.returncode == 0
+    files = {q.name: _read(q) for q in logdir.iterdir()}
+    assert files['clayrune.pre-cap.log'].startswith('legacy\n' * 4000)   # kept whole
+    combined = ''.join(files.values())
+    assert 'installed 1 True' in combined                             # inherited mode
+    assert '[log-rotate] mode: inherited handle on clayrune.log' in combined
+    assert 'copied then truncated through the inherited handle' in combined
+    _assert_rotated_and_complete(files, 400)
+
+
+def test_rotation_in_inherited_mode(tmp_path):
+    """Inherited mode forced on any OS (the write-open probe reports a denial):
+    several rotations through the launcher's handle, by copy-out and
+    truncate, no rename of the active file, no line lost, no hole."""
+    logdir = tmp_path / 'logs'
+    logdir.mkdir()
+    log = logdir / 'clayrune.log'
+    setup = ("slr.RotatingLog._write_open_denied = "
+             "lambda self: PermissionError(13, 'forced denial')")
+    script = _cmd_child_script(tmp_path, logdir, setup=setup, lines=900)
+    with open(log, 'ab') as handed:
+        r = subprocess.run([sys.executable, str(script)], stdout=handed,
+                           stderr=subprocess.STDOUT, timeout=120)
+        handed_ino = os.fstat(handed.fileno()).st_ino
+    assert r.returncode == 0
+    files = {q.name: _read(q) for q in logdir.iterdir()}
+    assert 'clayrune.log.2' in files                                  # rotated more than once
+    assert 'clayrune.pre-cap.log' not in files
+    assert files['clayrune.log.1'].count('[log-rotate]') >= 1
+    assert os.stat(log).st_ino == handed_ino     # the active file was never replaced
+    # lines 150-160 (grandchild, raw fd writes) have rotated out of the 2 kept
+    # generations by now; the end of the run is what is checked
+    _assert_rotated_and_complete(files, 900, markers=('STDERR-LINE', 'done'))
+
+
+def test_a_failed_takeover_puts_output_back_on_the_file(tmp_path):
+    """Any failure inside open() must point fd 1/2 back at the launcher's
+    handle; the old code left them on NUL when its reopen failed too."""
+    logdir = tmp_path / 'logs'
+    logdir.mkdir()
+    log = logdir / 'clayrune.log'
+    setup = textwrap.dedent('''
+        def _boom(self):
+            raise PermissionError(13, 'forced reopen failure')
+        slr.RotatingLog._open_active = _boom
+    ''')
+    script = _cmd_child_script(tmp_path, logdir, setup=setup, lines=200)
+    with open(log, 'ab') as handed:
+        r = subprocess.run([sys.executable, str(script)], stdout=handed,
+                           stderr=subprocess.STDOUT, timeout=120)
+    assert r.returncode == 0
+    text = _read(log)
+    assert 'could not take over clayrune.log (' in text and 'forced reopen failure' in text
+    for marker in ('installed 0', 'line 0199', 'GRANDCHILD-OUT', 'RAW-FD1', 'RAW-FD2', 'STDERR-LINE', 'done'):
+        assert marker in text, marker
