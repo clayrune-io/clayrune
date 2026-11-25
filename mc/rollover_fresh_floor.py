@@ -1,4 +1,13 @@
-"""Verify Claude's first main-conversation input against its native transcript."""
+"""Read Claude's first main-conversation input from its native transcript.
+
+The fresh floor of a native segment is the size of its FIRST model call. The
+reader that started the segment sees that call on stdout; one that attached
+later (server restart, revive, adopted process) does not, and its own first
+reading is some later, larger call. Either way the transcript's first call is
+the measurement, so that is what becomes the floor (2026-11-25 review, F1/F2:
+a late reading taken as the floor moved the limit up at every restart, and
+leaving it unknown let a pin under the real floor back in).
+"""
 
 import json
 from collections.abc import Callable
@@ -9,6 +18,7 @@ from mc.core import _log
 
 _PREFIX_BYTES = 4 * 1024 * 1024
 _PROBES = 3
+_NO_START = 0    # never a real reading: a first call always carries a prompt
 
 
 def clear_floor(session: dict[str, Any]) -> None:
@@ -24,11 +34,13 @@ def _opening_prompt(content: object) -> bool:
     return bool(types & {'text', 'image'}) and 'tool_result' not in types
 
 
-def _matches_start(
-    path: Path, native: str, call: str, tokens: int,
-    normalize: Callable[[Any], int | None],
-) -> bool | None:
-    """Read a bounded prefix. None means the first call may still be flushing."""
+def _start_tokens(
+    path: Path, native: str, normalize: Callable[[Any], int | None],
+) -> int | None:
+    """Size of the segment's first main call, from a bounded prefix. None
+    means that call may still be flushing; `_NO_START` means the segment has
+    no start of its own to measure (it continues an earlier one, or the
+    prefix holds no call)."""
     rooted = prompted = False
     remaining = _PREFIX_BYTES
     try:
@@ -36,13 +48,13 @@ def _matches_start(
             while remaining:
                 raw = stream.readline(remaining)
                 if not raw or not raw.endswith(b'\n'):
-                    return None if len(raw) < remaining else False
+                    return None if len(raw) < remaining else _NO_START
                 remaining -= len(raw)
                 if not raw.strip():
                     continue
                 row = json.loads(raw)
                 if not isinstance(row, dict):
-                    return False
+                    return _NO_START
                 if (row.get('sessionId') != native or row.get('isSidechain')
                         or row.get('parentToolUseID') or row.get('parent_tool_use_id')):
                     continue
@@ -58,23 +70,24 @@ def _matches_start(
                     continue
                 size = normalize(message.get('usage'))
                 if size is not None:
-                    return prompted and message.get('id') == call and size == tokens
+                    return size if prompted else _NO_START
     except FileNotFoundError:
         return None
     except ValueError:
-        return False
+        return _NO_START
     except OSError as error:
         _log(f'[rollover-floor] could not read native transcript: {error}')
-    return False
+    return _NO_START
 
 
 class FloorProbe:
-    """Keep the first candidate from this reader, even if disk lags stdout."""
+    """Wait for this reader's first main call, then read the segment's start
+    from disk, which may lag stdout."""
 
     def __init__(self, proc: object) -> None:
         self.proc = proc
         self.native = ''
-        self.candidate: tuple[str, int] | None = None
+        self.seen = False
         self.probes = 0
         self.cwd: str | None = None
 
@@ -90,31 +103,30 @@ class FloorProbe:
             return
         if native != self.native:
             self.native = native
-            self.candidate = None
+            self.seen = False
             self.probes = 0
         kind = event.get('type')
         if kind not in ('assistant', 'result', 'user') or event.get('parent_tool_use_id'):
             return
-        if self.candidate is None:
+        if not self.seen:
             message = event.get('message')
             if (kind != 'assistant' or event.get('session_id') != native
                     or not isinstance(message, dict) or str(message.get('model', '')).startswith('<')):
                 return
-            call, tokens = message.get('id'), normalize(message.get('usage'))
-            if not isinstance(call, str) or not call or tokens is None:
+            call = message.get('id')
+            if not isinstance(call, str) or not call or normalize(message.get('usage')) is None:
                 return
-            self.candidate = call, tokens
+            self.seen = True
         if self.probes >= _PROBES:
             return
         self.probes += 1
         path = find(self.cwd, native)
         if path is None:
             return
-        call, tokens = self.candidate
-        match = _matches_start(path, native, call, tokens, normalize)
-        if match is not None:
+        tokens = _start_tokens(path, native, normalize)
+        if tokens is not None:
             self.probes = _PROBES
-        if (match and session.get('claude_session_id') == native
+        if (tokens and session.get('claude_session_id') == native
                 and session.get('proc') is self.proc
                 and not session.get('_interrupting') and not session.get('_respawn_in_flight')):
             session['_mt_fresh_floor'] = tokens

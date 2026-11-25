@@ -16,7 +16,10 @@ session, a `scope:name` character reference, or character metadata.
    effort. Duplicate targets use the first valid entry. The legacy
    `context_rollover_by_character` map supplies character-only entries after
    the list. A target below the verified floor plus 60,000 tokens emits one
-   diagnostic per distinct target and falls through.
+   diagnostic per distinct target and falls through. While a Claude chat has
+   no verified floor, a target below the base falls through the same way,
+   because the working room it would leave is unknown. Other providers never
+   report a floor, so their targets apply as written.
 3. The computed default uses the live verified floor and the first qualified
    growth estimate for character/model/effort, model/effort, or model. The
    reviewed model table supplies its own growth estimate when no measured
@@ -45,12 +48,13 @@ checks. The context meter continues to display the global setting.
 
 ## Verified floors and computed limits
 
-Clayrune verifies the first main-conversation input against the beginning of
-the native Claude transcript. A reader that attaches during a later call can
-only use a floor previously verified for that same segment. Changing the
-native ID or rolling to fresh context clears the outgoing floor. When the
-first call cannot be proved from available evidence, resolution uses the
-no-floor path.
+The floor is the size of the first main-conversation call recorded at the
+beginning of the native Claude transcript. A reader that attaches during a
+later call (after a server restart, a revive, or an adopted process) reads
+that same first call from the transcript, so the limit does not move across a
+restart. Changing the native ID or rolling to fresh context clears the
+outgoing floor. When the transcript holds no start of its own for the segment,
+resolution uses the no-floor path.
 
 With fresh floor `F`, mean input growth per call `g`, ratio `w/r` of cache-write
 to cache-read prices, and working room `R = T - F`, the relative cost per call

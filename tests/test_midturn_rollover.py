@@ -392,7 +392,10 @@ def test_midturn_log_preserves_the_triggering_request_and_limit(env, monkeypatch
                        _mt_turn_prompt='answer this', _mt_fresh_floor=None)
     _run_reader(env, lines, session=session, proc=session['proc'])
     row = json.loads((env['tmp'] / 'midturn_log' / 'p1.jsonl').read_text().splitlines()[0])
-    assert row['threshold'] == 200_000
+    # The reader attached at the trigger call; the floor is the transcript's
+    # first call (30k), so the limit is the computed one, not the 200k base.
+    assert row['fresh_floor_tokens'] == 30_000
+    assert (row['threshold'], row['threshold_reason']) == (120_000, 'computed:model_effort')
     assert row['requested_model'] == 'sonnet'
     assert row['canonical_model'] == 'claude-sonnet-5-5'
     assert row['effective_effort'] == 'medium'
@@ -402,6 +405,8 @@ def test_midturn_log_preserves_the_triggering_request_and_limit(env, monkeypatch
 
 @pytest.mark.parametrize('reader', ['reader', 'reader_a'])
 def test_reader_attached_after_first_call_does_not_invent_a_floor(env, monkeypatch, reader):
+    """The late reading is never the floor; the transcript's own first call is
+    (review F1/F2: unknown let the 100k pin back in after every restart)."""
     _write_floor_transcript(env, monkeypatch, _assistant('earlier', 85_000, 'first'))
 
     def lines():
@@ -409,7 +414,7 @@ def test_reader_attached_after_first_call_does_not_invent_a_floor(env, monkeypat
 
     session = _run_reader(env, lines, reader=reader, _mt_fresh_floor=None)
     assert session['context_tokens'] == 389_142
-    assert session['_mt_fresh_floor'] is None
+    assert session['_mt_fresh_floor'] == 85_000
 
 
 def test_roll_and_native_change_clear_only_the_outgoing_floor(env):

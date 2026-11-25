@@ -11,9 +11,10 @@ from mc.rollover_model_table import MODEL_TABLE, model_inputs
     {'character': 'global:dave'},
 ])
 def test_override_uses_character_ref_not_display_name(character):
+    # No floor is known for a bare reference, so the pin sits above the base.
     config = {'context_rollover_tokens': 200_000,
-              'context_rollover_by_character': {'global:dave': 120_000}}
-    assert threshold_for(character, config) == 120_000
+              'context_rollover_by_character': {'global:dave': 250_000}}
+    assert threshold_for(character, config) == 250_000
 
 
 @pytest.mark.parametrize('character', [None, {}, {'character': None},
@@ -26,11 +27,26 @@ def test_missing_override_uses_global(character):
     }) == 180_000
 
 
-@pytest.mark.parametrize('value', [1, 59_999, 0, -1, '1000'])
-def test_character_override_clamps_to_floor(value):
-    assert threshold_for('global:dave', {
+@pytest.mark.parametrize('value', [1, 59_999, 0, -1, '1000', 199_999])
+def test_override_below_the_base_is_ignored_without_a_floor(value):
+    assert threshold_with_reason('global:dave', {
         'context_rollover_by_character': {'global:dave': value},
-    }) == 60_000
+    }) == (200_000, 'base')
+
+
+@pytest.mark.parametrize('config,expected', [
+    ({'context_rollover_by_character': {'global:dave': 200_000}},
+     (200_000, 'override:character')),
+    ({'context_rollover_tokens': 5000,
+      'context_rollover_by_character': {'global:dave': 60_000}},
+     (60_000, 'override:character')),
+    ({'context_rollover_overrides': [{'model': 'opus', 'tokens': 150_000},
+                                     {'character': 'global:dave', 'tokens': 240_000}]},
+     (240_000, 'override:character')),
+])
+def test_override_at_or_above_the_base_applies_without_a_floor(config, expected):
+    session = {'character': 'global:dave', 'model': 'opus'}
+    assert threshold_with_reason(session, config) == expected
 
 
 @pytest.mark.parametrize('value', [None, True, False, [], {}, 'bad', '',
@@ -133,12 +149,47 @@ def test_window_cap_and_fresh_floor_lower_bound():
     ('claude-fable-5-2', None), ('claude-fable-5-2', -1),
     ('claude-fable-5-2', True), ('claude-fable-5-2', 'unknown'),
 ])
-def test_unknown_floor_preserves_legacy_pin(model, floor):
+def test_unknown_floor_ignores_a_pin_below_the_base(model, floor):
+    # 2026-11-25 review F1: after a restart no floor is known, and the legacy
+    # 100k pin came back with ~11k of room over an 89k start.
     session = _session(model, floor)
     assert threshold_with_reason(session, {}) == (200_000, 'base')
     assert threshold_with_reason(session, {
         'context_rollover_by_character': {'global:dave': 100_000},
-    }) == (100_000, 'override:character')
+    }) == (200_000, 'base')
+
+
+@pytest.mark.parametrize('provider', ['codex', 'gemini', 'qwen', 'Codex'])
+def test_provider_that_never_measures_a_floor_keeps_its_pin(provider):
+    # MC-1072: only the Claude readers verify a floor, so there is nothing to
+    # wait for on another provider.
+    session = {'character': 'global:dave', 'provider': provider}
+    assert threshold_with_reason(session, {
+        'context_rollover_by_character': {'global:dave': 120_000},
+    }) == (120_000, 'override:character')
+
+
+@pytest.mark.parametrize('provider', [None, '', 'claude', 'Claude'])
+def test_claude_chat_without_a_floor_ignores_a_pin_below_the_base(provider):
+    session = {'character': 'global:dave', 'model': 'opus', 'provider': provider}
+    assert threshold_with_reason(session, {
+        'context_rollover_by_character': {'global:dave': 120_000},
+    }) == (200_000, 'base')
+
+
+def test_dave_opus_never_gets_the_100k_pin_with_or_without_a_floor(monkeypatch):
+    from mc import rollover_threshold as rt
+    rt._log_ignored_override.cache_clear()
+    messages = []
+    monkeypatch.setattr(rt, '_log', messages.append)
+    config = {'context_rollover_by_character': {'global:dave': 100_000}}
+    session = {'character': 'global:dave', 'model': 'opus'}
+    assert rt.resolve(session, config)[:2] == (200_000, 'base')
+    assert rt.resolve(session, config)[:2] == (200_000, 'base')
+    assert len(messages) == 1 and 'no verified fresh floor' in messages[0]
+    assert rt.resolve(dict(session, _mt_fresh_floor=89_000), config)[:2] == (
+        220_000, 'computed:model')
+    rt._log_ignored_override.cache_clear()
 
 
 @pytest.mark.parametrize('model', ['gpt-6.1-sol', 'claude-future-6', ''])

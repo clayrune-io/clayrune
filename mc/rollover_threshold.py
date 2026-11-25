@@ -59,15 +59,18 @@ def model_for_session(session: Any) -> str | None:
 
 
 @lru_cache(maxsize=256)
-def _log_ignored_override(selectors: tuple[tuple[str, str], ...], tokens: int) -> None:
+def _log_ignored_override(
+    selectors: tuple[tuple[str, str], ...], tokens: int, why: str,
+) -> None:
     scope = ', '.join(f'{key}={value}' for key, value in selectors)
-    _log(f'[rollover-threshold] ignoring {scope} override {tokens}: below fresh floor + 60000')
+    _log(f'[rollover-threshold] ignoring {scope} override {tokens}: {why}')
 
 
 def _explicit_override(
     config: Mapping[str, Any], character: str, model: str | None,
-    effort: str | None, fresh: int | None,
+    effort: str | None, fresh: int | None, base: int | None,
 ) -> tuple[int, str] | None:
+    """`base` is set while a floor is still owed (see `_floor_owed`)."""
     values = {'model': model, 'character': character, 'effort': effort}
     entries = config.get('context_rollover_overrides')
     entries = list(entries) if isinstance(entries, list) else []
@@ -99,11 +102,27 @@ def _explicit_override(
     matches.sort(key=lambda item: (
         len(item[0]), sum(_SELECTORS[key] for key, _ in item[0])), reverse=True)
     for selected, tokens in matches:
+        # With no verified floor the working room a target leaves is unknown,
+        # so one under the base cannot be trusted: after a restart the legacy
+        # 100k pin came back over an 89k start (2026-11-25 review, F1).
+        if base is not None and tokens < base:
+            _log_ignored_override(
+                selected, tokens, f'below the base {base} with no verified fresh floor')
+            continue
         if fresh is not None and tokens < fresh + MIN_THRESHOLD:
-            _log_ignored_override(selected, tokens)
+            _log_ignored_override(selected, tokens, 'below fresh floor + 60000')
             continue
         return max(MIN_THRESHOLD, tokens), 'override:' + '+'.join(key for key, _ in selected)
     return None
+
+
+def _floor_owed(source: Mapping[str, Any], fresh: int | None) -> bool:
+    """True while a Claude chat has no verified floor yet. Only the Claude
+    readers measure one (mc/rollover_fresh_floor.py); another provider never
+    will, so its targets keep applying as written (MC-1072)."""
+    provider = source.get('provider')
+    claude = not isinstance(provider, str) or provider.strip().lower() in ('', 'claude')
+    return fresh is None and claude
 
 
 def _growth(
@@ -161,7 +180,9 @@ def resolve(session_or_character: Any, config: Mapping[str, Any]) -> Resolution:
     if fresh is not None and fresh <= 0:
         fresh = None
 
-    override = _explicit_override(config, ref, model, effort, fresh)
+    base = max(MIN_THRESHOLD, global_tokens)
+    override = _explicit_override(
+        config, ref, model, effort, fresh, base if _floor_owed(source, fresh) else None)
     if override is not None:
         return _with_guards(Resolution(*override), fresh, inputs)
 
@@ -176,7 +197,7 @@ def resolve(session_or_character: Any, config: Mapping[str, Any]) -> Resolution:
                       continuity_target(fresh, mean, ratio, minimum))
             return _with_guards(Resolution(target, 'computed:' + growth_source, mean,
                                            growth_source), fresh, inputs)
-    return _with_guards(Resolution(max(MIN_THRESHOLD, global_tokens), 'base'), fresh, inputs)
+    return _with_guards(Resolution(base, 'base'), fresh, inputs)
 
 
 def threshold_with_reason(session_or_character: Any, config: Mapping[str, Any]) -> tuple[int, str]:

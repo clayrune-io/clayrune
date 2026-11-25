@@ -110,8 +110,10 @@ def test_auto_fresh_uses_character_threshold(ar, monkeypatch, ref, expected):
     monkeypatch.setitem(ar.state.CONFIG, 'context_rollover_tokens', 200_000)
     monkeypatch.setitem(ar.state.CONFIG, 'context_rollover_by_character',
                         {'global:dave': 120_000})
+    # A verified floor: without one a Claude chat ignores a pin under the base.
     reason, detail = ar._auto_fresh_trigger(
-        '/p', 'sid', 130_000, session_or_character={'character': ref})
+        '/p', 'sid', 130_000,
+        session_or_character={'character': ref, '_mt_fresh_floor': 50_000})
     assert (reason, detail) == (expected, 130_000 if expected else 0)
 
 
@@ -123,7 +125,7 @@ def test_mode_a_rollover_uses_character_threshold(ar, monkeypatch, provider):
     monkeypatch.setattr(ar, '_auto_fresh_handoff',
                         lambda *a, **k: ('handoff', 'rolled', 'activity'))
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a: None)
-    session = {'character': {'name': 'dave', 'scope': 'global'},
+    session = {'character': {'name': 'dave', 'scope': 'global'}, 'provider': provider,
                'context_tokens': 130_000, 'provider_session_id': 'old'}
     assert ar._mode_a_token_rollover('/p', 'p', 's', session, provider, 'continue') == \
         'handoff\n\ncontinue'

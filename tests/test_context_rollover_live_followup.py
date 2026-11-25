@@ -180,6 +180,7 @@ def test_character_limit_rolls_live_followup_below_global(env, monkeypatch):
                         {'global:dave': 120_000})
     live = _session('dave-session', context_tokens=130_000)
     live['character'] = {'name': 'dave', 'scope': 'global'}
+    live['_mt_fresh_floor'] = 30_000    # verified: a pin under the base needs one
     old_proc = live['proc']
     env['sessions']['dave-session'] = live
     spawned = []
