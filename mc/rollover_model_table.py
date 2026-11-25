@@ -16,8 +16,8 @@ class ModelInputs(TypedDict):
     input_price: float | None
     cache_read_price: float | None
     cache_write_price: float | None
-    write_read_ratio: float
-    mean_growth_tokens: int
+    write_read_ratio: float | None
+    mean_growth_tokens: int | None
     growth_source: Literal['measured', 'family', 'provisional']
     price_step_tokens: int | None
 
@@ -71,11 +71,14 @@ MODEL_TABLE: dict[str, ModelInputs] = {
 }
 
 
-def model_inputs(model: object) -> ModelInputs | None:
-    """Only recognize canonical Claude IDs (optional date) and the bare aliases
-    in `MODEL_ALIASES`, either with a trailing [1m]."""
+def canonical_model_id(model: object) -> str | None:
+    """Normalize Claude dates, context-window suffixes and reviewed aliases."""
     if not isinstance(model, str):
         return None
     canonical = re.sub(r'\[1m\]$', '', model.strip().lower()).rstrip()
-    canonical = MODEL_ALIASES.get(canonical, re.sub(r'-[0-9]{8}$', '', canonical))
-    return MODEL_TABLE.get(canonical)
+    return (MODEL_ALIASES.get(canonical) or re.sub(r'-[0-9]{8}$', '', canonical)) or None
+
+
+def model_inputs(model: object) -> ModelInputs | None:
+    canonical = canonical_model_id(model)
+    return MODEL_TABLE.get(canonical) if canonical else None

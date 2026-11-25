@@ -38,7 +38,8 @@ from mc import state
 from mc import bg_job_liveness as _bg_live
 from mc.core import _log, TimestampedLines
 from mc.long_job_guidance import job_route_url as _job_url
-from mc.rollover_threshold import _character_ref, inputs_for_session, threshold_with_reason
+from mc.rollover_fresh_floor import clear_floor
+from mc import rollover_decision as _decision
 
 RECENT_TOOLS_KEEP = 10
 # MC-964 Step C: the last tool_results' first lines, carried across a roll
@@ -318,10 +319,6 @@ def note_call_tokens(session, tokens, parent_tool_use_id=None):
     if not enabled() or parent_tool_use_id or tokens is None:
         return
     session['_mt_main_tokens'] = tokens
-    if session.get('_mt_fresh_floor') is None:
-        # MC-1178 prep: log-only. The first reading since session start / the
-        # last roll is the fresh-start load, before any work grew it.
-        session['_mt_fresh_floor'] = tokens
     if session.get('_mt_awaiting_baseline'):
         session['_mt_awaiting_baseline'] = False
         session['_mt_baseline_tokens'] = tokens
@@ -385,8 +382,9 @@ def _observe_failures(session):
         _log(f"[midturn-rollover] {session.get('project_id', '')}/"
              f"{session.get('session_id', '')}: gave up after {failures} failed "
              f"rolls (last attempt at {tokens} tokens)")
-        _append_row(session, {'event': 'gave_up', 'failures': failures,
-                              'context_tokens': tokens})
+        decision = session.get('_mt_attempt_decision') or _decision.capture(
+            session, 'midturn', 'tokens', tokens)
+        _decision.append_row(_log_dir(), decision, {'event': 'gave_up', 'failures': failures})
 
 
 def begin_roll(session):
@@ -395,11 +393,7 @@ def begin_roll(session):
     `should_roll` measures growth from (MIN_GROWTH_TOKENS). Called by
     agent_interrupt once the roll is committed to, so a refused or failed
     attempt never leaves a baseline armed."""
-    # begin_roll runs BEFORE record_roll (agent_interrupt, then the 200 branch
-    # of _maybe_midturn_roll), so the outgoing segment's floor is parked for
-    # that row and the new segment starts un-set.
-    session['_mt_rolled_floor'] = session.get('_mt_fresh_floor')
-    session['_mt_fresh_floor'] = None
+    clear_floor(session)
     session['_mt_main_tokens'] = None
     session['_mt_awaiting_baseline'] = True
     session['_mt_baseline_tokens'] = None
@@ -545,78 +539,34 @@ def _log_dir():
     return base / 'midturn_rollover_log'
 
 
-def _character_model_fields(session, floor, threshold):
-    """MC-1178 prep: who rolled, on what, and how much room the threshold left
-    after the fresh-start load. Absent values are None (null in the JSONL),
-    never missing keys. `model` is the observed one when the stream reported
-    it, else the requested one (`model`, then `agent_model` — the same order
-    agent_routes._requested_model_snapshot uses, where a present empty
-    `model` means native default and stays null)."""
-    model = session.get('observed_model')
-    if not model:
-        model = session['model'] if 'model' in session else session.get('agent_model')
-    inputs = inputs_for_session(session)
-    room = threshold - floor if floor is not None and threshold > 0 else None
-    return {
-        'character': _character_ref(session) or None,
-        'model': model or None,
-        'provider': session.get('provider') or None,
-        'fresh_floor_tokens': floor,
-        'working_room_tokens': room,
-        'mean_growth_tokens': inputs['mean_growth_tokens'] if inputs else None,
-        'growth_source': inputs['growth_source'] if inputs else None,
-    }
+def roll_decision(session):
+    """Use the very threshold checked by the gate in the eventual audit row."""
+    decision = None
+
+    def over_threshold(tokens, source):
+        nonlocal decision
+        decision = _decision.capture(source, 'midturn', 'tokens', tokens)
+        return decision.crosses_threshold
+
+    return decision if should_roll(session, over_threshold) else None
 
 
-def _append_row(session, extra, floor=None):
-    """Append one JSONL row to the durable roll log. Never raises. `floor` is
-    the fresh-start reading to log; None means the session's current segment."""
-    pid = session.get('project_id', '') or 'unknown'
-    if floor is None:
-        floor = session.get('_mt_fresh_floor')
-    threshold, reason = threshold_with_reason(
-        dict(session, _mt_fresh_floor=floor), state.CONFIG)
-    row = {
-        'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        'project_id': pid,
-        'session_id': session.get('session_id', ''),
-        'claude_session_id': session.get('claude_session_id', ''),
-        'threshold': threshold,
-        'threshold_reason': reason,
-        'roll_number': session.get('_mt_rolls', 0),
-        'epoch': int(time.time()),
-    }
-    row.update(_character_model_fields(session, floor, threshold))
-    row.update(extra)
-    try:
-        d = _log_dir()
-        d.mkdir(parents=True, exist_ok=True)
-        safe = ''.join(c for c in pid if c.isalnum() or c in '-_') or 'unknown'
-        with open(d / f'{safe}.jsonl', 'a', encoding='utf-8') as fh:
-            fh.write(json.dumps(row) + '\n')
-    except Exception as e:
-        _log(f"[midturn-rollover] log write failed: {e}")
-
-
-def record_roll(session, context_tokens, *, scribe_flushed=False):
-    """Append one JSONL line per roll: server log + a file that survives.
-    Never raises — a failed write must not break the roll.
-
-    `scribe_flushed` (MC-964 Step C) records whether the forced pre-roll
-    checkpoint (`agent_routes._maybe_midturn_roll` ->
-    `memory._maybe_checkpoint(session, force=True)`) actually committed
-    something — false covers both "nothing new to flush" and a real failure,
-    which the acceptance test's replay distinguishes by cross-checking
-    against the Scribe's own `checkpoint_*` stats for the same window."""
-    pid = session.get('project_id', '') or 'unknown'
-    _log(f"[midturn-rollover] {pid}/{session.get('session_id', '')}: context "
-         f"{context_tokens} tokens crossed threshold mid-turn — rolling "
+def record_roll(session, decision, *, scribe_flushed=False):
+    """Log an accepted mid-turn interruption using its outgoing decision."""
+    data = decision.fields
+    _log(f"[midturn-rollover] {data['project_id']}/{data['session_id']}: context "
+         f"{data['context_tokens']} tokens crossed threshold mid-turn "
          f"(scribe_flushed={scribe_flushed})")
-    _append_row(session, {
-        'context_tokens': context_tokens,
-        'recent_tools': len(session.get('_mt_recent_tools') or []),
-        'journal_paths': len(session.get('_mt_journal_paths') or []),
-        'tool_result_heads': len(session.get('_mt_tool_result_heads') or []),
-        'unanswered_msgs': len(session.get('_mt_unanswered_msgs') or []),
+    _decision.append_row(_log_dir(), decision, {
+        'roll_number': session.get('_mt_rolls', 0),
         'scribe_flushed': bool(scribe_flushed),
-    }, floor=session.pop('_mt_rolled_floor', None))
+    })
+
+
+def record_boundary_roll(decisions, source, project_id, session_id, native_id, reason, detail):
+    decision = decisions[0] if decisions else _decision.capture(
+        source, 'message_boundary', reason, detail, native_id=native_id)
+    _decision.append_row(_log_dir(), decision, {
+        'project_id': project_id,
+        'session_id': session_id or decision.fields['session_id'],
+    })

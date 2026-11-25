@@ -196,4 +196,4 @@ def test_auto_fresh_uses_model_and_floor(ar, monkeypatch):
     monkeypatch.setitem(ar.state.CONFIG, 'context_rollover_by_character', {'global:dave': 100_000})
     session = {'character': 'global:dave', 'model': 'claude-fable-5-2', '_mt_fresh_floor': 90_000}
     assert ar._auto_fresh_trigger('/p', 'sid', 200_000, session_or_character=session) == (None, 0)
-    assert ar._auto_fresh_trigger('/p', 'sid', 277_349, session_or_character=session) == ('tokens', 277_349)
+    assert ar._auto_fresh_trigger('/p', 'sid', 290_000, session_or_character=session) == ('tokens', 290_000)
