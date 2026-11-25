@@ -113,6 +113,13 @@ def _wait(pred, timeout=3.0):
     return pred()
 
 
+def _over(tokens, source):
+    """The threshold check production uses (`midturn_rollover.roll_decision`):
+    the resolver every rollover path shares, asked through the decision."""
+    from mc import rollover_decision
+    return rollover_decision.capture(source, 'midturn', 'tokens', tokens).crosses_threshold
+
+
 @pytest.fixture()
 def env(tmp_path, monkeypatch, survive_restart_off):
     import server  # noqa: F401  (registers the blueprint)
@@ -669,20 +676,20 @@ def test_parallel_tool_calls_wait_for_every_result(env):
     ar._midturn.note_tool_use(session, {'type': 'tool_use', 'id': 'b', 'name': 'Read',
                                         'input': {'file_path': 'y'}})
     ar._midturn.note_tool_results(session, [{'type': 'tool_result', 'tool_use_id': 'a'}])
-    assert not ar._midturn.should_roll(session, ar._context_tokens_over_threshold)
+    assert not ar._midturn.should_roll(session, _over)
     ar._midturn.note_tool_results(session, [{'type': 'tool_result', 'tool_use_id': 'b'}])
-    assert ar._midturn.should_roll(session, ar._context_tokens_over_threshold)
+    assert ar._midturn.should_roll(session, _over)
 
 
 def test_non_claude_and_unknown_tokens_never_roll(env):
     ar = env['ar']
     s = _session(_Proc(), _mt_main_tokens=250_000, provider='gemini')
-    assert not ar._midturn.should_roll(s, ar._context_tokens_over_threshold)
+    assert not ar._midturn.should_roll(s, _over)
     s = _session(_Proc(), _mt_main_tokens=None)
-    assert not ar._midturn.should_roll(s, ar._context_tokens_over_threshold)
+    assert not ar._midturn.should_roll(s, _over)
     env['CONFIG']['context_rollover_tokens'] = 0
     s = _session(_Proc(), _mt_main_tokens=999_999)
-    assert not ar._midturn.should_roll(s, ar._context_tokens_over_threshold)
+    assert not ar._midturn.should_roll(s, _over)
 
 
 # --- Review fixes (b5fa971 review, 2026-09-18) --------------------------------
@@ -834,7 +841,7 @@ def test_finding6_no_reroll_loop_when_the_fresh_prefix_is_over_the_threshold(env
 
 def test_finding6_repeated_failed_rolls_stop_being_attempted(env):
     mt = env['ar']._midturn
-    over = env['ar']._context_tokens_over_threshold
+    over = _over
     session = _session(_Proc(), _mt_main_tokens=250_000,
                        _mt_roll_failures=mt.MAX_ROLL_FAILURES)
     assert not mt.should_roll(session, over)
@@ -880,7 +887,7 @@ def test_low_results_for_calls_started_before_the_flag_are_not_boundaries(env):
 
 def test_low_toggling_the_flag_off_and_on_drops_stale_pending_ids(env):
     mt = env['ar']._midturn
-    over = env['ar']._context_tokens_over_threshold
+    over = _over
     session = _session(_Proc(), _mt_main_tokens=250_000, claude_session_id=CSID)
     mt.note_tool_use(session, _tool_use_block('a'))
     env['CONFIG']['midturn_rollover_enabled'] = False
@@ -926,7 +933,7 @@ def _failed_attempt_at(mt, over, session, tokens):
 
 def test_n2_failed_roll_waits_for_growth_before_the_next_attempt(env):
     mt = env['ar']._midturn
-    over = env['ar']._context_tokens_over_threshold
+    over = _over
     session = _session(_Proc())
     _failed_attempt_at(mt, over, session, 250_000)
     # The very next tool boundary (no growth) used to retry at once.
@@ -941,7 +948,7 @@ def test_n2_three_back_to_back_boundaries_do_not_exhaust_the_retries(env):
     """One brief fault (agent_log locked) spans many tool boundaries. Before
     the back-off, MAX_ROLL_FAILURES of them in a row disabled rollover."""
     mt = env['ar']._midturn
-    over = env['ar']._context_tokens_over_threshold
+    over = _over
     session = _session(_Proc())
     _failed_attempt_at(mt, over, session, 250_000)
     for _ in range(10):
@@ -953,7 +960,7 @@ def test_n2_three_back_to_back_boundaries_do_not_exhaust_the_retries(env):
 
 def test_n2_giving_up_is_visible_once_in_the_session_log_and_the_durable_log(env):
     mt = env['ar']._midturn
-    over = env['ar']._context_tokens_over_threshold
+    over = _over
     session = _session(_Proc())
     tokens = 250_000
     for _ in range(mt.MAX_ROLL_FAILURES):
@@ -974,7 +981,7 @@ def test_n2_giving_up_is_visible_once_in_the_session_log_and_the_durable_log(env
 
 def test_n2_a_committed_roll_clears_the_back_off_state(env):
     mt = env['ar']._midturn
-    over = env['ar']._context_tokens_over_threshold
+    over = _over
     session = _session(_Proc())
     _failed_attempt_at(mt, over, session, 250_000)
     assert not mt.should_roll(session, over)    # observes the failure

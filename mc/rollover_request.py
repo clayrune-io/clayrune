@@ -27,6 +27,9 @@ class Call:
     cwd: str | None
     effort: str | None = None
     checked: bool = False
+    # The effort last read for an earlier call of this session: the fallback
+    # while this call's own row is not on disk yet (2026-11-25 review, F9).
+    last_effort: str | None = None
 
 
 def note_call(
@@ -48,7 +51,12 @@ def note_call(
     session['_rollover_call'] = Call(
         native, message_id if isinstance(message_id, str) else '', tokens,
         model if isinstance(model, str) and model else None, cwd,
+        last_effort=_known_effort(previous),
     )
+
+
+def _known_effort(call: object) -> str | None:
+    return (call.effort or call.last_effort) if isinstance(call, Call) else None
 
 
 def _request_effort(path: Path, call: Call) -> tuple[str | None, bool]:
@@ -111,7 +119,12 @@ def call_facts(source: dict[str, Any], context_tokens: object) -> tuple[str | No
         path = _find_claude_transcript(call.cwd, call.native)
         if path is not None:
             call.effort, call.checked = _request_effort(path, call)
-    return call.model, call.effort or effort
+    if call.checked:
+        return call.model, call.effort or effort    # the row is on disk: it is the answer
+    # stdout runs ahead of the transcript. Without the row the effort was
+    # None and the limit moved a grid step (opus over an 89k floor: 220,000,
+    # against 200,000 once the row said `high`).
+    return call.model, call.effort or effort or call.last_effort
 
 
 def main_context_tokens(source: Any, native: str, tokens: Any) -> Any:

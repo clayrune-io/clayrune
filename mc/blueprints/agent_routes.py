@@ -164,7 +164,6 @@ import mc.long_job_guidance as _long_job_guidance  # MC-1149: long jobs -> /job 
 import mc.resume_target as _resume_target  # unresumable `-r` ids: heal, don't loop
 from mc import habit_report as _habit_report  # MC-964 Step E report mode (human messages at send time)
 from mc import log_lines_trim as _log_lines_trim  # log_lines cap that keeps user lines
-from mc.rollover_threshold import threshold_for as _rollover_threshold_for
 import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (Mode B)
 import mc.delegation_waiting as _delegation_waiting  # MC-1063: queued child reports shown on the parent
 import mc.delegation_running as _delegation_running  # running children shown on the parent
@@ -12312,22 +12311,6 @@ def _resume_unresumable(session, project_id, pp, claude_sid):
         lambda sid: _find_transcript_file(pp, sid), log=_log)
 
 
-def _context_tokens_over_threshold(context_tokens, session_or_character=None):
-    """Token-based auto-fresh trigger (`context_rollover_tokens`, default
-    200000, 0 disables) — the live counterpart to `_session_too_large`'s
-    byte-based backstop. Either trigger may fire a rollover independently
-    (docs/CONTEXT_ECONOMY_SPEC.md §2). `context_tokens` is a live session's
-    last per-turn normalized figure (mc.agent_runtime.normalize_context_tokens,
-    set by `_accumulate_session_usage`/the Mode-A readers) — None when no
-    usage has been recorded yet (a revived/never-live session), which never
-    trips this trigger, matching "unknown stays unknown".
-    """
-    thr = _rollover_threshold_for(session_or_character, state.CONFIG)
-    if thr <= 0:
-        return False
-    return isinstance(context_tokens, (int, float)) and context_tokens >= thr
-
-
 def _auto_fresh_trigger(pp, claude_sid, context_tokens=None, *, session_or_character=None,
                         decisions=None):
     """Unified auto-fresh decision. A KNOWN `context_tokens` figure is
@@ -16564,7 +16547,7 @@ def agent_status(project_id):
                 'num_turns': s.get('num_turns', 0),
                 # Live context-size counter (docs/CONTEXT_ECONOMY_SPEC.md §5):
                 # the SAME per-turn normalized figure the auto-fresh rollover
-                # trigger reads (_auto_fresh_trigger/_context_tokens_over_threshold)
+                # trigger reads (_auto_fresh_trigger / mc.rollover_decision.capture)
                 # — this was previously set on the in-memory session dict
                 # (_note_call_context_tokens et al.) but never surfaced past
                 # that point, so /agent/status genuinely never returned it

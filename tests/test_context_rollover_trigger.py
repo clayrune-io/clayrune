@@ -1,6 +1,7 @@
 """Token-based auto-fresh trigger (docs/CONTEXT_ECONOMY_SPEC.md §2) — unit
 tests for the pure decision helpers in mc/blueprints/agent_routes.py:
-`_context_tokens_over_threshold`, `_auto_fresh_trigger`, `_in_flight_children`.
+`_auto_fresh_trigger`, `_in_flight_children`, and the shared threshold check
+(`mc.rollover_decision.capture`).
 
 These fail before the helpers exist (ImportError via getattr below) and pass
 once `context_rollover_tokens` (default 200000, 0 disables) is wired in as
@@ -32,28 +33,39 @@ def ar(monkeypatch):
         mc_state.agent_sessions.update(snapshot)
 
 
+def _crosses(tokens):
+    """The one threshold check every rollover path shares
+    (`rollover_decision.capture`). `agent_routes._context_tokens_over_threshold`
+    asked the same question and had no caller left (2026-11-25 review, F9)."""
+    from mc import rollover_decision
+    return rollover_decision.capture(None, 'message_boundary', 'tokens', tokens).crosses_threshold
+
+
 class TestContextTokensOverThreshold:
     def test_default_threshold_200k(self, ar, monkeypatch):
         from mc import state as mc_state
         monkeypatch.delitem(mc_state.CONFIG, 'context_rollover_tokens', raising=False)
-        assert ar._context_tokens_over_threshold(199_999) is False
-        assert ar._context_tokens_over_threshold(200_000) is True
+        assert _crosses(199_999) is False
+        assert _crosses(200_000) is True
 
     def test_zero_disables(self, ar, monkeypatch):
         from mc import state as mc_state
         monkeypatch.setitem(mc_state.CONFIG, 'context_rollover_tokens', 0)
-        assert ar._context_tokens_over_threshold(10_000_000) is False
+        assert _crosses(10_000_000) is False
 
     def test_custom_threshold(self, ar, monkeypatch):
         from mc import state as mc_state
         monkeypatch.setitem(mc_state.CONFIG, 'context_rollover_tokens', 5000)
-        assert ar._context_tokens_over_threshold(60_000) is True
-        assert ar._context_tokens_over_threshold(59_999) is False
+        assert _crosses(60_000) is True
+        assert _crosses(59_999) is False
 
     def test_none_never_trips(self, ar, monkeypatch):
         from mc import state as mc_state
         monkeypatch.setitem(mc_state.CONFIG, 'context_rollover_tokens', 100)
-        assert ar._context_tokens_over_threshold(None) is False
+        assert _crosses(None) is False
+
+    def test_the_dead_route_level_check_is_gone(self, ar):
+        assert not hasattr(ar, '_context_tokens_over_threshold')
 
 
 class TestAutoFreshTrigger:

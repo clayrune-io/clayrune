@@ -394,7 +394,8 @@ def should_roll(session, over_threshold):
     end, where the follow-up check already runs), token threshold crossed, no
     tool call still awaiting its result, no roll already requested or in
     flight, and — after a previous roll — real growth over the fresh session's
-    first reading. `over_threshold` is agent_routes._context_tokens_over_threshold."""
+    first reading. `over_threshold(tokens, session)` is the threshold check;
+    `roll_decision` supplies the one every rollover path shares."""
     if not enabled():
         return False
     if (session.get('provider') or 'claude').lower() != 'claude':
