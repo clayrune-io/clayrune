@@ -13681,7 +13681,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         if original_resume and not resume_id and _af_log_line:
             session['log_lines'].append(_af_log_line)
 
-    if _roll_decisions:
+    if _roll_decisions and not incognito:
         _midturn.record_boundary_roll(_roll_decisions, None, project_id, session_id,
                                       original_resume, None, None)
     _midturn.note_turn_prompt(session, task)  # a roll in turn 1 must know it
@@ -15134,6 +15134,7 @@ def agent_followup(project_id):
                 return jsonify({'ok': True, 'queued': True, 'session_id': session_id})
 
             # Mark as running and return quickly — spawn process in background
+            _roll_source = dict(existing)
             _midturn.note_user_message(existing, message)
             _start_new_turn(existing)
             existing['status'] = 'running'
@@ -15352,8 +15353,8 @@ def agent_followup(project_id):
             if claude_sid:
                 _roll_decisions = []
                 _af_reason, _af_detail = _auto_fresh_trigger(
-                    pp, claude_sid, existing.get('context_tokens'),
-                    session_or_character=existing, decisions=_roll_decisions)
+                    pp, claude_sid, _roll_source.get('context_tokens'),
+                    session_or_character=_roll_source, decisions=_roll_decisions)
                 _unresumable = _resume_unresumable(existing, project_id, pp, claude_sid)
                 _af_rolled_from = existing.get('_rolled_from')
                 if not _af_reason and (_unresumable or _fragile_resume_target(
@@ -15371,7 +15372,7 @@ def agent_followup(project_id):
                         pp, 'claude', claude_sid, project_id, session_id,
                         reason=_af_reason, detail=_af_detail,
                         fallback_native_id=_af_rolled_from)
-                    _midturn.record_boundary_roll(_roll_decisions, existing, project_id,
+                    _midturn.record_boundary_roll(_roll_decisions, _roll_source, project_id,
                         session_id, claude_sid, _af_reason, _af_detail)
                     _log_agent_activity(project_id, _activity_line)
                     with get_manager(project_id).lock:
@@ -15855,7 +15856,7 @@ def agent_interrupt(project_id, *, _internal=None):
 
         old_proc = session['proc']
         claude_sid = session.get('claude_session_id')
-        _roll_source = dict(session) if not is_midturn else None
+        _roll_source = {} if is_midturn else dict(session)
 
         # Mark as interrupting BEFORE killing the old proc. The old reader's
         # finally block will see this flag (via _session_owned_by) and skip

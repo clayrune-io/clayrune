@@ -16,6 +16,7 @@ from statistics import mean, median
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from mc.rollover_cost import continuity_target
 from mc.rollover_model_table import MODEL_TABLE
 from mc.rollover_request import effort_name
 
@@ -216,20 +217,17 @@ def cost_fit(stats, model):
 
 
 def candidate(s, model):
-    fit = cost_fit(s, model)
-    if not fit or not coverage_met(s):
+    prices = MODEL_TABLE.get(model)
+    if not prices or not prices['write_read_ratio'] or not coverage_met(s):
         return None
-    optimum, cost = fit
+    growth = mean(s.deltas)
+    if growth <= 0:
+        return None
     f90 = sorted(s.floors)[ceil(.9 * len(s.floors)) - 1]
-    # Spend up to 2% above the minimum for up to 30k more continuity.
-    grid = round(optimum / 10000) * 10000
-    choices = [grid + d for d in (0, 10000, 20000, 30000)
-               if grid + d <= optimum + 30000 and cost(grid + d) <= 1.02 * cost(optimum)]
     minimum = f90 + ROOM
-    target = max([grid, *choices, ceil(minimum / 10000) * 10000])
-    prices = MODEL_TABLE[model]
     if minimum >= prices['window_tokens']:
         return None
+    target = continuity_target(median(s.floors), growth, prices['write_read_ratio'], minimum)
     cap = min(prices['window_tokens'] // 2, prices.get('price_step_tokens') or target)
     return min(target, max(cap, minimum))
 

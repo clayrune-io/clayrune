@@ -8,6 +8,7 @@ import pytest
 from mc import midturn_rollover as mt
 from mc import state
 from mc.rollover_decision import capture
+from mc.rollover_growth_snapshot import GROWTH_ROWS
 
 FIELDS = ('character', 'model', 'provider', 'fresh_floor_tokens',
           'working_room_tokens', 'requested_model', 'canonical_model', 'effective_effort',
@@ -61,6 +62,13 @@ def test_requested_model_used_when_nothing_observed(log):
     s2 = _session(agent_model='sonnet')
     _record(s2, 1)
     assert log()[1]['model'] == 'sonnet'
+
+
+def test_unknown_requested_alias_has_no_canonical_model(log):
+    _record(_session(model='fable'), 200_000)
+    row = log()[0]
+    assert row['requested_model'] == 'fable'
+    assert row['canonical_model'] is None
 
 
 def test_absent_values_are_null_not_missing(log):
@@ -152,13 +160,14 @@ def test_model_threshold_reason_uses_outgoing_floor_after_reset(log, monkeypatch
     monkeypatch.setitem(state.CONFIG, 'context_rollover_by_character', {'global:dave': 100_000})
     s = _session(model='claude-fable-5-2', character='global:dave')
     s['_mt_fresh_floor'] = 90_000
-    _record(s, 280_000, begin_roll=True)
+    _record(s, 300_000, begin_roll=True)
     row = log()[0]
-    assert row['threshold'] == 277_349
-    assert row['threshold_reason'] == 'pin_ignored_below_floor'
+    assert row['threshold'] == 290_000
+    assert row['threshold_reason'] == 'computed:model'
     assert row['fresh_floor_tokens'] == 90_000
-    assert row['working_room_tokens'] == 187_349
-    assert row['growth_source'] == 'measured' and row['mean_growth_tokens'] == 3900
+    assert row['working_room_tokens'] == 200_000
+    assert row['growth_source'] == 'model'
+    assert row['mean_growth_tokens'] == GROWTH_ROWS[None, 'claude-fable-5-2', None].mean_growth
     assert s['_mt_fresh_floor'] is None
 
 
@@ -166,8 +175,8 @@ def test_gave_up_logs_model_threshold_for_current_floor(log):
     s = _session(agent_model='claude-fable-5-1')
     s['_mt_fresh_floor'] = 90_000
     s['_mt_roll_failures'] = mt.MAX_ROLL_FAILURES
-    s['_mt_attempt_tokens'] = 280_000
+    s['_mt_attempt_tokens'] = 310_000
     mt._observe_failures(s)
     row = log()[0]
-    assert row['threshold'] == 277_349 and row['threshold_reason'] == 'cost_optimal'
-    assert row['growth_source'] == 'family'
+    assert row['threshold'] == 300_000 and row['threshold_reason'] == 'computed:reviewed_family'
+    assert row['growth_source'] == 'reviewed_family'

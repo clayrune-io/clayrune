@@ -367,13 +367,13 @@ def test_roll_row_logs_character_model_provider_and_fresh_floor(env, monkeypatch
 def test_midturn_log_preserves_the_triggering_request_and_limit(env, monkeypatch):
     event = json.loads(_assistant('tool1', 250_000, 'trigger'))
     event['message']['model'] = 'claude-sonnet-5-5'
-    _write_floor_transcript(env, monkeypatch, json.dumps(event))
+    _write_floor_transcript(env, monkeypatch, _assistant('earlier', 30_000, 'first'))
     transcript = env['tmp'] / f'{CSID}.jsonl'
     rows = transcript.read_text(encoding='utf-8').splitlines()
     request = {'type': 'api-request', 'sessionId': CSID, 'id': 'matched',
                'params': {'output_config': {'effort': 'medium'}}}
-    assistant = dict(json.loads(rows[1]), requestRef='matched', perTurnEffort='low')
-    rows[1:] = [json.dumps(request), json.dumps(assistant)]
+    assistant = dict(event, sessionId=CSID, requestRef='matched', perTurnEffort='low')
+    rows += [json.dumps(request), json.dumps(assistant)]
     transcript.write_text('\n'.join(rows) + '\n', encoding='utf-8')
 
     def mutate_after_decision(session, **_):
@@ -389,7 +389,7 @@ def test_midturn_log_preserves_the_triggering_request_and_limit(env, monkeypatch
         yield _tool_result('tool1')
 
     session = _session(_Proc(), model='sonnet', requested_effort='high',
-                       _mt_turn_prompt='answer this', _mt_fresh_floor=30_000)
+                       _mt_turn_prompt='answer this', _mt_fresh_floor=None)
     _run_reader(env, lines, session=session, proc=session['proc'])
     row = json.loads((env['tmp'] / 'midturn_log' / 'p1.jsonl').read_text().splitlines()[0])
     assert row['threshold'] == 200_000
@@ -429,26 +429,45 @@ def test_successor_verifies_its_own_first_call_after_transcript_flush(env, monke
     session = _session(proc)
     env['ar']._midturn.begin_roll(session)
 
+    def successor_line(text, tokens, call):
+        line = json.loads(_assistant(text, tokens, call))
+        line['session_id'] = 'successor'
+        return json.dumps(line)
+
     def lines():
-        first = _assistant('first', 84_000, 'new-first')
+        first = successor_line('first', 84_000, 'new-first')
         yield first                      # transcript is not on disk yet
         assert session['_mt_fresh_floor'] is None
         _write_floor_transcript(env, monkeypatch, first)
-        yield _assistant('next', 95_000, 'new-second')
+        yield successor_line('next', 95_000, 'new-second')
 
     _run_reader(env, lines, session=session, proc=proc)
     assert session['_mt_fresh_floor'] == 84_000
     assert session['context_tokens'] == 95_000
 
 
+def test_verified_floor_survives_enabling_midturn_and_resuming_the_same_segment(env, monkeypatch):
+    first = _assistant('first', 84_000, 'first')
+    _write_floor_transcript(env, monkeypatch, first)
+    monkeypatch.setitem(env['CONFIG'], 'midturn_rollover_enabled', False)
+    session = _run_reader(env, lambda: iter([first]), _mt_fresh_floor=None)
+    assert session['_mt_fresh_floor'] == 84_000
+
+    monkeypatch.setitem(env['CONFIG'], 'midturn_rollover_enabled', True)
+    _run_reader(env, lambda: iter([_assistant('later', 100_000, 'later')]), session=session)
+    assert session['_mt_fresh_floor'] == 84_000
+    assert session['_mt_main_tokens'] == 100_000
+
+
 def _write_floor_transcript(env, monkeypatch, assistant_line):
-    path = env['tmp'] / f'{CSID}.jsonl'
     assistant = json.loads(assistant_line)
-    assistant['sessionId'] = CSID
+    native = assistant['session_id']
+    path = env['tmp'] / f'{native}.jsonl'
+    assistant['sessionId'] = native
     assistant['parentUuid'] = 'prompt'
     assistant['message']['model'] = 'claude-fable-5-2'
     events = [
-        {'sessionId': CSID, 'type': 'user', 'parentUuid': None,
+        {'sessionId': native, 'type': 'user', 'parentUuid': None,
          'uuid': 'prompt', 'message': {'content': 'opening prompt'}},
         assistant,
     ]
@@ -1388,15 +1407,15 @@ def test_model_rollover_waits_for_cost_optimum_and_logs_it(env, monkeypatch):
         yield _tool_result('tool1')
         yield _assistant('tool2', 210_000, 'm2')
         yield _tool_result('tool2')
-        yield _assistant('tool3', 280_000, 'm3')
+        yield _assistant('tool3', 300_000, 'm3')
         yield _tool_result('tool3')
 
     _run_reader(env, lines, model='claude-fable-5-2', _mt_fresh_floor=None)
     log = env['tmp'] / 'midturn_log' / 'p1.jsonl'
     assert _wait(log.is_file)
     row = json.loads(log.read_text().splitlines()[0])
-    assert row['context_tokens'] == 280_000
-    assert row['threshold'] == 277_349 and row['threshold_reason'] == 'cost_optimal'
+    assert row['context_tokens'] == 300_000
+    assert row['threshold'] == 290_000 and row['threshold_reason'] == 'computed:model'
     env['join_respawns']()
     assert len(env['spawned']) == 1
 

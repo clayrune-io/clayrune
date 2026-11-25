@@ -166,6 +166,16 @@ def test_character_rollover_limits_round_trip(ctx):
     assert saved['context_rollover_by_character'] == limits
 
 
+def test_scoped_rollover_overrides_round_trip(ctx):
+    overrides = [{'model': 'sonnet', 'effort': 'high', 'tokens': 220_000}]
+    response = ctx.client.put('/api/config', json={'context_rollover_overrides': overrides})
+    assert response.status_code == 200
+    assert response.get_json()['updated'] == ['context_rollover_overrides']
+    assert ctx.client.get('/api/config').get_json()['context_rollover_overrides'] == overrides
+    saved = json.loads(ctx.config_path.read_text(encoding='utf-8'))
+    assert saved['context_rollover_overrides'] == overrides
+
+
 def test_update_config_happy_persists(ctx):
     resp = ctx.client.put('/api/config', json={'agent_name': 'Vector',
                                                'log_level': 'warn'})

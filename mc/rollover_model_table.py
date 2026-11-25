@@ -16,8 +16,8 @@ class ModelInputs(TypedDict):
     input_price: float | None
     cache_read_price: float | None
     cache_write_price: float | None
-    write_read_ratio: float
-    mean_growth_tokens: int
+    write_read_ratio: float | None
+    mean_growth_tokens: int | None
     growth_source: Literal['measured', 'family', 'provisional']
     price_step_tokens: int | None
 

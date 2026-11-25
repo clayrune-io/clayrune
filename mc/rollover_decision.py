@@ -10,9 +10,9 @@ from typing import Any
 
 from mc import state
 from mc.core import _log
-from mc.rollover_model_table import canonical_model_id
+from mc.rollover_model_table import MODEL_TABLE, canonical_model_id
 from mc.rollover_request import call_facts
-from mc.rollover_threshold import _character_ref, inputs_for_session, threshold_with_reason
+from mc.rollover_threshold import _character_ref, resolve
 
 _APPEND_LOCK = threading.Lock()
 
@@ -39,10 +39,14 @@ def capture(
     observed, effort = call_facts(session, tokens)
     requested = session.get('model', session.get('agent_model')) or None
     observed = observed or session.get('observed_model')
+    canonical = canonical_model_id(observed)
+    requested_id = canonical_model_id(requested)
+    if (canonical is None and requested_id
+            and (requested_id in MODEL_TABLE or requested_id.startswith('claude-'))):
+        canonical = requested_id
     inputs = dict(session, observed_model=observed, effective_effort=effort)
-    threshold, reason = (threshold_with_reason(inputs, state.CONFIG)
-                         if trigger_reason in ('tokens', None) else (None, None))
-    model_inputs = inputs_for_session(inputs)
+    resolution = resolve(inputs, state.CONFIG) if trigger_reason in ('tokens', None) else None
+    threshold = resolution.tokens if resolution else None
     floor = session.get('_mt_fresh_floor')
     status = session.get('status')
     opening = None
@@ -56,19 +60,19 @@ def capture(
         'session_id': session.get('session_id'),
         'claude_session_id': native_id or session.get('claude_session_id'),
         'threshold': threshold,
-        'threshold_reason': reason,
+        'threshold_reason': resolution.reason if resolution else None,
         'roll_number': None,
         'epoch': int(time.time()),
         'character': _character_ref(source) or None,
         'model': observed or requested,
         'requested_model': requested,
-        'canonical_model': canonical_model_id(observed or requested),
+        'canonical_model': canonical,
         'provider': session.get('provider') or None,
         'effective_effort': effort,
         'fresh_floor_tokens': floor,
         'working_room_tokens': threshold - floor if floor is not None and threshold else None,
-        'mean_growth_tokens': model_inputs['mean_growth_tokens'] if model_inputs else None,
-        'growth_source': model_inputs['growth_source'] if model_inputs else None,
+        'mean_growth_tokens': resolution.mean_growth if resolution else None,
+        'growth_source': resolution.growth_source if resolution else None,
         'context_tokens': tokens,
         'transcript_bytes': detail if trigger_reason == 'bytes' else None,
         'trigger_type': trigger_type,
