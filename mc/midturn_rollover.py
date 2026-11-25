@@ -38,7 +38,8 @@ from mc import state
 from mc import bg_job_liveness as _bg_live
 from mc.core import _log, TimestampedLines
 from mc.long_job_guidance import job_route_url as _job_url
-from mc.rollover_threshold import _character_ref, inputs_for_session, threshold_with_reason
+from mc.rollover_fresh_floor import clear_floor
+from mc import rollover_decision as _decision
 
 RECENT_TOOLS_KEEP = 10
 # MC-964 Step C: the last tool_results' first lines, carried across a roll
@@ -83,6 +84,19 @@ ROLL_MESSAGE = ("Your context was rolled over mid-task because it reached the "
                 "token limit. This is the SAME task, not a new one — continue "
                 "it from where it stopped using the state above. Do not "
                 "restart it and do not redo finished work.")
+
+
+# State block frame and section heads. `carried_user_text` reads back what
+# `build_state_block` writes, so both use these.
+_BLOCK_START = '=== Mid-task rollover state ==='
+_BLOCK_END = '=== End of mid-task rollover state ==='
+_INFLIGHT_HEAD = ('--- Message this turn was answering when the roll '
+                  'happened (NOT answered yet; finish it) ---')
+_UNANSWERED_HEAD = '--- Unanswered user messages (answer these first) ---'
+_LATEST_HEAD = '--- Latest user message (current direction) ---'
+_FIRST_IS_CURRENT = 'the current task; no later message was recorded'
+_CWD_HEAD = '--- Working directory ---'
+_NO_UNANSWERED = '(none)'
 
 
 def enabled():
@@ -310,6 +324,57 @@ def note_turn_complete(session):
     session.pop('_mt_turn_prompt', None)
 
 
+def note_self_started_turn(session):
+    """The CLI started a turn Clayrune did not send (a background-job wake, a
+    peer message). No message of ours opened it, so a turn prompt still set is
+    left over from a send that was refused or never written. Showing that as
+    "NOT answered yet" pointed the fresh session at a message the agent never
+    received (2026-11-25 review, F6)."""
+    session.pop('_mt_turn_prompt', None)
+
+
+def note_message_undelivered(session, text, *, mid_turn=False, previous_prompt=None):
+    """`text` was noted (`note_user_message`, same `mid_turn`) and then did not
+    reach the agent: the send was refused, or its stdin write failed. Take the
+    note back, so a roll never calls the message unanswered and an undelivered
+    child report is not answered ahead of the retry that delivers it.
+
+    `previous_prompt` is `_mt_turn_prompt` as it stood before the note: a
+    refused interrupt leaves the old turn running, and that turn is still
+    answering it. Only a note for this same text is undone; a later message
+    that opened a turn of its own is left alone. The latest-message record is
+    not rewound. Never raises."""
+    try:
+        if not isinstance(text, str) or not text.strip():
+            return
+        message = text.strip()
+        if mid_turn:
+            msgs = session.get('_mt_unanswered_msgs') or []
+            for i in range(len(msgs) - 1, -1, -1):
+                if msgs[i].get('text') == message and not msgs[i].get('carried'):
+                    del msgs[i]
+                    break
+        elif session.get('_mt_turn_prompt') == message:
+            if previous_prompt and previous_prompt != message:
+                session['_mt_turn_prompt'] = previous_prompt
+            else:
+                session.pop('_mt_turn_prompt', None)
+    except Exception as e:
+        _log(f"[midturn-rollover] note_message_undelivered failed: {e}")
+
+
+def note_send_response(session, text, previous_prompt, status_code, body):
+    """Undo the note for `text` when the handler's response says it was not
+    delivered. An unknown outcome (`stdin_write_ack: unknown`, `delivered:
+    None`) may still have reached the agent, so its note stays."""
+    if not isinstance(status_code, int) or status_code < 400:
+        return
+    body = body if isinstance(body, dict) else {}
+    if body.get('stdin_write_ack') == 'unknown' or body.get('delivered', False) is None:
+        return
+    note_message_undelivered(session, text, previous_prompt=previous_prompt)
+
+
 def note_call_tokens(session, tokens, parent_tool_use_id=None):
     """Record the MAIN conversation's context size from one model call.
     A subagent (Task) call streams through the same reader with a
@@ -318,10 +383,6 @@ def note_call_tokens(session, tokens, parent_tool_use_id=None):
     if not enabled() or parent_tool_use_id or tokens is None:
         return
     session['_mt_main_tokens'] = tokens
-    if session.get('_mt_fresh_floor') is None:
-        # MC-1178 prep: log-only. The first reading since session start / the
-        # last roll is the fresh-start load, before any work grew it.
-        session['_mt_fresh_floor'] = tokens
     if session.get('_mt_awaiting_baseline'):
         session['_mt_awaiting_baseline'] = False
         session['_mt_baseline_tokens'] = tokens
@@ -333,7 +394,8 @@ def should_roll(session, over_threshold):
     end, where the follow-up check already runs), token threshold crossed, no
     tool call still awaiting its result, no roll already requested or in
     flight, and — after a previous roll — real growth over the fresh session's
-    first reading. `over_threshold` is agent_routes._context_tokens_over_threshold."""
+    first reading. `over_threshold(tokens, session)` is the threshold check;
+    `roll_decision` supplies the one every rollover path shares."""
     if not enabled():
         return False
     if (session.get('provider') or 'claude').lower() != 'claude':
@@ -385,8 +447,9 @@ def _observe_failures(session):
         _log(f"[midturn-rollover] {session.get('project_id', '')}/"
              f"{session.get('session_id', '')}: gave up after {failures} failed "
              f"rolls (last attempt at {tokens} tokens)")
-        _append_row(session, {'event': 'gave_up', 'failures': failures,
-                              'context_tokens': tokens})
+        decision = session.get('_mt_attempt_decision') or _decision.capture(
+            session, 'midturn', 'tokens', tokens)
+        _decision.append_row(_log_dir(), decision, {'event': 'gave_up', 'failures': failures})
 
 
 def begin_roll(session):
@@ -395,11 +458,7 @@ def begin_roll(session):
     `should_roll` measures growth from (MIN_GROWTH_TOKENS). Called by
     agent_interrupt once the roll is committed to, so a refused or failed
     attempt never leaves a baseline armed."""
-    # begin_roll runs BEFORE record_roll (agent_interrupt, then the 200 branch
-    # of _maybe_midturn_roll), so the outgoing segment's floor is parked for
-    # that row and the new segment starts un-set.
-    session['_mt_rolled_floor'] = session.get('_mt_fresh_floor')
-    session['_mt_fresh_floor'] = None
+    clear_floor(session)
     session['_mt_main_tokens'] = None
     session['_mt_awaiting_baseline'] = True
     session['_mt_baseline_tokens'] = None
@@ -492,14 +551,14 @@ def build_state_block(session, cwd):
                   or '(none captured)')
     unanswered = session.get('_mt_unanswered_msgs') or []
     unanswered_text = ('\n'.join(f"- [{m['ts']}] {m['text']}" for m in unanswered)
-                       or '(none)')
+                       or _NO_UNANSWERED)
     latest = session.get('_mt_latest_user_msg')
     latest_body = latest or '(none recorded after the first message)'
     # A dispatched one-prompt worker never records a later message, and its
     # first message IS the task: only call it historical when something later
     # superseded it (AP40).
     first_label = ("historical; may be long finished, not the current task"
-                   if latest else "the current task; no later message was recorded")
+                   if latest else _FIRST_IS_CURRENT)
     inflight = session.get('_mt_turn_prompt')
     # A one-prompt worker's first turn: the first-message section already
     # presents it as the current task (AP40), so don't add a second copy.
@@ -508,22 +567,20 @@ def build_state_block(session, cwd):
     inflight_text = ''
     first_body = task
     if inflight:
-        inflight_text = ("--- Message this turn was answering when the roll "
-                         "happened (NOT answered yet; finish it) ---\n"
-                         f"{inflight}\n\n")
+        inflight_text = f"{_INFLIGHT_HEAD}\n{inflight}\n\n"
         quoted = '(the message this turn was answering, quoted in the first section)'
         if latest == inflight:
             latest_body = quoted
         if task.strip() == inflight:
             first_label, first_body = 'the turn still in progress', quoted
-    latest_text = f"--- Latest user message (current direction) ---\n{latest_body}\n\n"
+    latest_text = f"{_LATEST_HEAD}\n{latest_body}\n\n"
     return (
-        "=== Mid-task rollover state ===\n"
+        f"{_BLOCK_START}\n"
         f"{inflight_text}"
-        f"--- Unanswered user messages (answer these first) ---\n{unanswered_text}\n\n"
+        f"{_UNANSWERED_HEAD}\n{unanswered_text}\n\n"
         f"{latest_text}"
         f"--- First message of this chat ({first_label}) ---\n{first_body}\n\n"
-        f"--- Working directory ---\n{cwd}\n"
+        f"{_CWD_HEAD}\n{cwd}\n"
         f"Branch: {_git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD')}\n\n"
         f"--- git status --short ---\n{_git(cwd, 'status', '--short')}\n\n"
         f"--- git diff --stat ---\n{_git(cwd, 'diff', '--stat')}\n\n"
@@ -531,7 +588,45 @@ def build_state_block(session, cwd):
         f"--- Journal file(s) written this session ---\n{journal_text}\n\n"
         f"--- Recent tool_result heads (<={TOOL_RESULT_CARRY_CAP_BYTES // 1024}KB) ---\n{heads_text}\n\n"
         f"--- Background jobs ---\n{job_text}\n"
-        "=== End of mid-task rollover state ===")
+        f"{_BLOCK_END}")
+
+
+def _section(block, head, next_head):
+    """Body of one state-block section, '' when the section is absent."""
+    start = block.find(head + '\n')
+    if start < 0:
+        return ''
+    start += len(head) + 1
+    end = block.find('\n\n' + next_head, start)
+    return block[start:end].strip() if end >= 0 else ''
+
+
+def carried_user_text(text):
+    """The user's own words inside the state block that opens a mid-task-rolled
+    session: the message the interrupted turn was answering, then the messages
+    sent while it ran. '' when `text` holds no state block, or the block names
+    no message still owed an answer.
+
+    Such a turn is nothing but injected text, so the handoff reader dropped it
+    whole and the NEXT handoff opened on an Assistant line with the message it
+    was answering nowhere in it (2026-11-25 review, F4). Never raises."""
+    if not isinstance(text, str):
+        return ''
+    start = text.find(_BLOCK_START)
+    end = text.find(_BLOCK_END, start)
+    if start < 0 or end < 0:
+        return ''
+    block = text[start:end]
+    inflight = _section(block, _INFLIGHT_HEAD, _UNANSWERED_HEAD)
+    if not inflight:
+        # A one-prompt worker: its first message IS the turn in flight (AP40).
+        inflight = _section(
+            block, f'--- First message of this chat ({_FIRST_IS_CURRENT}) ---', _CWD_HEAD)
+    unanswered = _section(block, _UNANSWERED_HEAD, _LATEST_HEAD)
+    parts = [inflight] if inflight else []
+    if unanswered and unanswered != _NO_UNANSWERED:
+        parts.append(f'[sent while that turn was running]\n{unanswered}')
+    return '\n\n'.join(parts)
 
 
 def _log_dir():
@@ -545,78 +640,34 @@ def _log_dir():
     return base / 'midturn_rollover_log'
 
 
-def _character_model_fields(session, floor, threshold):
-    """MC-1178 prep: who rolled, on what, and how much room the threshold left
-    after the fresh-start load. Absent values are None (null in the JSONL),
-    never missing keys. `model` is the observed one when the stream reported
-    it, else the requested one (`model`, then `agent_model` — the same order
-    agent_routes._requested_model_snapshot uses, where a present empty
-    `model` means native default and stays null)."""
-    model = session.get('observed_model')
-    if not model:
-        model = session['model'] if 'model' in session else session.get('agent_model')
-    inputs = inputs_for_session(session)
-    room = threshold - floor if floor is not None and threshold > 0 else None
-    return {
-        'character': _character_ref(session) or None,
-        'model': model or None,
-        'provider': session.get('provider') or None,
-        'fresh_floor_tokens': floor,
-        'working_room_tokens': room,
-        'mean_growth_tokens': inputs['mean_growth_tokens'] if inputs else None,
-        'growth_source': inputs['growth_source'] if inputs else None,
-    }
+def roll_decision(session):
+    """Use the very threshold checked by the gate in the eventual audit row."""
+    decision = None
+
+    def over_threshold(tokens, source):
+        nonlocal decision
+        decision = _decision.capture(source, 'midturn', 'tokens', tokens)
+        return decision.crosses_threshold
+
+    return decision if should_roll(session, over_threshold) else None
 
 
-def _append_row(session, extra, floor=None):
-    """Append one JSONL row to the durable roll log. Never raises. `floor` is
-    the fresh-start reading to log; None means the session's current segment."""
-    pid = session.get('project_id', '') or 'unknown'
-    if floor is None:
-        floor = session.get('_mt_fresh_floor')
-    threshold, reason = threshold_with_reason(
-        dict(session, _mt_fresh_floor=floor), state.CONFIG)
-    row = {
-        'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        'project_id': pid,
-        'session_id': session.get('session_id', ''),
-        'claude_session_id': session.get('claude_session_id', ''),
-        'threshold': threshold,
-        'threshold_reason': reason,
-        'roll_number': session.get('_mt_rolls', 0),
-        'epoch': int(time.time()),
-    }
-    row.update(_character_model_fields(session, floor, threshold))
-    row.update(extra)
-    try:
-        d = _log_dir()
-        d.mkdir(parents=True, exist_ok=True)
-        safe = ''.join(c for c in pid if c.isalnum() or c in '-_') or 'unknown'
-        with open(d / f'{safe}.jsonl', 'a', encoding='utf-8') as fh:
-            fh.write(json.dumps(row) + '\n')
-    except Exception as e:
-        _log(f"[midturn-rollover] log write failed: {e}")
-
-
-def record_roll(session, context_tokens, *, scribe_flushed=False):
-    """Append one JSONL line per roll: server log + a file that survives.
-    Never raises — a failed write must not break the roll.
-
-    `scribe_flushed` (MC-964 Step C) records whether the forced pre-roll
-    checkpoint (`agent_routes._maybe_midturn_roll` ->
-    `memory._maybe_checkpoint(session, force=True)`) actually committed
-    something — false covers both "nothing new to flush" and a real failure,
-    which the acceptance test's replay distinguishes by cross-checking
-    against the Scribe's own `checkpoint_*` stats for the same window."""
-    pid = session.get('project_id', '') or 'unknown'
-    _log(f"[midturn-rollover] {pid}/{session.get('session_id', '')}: context "
-         f"{context_tokens} tokens crossed threshold mid-turn — rolling "
+def record_roll(session, decision, *, scribe_flushed=False):
+    """Log an accepted mid-turn interruption using its outgoing decision."""
+    data = decision.fields
+    _log(f"[midturn-rollover] {data['project_id']}/{data['session_id']}: context "
+         f"{data['context_tokens']} tokens crossed threshold mid-turn "
          f"(scribe_flushed={scribe_flushed})")
-    _append_row(session, {
-        'context_tokens': context_tokens,
-        'recent_tools': len(session.get('_mt_recent_tools') or []),
-        'journal_paths': len(session.get('_mt_journal_paths') or []),
-        'tool_result_heads': len(session.get('_mt_tool_result_heads') or []),
-        'unanswered_msgs': len(session.get('_mt_unanswered_msgs') or []),
+    _decision.append_row(_log_dir(), decision, {
+        'roll_number': session.get('_mt_rolls', 0),
         'scribe_flushed': bool(scribe_flushed),
-    }, floor=session.pop('_mt_rolled_floor', None))
+    })
+
+
+def record_boundary_roll(decisions, source, project_id, session_id, native_id, reason, detail):
+    decision = decisions[0] if decisions else _decision.capture(
+        source, 'message_boundary', reason, detail, native_id=native_id)
+    _decision.append_row(_log_dir(), decision, {
+        'project_id': project_id,
+        'session_id': session_id or decision.fields['session_id'],
+    })

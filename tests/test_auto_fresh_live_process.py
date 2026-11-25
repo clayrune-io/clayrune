@@ -19,6 +19,7 @@ Reuses the Flask-route-driven fixture pattern from
 test_one_process_per_conversation.py (subprocess.Popen patched so the test
 controls exactly what "spawning a process" does).
 """
+import json
 import sys
 import threading
 import time
@@ -155,6 +156,30 @@ def test_live_oversized_session_ends_process_and_starts_fresh(env, monkeypatch):
     assert _wait(lambda: bool(new_proc.stdin.written)), \
         'the fresh process never received the follow-up message'
     assert any('too large' in l for l in live['log_lines']), live['log_lines']
+
+
+def test_live_message_boundary_writes_one_roll_row(env, monkeypatch, tmp_path):
+    ar = env['ar']
+    log_dir = tmp_path / 'rolls'
+    monkeypatch.setattr(ar._midturn, '_log_dir', lambda: log_dir)
+    monkeypatch.setattr(ar, '_session_too_large', lambda *_: (True, 7_000_000))
+    successor = _Proc(pid=523423)
+    monkeypatch.setattr(ar.subprocess, 'Popen', lambda *_, **__: successor)
+    live = _session('one-boundary')
+    env['sessions']['one-boundary'] = live
+    response = env['client'].post('/api/project/p1/agent/followup', json={
+        'session_id': 'one-boundary', 'message': 'keep going'})
+    assert response.status_code == 200
+    assert _wait(lambda: bool(successor.stdin.written))
+    rows = [json.loads(line) for line in (log_dir / 'p1.jsonl').read_text().splitlines()]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row['claude_session_id'] == CSID and row['session_id'] == 'one-boundary'
+    assert row['trigger_type'] == 'message_boundary'
+    assert row['trigger_reason'] == 'bytes' and row['transcript_bytes'] == 7_000_000
+    assert row['threshold'] is None and row['threshold_reason'] is None
+    assert row['effective_effort'] is None and row['canonical_model'] is None
+    assert row['requested_model'] is None and row['opening_prompt_unanswered'] is False
 
 
 def test_live_undersized_session_writes_straight_to_stdin(env, monkeypatch):

@@ -156,12 +156,14 @@ import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends
 import mc.turn_clock as _turn_clock          # per-turn "Now ... since your last reply" stamp + gap briefing
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
+import mc.rollover_decision as _rollover_decision
+import mc.rollover_fresh_floor as _rollover_floor
+import mc.rollover_request as _rollover_request
 from mc import handoff_turns as _handoff_turns
 import mc.long_job_guidance as _long_job_guidance  # MC-1149: long jobs -> /job route, every engine
 import mc.resume_target as _resume_target  # unresumable `-r` ids: heal, don't loop
 from mc import habit_report as _habit_report  # MC-964 Step E report mode (human messages at send time)
 from mc import log_lines_trim as _log_lines_trim  # log_lines cap that keeps user lines
-from mc.rollover_threshold import threshold_for as _rollover_threshold_for
 import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (Mode B)
 import mc.delegation_waiting as _delegation_waiting  # MC-1063: queued child reports shown on the parent
 import mc.delegation_running as _delegation_running  # running children shown on the parent
@@ -6174,6 +6176,7 @@ def _read_agent_stream(proc, session):
     # Snapshot the proc we were launched with so we can detect if a follow-up
     # replaced us with a newer process while we were still draining stdout.
     my_proc = proc
+    floor_probe = _rollover_floor.FloorProbe(my_proc)
     # Last total_cost_usd THIS process reported, plus its CLI version and, on
     # CLI >= 2.1.277, the total its resume carried over (read from the
     # transcript at init). This reader IS the process. See accumulate_result_cost.
@@ -6206,6 +6209,8 @@ def _read_agent_stream(proc, session):
                 # read stdin, so a child killed there never gets a transcript.
                 if 'session_id' in msg and not _resume_target.is_startup_hook_event(msg):
                     _note_claude_sid(session, msg['session_id'])
+                floor_probe.observe(session, msg, _agent_runtime._find_claude_transcript,
+                                    _agent_runtime.normalize_context_tokens)
                 # Refresh the account-global system status cache from
                 # `system/init` and `rate_limit_event` messages (every claude
                 # session emits these). No-op for any other message type.
@@ -6225,7 +6230,8 @@ def _read_agent_stream(proc, session):
                     continue
                 if msg_type == 'assistant' and isinstance(msg.get('message'), dict):
                     _turn_clock.note_reply(session)   # elapsed-since-last-reply clock (mc/turn_clock.py)
-                    _note_call_context_tokens(session, msg['message'], msg.get('parent_tool_use_id'))
+                    _note_call_context_tokens(session, msg['message'], msg.get('parent_tool_use_id'),
+                                              event=msg, cwd=floor_probe.cwd)
                     # First assistant output proves a `-r` resume loaded OK (not a
                     # fragile resume that dies instantly), so a LATER process death
                     # (the Mode-B AskUserQuestion proc.kill(), idle-eviction, or a
@@ -6383,6 +6389,7 @@ def _read_agent_stream(proc, session):
                     if 'usage' in msg:
                         _accumulate_session_usage(session, msg['usage'])
                     if _credits_session.record_result(session, msg, proc_cost):
+                        _midturn.note_turn_complete(session)  # the result arrived
                         proc.terminate()
                         break
                     _agent_runtime.accumulate_result_turns(session, msg, proc_turns)
@@ -6478,6 +6485,7 @@ def _read_agent_stream_b(proc, session):
     A 'result' message signals the end of a turn, not the end of the process.
     """
     my_proc = proc
+    floor_probe = _rollover_floor.FloorProbe(my_proc)
     # MC-958: background jobs belong to the process that started them. A
     # respawn (followup, eviction, AskUserQuestion) means they are gone —
     # say so instead of letting the promised wake silently never come.
@@ -6515,6 +6523,7 @@ def _read_agent_stream_b(proc, session):
             _accumulate_session_usage(session, msg['usage'])
         if _credits_session.record_result(session, msg, proc_cost):
             billing_halted = True
+            _midturn.note_turn_complete(session)  # the result arrived
             proc.terminate()
             return
         _agent_runtime.accumulate_result_turns(session, msg, proc_turns)
@@ -6629,6 +6638,8 @@ def _read_agent_stream_b(proc, session):
                 msg_type = msg.get('type', '')
                 if 'session_id' in msg and not _resume_target.is_startup_hook_event(msg):
                     _note_claude_sid(session, msg['session_id'])
+                floor_probe.observe(session, msg, _agent_runtime._find_claude_transcript,
+                                    _agent_runtime.normalize_context_tokens)
                 # See Mode A reader: refresh the system-status cache.
                 _capture_system_init(msg)
                 _limit_resume.observe_claude(session, msg)
@@ -6650,7 +6661,8 @@ def _read_agent_stream_b(proc, session):
                     _turn_clock.note_reply(session)   # elapsed-since-last-reply clock (mc/turn_clock.py)
                     if not msg.get('parent_tool_use_id'):
                         _note_self_started_turn(session)
-                    _note_call_context_tokens(session, msg['message'], msg.get('parent_tool_use_id'))
+                    _note_call_context_tokens(session, msg['message'], msg.get('parent_tool_use_id'),
+                                              event=msg, cwd=floor_probe.cwd)
                     # First assistant output proves a `-r` resume loaded OK (not a
                     # fragile resume that dies instantly), so a LATER process death
                     # (the Mode-B AskUserQuestion proc.kill(), idle-eviction, or a
@@ -7978,8 +7990,10 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
     # the byte-based backstop alone decides, same as before this trigger
     # existed (docs/CONTEXT_ECONOMY_SPEC.md §2, "byte-based trigger ...
     # independent of cost").
+    _roll_source = dict(entry, character=_revive_character, provider='claude')
+    _roll_decisions = []
     _af_reason, _af_detail = _auto_fresh_trigger(
-        pp, claude_sid, session_or_character=_revive_character)
+        pp, claude_sid, session_or_character=_roll_source, decisions=_roll_decisions)
     resume_flags = []
     context = None
     revival_msg = message
@@ -8016,6 +8030,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
             pp, 'claude', claude_sid, project_id, session_id,
             reason=_af_reason, detail=_af_detail)
+        _midturn.record_boundary_roll(_roll_decisions, _roll_source, project_id, session_id,
+                                      claude_sid, _af_reason, _af_detail)
         _log_agent_activity(project_id, _activity_line)
         revival_msg = f"{_handoff_text}\n\n{message}"
         if role_context is not None:
@@ -8213,6 +8229,9 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         delivery_gate = TerminalDeliveryGate(
             lambda exc: _log(f"[revive] {project_id}: terminal processing failed: {exc}"))
         session['_terminal_delivery_gate'] = (proc, delivery_gate)
+        # note_user_message, not note_turn_prompt: this message is also the
+        # latest one, or a roll calls the chat's first task the current one.
+        _midturn.note_user_message(session, message)
         threading.Thread(target=_read_agent_stream_b, args=(proc, session), daemon=True).start()
         # MC-944 (§9.6): the revival context above already carries a read floor
         # keyed on `message` (via _build_agent_context's task=), even when
@@ -8361,6 +8380,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         mgr.session_ids.add(session_id)
     _write_usage_breakdown_turn_start_checkpoint(session)   # see Mode B above
     _turn_clock.copy_reply(_clock_sess, session)   # stamp computed above
+    _midturn.note_user_message(session, message)   # see Mode B above
     threading.Thread(target=_read_agent_stream, args=(proc, session), daemon=True).start()
     _log(f"[revive] {project_id}: Mode A revived session {session_id} via -r {claude_sid[:12]}")
     return session
@@ -8769,7 +8789,7 @@ def _accumulate_session_usage(session, turn_usage):
     session['usage'] = merged
 
 
-def _note_call_context_tokens(session, message, parent_tool_use_id=None):
+def _note_call_context_tokens(session, message, parent_tool_use_id=None, *, event=None, cwd=None):
     """Record `session['context_tokens']` from ONE model call's usage.
 
     Claude's `result.usage` is the SUM over every model call in the turn, not
@@ -8787,6 +8807,8 @@ def _note_call_context_tokens(session, message, parent_tool_use_id=None):
     """
     _ctx = _agent_runtime.normalize_context_tokens(message.get('usage'))
     if _ctx is not None:
+        if event is not None:
+            _rollover_request.note_call(session, event, cwd, _ctx)
         session['context_tokens'] = _ctx
         session.pop('_rolled_from', None)
         _midturn.note_call_tokens(session, _ctx, parent_tool_use_id)
@@ -8829,6 +8851,8 @@ def _note_claude_sid(session, sid):
     with _CSID_LOCK:
         prev = session.get('claude_session_id')
         session['claude_session_id'] = sid
+        if prev != sid:
+            _rollover_floor.clear_floor(session)
         # MC-998 follow-up 5: a respawn/resume starts a NEW claude_session_id
         # (new transcript .jsonl); retain every one this MC session has run
         # under so `_session_cumulative_transcript_telemetry` can sum all of
@@ -9443,6 +9467,7 @@ def _note_self_started_turn(session):
     completes once)."""
     if not _log_agent_dispatch_pending(session, write_turn_start=False, self_started=True):
         return
+    _midturn.note_self_started_turn(session)
     background_wake = bool(session.pop(_bg_tasks.RESUME_PENDING_KEY, None))
     # Every automatic wake, not only the INTERIM-latched one below, records
     # its turn_start even if its pending-history claim could not be saved.
@@ -12148,6 +12173,7 @@ def _build_handoff_context(project_path, owning_provider, native_id, project_id=
                 f"cannot hand off from '{owning_provider}': its adapter has "
                 f"no extract_chat_turns reader yet")
         turns = cast(List[Tuple[str, str]], extract(tpath))  # pyright: ignore[reportAttributeAccessIssue]
+    raw_turns = turns
     turns = _handoff_turns.clean_turns(turns)
     if not turns:
         raise ValueError(
@@ -12171,11 +12197,17 @@ def _build_handoff_context(project_path, owning_provider, native_id, project_id=
               f"(session {native_id}), handed off here ===")
     if omitted:
         header += f"\n[{omitted} earlier turn(s) omitted for length]"
-    body = '\n\n'.join(kept)
+    # Review F4: budget this session's own turns left unused goes to the turns
+    # of the handoff it started from, so a chat that rolls twice with little
+    # said in between still opens with what came before the previous roll.
+    earlier = ('' if omitted else _handoff_turns.earlier_history(
+        raw_turns, _HANDOFF_MAX_CHARS - kept_chars))
+    body = '\n\n'.join(([earlier] if earlier else []) + kept)
     footer = _agent_runtime.HANDOFF_FOOTER
     context = f"{header}\n\n{body}\n\n{footer}"
     return context, {'owning_provider': owning_provider, 'total_turns': total,
-                     'included_turns': len(kept), 'omitted_turns': omitted}
+                     'included_turns': len(kept), 'omitted_turns': omitted,
+                     'earlier_history_chars': len(earlier)}
 
 
 def _live_context_tokens(project_id, claude_sid):
@@ -12229,6 +12261,8 @@ def _mark_context_rolled(session, old_native_id):
     that actually has a transcript, not at an intermediate dead end.
     """
     session['context_tokens'] = None
+    _rollover_floor.clear_floor(session)
+    session.pop('_rollover_call', None)
     if old_native_id:
         session['_rolled_from'] = session.get('_rolled_from') or old_native_id
 
@@ -12277,23 +12311,8 @@ def _resume_unresumable(session, project_id, pp, claude_sid):
         lambda sid: _find_transcript_file(pp, sid), log=_log)
 
 
-def _context_tokens_over_threshold(context_tokens, session_or_character=None):
-    """Token-based auto-fresh trigger (`context_rollover_tokens`, default
-    200000, 0 disables) — the live counterpart to `_session_too_large`'s
-    byte-based backstop. Either trigger may fire a rollover independently
-    (docs/CONTEXT_ECONOMY_SPEC.md §2). `context_tokens` is a live session's
-    last per-turn normalized figure (mc.agent_runtime.normalize_context_tokens,
-    set by `_accumulate_session_usage`/the Mode-A readers) — None when no
-    usage has been recorded yet (a revived/never-live session), which never
-    trips this trigger, matching "unknown stays unknown".
-    """
-    thr = _rollover_threshold_for(session_or_character, state.CONFIG)
-    if thr <= 0:
-        return False
-    return isinstance(context_tokens, (int, float)) and context_tokens >= thr
-
-
-def _auto_fresh_trigger(pp, claude_sid, context_tokens=None, *, session_or_character=None):
+def _auto_fresh_trigger(pp, claude_sid, context_tokens=None, *, session_or_character=None,
+                        decisions=None):
     """Unified auto-fresh decision. A KNOWN `context_tokens` figure is
     authoritative and decides on its own — the byte check is a backstop
     consulted only when tokens are unknown, never run alongside a known
@@ -12310,12 +12329,21 @@ def _auto_fresh_trigger(pp, claude_sid, context_tokens=None, *, session_or_chara
     the context-tokens int when reason=='tokens', else the transcript
     size_bytes int (0 when no rollover is warranted).
     """
+    context_tokens = _rollover_request.main_context_tokens(
+        session_or_character, claude_sid, context_tokens)
     if context_tokens is not None:
-        if _context_tokens_over_threshold(context_tokens, session_or_character):
+        decision = _rollover_decision.capture(
+            session_or_character, 'message_boundary', 'tokens', context_tokens, native_id=claude_sid)
+        if decision.crosses_threshold:
+            if decisions is not None:
+                decisions.append(decision)
             return 'tokens', int(context_tokens)
         return None, 0
     too_large, size_bytes = _session_too_large(pp, claude_sid)
     if too_large:
+        if decisions is not None:
+            decisions.append(_rollover_decision.capture(
+                session_or_character, 'message_boundary', 'bytes', size_bytes, native_id=claude_sid))
         return 'bytes', size_bytes
     return None, 0
 
@@ -12357,13 +12385,19 @@ def _mode_a_token_rollover(pp, project_id, session_id, session, provider, messag
     unknown")."""
     ctx = session.get('context_tokens')
     native_id = session.get('provider_session_id') or ''
-    if not native_id or not _context_tokens_over_threshold(ctx, session):
+    if not native_id or ctx is None:
+        return message
+    decision = _rollover_decision.capture(session, 'message_boundary', 'tokens', ctx,
+                                          native_id=native_id)
+    if not decision.crosses_threshold:
         return message
     _log(f"[followup] {provider} session {native_id} rolling to fresh (tokens={ctx})")
     handoff_text, log_line, activity_line = _auto_fresh_handoff(
         pp, provider, native_id, project_id, session_id,
         reason='tokens', detail=int(ctx),
         fallback_native_id=session.get('_rolled_from'))
+    _midturn.record_boundary_roll([decision], session, project_id, session_id, native_id,
+                                  'tokens', int(ctx))
     _log_agent_activity(project_id, activity_line)
     session.setdefault('log_lines', TimestampedLines()).append(log_line)
     if provider == 'codex':
@@ -13005,13 +13039,15 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # either trigger fires (docs/CONTEXT_ECONOMY_SPEC.md §2).
     original_resume = resume_id
     _af_log_line = ''
+    _roll_decisions = []
     if resume_id:
         _af_rolled_from = _live_session_rolled_from(project_id, resume_id)
+        _roll_source = next((s for s in list(agent_sessions.values())
+            if s.get('project_id') == project_id and s.get('claude_session_id') == resume_id),
+            {'character': character_meta, 'provider': 'claude', 'incognito': incognito})
         _af_reason, _af_detail = _auto_fresh_trigger(
             pp, resume_id, _live_context_tokens(project_id, resume_id),
-            session_or_character=next((s for s in list(agent_sessions.values())
-                if s.get('project_id') == project_id
-                and s.get('claude_session_id') == resume_id), character_meta))
+            session_or_character=_roll_source, decisions=_roll_decisions)
         if not _af_reason and _fragile_resume_target(pp, 'claude', resume_id, _af_rolled_from):
             # An earlier roll already reset this live session's context_tokens
             # to None (`_mark_context_rolled`), so the trigger above sees
@@ -13021,6 +13057,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             # the carried handoff instead (2026-09-27 double-roll incident).
             _af_reason, _af_detail = 'interrupted', 0
         if _af_reason:
+            if not _roll_decisions:
+                _roll_decisions.append(_rollover_decision.capture(
+                    _roll_source, 'message_boundary', _af_reason, _af_detail, native_id=resume_id))
             _log(f"[dispatch] Session {resume_id} rolling to fresh ({_af_reason}={_af_detail})")
             # This dispatch call is spawning a NEW MC session, so `reuse_session_id`
             # (when the caller supplied one) is the only stable id an in-flight
@@ -13637,6 +13676,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         if original_resume and not resume_id and _af_log_line:
             session['log_lines'].append(_af_log_line)
 
+    if _roll_decisions and not incognito:
+        _midturn.record_boundary_roll(_roll_decisions, None, project_id, session_id,
+                                      original_resume, None, None)
     _midturn.note_turn_prompt(session, task)  # a roll in turn 1 must know it
     resume_label = f" (resuming {resume_id})" if resume_id else ""
     _log(f"[dispatch] Claude session {session_id}: mode={session['mode']}")
@@ -13975,6 +14017,7 @@ def agent_send(project_id):
         _observe_habit_cue(project_id, session_id, message)
 
     # Decision under the lock — this is the ONLY place that picks the route.
+    _prompt_before = None
     with get_manager(project_id).lock:
         session = agent_sessions.get(session_id) if session_id else None
         if session and session.get('project_id') != project_id:
@@ -14009,6 +14052,9 @@ def agent_send(project_id):
             _log_agent_activity(project_id, f"Agent follow-up queued: {message[:100]}")
         elif session and decision in ('interrupt', 'followup', 'steer'):
             user_label = state.CONFIG.get('user_name') or 'User'
+            # The handler can still refuse this message; `note_send_response`
+            # below then puts this back (review F6).
+            _prompt_before = session.get('_mt_turn_prompt')
             if decision != 'steer':  # a steer is noted mid_turn=True after its ack
                 _midturn.note_user_message(session, message)  # MC-1088: latest user message
             session['log_lines'].append(_triggered_turns.user_turn_line(user_label, message))
@@ -14204,6 +14250,8 @@ def agent_send(project_id):
     # support get_json(); we rebuild and return.
     try:
         body = resp.get_json(silent=True) or {}  # pyright: ignore[reportAttributeAccessIssue]  # moved-verbatim typing debt (1.12)
+        if session is not None:
+            _midturn.note_send_response(session, message, _prompt_before, resp.status_code, body)  # pyright: ignore[reportAttributeAccessIssue]
         if isinstance(body, dict):
             body.setdefault('route', decision)
             return jsonify(body), resp.status_code  # pyright: ignore[reportAttributeAccessIssue]  # moved-verbatim typing debt (1.12)
@@ -14796,20 +14844,17 @@ def agent_followup(project_id):
             # §2) — `existing['context_tokens']` is this session's own last
             # per-turn figure, always available here since the process is live.
             # Detection only — do NOT build the handoff or log here. This just
-            # decides whether the still-alive process should be treated as
-            # dead; the dead-process branch immediately below re-evaluates
-            # `_auto_fresh_trigger` against the same (unchanged) claude_sid/
-            # context_tokens and is the ONE place that logs the roll. Building
-            # the handoff/activity-line here too used to log "Auto-fresh: …"
-            # twice, ~40ms apart, for a single roll (found 2026-09-18) —
-            # this branch's own handoff_text was even discarded (`_,`) since
-            # the dead-process branch below builds the real one anyway.
+            # decides whether the still-alive process should be replaced.
+            # The respawn path consumes that decision and logs it once.
+            _roll_decisions = []
+            _live_trigger = (None, 0)
             if existing.get('process_alive'):
                 _live_sid = existing.get('claude_session_id')
                 if _live_sid:
-                    _live_reason, _live_detail = _auto_fresh_trigger(
+                    _live_trigger = _auto_fresh_trigger(
                         pp, _live_sid, existing.get('context_tokens'),
-                        session_or_character=existing)
+                        session_or_character=existing, decisions=_roll_decisions)
+                    _live_reason, _live_detail = _live_trigger
                     if _live_reason:
                         _log(f"[followup] Live session {_live_sid} rolling to fresh "
                              f"({_live_reason}={_live_detail}) — ending process")
@@ -14850,9 +14895,11 @@ def agent_followup(project_id):
                 else:
                     # Normal session, OR a resume that already produced output
                     # (healthy — it just died later). Resume with -r to keep context.
-                    _af_reason, _af_detail = _auto_fresh_trigger(
-                        pp, claude_sid, existing.get('context_tokens'),
-                        session_or_character=existing)
+                    _af_reason, _af_detail = _live_trigger
+                    if not _af_reason:
+                        _af_reason, _af_detail = _auto_fresh_trigger(
+                            pp, claude_sid, existing.get('context_tokens'),
+                            session_or_character=existing, decisions=_roll_decisions)
                     _unresumable = _resume_unresumable(existing, project_id, pp, claude_sid)
                     _af_rolled_from = existing.get('_rolled_from')
                     if not _af_reason and (_unresumable or _fragile_resume_target(
@@ -14873,6 +14920,8 @@ def agent_followup(project_id):
                             pp, 'claude', claude_sid, project_id, session_id,
                             reason=_af_reason, detail=_af_detail,
                             fallback_native_id=_af_rolled_from)
+                        _midturn.record_boundary_roll(_roll_decisions, existing, project_id,
+                            session_id, claude_sid, _af_reason, _af_detail)
                         _log_agent_activity(project_id, _activity_line)
                         existing['log_lines'].append(_log_line)
                         context = _fresh_context_for(p, existing, message or '')
@@ -14961,8 +15010,9 @@ def agent_followup(project_id):
                                              'nothing was written'}), 503
                 # Process alive — optionally re-classify model before writing to stdin
                 # MC-1088: a write into a RUNNING Mode B turn is absorbed by it.
-                _midturn.note_user_message(
-                    existing, message, mid_turn=existing.get('status') == 'running')
+                _noted_mid_turn = existing.get('status') == 'running'
+                _prompt_before = existing.get('_mt_turn_prompt')
+                _midturn.note_user_message(existing, message, mid_turn=_noted_mid_turn)
                 user_label = state.CONFIG.get('user_name') or 'User'
                 if not existing.pop('_send_already_logged', False):
                     existing['log_lines'].append(_triggered_turns.user_turn_line(user_label, message))
@@ -15066,6 +15116,11 @@ def agent_followup(project_id):
                             return jsonify({'ok': True, 'session_id': session_id,
                                             'stdin_write_ack': 'written'})
                         if ack and ack.get('ack') == 'failed':
+                            # Nothing was written: it is not a message this
+                            # session still owes an answer (review F6).
+                            _midturn.note_message_undelivered(
+                                existing, message, mid_turn=_noted_mid_turn,
+                                previous_prompt=_prompt_before)
                             return jsonify({'ok': False, 'session_id': session_id,
                                             'stdin_write_ack': 'failed',
                                             'error': ack.get('error', 'stdin write failed')}), 503
@@ -15086,6 +15141,7 @@ def agent_followup(project_id):
                 return jsonify({'ok': True, 'queued': True, 'session_id': session_id})
 
             # Mark as running and return quickly — spawn process in background
+            _roll_source = dict(existing)
             _midturn.note_user_message(existing, message)
             _start_new_turn(existing)
             existing['status'] = 'running'
@@ -15302,9 +15358,10 @@ def agent_followup(project_id):
         try:
             followup_msg = message
             if claude_sid:
+                _roll_decisions = []
                 _af_reason, _af_detail = _auto_fresh_trigger(
-                    pp, claude_sid, existing.get('context_tokens'),
-                    session_or_character=existing)
+                    pp, claude_sid, _roll_source.get('context_tokens'),
+                    session_or_character=_roll_source, decisions=_roll_decisions)
                 _unresumable = _resume_unresumable(existing, project_id, pp, claude_sid)
                 _af_rolled_from = existing.get('_rolled_from')
                 if not _af_reason and (_unresumable or _fragile_resume_target(
@@ -15322,6 +15379,8 @@ def agent_followup(project_id):
                         pp, 'claude', claude_sid, project_id, session_id,
                         reason=_af_reason, detail=_af_detail,
                         fallback_native_id=_af_rolled_from)
+                    _midturn.record_boundary_roll(_roll_decisions, _roll_source, project_id,
+                        session_id, claude_sid, _af_reason, _af_detail)
                     _log_agent_activity(project_id, _activity_line)
                     with get_manager(project_id).lock:
                         existing['log_lines'].append(_log_line)
@@ -15804,6 +15863,7 @@ def agent_interrupt(project_id, *, _internal=None):
 
         old_proc = session['proc']
         claude_sid = session.get('claude_session_id')
+        _roll_source = {} if is_midturn else dict(session)
 
         # Mark as interrupting BEFORE killing the old proc. The old reader's
         # finally block will see this flag (via _session_owned_by) and skip
@@ -15916,13 +15976,14 @@ def agent_interrupt(project_id, *, _internal=None):
             _ctx_task = (session.get('task') or message) if is_midturn else (message or '')
             midturn_state = ''
             if claude_sid:
+                _roll_decisions = []
                 if is_midturn:
                     _af_reason, _af_detail = 'tokens', int(_mt.get('tokens') or 0)
                     midturn_state = _mt['build_state'](_session_cwd_for_reading(session, pp))
                 else:
                     _af_reason, _af_detail = _auto_fresh_trigger(
-                        pp, claude_sid, session.get('context_tokens'),
-                        session_or_character=session)
+                        pp, claude_sid, _roll_source.get('context_tokens'),
+                        session_or_character=_roll_source, decisions=_roll_decisions)
                 # An unwritten/rejected id (failed roll, 2026-10-15) must take
                 # the handoff path too, not `-r` into "No conversation found".
                 if _resume_unresumable(session, project_id, pp, claude_sid) and not _af_reason:
@@ -15932,6 +15993,9 @@ def agent_interrupt(project_id, *, _internal=None):
                         pp, 'claude', claude_sid, project_id, session_id,
                         reason=_af_reason, detail=_af_detail,
                         fallback_native_id=session.get('_rolled_from'))
+                    if not is_midturn:
+                        _midturn.record_boundary_roll(_roll_decisions, _roll_source, project_id,
+                            session_id, claude_sid, _af_reason, _af_detail)
                     _log_agent_activity(project_id, _activity_line)
                     session['log_lines'].append(_log_line)
                     # `_ctx_task`, not `message`: for a roll `message` is the
@@ -15947,6 +16011,8 @@ def agent_interrupt(project_id, *, _internal=None):
                         # The old figure describes the process just killed; the
                         # fresh one reports its own on its first model call.
                         session['context_tokens'] = None
+                    else:
+                        _mark_context_rolled(session, claude_sid)
                 else:
                     resume_flags = ['-r', claude_sid]
             else:
@@ -16105,10 +16171,12 @@ def _maybe_midturn_roll(session, proc=None):
     state block (built by the interrupt path after the old process is dead).
     Never raises — the reader must survive it."""
     try:
-        if not _midturn.should_roll(session, _context_tokens_over_threshold):
+        decision = _midturn.roll_decision(session)
+        if decision is None:
             return
         session['_mt_roll_requested'] = True
-        tokens = session.get('_mt_main_tokens')
+        session['_mt_attempt_decision'] = decision
+        tokens = decision.fields['context_tokens']
         project_id = session.get('project_id', '')
         # MC-964 Step C: force a Scribe checkpoint of the OUTGOING session
         # before handing off — the fresh session gets a new claude_session_id,
@@ -16127,7 +16195,7 @@ def _maybe_midturn_roll(session, proc=None):
             'tokens': tokens,
             'build_state': lambda cwd: _midturn.build_roll_state_block(session, cwd)})
         if status == 200:
-            _midturn.record_roll(session, tokens, scribe_flushed=scribe_flushed)
+            _midturn.record_roll(session, decision, scribe_flushed=scribe_flushed)
             return
         session.pop('_mt_roll_requested', None)
         if status != 409:  # 409 = a newer interrupt got there first: not a failure
@@ -16479,7 +16547,7 @@ def agent_status(project_id):
                 'num_turns': s.get('num_turns', 0),
                 # Live context-size counter (docs/CONTEXT_ECONOMY_SPEC.md §5):
                 # the SAME per-turn normalized figure the auto-fresh rollover
-                # trigger reads (_auto_fresh_trigger/_context_tokens_over_threshold)
+                # trigger reads (_auto_fresh_trigger / mc.rollover_decision.capture)
                 # — this was previously set on the in-memory session dict
                 # (_note_call_context_tokens et al.) but never surfaced past
                 # that point, so /agent/status genuinely never returned it

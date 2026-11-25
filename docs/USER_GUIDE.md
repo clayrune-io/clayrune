@@ -736,17 +736,15 @@ Two layers of context every agent sees:
   nothing auto-restarts. Tunable in Settings:
   `long_session_advisory_enabled` (on/off), `long_session_advisory_turns`
   (the threshold, default 25).
-- **Context rollover limits** - known Claude models with a measured fresh-session
-  floor use a model-specific cache-cost threshold, leaving at least 60,000
-  tokens for work, subject to half-window and price-step caps. A character
-  limit in `context_rollover_by_character` (`scope:name` keys) caps this only
-  when it leaves 60,000 tokens above the fresh floor; smaller pins are ignored.
-  Unknown models or floors use the character limit or global
-  `context_rollover_tokens` (default 200,000). Global `0` disables token
-  rollover even for pinned characters. The context meter still shows the
-  global limit, so it may differ from the effective model threshold.
-  Config edits keep their passcode requirement; there is no dedicated editor.
-  Details: `docs/ROLLOVER_THRESHOLDS.md`.
+- **Context rollover limits** - Clayrune uses the verified first input to size
+  the next rollover, with growth estimates for the model, thinking effort,
+  and built-in agent type. A verified floor reserves 60,000 tokens for work.
+  Set an explicit target by character, model, or effort through the config API
+  using `context_rollover_overrides`. Existing character pins still work when
+  they leave the required room. If Clayrune cannot compute a limit, it uses
+  `context_rollover_tokens` (default 200,000). Set it to `0` to disable the
+  token trigger. The context meter shows the global setting. Config edits keep
+  their passcode requirement. [Context rollover thresholds](ROLLOVER_THRESHOLDS.md)
 - **Shared Rules** (`SHARED_RULES.md`) — sidebar entry → injects rules
   into every agent's system prompt across every project. Use for stuff like
   *"never commit without my approval"*, *"always run tests before

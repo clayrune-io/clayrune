@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-25] - context rollover uses the live first-call floor and measured growth
+
+- Claude's rollover limit now uses the verified first input and dated growth estimates by model, effort, and built-in agent type. The base fallback is 200,000 tokens.
+- `context_rollover_overrides` accepts explicit targets through the config API. Existing character pins still work when they leave at least 60,000 tokens above the verified floor.
+- Mid-turn and message-boundary rolls log the outgoing request's model and effort, the applied decision, and whether the turn's opening prompt was unanswered.
+
 ## [2026-11-25] - the left rail follows the open chat
 
 - Opening Tilda's dispatched chat from the Floor left Dave highlighted and expanded in the Channel rail, so it read as Dave's chat.

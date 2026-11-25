@@ -113,6 +113,13 @@ def _wait(pred, timeout=3.0):
     return pred()
 
 
+def _over(tokens, source):
+    """The threshold check production uses (`midturn_rollover.roll_decision`):
+    the resolver every rollover path shares, asked through the decision."""
+    from mc import rollover_decision
+    return rollover_decision.capture(source, 'midturn', 'tokens', tokens).crosses_threshold
+
+
 @pytest.fixture()
 def env(tmp_path, monkeypatch, survive_restart_off):
     import server  # noqa: F401  (registers the blueprint)
@@ -121,6 +128,7 @@ def env(tmp_path, monkeypatch, survive_restart_off):
     from mc.blueprints import agent_routes as ar
     from mc.delegation_delivery import DeliveryStore
 
+    monkeypatch.setattr(ar._agent_runtime, '_find_claude_transcript', lambda *_: None)
     project_path = tmp_path / 'proj'
     project_path.mkdir()
     for args in (['init', '-q'], ['config', 'user.email', 't@example.invalid'],
@@ -340,9 +348,11 @@ def test_roll_is_logged_to_a_durable_file(env):
     assert len(env['spawned']) == 1
 
 
-def test_roll_row_logs_character_model_provider_and_fresh_floor(env):
+def test_roll_row_logs_character_model_provider_and_fresh_floor(env, monkeypatch):
     """MC-1178 prep, through the real reader + agent_interrupt (which calls
     begin_roll BEFORE record_roll): the row carries the segment that rolled."""
+    _write_floor_transcript(env, monkeypatch, _assistant('tool1', 50_000, 'm1'))
+
     def lines():
         yield _assistant('tool1', 50_000, 'm1')     # first reading = fresh floor
         yield _tool_result('tool1')
@@ -359,6 +369,122 @@ def test_roll_row_logs_character_model_provider_and_fresh_floor(env):
     assert row['fresh_floor_tokens'] == 50_000
     assert row['working_room_tokens'] == 150_000
     env['join_respawns']()
+
+
+def test_midturn_log_preserves_the_triggering_request_and_limit(env, monkeypatch):
+    event = json.loads(_assistant('tool1', 250_000, 'trigger'))
+    event['message']['model'] = 'claude-sonnet-5-5'
+    _write_floor_transcript(env, monkeypatch, _assistant('earlier', 30_000, 'first'))
+    transcript = env['tmp'] / f'{CSID}.jsonl'
+    rows = transcript.read_text(encoding='utf-8').splitlines()
+    request = {'type': 'api-request', 'sessionId': CSID, 'id': 'matched',
+               'params': {'output_config': {'effort': 'medium'}}}
+    assistant = dict(event, sessionId=CSID, requestRef='matched', perTurnEffort='low')
+    rows += [json.dumps(request), json.dumps(assistant)]
+    transcript.write_text('\n'.join(rows) + '\n', encoding='utf-8')
+
+    def mutate_after_decision(session, **_):
+        env['CONFIG']['context_rollover_tokens'] = 900_000
+        session['model'] = 'opus'
+        session['_mt_turn_prompt'] = None
+        return True
+
+    monkeypatch.setattr(env['ar'], '_maybe_checkpoint', mutate_after_decision)
+
+    def lines():
+        yield json.dumps(event) + '\n'
+        yield _tool_result('tool1')
+
+    session = _session(_Proc(), model='sonnet', requested_effort='high',
+                       _mt_turn_prompt='answer this', _mt_fresh_floor=None)
+    _run_reader(env, lines, session=session, proc=session['proc'])
+    row = json.loads((env['tmp'] / 'midturn_log' / 'p1.jsonl').read_text().splitlines()[0])
+    # The reader attached at the trigger call; the floor is the transcript's
+    # first call (30k), so the limit is the computed one, not the 200k base.
+    assert row['fresh_floor_tokens'] == 30_000
+    assert (row['threshold'], row['threshold_reason']) == (120_000, 'computed:model_effort')
+    assert row['requested_model'] == 'sonnet'
+    assert row['canonical_model'] == 'claude-sonnet-5-5'
+    assert row['effective_effort'] == 'medium'
+    assert row['opening_prompt_unanswered'] is True
+    assert row['trigger_type'] == 'midturn'
+
+
+@pytest.mark.parametrize('reader', ['reader', 'reader_a'])
+def test_reader_attached_after_first_call_does_not_invent_a_floor(env, monkeypatch, reader):
+    """The late reading is never the floor; the transcript's own first call is
+    (review F1/F2: unknown let the 100k pin back in after every restart)."""
+    _write_floor_transcript(env, monkeypatch, _assistant('earlier', 85_000, 'first'))
+
+    def lines():
+        yield _assistant('late', 389_142, '146')
+
+    session = _run_reader(env, lines, reader=reader, _mt_fresh_floor=None)
+    assert session['context_tokens'] == 389_142
+    assert session['_mt_fresh_floor'] == 85_000
+
+
+def test_roll_and_native_change_clear_only_the_outgoing_floor(env):
+    ar = env['ar']
+    session = _session(_Proc())
+    ar._note_claude_sid(session, CSID)
+    assert session['_mt_fresh_floor'] == 30_000
+    ar._mark_context_rolled(session, CSID)
+    assert session['_mt_fresh_floor'] is None
+    session['_mt_fresh_floor'] = 80_000
+    ar._note_claude_sid(session, 'different-native-id')
+    assert session['_mt_fresh_floor'] is None
+
+
+def test_successor_verifies_its_own_first_call_after_transcript_flush(env, monkeypatch):
+    proc = _Proc()
+    session = _session(proc)
+    env['ar']._midturn.begin_roll(session)
+
+    def successor_line(text, tokens, call):
+        line = json.loads(_assistant(text, tokens, call))
+        line['session_id'] = 'successor'
+        return json.dumps(line)
+
+    def lines():
+        first = successor_line('first', 84_000, 'new-first')
+        yield first                      # transcript is not on disk yet
+        assert session['_mt_fresh_floor'] is None
+        _write_floor_transcript(env, monkeypatch, first)
+        yield successor_line('next', 95_000, 'new-second')
+
+    _run_reader(env, lines, session=session, proc=proc)
+    assert session['_mt_fresh_floor'] == 84_000
+    assert session['context_tokens'] == 95_000
+
+
+def test_verified_floor_survives_enabling_midturn_and_resuming_the_same_segment(env, monkeypatch):
+    first = _assistant('first', 84_000, 'first')
+    _write_floor_transcript(env, monkeypatch, first)
+    monkeypatch.setitem(env['CONFIG'], 'midturn_rollover_enabled', False)
+    session = _run_reader(env, lambda: iter([first]), _mt_fresh_floor=None)
+    assert session['_mt_fresh_floor'] == 84_000
+
+    monkeypatch.setitem(env['CONFIG'], 'midturn_rollover_enabled', True)
+    _run_reader(env, lambda: iter([_assistant('later', 100_000, 'later')]), session=session)
+    assert session['_mt_fresh_floor'] == 84_000
+    assert session['_mt_main_tokens'] == 100_000
+
+
+def _write_floor_transcript(env, monkeypatch, assistant_line):
+    assistant = json.loads(assistant_line)
+    native = assistant['session_id']
+    path = env['tmp'] / f'{native}.jsonl'
+    assistant['sessionId'] = native
+    assistant['parentUuid'] = 'prompt'
+    assistant['message']['model'] = 'claude-fable-5-2'
+    events = [
+        {'sessionId': native, 'type': 'user', 'parentUuid': None,
+         'uuid': 'prompt', 'message': {'content': 'opening prompt'}},
+        assistant,
+    ]
+    path.write_text(''.join(json.dumps(event) + '\n' for event in events), encoding='utf-8')
+    monkeypatch.setattr(env['ar']._agent_runtime, '_find_claude_transcript', lambda *_: path)
 
 
 def test_journal_path_and_tool_result_heads_carried_across_roll(env):
@@ -550,20 +676,20 @@ def test_parallel_tool_calls_wait_for_every_result(env):
     ar._midturn.note_tool_use(session, {'type': 'tool_use', 'id': 'b', 'name': 'Read',
                                         'input': {'file_path': 'y'}})
     ar._midturn.note_tool_results(session, [{'type': 'tool_result', 'tool_use_id': 'a'}])
-    assert not ar._midturn.should_roll(session, ar._context_tokens_over_threshold)
+    assert not ar._midturn.should_roll(session, _over)
     ar._midturn.note_tool_results(session, [{'type': 'tool_result', 'tool_use_id': 'b'}])
-    assert ar._midturn.should_roll(session, ar._context_tokens_over_threshold)
+    assert ar._midturn.should_roll(session, _over)
 
 
 def test_non_claude_and_unknown_tokens_never_roll(env):
     ar = env['ar']
     s = _session(_Proc(), _mt_main_tokens=250_000, provider='gemini')
-    assert not ar._midturn.should_roll(s, ar._context_tokens_over_threshold)
+    assert not ar._midturn.should_roll(s, _over)
     s = _session(_Proc(), _mt_main_tokens=None)
-    assert not ar._midturn.should_roll(s, ar._context_tokens_over_threshold)
+    assert not ar._midturn.should_roll(s, _over)
     env['CONFIG']['context_rollover_tokens'] = 0
     s = _session(_Proc(), _mt_main_tokens=999_999)
-    assert not ar._midturn.should_roll(s, ar._context_tokens_over_threshold)
+    assert not ar._midturn.should_roll(s, _over)
 
 
 # --- Review fixes (b5fa971 review, 2026-09-18) --------------------------------
@@ -715,7 +841,7 @@ def test_finding6_no_reroll_loop_when_the_fresh_prefix_is_over_the_threshold(env
 
 def test_finding6_repeated_failed_rolls_stop_being_attempted(env):
     mt = env['ar']._midturn
-    over = env['ar']._context_tokens_over_threshold
+    over = _over
     session = _session(_Proc(), _mt_main_tokens=250_000,
                        _mt_roll_failures=mt.MAX_ROLL_FAILURES)
     assert not mt.should_roll(session, over)
@@ -761,7 +887,7 @@ def test_low_results_for_calls_started_before_the_flag_are_not_boundaries(env):
 
 def test_low_toggling_the_flag_off_and_on_drops_stale_pending_ids(env):
     mt = env['ar']._midturn
-    over = env['ar']._context_tokens_over_threshold
+    over = _over
     session = _session(_Proc(), _mt_main_tokens=250_000, claude_session_id=CSID)
     mt.note_tool_use(session, _tool_use_block('a'))
     env['CONFIG']['midturn_rollover_enabled'] = False
@@ -807,7 +933,7 @@ def _failed_attempt_at(mt, over, session, tokens):
 
 def test_n2_failed_roll_waits_for_growth_before_the_next_attempt(env):
     mt = env['ar']._midturn
-    over = env['ar']._context_tokens_over_threshold
+    over = _over
     session = _session(_Proc())
     _failed_attempt_at(mt, over, session, 250_000)
     # The very next tool boundary (no growth) used to retry at once.
@@ -822,7 +948,7 @@ def test_n2_three_back_to_back_boundaries_do_not_exhaust_the_retries(env):
     """One brief fault (agent_log locked) spans many tool boundaries. Before
     the back-off, MAX_ROLL_FAILURES of them in a row disabled rollover."""
     mt = env['ar']._midturn
-    over = env['ar']._context_tokens_over_threshold
+    over = _over
     session = _session(_Proc())
     _failed_attempt_at(mt, over, session, 250_000)
     for _ in range(10):
@@ -834,7 +960,7 @@ def test_n2_three_back_to_back_boundaries_do_not_exhaust_the_retries(env):
 
 def test_n2_giving_up_is_visible_once_in_the_session_log_and_the_durable_log(env):
     mt = env['ar']._midturn
-    over = env['ar']._context_tokens_over_threshold
+    over = _over
     session = _session(_Proc())
     tokens = 250_000
     for _ in range(mt.MAX_ROLL_FAILURES):
@@ -855,7 +981,7 @@ def test_n2_giving_up_is_visible_once_in_the_session_log_and_the_durable_log(env
 
 def test_n2_a_committed_roll_clears_the_back_off_state(env):
     mt = env['ar']._midturn
-    over = env['ar']._context_tokens_over_threshold
+    over = _over
     session = _session(_Proc())
     _failed_attempt_at(mt, over, session, 250_000)
     assert not mt.should_roll(session, over)    # observes the failure
@@ -1285,21 +1411,23 @@ def test_non_claude_process_that_really_dies_after_interrupt_still_goes_to_error
 
 
 
-def test_model_rollover_waits_for_cost_optimum_and_logs_it(env):
+def test_model_rollover_waits_for_cost_optimum_and_logs_it(env, monkeypatch):
+    _write_floor_transcript(env, monkeypatch, _assistant('tool1', 90_000, 'm1'))
+
     def lines():
         yield _assistant('tool1', 90_000, 'm1')
         yield _tool_result('tool1')
         yield _assistant('tool2', 210_000, 'm2')
         yield _tool_result('tool2')
-        yield _assistant('tool3', 280_000, 'm3')
+        yield _assistant('tool3', 300_000, 'm3')
         yield _tool_result('tool3')
 
     _run_reader(env, lines, model='claude-fable-5-2', _mt_fresh_floor=None)
     log = env['tmp'] / 'midturn_log' / 'p1.jsonl'
     assert _wait(log.is_file)
     row = json.loads(log.read_text().splitlines()[0])
-    assert row['context_tokens'] == 280_000
-    assert row['threshold'] == 277_349 and row['threshold_reason'] == 'cost_optimal'
+    assert row['context_tokens'] == 300_000
+    assert row['threshold'] == 290_000 and row['threshold_reason'] == 'computed:model'
     env['join_respawns']()
     assert len(env['spawned']) == 1
 

@@ -180,6 +180,7 @@ def test_character_limit_rolls_live_followup_below_global(env, monkeypatch):
                         {'global:dave': 120_000})
     live = _session('dave-session', context_tokens=130_000)
     live['character'] = {'name': 'dave', 'scope': 'global'}
+    live['_mt_fresh_floor'] = 30_000    # verified: a pin under the base needs one
     old_proc = live['proc']
     env['sessions']['dave-session'] = live
     spawned = []
@@ -262,7 +263,7 @@ def test_in_flight_child_survives_the_token_triggered_roll(env, monkeypatch):
 
 
 
-@pytest.mark.parametrize('tokens,rolls', [(210_000, False), (280_000, True)])
+@pytest.mark.parametrize('tokens,rolls', [(289_999, False), (290_000, True)])
 def test_model_floor_controls_live_followup(env, monkeypatch, tokens, rolls):
     ar = env['ar']
     monkeypatch.setitem(ar.state.CONFIG, 'context_rollover_by_character', {'global:dave': 100_000})

@@ -1,6 +1,7 @@
 """Token-based auto-fresh trigger (docs/CONTEXT_ECONOMY_SPEC.md §2) — unit
 tests for the pure decision helpers in mc/blueprints/agent_routes.py:
-`_context_tokens_over_threshold`, `_auto_fresh_trigger`, `_in_flight_children`.
+`_auto_fresh_trigger`, `_in_flight_children`, and the shared threshold check
+(`mc.rollover_decision.capture`).
 
 These fail before the helpers exist (ImportError via getattr below) and pass
 once `context_rollover_tokens` (default 200000, 0 disables) is wired in as
@@ -32,28 +33,39 @@ def ar(monkeypatch):
         mc_state.agent_sessions.update(snapshot)
 
 
+def _crosses(tokens):
+    """The one threshold check every rollover path shares
+    (`rollover_decision.capture`). `agent_routes._context_tokens_over_threshold`
+    asked the same question and had no caller left (2026-11-25 review, F9)."""
+    from mc import rollover_decision
+    return rollover_decision.capture(None, 'message_boundary', 'tokens', tokens).crosses_threshold
+
+
 class TestContextTokensOverThreshold:
     def test_default_threshold_200k(self, ar, monkeypatch):
         from mc import state as mc_state
         monkeypatch.delitem(mc_state.CONFIG, 'context_rollover_tokens', raising=False)
-        assert ar._context_tokens_over_threshold(199_999) is False
-        assert ar._context_tokens_over_threshold(200_000) is True
+        assert _crosses(199_999) is False
+        assert _crosses(200_000) is True
 
     def test_zero_disables(self, ar, monkeypatch):
         from mc import state as mc_state
         monkeypatch.setitem(mc_state.CONFIG, 'context_rollover_tokens', 0)
-        assert ar._context_tokens_over_threshold(10_000_000) is False
+        assert _crosses(10_000_000) is False
 
     def test_custom_threshold(self, ar, monkeypatch):
         from mc import state as mc_state
         monkeypatch.setitem(mc_state.CONFIG, 'context_rollover_tokens', 5000)
-        assert ar._context_tokens_over_threshold(60_000) is True
-        assert ar._context_tokens_over_threshold(59_999) is False
+        assert _crosses(60_000) is True
+        assert _crosses(59_999) is False
 
     def test_none_never_trips(self, ar, monkeypatch):
         from mc import state as mc_state
         monkeypatch.setitem(mc_state.CONFIG, 'context_rollover_tokens', 100)
-        assert ar._context_tokens_over_threshold(None) is False
+        assert _crosses(None) is False
+
+    def test_the_dead_route_level_check_is_gone(self, ar):
+        assert not hasattr(ar, '_context_tokens_over_threshold')
 
 
 class TestAutoFreshTrigger:
@@ -110,8 +122,10 @@ def test_auto_fresh_uses_character_threshold(ar, monkeypatch, ref, expected):
     monkeypatch.setitem(ar.state.CONFIG, 'context_rollover_tokens', 200_000)
     monkeypatch.setitem(ar.state.CONFIG, 'context_rollover_by_character',
                         {'global:dave': 120_000})
+    # A verified floor: without one a Claude chat ignores a pin under the base.
     reason, detail = ar._auto_fresh_trigger(
-        '/p', 'sid', 130_000, session_or_character={'character': ref})
+        '/p', 'sid', 130_000,
+        session_or_character={'character': ref, '_mt_fresh_floor': 50_000})
     assert (reason, detail) == (expected, 130_000 if expected else 0)
 
 
@@ -123,7 +137,7 @@ def test_mode_a_rollover_uses_character_threshold(ar, monkeypatch, provider):
     monkeypatch.setattr(ar, '_auto_fresh_handoff',
                         lambda *a, **k: ('handoff', 'rolled', 'activity'))
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a: None)
-    session = {'character': {'name': 'dave', 'scope': 'global'},
+    session = {'character': {'name': 'dave', 'scope': 'global'}, 'provider': provider,
                'context_tokens': 130_000, 'provider_session_id': 'old'}
     assert ar._mode_a_token_rollover('/p', 'p', 's', session, provider, 'continue') == \
         'handoff\n\ncontinue'
@@ -196,4 +210,4 @@ def test_auto_fresh_uses_model_and_floor(ar, monkeypatch):
     monkeypatch.setitem(ar.state.CONFIG, 'context_rollover_by_character', {'global:dave': 100_000})
     session = {'character': 'global:dave', 'model': 'claude-fable-5-2', '_mt_fresh_floor': 90_000}
     assert ar._auto_fresh_trigger('/p', 'sid', 200_000, session_or_character=session) == (None, 0)
-    assert ar._auto_fresh_trigger('/p', 'sid', 277_349, session_or_character=session) == ('tokens', 277_349)
+    assert ar._auto_fresh_trigger('/p', 'sid', 290_000, session_or_character=session) == ('tokens', 290_000)
