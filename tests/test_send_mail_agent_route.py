@@ -112,6 +112,15 @@ def test_every_failure_falls_back_with_one_stderr_line(result, exc, needle):
     assert needle in err and err.rstrip().endswith("; sending via Gmail")
 
 
+def test_server_hint_is_surfaced_on_the_one_fallback_line():
+    hint = "Clayrune's secrets vault is locked.\nUnlock it in Settings.\x1b " + "x" * 600
+    ok, out, err = run(Fake(result=(503, {"error": "vault_locked", "hint": hint})))
+    assert ok is False and out == ""
+    assert err.count("\n") == 1 and "\x1b" not in err
+    assert "HTTP 503 vault_locked: Clayrune's secrets vault is locked. Unlock it in Settings." in err
+    assert len(err) < route.HINT_MAX_CHARS + 150 and err.rstrip().endswith("; sending via Gmail")
+
+
 def test_timeout_falls_back(monkeypatch):
     monkeypatch.setattr(route, "TIMEOUT_S", 0.05)
     gate = threading.Event()

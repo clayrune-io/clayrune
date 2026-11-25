@@ -6,6 +6,13 @@
 - New `mc/agent_mail_hold_alerts.py`, run by each mail recovery pass: one Inbox row + push per hold (including holds older than this code), and another if a reply is deleted undelivered (expiry, or revocation of a hold already reported). Metadata only, no mail text, no email. It never releases or forwards; release stays passcode-gated.
 - `_append_notification` / `_queue_push` now return whether the Inbox row was saved, so a failed write is retried.
 
+## [2026-11-24] - agent-mail notes failed with `409 service_unavailable` on every send (MC-1213)
+
+- `Outbound.prepare` and `send` called `reviewed_service()` inside their own `BEGIN IMMEDIATE`. On a cold cache that call writes the manifest floor to the same SQLite store, waited out the busy timeout and surfaced as `service_unavailable`. The pull client normally kept the cache warm, so it only showed once pull was down. The review is now resolved before any transaction and passed into `_authority`, which rechecks the durable floor inside the transaction and refuses `service_key_changed` if it moved.
+- A locked vault now answers `503 vault_locked` before any manifest fetch.
+- The note route returns `{error, hint}` on refusals, with fixed hint text per reason; `service_unavailable` is now 503. `send_mail.py` prints the hint on its `agent-mail unavailable (...)` line and still falls back to Gmail.
+- The running server picks this up the next time it loads the code.
+
 ## [2026-11-23] - tools/film-export: an HTML promo film becomes an mp4 with its sound (campaign gate G2)
 
 - New `tools/film-export/export.cjs`: `node tools/film-export/export.cjs <film.html> <out.mp4> [--fps 30] [--width 1920 --height 1080]`, and `--all <dir> <out-dir>` for a folder. Picture is frame-stepped (`window.__render(n/fps)`, one screenshot per frame, piped to ffmpeg as H.264 `yuv420p`), never a screen recording, so an export is exact and repeatable.

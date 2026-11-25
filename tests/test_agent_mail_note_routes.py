@@ -98,6 +98,7 @@ def test_non_json_body_refused(monkeypatch):
     (EnrollmentRefused('invalid_send'), 400), (EnrollmentRefused('session_unavailable'), 404),
     (EnrollmentRefused('project_unavailable'), 404), (EnrollmentRefused('vault_locked'), 503),
     (EnrollmentRefused('outbound_full'), 503), (EnrollmentRefused('intent_conflict'), 409),
+    (EnrollmentRefused('service_unavailable'), 503), (MailHeld('session_busy'), 409),
     (EnrollmentRefused('consent_required'), 409), (EnrollmentRefused('outbound_disabled'), 409),
     (OwnershipHeld('ownership_capacity'), 503), (MailStoreError('SECRET path C:/x'), 503),
     (RuntimeError('SECRET boom'), 503)])
@@ -105,13 +106,30 @@ def test_refusals_map_to_closed_codes_without_leaking_exception_text(monkeypatch
     result = client_for(monkeypatch, Fake(prepare=error)).post(URL, json=payload())
     assert result.status_code == status
     assert 'SECRET' not in result.get_data(as_text=True)
-    assert set(result.json or {}) == {'error'}
+    assert set(result.json or {}) == {'error', 'hint'}
+    hint = (result.json or {})['hint']
+    assert hint == routes._HINTS.get((result.json or {})['error'], routes._DEFAULT_HINT)
+
+
+def test_every_hint_names_the_fallback_and_survives_the_client_cap():
+    for hint in [*routes._HINTS.values(), routes._DEFAULT_HINT]:
+        assert hint.endswith('Fall back to Gmail meanwhile.') and len(hint) <= 300 and '\n' not in hint
+
+
+def test_locked_vault_and_unavailable_service_say_what_to_do(monkeypatch):
+    locked = client_for(monkeypatch, Fake(prepare=EnrollmentRefused('vault_locked'))).post(URL, json=payload())
+    assert (locked.json or {})['hint'] == (
+        "Clayrune's secrets vault is locked; the install owner must unlock it with the passcode "
+        'in Settings. Fall back to Gmail meanwhile.')
+    transient = client_for(monkeypatch, Fake(prepare=EnrollmentRefused('service_unavailable'))).post(
+        URL, json=payload())
+    assert 'retry' in (transient.json or {})['hint']
 
 
 def test_send_failure_after_prepare_is_also_mapped(monkeypatch):
     fake = Fake(send=EnrollmentRefused('service_key_changed'))
     result = client_for(monkeypatch, fake).post(URL, json=payload())
-    assert result.status_code == 409 and result.json == {'error': 'service_key_changed'}
+    assert result.status_code == 409 and (result.json or {})['error'] == 'service_key_changed'
     assert [c[0] for c in fake.calls] == ['prepare', 'send']
 
 
@@ -122,7 +140,7 @@ def test_factory_failure_is_503_not_a_traceback(monkeypatch):
     app = Flask(__name__)
     app.register_blueprint(routes.create_blueprint(factory=broken))
     result = app.test_client().post(URL, json=payload())
-    assert result.status_code == 503 and result.json == {'error': 'store_unavailable'}
+    assert result.status_code == 503 and (result.json or {})['error'] == 'store_unavailable'
 
 
 def test_module_is_registered_by_the_ingress_registry(tmp_path):
@@ -160,7 +178,7 @@ def test_through_real_outbound_unknown_session_is_404(out, monkeypatch):
     app = Flask(__name__)
     app.register_blueprint(routes.create_blueprint(factory=lambda: out.outbound))
     result = app.test_client().post(URL, json=payload(session_id='no-such-session'))
-    assert result.status_code == 404 and result.json == {'error': 'session_unavailable'}
+    assert result.status_code == 404 and (result.json or {})['error'] == 'session_unavailable'
     assert out.recording.calls == []
 
 
@@ -169,20 +187,20 @@ def test_mail_held_returns_its_reason_as_409_and_logs_it(monkeypatch, reason):
     logged = []
     monkeypatch.setattr(routes, '_log', lambda msg, **kw: logged.append(msg))
     result = client_for(monkeypatch, Fake(prepare=MailHeld(reason))).post(URL, json=payload())
-    assert result.status_code == 409 and result.json == {'error': reason}
+    assert result.status_code == 409 and (result.json or {})['error'] == reason
     assert logged == [f'[agent-mail] note route held: {reason}']
 
 
 def test_mail_held_from_send_is_also_reported(monkeypatch):
     result = client_for(monkeypatch, Fake(send=MailHeld('worktree_unavailable'))).post(URL, json=payload())
-    assert result.status_code == 409 and result.json == {'error': 'worktree_unavailable'}
+    assert result.status_code == 409 and (result.json or {})['error'] == 'worktree_unavailable'
 
 
 def test_generic_failure_logs_type_and_message_but_not_in_response(monkeypatch):
     logged = []
     monkeypatch.setattr(routes, '_log', lambda msg, **kw: logged.append(msg))
     result = client_for(monkeypatch, Fake(prepare=RuntimeError('SECRET boom'))).post(URL, json=payload())
-    assert result.status_code == 503 and result.json == {'error': 'outbound_unavailable'}
+    assert result.status_code == 503 and (result.json or {})['error'] == 'outbound_unavailable'
     assert len(logged) == 1 and 'RuntimeError' in logged[0] and 'SECRET boom' in logged[0]
 
 
@@ -197,7 +215,7 @@ def test_through_real_outbound_held_bind_abandons_the_draft_and_never_sends_it_l
     sid = out.session['session_id']
     out.session['incognito'] = True
     held = app.test_client().post(URL, json=payload(session_id=sid))
-    assert held.status_code == 409 and held.json == {'error': 'incognito_not_persistent'}
+    assert held.status_code == 409 and (held.json or {})['error'] == 'incognito_not_persistent'
     with out.store._read() as db:
         row = db.execute('SELECT state,reason,payload,thread_hash FROM mail_outbound_intents').fetchone()
         assert (row['state'], row['reason'], row['payload']) == ('abandoned', 'incognito_not_persistent', None)

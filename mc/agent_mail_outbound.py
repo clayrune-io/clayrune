@@ -160,10 +160,8 @@ class Outbound:
                        (*key, preferred, self.store.clock() + self.store.config.thread_ttl_seconds))
             return preferred
 
-    def _authority(self, db: Any, expected: dict[str, Any] | None = None) -> dict[str, Any]:
-        self._enabled()
-        if self.client is None or self.reviewed_service is None:
-            raise _refused('legacy_retired')
+    def _account(self, db: Any) -> dict[str, Any]:
+        """Local authority only (schema, account, consent, fence): no I/O beyond ``db``."""
         _validate(db)
         rows = db.execute('''SELECT a.*,a.install_id AS install,a.seal_flow_id AS flow,
             a.consent_epoch AS epoch,g.service_key_id,g.service_public_key,g.manifest_sequence,
@@ -184,7 +182,44 @@ class Outbound:
         if db.execute('SELECT 1 FROM mail_pull_fences WHERE install_id=? AND generation=?',
                       (row['install'], row['generation'])).fetchone():
             raise _refused('fenced')
-        pin, digest = self.reviewed_service()
+        return row
+
+    def _review(self) -> tuple[ServiceKeyCandidate, str]:
+        """Resolve the service pin. Call ONLY with no store transaction open.
+
+        reviewed_service() may fetch the manifest and CAS its floor on this same
+        store; inside ``_tx()`` that nested write waits out the busy timeout and
+        comes back as service_unavailable (MC-1213). Pre-warming is not enough:
+        the cache can expire mid-transaction. Local refusals and the vault go
+        first, so they answer by their own name without a fetch. Nothing here
+        grants authority: ``_authority`` rechecks it all inside the caller's tx.
+        """
+        self._enabled()
+        if self.client is None or self.reviewed_service is None:
+            raise _refused('legacy_retired')
+        with self.store._read() as db:
+            row = self._account(db)
+        reason = self.client().seal.status(
+            SealReference(row['flow'], row['install'], row['generation'], row['key_id']))
+        if reason != 'ready':
+            raise _refused(reason)
+        return self.reviewed_service()
+
+    def _authority(self, db: Any, review: tuple[ServiceKeyCandidate, str],
+                   expected: dict[str, Any] | None = None) -> dict[str, Any]:
+        self._enabled()
+        if self.client is None:
+            raise _refused('legacy_retired')
+        row = self._account(db)
+        pin, digest = review
+        # ``review`` predates this transaction. If another refresh advanced the
+        # durable floor since, it is stale; BEGIN IMMEDIATE holds it from here on.
+        # (Production reviews cannot succeed without this table.)
+        if db.execute("SELECT 1 FROM sqlite_master WHERE name='mail_enrollment_manifests'").fetchone():
+            floor = db.execute('SELECT sequence,digest FROM mail_enrollment_manifests WHERE origin=?',
+                               (pin.origin,)).fetchone()
+            if floor is not None and tuple(floor) != (pin.sequence, digest):
+                raise _refused('service_key_changed')
         if ((row['service_origin'], row['service_key_id'], row['service_public_key'],
              row['manifest_sequence'], row['manifest_digest']) !=
                 (pin.origin, pin.key_id, pin.public_key, pin.sequence, digest)
@@ -233,14 +268,15 @@ class Outbound:
                                         separators=(',', ':')).encode()).hexdigest()
         row: dict[str, Any]
         created = False
+        review = self._review()
         with self.store._tx() as db:
-            auth = self._authority(db)
+            auth = self._authority(db, review)
             old = db.execute('SELECT * FROM mail_outbound_intents WHERE project_id=? '
                              'AND session_id=? AND request_key=?',
                              (project_id, session_id, request['request_id'])).fetchone()
             if old:
                 row = dict(old)
-                self._authority(db, row)
+                self._authority(db, review, row)
                 if row['request_digest'] != request_digest:
                     raise _refused('intent_conflict')
             else:
@@ -310,8 +346,9 @@ class Outbound:
         self.store.bind_thread(row['install'], token, project_id, session_id,
                                kind=kind, expires_at=row['expires'])
         MailWake(self.store).bind(token, question=question)
+        review = self._review()
         with self.store._tx() as db:
-            auth = self._authority(db, row)
+            auth = self._authority(db, review, row)
             snapshot = db.execute('SELECT snapshot FROM mail_continuations WHERE thread_hash=?',
                                   (row['thread_hash'],)).fetchone()[0]
             thread = (row['install'], row['generation'], auth['owner_generation'], row['thread_id'],
@@ -361,13 +398,14 @@ class Outbound:
         with self.store._read() as db:
             row = dict(db.execute('SELECT * FROM mail_outbound_intents WHERE intent_id=?', (intent_id,)).fetchone())
         value, raw = self._payload(row)
+        review = self._review()  # Before the manager lock and the tx; may fetch.
         # Same manager -> store ordering as unit 6. Network never holds SQLite.
         with ar.get_manager(row['project_id']).lock:
             with self.store._tx() as db:
                 current = db.execute('SELECT * FROM mail_outbound_intents WHERE intent_id=?', (intent_id,)).fetchone()
                 if current['state'] not in ('ready', 'retryable'):
                     return metadata(current)
-                auth = self._authority(db, row)
+                auth = self._authority(db, review, row)
                 reason = self.store._validate_target(db, row['install'], row['thread_hash'], self.store.clock())
                 bound = db.execute('SELECT snapshot FROM mail_continuations WHERE thread_hash=?', (row['thread_hash'],)).fetchone()
                 mapping = db.execute("SELECT * FROM mail_pull_threads WHERE install_id=? "
@@ -393,9 +431,9 @@ class Outbound:
                 validate(project, session, snapshot, busy=False, wake=False)
                 if value['kind'] == 'question' and matching(session, snapshot['question']) is None:
                     raise _refused('question_changed')
-                assert self.client is not None and self.reviewed_service is not None
+                assert self.client is not None
                 client = self.client()
-                pin, manifest = self.reviewed_service()
+                pin, manifest = review
                 nonce, stamp = secrets.token_hex(16), str(int(self.store.clock() * 1000))
                 signed = {'x-mail-version': '2', 'x-mail-direction': 'install-to-pull',
                           'x-mail-install-id': auth['install'], 'x-mail-generation': str(auth['generation']),
@@ -407,10 +445,9 @@ class Outbound:
                     'clayrune-agent-mail-pull-http', '1', 'install-to-pull', client.origin, 'POST', SEND,
                     auth['key_id'], auth['install'], str(auth['generation']), str(auth['owner_generation']),
                     stamp, nonce, signed['x-mail-digest']], separators=(',', ':')).encode('ascii'))
-                self._authority(db, row)
-                if (self.reviewed_service() != (pin, manifest)
-                        or (pin.key_id, pin.public_key, pin.sequence, manifest) !=
-                           (auth['service_key_id'], auth['service_public_key'], auth['manifest_sequence'], auth['manifest_digest'])):
+                self._authority(db, review, row)  # Floor, expiry, seal and row, after signing.
+                if ((pin.key_id, pin.public_key, pin.sequence, manifest) !=
+                        (auth['service_key_id'], auth['service_public_key'], auth['manifest_sequence'], auth['manifest_digest'])):
                     raise _refused('service_key_changed')
                 attempt = secrets.token_hex(16)
                 # Signing and trusted validation can outlive a short or nearly
