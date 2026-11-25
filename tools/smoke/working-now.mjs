@@ -182,7 +182,7 @@ try {
       if (timer) timer.textContent = 'refresh in 30s';
       const bar = document.querySelector(m ? '#mobile-app-bar' : '.header');
       const picks = m ? ['#mc-hamburger-btn']
-        : ['.header-search', '.header .metric-pill', '#sys-status-pill', '.live-badge', '.header-breadcrumb',
+        : ['.header-search', '#sys-status-pill', '.live-badge', '.header-breadcrumb',
           '#bottom-status-row', '#usage-bar-strip .usage-bar-item', '#usage-bar-strip .usage-bar-item:nth-child(2)'];
       return { height: bar.getBoundingClientRect().height, bottom: bar.getBoundingClientRect().bottom,
         at: picks.map((s) => { const r = document.querySelector(s).getBoundingClientRect(); return `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}`; }) };
@@ -207,7 +207,7 @@ try {
 
     await page.waitForTimeout(400);
     check(await page.locator('.header .wn-pill').count() === 0, 'no working chip in the desktop header');
-    check(await page.locator('.header #header-agent-count').count() === 1, 'the header keeps its "N agents" chip');
+    check(await page.locator('#header-agent-count, .header .metric-pill').count() === 0, 'the old "N agents" header chip is gone');
     let quiet = null;
     if (mobile) {
       check(await page.locator('.wn-pill:visible').count() === 0, 'nobody working: no pill in the mobile bar');

@@ -677,10 +677,9 @@
       <!-- Token counter moved into the system-status popover's Usage tab.
            Header stays clean; the running total now lives next to the
            Anthropic-side rate-limit data where it belongs. -->
-      <div class="metric-pill">
-        <div class="mp-dot" style="background:var(--green)"></div>
-        <span id="header-agent-count">0</span> agents
-      </div>
+      <!-- The "N agents" chip that sat here is gone (2026-11-25): it counted
+           running + idle chats, did nothing on click, and disagreed with the
+           "N working" chip in the bottom status row (working-now.js). -->
       <div class="sys-status-pill" id="sys-status-pill" onclick="toggleSysStatusPopover(event)" title="Claude system status (click for details)">
         <div class="ssp-dot"></div>
         <span class="ssp-label" id="sys-status-pill-label">—</span>
@@ -1622,9 +1621,6 @@ window.addEventListener('popstate', () => {
 });
 
 function renderStats() {
-  const runningAgents = agentHistory.filter(h => h.status === 'running' || h.status === 'idle').length;
-  const agentEl = document.getElementById('header-agent-count');
-  if (agentEl) agentEl.textContent = runningAgents;
   const pcEl = document.getElementById('header-project-count');
   if (pcEl) pcEl.textContent = allProjects.length;
 }

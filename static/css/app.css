@@ -467,15 +467,7 @@
     background: var(--surface3); padding: 1px 5px; border-radius: 3px;
     color: var(--text-faint); border: 1px solid var(--border2);
   }
-  .metric-pill {
-    display: flex; align-items: center; gap: 6px;
-    padding: 4px 10px; border-radius: 5px;
-    font-size: 11px; font-weight: 600; color: var(--text-dim);
-    background: var(--surface2);
-  }
-  .metric-pill .mp-dot { width: 6px; height: 6px; border-radius: 50%; }
-  .metric-pill .mp-value { color: var(--text); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
-  /* System-status pill — sibling to .metric-pill, click to open detail popover.
+  /* System-status pill — click to open detail popover.
      Color dot reflects rate-limit health: green/amber/red. Label is compact
      (e.g. "5h", "OK", "—"); full detail lives in the popover. */
   .sys-status-pill {
@@ -2578,7 +2570,7 @@
   @media (max-width: 600px) {
     .header { padding: 0 12px; }
     .header-search { display: none; }
-    .metric-pill, .sys-status-pill { display: none; }
+    .sys-status-pill { display: none; }
     .content-main { padding: 8px 12px; }
     .projects-col { grid-template-columns: 1fr; gap: 8px; }
     .card { aspect-ratio: auto; }
