@@ -1,6 +1,6 @@
 # Clayrune v2.5.0
 
-1,514 commits since v2.4.8, November 3 to November 25, 2026. Full detail is in `CHANGELOG.md`.
+1,519 commits since v2.4.8, November 3 to November 25, 2026. Full detail is in `CHANGELOG.md`.
 
 ## Floor and chats
 
@@ -29,6 +29,7 @@
 
 - Clayrune makes a verified daily copy of each project's memory and keeps the latest 14 automatic copies by default.
 - Backlog items suggested by an agent are marked **Agent proposed**. You can accept or dismiss them before the runner picks them up.
+- **Settings > Connections** shows one collapsible card per AI vendor. A card starts open only when that vendor needs attention, such as a rejected sign-in, a bad key or a used-up quota.
 - The project menu has a **Safety** dialog for worktree and merge settings. Review before merge and independent review are off by default and can be enabled there.
 
 ## Workflows
