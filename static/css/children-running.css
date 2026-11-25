@@ -1,0 +1,31 @@
+/* Running children, shown on the dispatching chat above the transcript. Same
+   slot and shape as report-waiting.css; green because it is live work. */
+.children-running-notice {
+  flex-shrink: 0; min-width: 0; margin: 0 0 8px; padding: 6px 12px; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--green) 40%, transparent);
+  background: color-mix(in srgb, var(--green) 9%, transparent);
+  color: inherit; font-size: 13px; line-height: 1.45;
+}
+.children-running-row { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.children-running-row + .children-running-row { margin-top: 6px; }
+.children-running-row .children-running-text { min-width: 0; overflow-wrap: anywhere; }
+.children-running-open {
+  flex-shrink: 0; border: 0; padding: 0 4px; background: none; color: inherit;
+  font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer;
+}
+.children-running-summary {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0;
+  border: 0; padding: 0; background: none; color: inherit; font: inherit;
+  text-align: left; cursor: pointer;
+}
+.children-running-summary .children-running-text {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.children-running-dot {
+  flex-shrink: 0; width: 7px; height: 7px; border-radius: 50%; background: var(--green);
+}
+.children-running-rows[hidden] { display: none; }
+.children-running-rows.is-list { max-height: 30vh; overflow-y: auto; margin-top: 6px; }
+@media (max-width: 960px) {
+  .children-running-open { padding: 4px 8px; }
+}

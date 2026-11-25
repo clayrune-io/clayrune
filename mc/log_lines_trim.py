@@ -17,10 +17,23 @@ from mc.core import _log, TimestampedLines
 
 DEFAULT_CAP = 2000
 DEFAULT_KEEP = 1500
+# Every provider's reader writes a tool call with this prefix
+# (agent_runtime._format_tool_activity), so one line is one step.
+TOOL_LINE_PREFIX = '[tool: '
 
 
 def is_user_line(line):
     return isinstance(line, str) and line.lstrip().startswith('> ')
+
+
+def is_tool_line(line):
+    return isinstance(line, str) and line.startswith(TOOL_LINE_PREFIX)
+
+
+def count_steps(lines):
+    """Tool calls in this chat, including lines `trim` has since dropped."""
+    dropped = getattr(lines, 'dropped_steps', 0)
+    return dropped + sum(1 for line in list(lines or []) if is_tool_line(line))
 
 
 def trim(lines, cap=DEFAULT_CAP, keep=DEFAULT_KEEP, *, label=''):
@@ -39,6 +52,11 @@ def trim(lines, cap=DEFAULT_CAP, keep=DEFAULT_KEEP, *, label=''):
         ts = getattr(lines, 'ts', None)
         out = (TimestampedLines(items, ts=[ts[i] for i in keep_idx])
                if ts is not None and len(ts) == len(lines) else items)
+        if isinstance(out, TimestampedLines):
+            # Kept lines are the tail plus user lines, so every tool line
+            # before the cut is dropped. Carried so the step count never falls.
+            out.dropped_steps = (getattr(lines, 'dropped_steps', 0)
+                                 + sum(1 for i in range(cut) if is_tool_line(lines[i])))
         _log(f"[log-lines] {label or 'session'}: trimmed {dropped} of {len(lines)} "
              f"lines (kept last {keep} + {len(pinned)} older user lines)")
         return out

@@ -275,6 +275,8 @@
 <link rel="stylesheet" href="/static/css/beacon.css">
 <link rel="stylesheet" href="/static/css/documents-search.css">
 <link rel="stylesheet" href="/static/css/report-waiting.css">
+<link rel="stylesheet" href="/static/css/children-running.css">
+<link rel="stylesheet" href="/static/css/working-now.css">
 <link rel="stylesheet" href="/static/css/agent-mail-hold-notice.css">
 <link rel="stylesheet" href="/static/css/agent-mail-status.css">
 <link rel="stylesheet" href="/static/css/agent-mail-actions.css">
@@ -2485,6 +2487,7 @@ function refreshModalById(modalId) {
     }
   }
   window.restoreReportsWaiting?.(content);
+  window.restoreChildrenRunning?.(content);
   // Observe non-chat panel children (status bar, tab bar, etc.) so
   // sizeAgentChat re-fires when the badge/timer text causes the status
   // row to wrap to a 2nd line during streaming. Without this, the
@@ -3890,6 +3893,7 @@ setInterval(async () => {
       const data = await res.json();
       if (!data || !Array.isArray(data.sessions)) continue;
       window.updateAgentMailHoldNotices?.(pid, data.agent_mail_holds);
+      window.syncChildrenRunning?.(pid, data.sessions);   // children-running.js
       if (window.discoverNewSessions?.(pid, data.sessions)) continue;
       const serverMap = {};
       for (const s of (data.sessions || [])) serverMap[s.session_id] = s;
@@ -4265,6 +4269,8 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/chat-search.js"></script>
 <script type="module" src="/static/js/bg-wait-status.js"></script>
 <script type="module" src="/static/js/report-waiting.js"></script>
+<script type="module" src="/static/js/children-running.js"></script>
+<script type="module" src="/static/js/working-now.js"></script>
 <script type="module" src="/static/js/agent-mail-hold-notice.js"></script>
 <script type="module" src="/static/js/conversation.js"></script>
 <script type="module" src="/static/js/session-discovery.js"></script>
