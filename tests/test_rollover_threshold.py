@@ -346,3 +346,45 @@ def test_unknown_floor_under_the_cap_is_untouched():
     assert threshold_with_reason(_session('claude-future-6', None), {
         'context_rollover_by_character': {'global:dave': 900_000},
     }) == (900_000, 'override:character')      # no table row, no cap to apply
+
+
+# ── 2026-11-25 review F10: an ignored override entry says so, once ─────────
+
+@pytest.fixture
+def override_log(monkeypatch):
+    from mc import rollover_threshold as rt
+    rt._log_unusable_override.cache_clear()
+    messages = []
+    monkeypatch.setattr(rt, '_log', messages.append)
+    yield messages
+    rt._log_unusable_override.cache_clear()
+
+
+@pytest.mark.parametrize('entry,needle', [
+    ({'model': 'fable', 'tokens': 300_000}, 'haiku, sonnet, opus'),       # no such alias
+    ({'charcter': 'global:dave', 'tokens': 300_000}, 'charcter'),         # misspelled key
+    ({'model': 'opus', 'token': 300_000}, 'token'),
+    ({'model': 'opus', 'tokens': 'lots'}, 'tokens'),
+    ({'tokens': 300_000}, 'model, character or effort'),
+    ({'model': 'opus', 'effort': 'extreme', 'tokens': 300_000}, 'extreme'),
+    ('opus=300000', 'not an object'),
+])
+def test_ignored_override_entry_is_logged_once(override_log, entry, needle):
+    config = {'context_rollover_overrides': [entry]}
+    session = _session('claude-fable-5-2')
+    first = threshold_with_reason(session, config)
+    assert threshold_with_reason(session, config) == first == (290_000, 'computed:model')
+    assert len(override_log) == 1, override_log
+    assert needle in override_log[0] and 'ignor' in override_log[0]
+
+
+def test_usable_override_entries_log_nothing(override_log):
+    config = {'context_rollover_overrides': [
+        {'model': 'opus', 'tokens': 300_000},                  # does not match this chat
+        {'model': 'claude-fable-5-2', 'tokens': 310_000},
+        {'model': 'gpt-6.1-sol', 'effort': 'high', 'tokens': 250_000},
+        {'character': 'global:builder', 'tokens': 240_000},
+    ]}
+    assert threshold_with_reason(_session('claude-fable-5-2'), config) == (
+        310_000, 'override:model')
+    assert override_log == []

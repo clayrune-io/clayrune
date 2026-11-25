@@ -15,7 +15,14 @@ session, a `scope:name` character reference, or character metadata.
    equally specific entries, model takes precedence over character, then
    effort. Duplicate targets use the first valid entry. The legacy
    `context_rollover_by_character` map supplies character-only entries after
-   the list. A target below the verified floor plus 60,000 tokens emits one
+   the list. A `model` selector takes full model ids or the aliases
+   haiku/sonnet/opus; any other bare word (`fable`) matches no chat that has
+   reported its model. An entry that cannot apply (an unknown or misspelled
+   key, such a model word, a non-integer `tokens`, an unknown effort, no
+   selector) emits one diagnostic per distinct entry. A character pin, like
+   every explicit target, is a target, not a cap: a 400,000 pin resolves to
+   400,000 where the computed default is lower, and only the window and
+   price-step caps bound it. A target below the verified floor plus 60,000 tokens emits one
    diagnostic per distinct target and falls through. While a Claude chat has
    no verified floor, a target below the base falls through the same way,
    because the working room it would leave is unknown. Other providers never
@@ -26,10 +33,14 @@ session, a `scope:name` character reference, or character metadata.
    cohort qualifies. The actual call model takes precedence over the requested
    model. Known Claude aliases, dated IDs and `[1m]` suffixes normalize to the
    corresponding model IDs. Effort comes from the triggering request when the
-   native transcript links it to that call.
+   native transcript links it to that call; while that row is not on disk yet,
+   the last effort known for the session stands in.
 4. `context_rollover_tokens` supplies the base (default 200,000) when the floor,
-   price ratio, or growth estimate is unavailable. A computed limit can be
-   below the base. Active thresholds start at 60,000 tokens.
+   price ratio, or growth estimate is unavailable. It is the base fallback only
+   and does not bound a chat whose model and floor are known: Opus 5.5 at high
+   effort over an 89,000 floor resolves to 200,000 whether the setting is
+   120,000, 200,000 or 400,000. A computed limit can be below or above the
+   base. Active thresholds start at 60,000 tokens.
 
 The config API accepts integer numbers and integer strings for token counts.
 Fractional and non-finite values, booleans, and malformed overrides fall
@@ -64,8 +75,8 @@ is `F + R/2 + (w/r) * F * g / R`. Its minimum is
 The computed default chooses the highest 10,000-token grid point within 2% of
 the minimum modelled cost and 30,000 tokens above `T*`. With a known floor,
 every active threshold leaves at least 60,000 work tokens. Half-window and
-price-step caps apply with that floor. If an existing cap would leave less
-room, the effective cap becomes `F + 60000`.
+price-step caps apply with or without a floor. If a cap would leave less room
+over a known floor, the effective cap becomes `F + 60000`.
 
 The snapshot requires at least 10 floors, five distinct chats with a floor,
 100 call deltas, and at most 50% of those deltas from any one chat. Only built-in

@@ -1,4 +1,5 @@
 """Resolve the token rollover limit shared by all rollover paths (MC-1072)."""
+import re
 from collections.abc import Mapping
 from functools import lru_cache
 from math import isfinite
@@ -66,6 +67,42 @@ def _log_ignored_override(
     _log(f'[rollover-threshold] ignoring {scope} override {tokens}: {why}')
 
 
+@lru_cache(maxsize=256)
+def _log_unusable_override(entry: str, why: str) -> None:
+    _log(f'[rollover-threshold] ignoring override entry {entry}: {why}')
+
+
+def _unusable(entry: Any) -> tuple[str, bool] | None:
+    """(why, skip) for an override entry that cannot do what it was written to
+    do, else None. These used to be passed over without a word: a misspelled
+    key, or `{"model": "fable"}`, which no chat reporting a full model id ever
+    matches (2026-11-25 review, F10). `skip` is False for the one case that was
+    never skipped and still is not: a bare model word can still equal a chat's
+    requested model before its first call reports the real id."""
+    if not isinstance(entry, Mapping):
+        return 'not an object', True
+    unknown = sorted(str(key) for key in entry.keys() - (_SELECTORS.keys() | {'tokens'}))
+    if unknown:
+        return (f"unknown key {', '.join(unknown)} "
+                '(expected model, character, effort, tokens)'), True
+    if _tokens(entry.get('tokens')) is None:
+        return 'tokens is not an integer', True
+    if not entry.keys() & _SELECTORS.keys():
+        return 'no model, character or effort to match', True
+    if 'effort' in entry and effort_name(entry['effort']) is None:
+        return f"effort {entry['effort']!r} is not one of low, medium, high, xhigh, max", True
+    if 'character' in entry and not (isinstance(entry['character'], str) and entry['character']):
+        return 'character is not a scope:name reference', True
+    if 'model' in entry:
+        model = canonical_model_id(entry['model'])
+        if not model:
+            return 'model is empty', True
+        if re.fullmatch(r'[a-z]+', model):
+            return (f"model {entry['model']!r} is not a full model id or one of the "
+                    'aliases haiku, sonnet, opus'), False
+    return None
+
+
 def _explicit_override(
     config: Mapping[str, Any], character: str, model: str | None,
     effort: str | None, fresh: int | None, base: int | None,
@@ -79,6 +116,11 @@ def _explicit_override(
         entries.append({'character': character, 'tokens': legacy[character]})
     matches: list[tuple[tuple[tuple[str, str], ...], int]] = []
     for entry in entries:
+        unusable = _unusable(entry)
+        if unusable is not None:
+            _log_unusable_override(repr(entry)[:200], unusable[0])
+            if unusable[1]:
+                continue
         if not isinstance(entry, Mapping) or entry.keys() - (values.keys() | {'tokens'}):
             continue
         tokens = _tokens(entry.get('tokens'))
