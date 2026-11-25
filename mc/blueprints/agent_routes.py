@@ -6390,6 +6390,7 @@ def _read_agent_stream(proc, session):
                     if 'usage' in msg:
                         _accumulate_session_usage(session, msg['usage'])
                     if _credits_session.record_result(session, msg, proc_cost):
+                        _midturn.note_turn_complete(session)  # the result arrived
                         proc.terminate()
                         break
                     _agent_runtime.accumulate_result_turns(session, msg, proc_turns)
@@ -6523,6 +6524,7 @@ def _read_agent_stream_b(proc, session):
             _accumulate_session_usage(session, msg['usage'])
         if _credits_session.record_result(session, msg, proc_cost):
             billing_halted = True
+            _midturn.note_turn_complete(session)  # the result arrived
             proc.terminate()
             return
         _agent_runtime.accumulate_result_turns(session, msg, proc_turns)
@@ -9466,6 +9468,7 @@ def _note_self_started_turn(session):
     completes once)."""
     if not _log_agent_dispatch_pending(session, write_turn_start=False, self_started=True):
         return
+    _midturn.note_self_started_turn(session)
     background_wake = bool(session.pop(_bg_tasks.RESUME_PENDING_KEY, None))
     # Every automatic wake, not only the INTERIM-latched one below, records
     # its turn_start even if its pending-history claim could not be saved.
@@ -14031,6 +14034,7 @@ def agent_send(project_id):
         _observe_habit_cue(project_id, session_id, message)
 
     # Decision under the lock — this is the ONLY place that picks the route.
+    _prompt_before = None
     with get_manager(project_id).lock:
         session = agent_sessions.get(session_id) if session_id else None
         if session and session.get('project_id') != project_id:
@@ -14065,6 +14069,9 @@ def agent_send(project_id):
             _log_agent_activity(project_id, f"Agent follow-up queued: {message[:100]}")
         elif session and decision in ('interrupt', 'followup', 'steer'):
             user_label = state.CONFIG.get('user_name') or 'User'
+            # The handler can still refuse this message; `note_send_response`
+            # below then puts this back (review F6).
+            _prompt_before = session.get('_mt_turn_prompt')
             if decision != 'steer':  # a steer is noted mid_turn=True after its ack
                 _midturn.note_user_message(session, message)  # MC-1088: latest user message
             session['log_lines'].append(_triggered_turns.user_turn_line(user_label, message))
@@ -14260,6 +14267,8 @@ def agent_send(project_id):
     # support get_json(); we rebuild and return.
     try:
         body = resp.get_json(silent=True) or {}  # pyright: ignore[reportAttributeAccessIssue]  # moved-verbatim typing debt (1.12)
+        if session is not None:
+            _midturn.note_send_response(session, message, _prompt_before, resp.status_code, body)  # pyright: ignore[reportAttributeAccessIssue]
         if isinstance(body, dict):
             body.setdefault('route', decision)
             return jsonify(body), resp.status_code  # pyright: ignore[reportAttributeAccessIssue]  # moved-verbatim typing debt (1.12)
@@ -15018,8 +15027,9 @@ def agent_followup(project_id):
                                              'nothing was written'}), 503
                 # Process alive — optionally re-classify model before writing to stdin
                 # MC-1088: a write into a RUNNING Mode B turn is absorbed by it.
-                _midturn.note_user_message(
-                    existing, message, mid_turn=existing.get('status') == 'running')
+                _noted_mid_turn = existing.get('status') == 'running'
+                _prompt_before = existing.get('_mt_turn_prompt')
+                _midturn.note_user_message(existing, message, mid_turn=_noted_mid_turn)
                 user_label = state.CONFIG.get('user_name') or 'User'
                 if not existing.pop('_send_already_logged', False):
                     existing['log_lines'].append(_triggered_turns.user_turn_line(user_label, message))
@@ -15123,6 +15133,11 @@ def agent_followup(project_id):
                             return jsonify({'ok': True, 'session_id': session_id,
                                             'stdin_write_ack': 'written'})
                         if ack and ack.get('ack') == 'failed':
+                            # Nothing was written: it is not a message this
+                            # session still owes an answer (review F6).
+                            _midturn.note_message_undelivered(
+                                existing, message, mid_turn=_noted_mid_turn,
+                                previous_prompt=_prompt_before)
                             return jsonify({'ok': False, 'session_id': session_id,
                                             'stdin_write_ack': 'failed',
                                             'error': ack.get('error', 'stdin write failed')}), 503

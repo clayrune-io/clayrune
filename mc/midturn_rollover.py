@@ -324,6 +324,57 @@ def note_turn_complete(session):
     session.pop('_mt_turn_prompt', None)
 
 
+def note_self_started_turn(session):
+    """The CLI started a turn Clayrune did not send (a background-job wake, a
+    peer message). No message of ours opened it, so a turn prompt still set is
+    left over from a send that was refused or never written. Showing that as
+    "NOT answered yet" pointed the fresh session at a message the agent never
+    received (2026-11-25 review, F6)."""
+    session.pop('_mt_turn_prompt', None)
+
+
+def note_message_undelivered(session, text, *, mid_turn=False, previous_prompt=None):
+    """`text` was noted (`note_user_message`, same `mid_turn`) and then did not
+    reach the agent: the send was refused, or its stdin write failed. Take the
+    note back, so a roll never calls the message unanswered and an undelivered
+    child report is not answered ahead of the retry that delivers it.
+
+    `previous_prompt` is `_mt_turn_prompt` as it stood before the note: a
+    refused interrupt leaves the old turn running, and that turn is still
+    answering it. Only a note for this same text is undone; a later message
+    that opened a turn of its own is left alone. The latest-message record is
+    not rewound. Never raises."""
+    try:
+        if not isinstance(text, str) or not text.strip():
+            return
+        message = text.strip()
+        if mid_turn:
+            msgs = session.get('_mt_unanswered_msgs') or []
+            for i in range(len(msgs) - 1, -1, -1):
+                if msgs[i].get('text') == message and not msgs[i].get('carried'):
+                    del msgs[i]
+                    break
+        elif session.get('_mt_turn_prompt') == message:
+            if previous_prompt and previous_prompt != message:
+                session['_mt_turn_prompt'] = previous_prompt
+            else:
+                session.pop('_mt_turn_prompt', None)
+    except Exception as e:
+        _log(f"[midturn-rollover] note_message_undelivered failed: {e}")
+
+
+def note_send_response(session, text, previous_prompt, status_code, body):
+    """Undo the note for `text` when the handler's response says it was not
+    delivered. An unknown outcome (`stdin_write_ack: unknown`, `delivered:
+    None`) may still have reached the agent, so its note stays."""
+    if not isinstance(status_code, int) or status_code < 400:
+        return
+    body = body if isinstance(body, dict) else {}
+    if body.get('stdin_write_ack') == 'unknown' or body.get('delivered', False) is None:
+        return
+    note_message_undelivered(session, text, previous_prompt=previous_prompt)
+
+
 def note_call_tokens(session, tokens, parent_tool_use_id=None):
     """Record the MAIN conversation's context size from one model call.
     A subagent (Task) call streams through the same reader with a
