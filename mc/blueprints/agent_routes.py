@@ -8228,7 +8228,9 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         delivery_gate = TerminalDeliveryGate(
             lambda exc: _log(f"[revive] {project_id}: terminal processing failed: {exc}"))
         session['_terminal_delivery_gate'] = (proc, delivery_gate)
-        _midturn.note_turn_prompt(session, message)
+        # note_user_message, not note_turn_prompt: this message is also the
+        # latest one, or a roll calls the chat's first task the current one.
+        _midturn.note_user_message(session, message)
         threading.Thread(target=_read_agent_stream_b, args=(proc, session), daemon=True).start()
         # MC-944 (§9.6): the revival context above already carries a read floor
         # keyed on `message` (via _build_agent_context's task=), even when
@@ -8377,7 +8379,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         mgr.session_ids.add(session_id)
     _write_usage_breakdown_turn_start_checkpoint(session)   # see Mode B above
     _turn_clock.copy_reply(_clock_sess, session)   # stamp computed above
-    _midturn.note_turn_prompt(session, message)
+    _midturn.note_user_message(session, message)   # see Mode B above
     threading.Thread(target=_read_agent_stream, args=(proc, session), daemon=True).start()
     _log(f"[revive] {project_id}: Mode A revived session {session_id} via -r {claude_sid[:12]}")
     return session
