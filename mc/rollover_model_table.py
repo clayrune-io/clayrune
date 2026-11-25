@@ -8,6 +8,8 @@ or provisional for Haiku. This table makes no rollover decisions.
 import re
 from typing import Literal, TypedDict
 
+from mc.api_credits_offload import MODEL_ALIASES
+
 
 class ModelInputs(TypedDict):
     window_tokens: int
@@ -70,9 +72,10 @@ MODEL_TABLE: dict[str, ModelInputs] = {
 
 
 def model_inputs(model: object) -> ModelInputs | None:
-    """Only recognize canonical Claude IDs, optional date and trailing [1m]."""
+    """Only recognize canonical Claude IDs (optional date) and the bare aliases
+    in `MODEL_ALIASES`, either with a trailing [1m]."""
     if not isinstance(model, str):
         return None
     canonical = re.sub(r'\[1m\]$', '', model.strip().lower()).rstrip()
-    canonical = re.sub(r'-[0-9]{8}$', '', canonical)
+    canonical = MODEL_ALIASES.get(canonical, re.sub(r'-[0-9]{8}$', '', canonical))
     return MODEL_TABLE.get(canonical)

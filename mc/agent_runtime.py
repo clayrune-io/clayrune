@@ -522,6 +522,7 @@ _LEADING_INJECTED_RE = re.compile(
     + re.escape(HANDOFF_FOOTER) +
     r'|\[Now \d{4}-\d{2}-\d{2} \d{2}:\d{2}[^\]\n]*\](?:\nSince your last reply:(?:\n- [^\n]*)*)?'  # mc/turn_clock.py header
     r'|=== Still waiting on \d+ dispatched session[^\n]*===(?:\n- [^\n]*)*'
+    r'|\[Note: session [^\]\n]* this handoff is carried from [^\]\n]*\]'  # _auto_fresh_handoff
     r'|=== Mid-task rollover state ===[\s\S]*?=== End of mid-task rollover state ==='
     r'|Your context was rolled over mid-task because it reached the token limit\.[^\n]*'
     r')\s*')

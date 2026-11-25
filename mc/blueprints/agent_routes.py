@@ -156,6 +156,7 @@ import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends
 import mc.turn_clock as _turn_clock          # per-turn "Now ... since your last reply" stamp + gap briefing
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
+from mc import handoff_turns as _handoff_turns
 import mc.long_job_guidance as _long_job_guidance  # MC-1149: long jobs -> /job route, every engine
 import mc.resume_target as _resume_target  # unresumable `-r` ids: heal, don't loop
 from mc import habit_report as _habit_report  # MC-964 Step E report mode (human messages at send time)
@@ -10948,6 +10949,8 @@ def _auto_dispatch_followup_locked(session, message, p, pp, cmd, _sp_path):
     # the scheduled backlog runner, had 5 completions a minute apart with no
     # turn_start and no ticks between any of them).
     _write_usage_breakdown_turn_start_checkpoint(session)
+    # Not note_user_message: a message queued after this one is the latest.
+    _midturn.note_turn_prompt(session, message)
     session['status'] = 'running'
     session['last_status_change_time'] = _time.time()
     session['last_output_time'] = _time.time()
@@ -12135,7 +12138,7 @@ def _build_handoff_context(project_path, owning_provider, native_id, project_id=
             f"available for this conversation (this vendor may have no "
             f"native transcript store at all)")
     elif owning_provider == 'claude':
-        raw = runtime.parse_transcript_file(tpath)  # pyright: ignore[reportAttributeAccessIssue]
+        raw = runtime.parse_transcript_file(tpath, user_text_cap=None)  # pyright: ignore[reportAttributeAccessIssue]
         turns = [(m['role'], m['text']) for m in raw
                  if m.get('role') in ('user', 'assistant') and m.get('text')]
     else:
@@ -12145,6 +12148,7 @@ def _build_handoff_context(project_path, owning_provider, native_id, project_id=
                 f"cannot hand off from '{owning_provider}': its adapter has "
                 f"no extract_chat_turns reader yet")
         turns = cast(List[Tuple[str, str]], extract(tpath))  # pyright: ignore[reportAttributeAccessIssue]
+    turns = _handoff_turns.clean_turns(turns)
     if not turns:
         raise ValueError(
             f"cannot hand off from '{owning_provider}': the transcript "
@@ -13633,6 +13637,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         if original_resume and not resume_id and _af_log_line:
             session['log_lines'].append(_af_log_line)
 
+    _midturn.note_turn_prompt(session, task)  # a roll in turn 1 must know it
     resume_label = f" (resuming {resume_id})" if resume_id else ""
     _log(f"[dispatch] Claude session {session_id}: mode={session['mode']}")
     # MC-959: the child is already Popen'd and registered in agent_sessions
@@ -14004,7 +14009,8 @@ def agent_send(project_id):
             _log_agent_activity(project_id, f"Agent follow-up queued: {message[:100]}")
         elif session and decision in ('interrupt', 'followup', 'steer'):
             user_label = state.CONFIG.get('user_name') or 'User'
-            _midturn.note_user_message(session, message)  # MC-1088: latest user message
+            if decision != 'steer':  # a steer is noted mid_turn=True after its ack
+                _midturn.note_user_message(session, message)  # MC-1088: latest user message
             session['log_lines'].append(_triggered_turns.user_turn_line(user_label, message))
             session['_send_already_logged'] = True
             # Mark followup as in-flight under the same lock so the SSE generate()
@@ -14041,6 +14047,7 @@ def agent_send(project_id):
         # Write failed (pipe gone): the message was not delivered, so fall
         # back to the old interrupt-and-resume rather than drop it.
         _log(f"[send] {session_id[:12]} steer write failed ({ack.get('error')}); interrupting")
+        _midturn.note_user_message(session, message)  # it will open its own turn
         decision = 'interrupt'
         with get_manager(project_id).lock:
             if session.get('status') == 'running':
@@ -14878,6 +14885,8 @@ def agent_followup(project_id):
                 user_label = state.CONFIG.get('user_name') or 'User'
                 if not existing.pop('_send_already_logged', False):
                     existing['log_lines'].append(_triggered_turns.user_turn_line(user_label, message))
+                # The caller's text: `message` may now carry a handoff prefix.
+                _midturn.note_user_message(existing, data['message'])
                 _start_new_turn(existing)
                 existing['status'] = 'running'
                 # MC-1002: the old process is about to be killed and the new
@@ -15077,6 +15086,7 @@ def agent_followup(project_id):
                 return jsonify({'ok': True, 'queued': True, 'session_id': session_id})
 
             # Mark as running and return quickly — spawn process in background
+            _midturn.note_user_message(existing, message)
             _start_new_turn(existing)
             existing['status'] = 'running'
             # MC-1002: Mode A's `proc` is still the PREVIOUS turn's (already-
@@ -15869,6 +15879,8 @@ def agent_interrupt(project_id, *, _internal=None):
         session['process_alive'] = True
         if is_midturn:
             _midturn.begin_roll(session)
+        else:
+            _midturn.note_user_message(session, message)
 
     # Kill old process in background
     _kill_proc_background(old_proc)

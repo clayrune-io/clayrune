@@ -124,16 +124,44 @@ def test_window_cap_and_fresh_floor_lower_bound():
 
 
 @pytest.mark.parametrize('model,floor', [
-    ('gpt-6.1-sol', 90_000), ('claude-future-6', 90_000),
+    ('gpt-6.1-sol', None), ('claude-future-6', None),
     ('claude-fable-5-2', None), ('claude-fable-5-2', -1),
     ('claude-fable-5-2', True), ('claude-fable-5-2', 'unknown'),
 ])
-def test_unknown_model_or_floor_preserves_legacy_pin(model, floor):
+def test_unknown_floor_preserves_legacy_pin(model, floor):
     session = _session(model, floor)
     assert threshold_with_reason(session, {}) == (200_000, 'global')
     assert threshold_with_reason(session, {
         'context_rollover_by_character': {'global:dave': 100_000},
     }) == (100_000, 'pin')
+
+
+@pytest.mark.parametrize('model', ['gpt-6.1-sol', 'claude-future-6', ''])
+@pytest.mark.parametrize('floor,config,expected', [
+    # 2026-11-25: a 100k pin over an 89k floor left 11k of working room.
+    (89_000, {'context_rollover_by_character': {'global:dave': 100_000}},
+     (200_000, 'pin_ignored_below_floor')),
+    (89_000, {'context_rollover_tokens': 60_000,
+              'context_rollover_by_character': {'global:dave': 100_000}},
+     (149_000, 'pin_ignored_below_floor')),
+    (89_000, {'context_rollover_by_character': {'global:dave': 149_000}},
+     (149_000, 'pin')),
+    (89_000, {}, (200_000, 'global')),
+    (89_000, {'context_rollover_tokens': 100_000}, (149_000, 'fresh_floor')),
+    (180_000, {}, (240_000, 'fresh_floor')),
+])
+def test_unknown_model_with_a_floor_keeps_60k_working_room(model, floor, config,
+                                                           expected):
+    assert threshold_with_reason(_session(model, floor), config) == expected
+
+
+@pytest.mark.parametrize('model', ['opus', 'opus[1m]', 'sonnet', 'haiku'])
+def test_stored_alias_never_gets_the_thrashing_pin(model):
+    assert model_inputs(model) is not None
+    threshold, reason = threshold_with_reason(_session(model, 89_000), {
+        'context_rollover_by_character': {'global:dave': 100_000},
+    })
+    assert threshold >= 149_000 and reason != 'pin'
 
 
 @pytest.mark.parametrize('global_tokens', [0, -1, '0'])
@@ -165,7 +193,7 @@ def test_model_normalization_and_growth_sources(model):
                                     'provisional' if family == 'haiku' else 'family')
 
 
-@pytest.mark.parametrize('model', [None, 1, 'gpt-6.1-sol', 'sonnet',
+@pytest.mark.parametrize('model', [None, 1, 'gpt-6.1-sol', 'fable',
                                    'claude-haiku-4-5-unknown', 'claude-fable-5-20'])
 def test_unknown_models_are_not_guessed(model):
     assert model_inputs(model) is None
