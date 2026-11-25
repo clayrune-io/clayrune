@@ -9,6 +9,7 @@ const end = source.indexOf('window.openChannelPerson = openChannelPerson;', star
 assert.ok(start >= 0 && end > start);
 const events = [];
 const context = vm.createContext({
+  window: {},   // openChannelPerson tells window.railFollow, absent here
   _channelExpanded: {}, conversationsCache: {},
   _convCharKey: row => row.key, _isNoiseConvoRow: row => !!row.noise,
   _userInitiatedConvos: pid => context.conversationsCache[pid] || [],
@@ -71,7 +72,7 @@ const mergeStart = source.indexOf('function _userInitiatedConvos(');
 const mergeEnd = source.indexOf('window._userInitiatedConvos = _userInitiatedConvos;', mergeStart);
 const delayed = [];
 const historyContext = vm.createContext({
-  _channelExpanded: {}, _showHiddenConvos: {}, conversationsCache: {p: []}, agentLogCache: {p: []},
+  window: {}, _channelExpanded: {}, _showHiddenConvos: {}, conversationsCache: {p: []}, agentLogCache: {p: []},
   _hiddenConvSet: () => new Set(), _isStewardConvo: () => false,
   _convHideKey: c => c.claude_session_id, _isNoiseConvoRow: () => false,
   _getProviderCaps: () => ({}), _convCharKey: c => c.character?.name || '',

@@ -1,5 +1,12 @@
 # Clayrune — Changelog
 
+## [2026-11-25] - the left rail follows the open chat
+
+- Opening Tilda's dispatched chat from the Floor left Dave highlighted and expanded in the Channel rail, so it read as Dave's chat.
+- New `static/js/rail-follow.js`, synced from the panel render that every way of opening a chat ends in: Channel expands the open chat's person (nobody when it has none), and the open row or topic is scrolled into view. Your own collapse holds until another chat is opened.
+- The rail keeps its scroll position across repaints. On the phone list no chat is open, so the person is expanded and in view but no chat row is marked.
+- Test: `tools/smoke/rail-follows-open-chat.mjs` (1440 and 390px). Needs a hard reload.
+
 ## [2026-11-24] - who is working right now, without opening the Floor
 
 - A Tobin dispatched from a Clayrune website chat ran in the Mission Control project, and nothing on screen outside the Floor said it was working.
