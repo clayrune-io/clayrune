@@ -361,6 +361,13 @@ try {
     world.floorStatus = 500;
     await waitNobody(8000);
     ok('a failed read shows the quiet (desktop) or hidden (mobile) state, not a stale count');
+    if (!mobile) {
+      await pill.click();
+      await pop.waitFor();
+      check((await pop.locator('.wn-none').textContent()) === "Can't read the Floor right now",
+        'after a failed read the popover says the Floor cannot be read, not that no one is working');
+      await page.keyboard.press('Escape');
+    }
     world.floorStatus = 200;
     await waitLive();
 

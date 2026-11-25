@@ -31,14 +31,14 @@
 /* Live: the same green tint as .children-running-notice, in both places. */
 .wn-pill.wn-live, .mc-app-bar .wn-pill.wn-live, .bottom-status-row .wn-pill.wn-live {
   color: var(--text);
-  border-color: color-mix(in srgb, var(--green) 40%, transparent);
-  background: color-mix(in srgb, var(--green) 9%, transparent);
+  border-color: var(--green);
+  background: color-mix(in srgb, var(--green) 18%, transparent);
 }
 .mc-app-bar .wn-pill.wn-live[aria-expanded="true"],
 .bottom-status-row .wn-pill.wn-live:hover,
 .bottom-status-row .wn-pill.wn-live[aria-expanded="true"] {
   border-color: var(--green);
-  background: color-mix(in srgb, var(--green) 18%, transparent);
+  background: color-mix(in srgb, var(--green) 30%, transparent);
 }
 /* After the display rules above, so hidden always wins (mobile bar at zero). */
 .wn-pill[hidden], .mc-app-bar .wn-pill[hidden] { display: none; }

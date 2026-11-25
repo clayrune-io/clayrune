@@ -18,6 +18,7 @@ const _WN_MOUNTS = [
 ];
 
 let _wnWorking = [];
+let _wnUnreadable = false;   // the last /api/floor read failed: the count is unknown
 let _wnPollMs = 5000;
 // With nobody working it reads the Floor less often: the chip may turn live up
 // to this late, and an idle dashboard costs a third as much.
@@ -59,7 +60,9 @@ function _wnRender() {
   else _wnFill();
 }
 
-const _WN_NONE_HTML = '<p class="wn-none">No one is working right now</p>' +
+// A failed read is not evidence that nobody is working, so it says so.
+const _wnNoneHTML = () => `<p class="wn-none">${_wnUnreadable
+  ? "Can't read the Floor right now" : 'No one is working right now'}</p>` +
   '<button type="button" class="wn-open-floor">Open the Floor</button>';
 
 function _wnRowHTML(f) {
@@ -73,7 +76,7 @@ function _wnRowHTML(f) {
 }
 
 function _wnFill() {
-  const html = _wnWorking.map(_wnRowHTML).join('') || _WN_NONE_HTML;
+  const html = _wnWorking.map(_wnRowHTML).join('') || _wnNoneHTML();
   // Compared against what was written, not read back: an unchanged board must
   // not rebuild the list under a finger or drop keyboard focus.
   if (_wnPopover._html === html) return;
@@ -163,6 +166,7 @@ function _wnApply(payload) {
     .map(f => ({ ...f, projectId: room.id, projectName: room.name })));
   _wnPollMs = Math.max(3, parseInt(payload?.poll_seconds, 10) || 5) * 1000;
   _wnWorking = working;
+  _wnUnreadable = false;
   _wnRender();
 }
 
@@ -181,6 +185,7 @@ async function _wnTick() {
     } catch (e) {
       // An unreadable board is unknown, not "still N working".
       _wnWorking = [];
+      _wnUnreadable = true;
       _wnRender();
     } finally {
       _wnBusy = false;
