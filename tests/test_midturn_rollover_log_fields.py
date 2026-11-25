@@ -7,9 +7,11 @@ import pytest
 
 from mc import midturn_rollover as mt
 from mc import state
+from mc.rollover_decision import capture
 
 FIELDS = ('character', 'model', 'provider', 'fresh_floor_tokens',
-          'working_room_tokens')
+          'working_room_tokens', 'requested_model', 'canonical_model', 'effective_effort',
+          'opening_prompt_unanswered', 'transcript_bytes')
 
 
 @pytest.fixture
@@ -31,11 +33,18 @@ def _session(**extra):
     return s
 
 
+def _record(s, tokens, *, begin_roll=False):
+    decision = capture(s, 'midturn', 'tokens', tokens)
+    if begin_roll:
+        mt.begin_roll(s)
+    mt.record_roll(s, decision)
+
+
 def test_row_carries_all_fields(log):
     s = _session(character={'name': 'dave', 'scope': 'global'}, provider='claude',
                  model='claude-opus-4', observed_model='claude-opus-4-20250101')
     s['_mt_fresh_floor'] = 30_000
-    mt.record_roll(s, 250_000)
+    _record(s, 250_000)
     row = log()[0]
     assert row['character'] == 'global:dave'
     assert row['model'] == 'claude-opus-4-20250101'    # observed beats requested
@@ -47,15 +56,15 @@ def test_row_carries_all_fields(log):
 
 def test_requested_model_used_when_nothing_observed(log):
     s = _session(model='opus')
-    mt.record_roll(s, 1)
+    _record(s, 1)
     assert log()[0]['model'] == 'opus'
     s2 = _session(agent_model='sonnet')
-    mt.record_roll(s2, 1)
+    _record(s2, 1)
     assert log()[1]['model'] == 'sonnet'
 
 
 def test_absent_values_are_null_not_missing(log):
-    mt.record_roll(_session(), 250_000)
+    _record(_session(), 250_000)
     row = log()[0]
     for k in FIELDS:
         assert k in row, k
@@ -63,7 +72,7 @@ def test_absent_values_are_null_not_missing(log):
 
 
 def test_empty_native_default_model_and_bare_character_are_null(log):
-    mt.record_roll(_session(model='', character=None), 1)
+    _record(_session(model='', character=None), 1)
     row = log()[0]
     assert row['model'] is None and row['character'] is None
 
@@ -73,7 +82,7 @@ def test_working_room_uses_the_character_threshold(log, monkeypatch):
                         {'global:dave': 120_000})
     s = _session(character={'name': 'dave', 'scope': 'global'})
     s['_mt_fresh_floor'] = 45_000
-    mt.record_roll(s, 130_000)
+    _record(s, 130_000)
     row = log()[0]
     assert row['threshold'] == 120_000 and row['working_room_tokens'] == 75_000
 
@@ -83,7 +92,7 @@ def test_call_tokens_never_replace_verified_floor(log):
     mt.note_call_tokens(s, 90_000)
     mt.note_call_tokens(s, 150_000)
     assert s['_mt_fresh_floor'] == 40_000
-    mt.record_roll(s, 150_000)
+    _record(s, 150_000)
     assert log()[0]['fresh_floor_tokens'] == 40_000
 
 
@@ -99,15 +108,13 @@ def test_roll_row_keeps_outgoing_floor(log):
     s = _session(_mt_fresh_floor=40_000)
     mt.note_call_tokens(s, 210_000)
     # agent_interrupt calls begin_roll BEFORE _maybe_midturn_roll calls record_roll.
-    mt.begin_roll(s)
+    _record(s, 210_000, begin_roll=True)
     assert s['_mt_fresh_floor'] is None             # reset for the new segment
-    mt.record_roll(s, 210_000)
     assert log()[0]['fresh_floor_tokens'] == 40_000  # the segment that rolled
     s['_mt_fresh_floor'] = 55_000                   # verified in the successor
     mt.note_call_tokens(s, 120_000)
     assert s['_mt_fresh_floor'] == 55_000
-    mt.begin_roll(s)
-    mt.record_roll(s, 230_000)
+    _record(s, 230_000, begin_roll=True)
     row = log()[1]
     assert row['fresh_floor_tokens'] == 55_000 and row['roll_number'] == 2
     assert row['working_room_tokens'] == 145_000
@@ -116,8 +123,7 @@ def test_roll_row_keeps_outgoing_floor(log):
 
 def test_roll_with_no_reading_logs_null_floor_and_room(log):
     s = _session()
-    mt.begin_roll(s)
-    mt.record_roll(s, 250_000)
+    _record(s, 250_000, begin_roll=True)
     row = log()[0]
     assert row['fresh_floor_tokens'] is None and row['working_room_tokens'] is None
 
@@ -146,8 +152,7 @@ def test_model_threshold_reason_uses_outgoing_floor_after_reset(log, monkeypatch
     monkeypatch.setitem(state.CONFIG, 'context_rollover_by_character', {'global:dave': 100_000})
     s = _session(model='claude-fable-5-2', character='global:dave')
     s['_mt_fresh_floor'] = 90_000
-    mt.begin_roll(s)
-    mt.record_roll(s, 280_000)
+    _record(s, 280_000, begin_roll=True)
     row = log()[0]
     assert row['threshold'] == 277_349
     assert row['threshold_reason'] == 'pin_ignored_below_floor'

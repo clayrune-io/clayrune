@@ -364,6 +364,42 @@ def test_roll_row_logs_character_model_provider_and_fresh_floor(env, monkeypatch
     env['join_respawns']()
 
 
+def test_midturn_log_preserves_the_triggering_request_and_limit(env, monkeypatch):
+    event = json.loads(_assistant('tool1', 250_000, 'trigger'))
+    event['message']['model'] = 'claude-sonnet-5-5'
+    _write_floor_transcript(env, monkeypatch, json.dumps(event))
+    transcript = env['tmp'] / f'{CSID}.jsonl'
+    rows = transcript.read_text(encoding='utf-8').splitlines()
+    request = {'type': 'api-request', 'sessionId': CSID, 'id': 'matched',
+               'params': {'output_config': {'effort': 'medium'}}}
+    assistant = dict(json.loads(rows[1]), requestRef='matched', perTurnEffort='low')
+    rows[1:] = [json.dumps(request), json.dumps(assistant)]
+    transcript.write_text('\n'.join(rows) + '\n', encoding='utf-8')
+
+    def mutate_after_decision(session, **_):
+        env['CONFIG']['context_rollover_tokens'] = 900_000
+        session['model'] = 'opus'
+        session['_mt_turn_prompt'] = None
+        return True
+
+    monkeypatch.setattr(env['ar'], '_maybe_checkpoint', mutate_after_decision)
+
+    def lines():
+        yield json.dumps(event) + '\n'
+        yield _tool_result('tool1')
+
+    session = _session(_Proc(), model='sonnet', requested_effort='high',
+                       _mt_turn_prompt='answer this', _mt_fresh_floor=30_000)
+    _run_reader(env, lines, session=session, proc=session['proc'])
+    row = json.loads((env['tmp'] / 'midturn_log' / 'p1.jsonl').read_text().splitlines()[0])
+    assert row['threshold'] == 200_000
+    assert row['requested_model'] == 'sonnet'
+    assert row['canonical_model'] == 'claude-sonnet-5-5'
+    assert row['effective_effort'] == 'medium'
+    assert row['opening_prompt_unanswered'] is True
+    assert row['trigger_type'] == 'midturn'
+
+
 @pytest.mark.parametrize('reader', ['reader', 'reader_a'])
 def test_reader_attached_after_first_call_does_not_invent_a_floor(env, monkeypatch, reader):
     _write_floor_transcript(env, monkeypatch, _assistant('earlier', 85_000, 'first'))
