@@ -517,4 +517,6 @@ def _default_recovery(factory: Any, app: Any) -> Recovery:
         if _on():
             MailWake(factory.require_store(), enabled=True).reconcile()
 
-    return Recovery(factory, launder=extract, wake=wake, wake_reconcile=wake_reconcile)
+    from mc.agent_mail_hold_alerts import sweep
+    return Recovery(factory, launder=extract, wake=wake, wake_reconcile=wake_reconcile,
+                    alerts=sweep)

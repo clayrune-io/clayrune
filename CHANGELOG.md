@@ -1,5 +1,11 @@
 # Clayrune — Changelog
 
+## [2026-11-24] - agent-mail: a held email reply is no longer silent (MC-1213 d)
+
+- A reply held on 2026-11-15 (`worktree_unavailable`) sat 9 days unnoticed. `blocked` rows are never re-claimed, so the MC-1177 spawner fallback (2026-11-16) never saw it; the only signs were a line inside that chat and a list in Settings, and at retention it would have expired with a log line only.
+- New `mc/agent_mail_hold_alerts.py`, run by each mail recovery pass: one Inbox row + push per hold (including holds older than this code), and another if a reply is deleted undelivered (expiry, or revocation of a hold already reported). Metadata only, no mail text, no email. It never releases or forwards; release stays passcode-gated.
+- `_append_notification` / `_queue_push` now return whether the Inbox row was saved, so a failed write is retried.
+
 ## [2026-11-23] - tools/film-export: an HTML promo film becomes an mp4 with its sound (campaign gate G2)
 
 - New `tools/film-export/export.cjs`: `node tools/film-export/export.cjs <film.html> <out.mp4> [--fps 30] [--width 1920 --height 1080]`, and `--all <dir> <out-dir>` for a folder. Picture is frame-stepped (`window.__render(n/fps)`, one screenshot per frame, piped to ffmpeg as H.264 `yuv420p`), never a screen recording, so an export is exact and repeatable.
