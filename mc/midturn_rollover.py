@@ -86,6 +86,19 @@ ROLL_MESSAGE = ("Your context was rolled over mid-task because it reached the "
                 "restart it and do not redo finished work.")
 
 
+# State block frame and section heads. `carried_user_text` reads back what
+# `build_state_block` writes, so both use these.
+_BLOCK_START = '=== Mid-task rollover state ==='
+_BLOCK_END = '=== End of mid-task rollover state ==='
+_INFLIGHT_HEAD = ('--- Message this turn was answering when the roll '
+                  'happened (NOT answered yet; finish it) ---')
+_UNANSWERED_HEAD = '--- Unanswered user messages (answer these first) ---'
+_LATEST_HEAD = '--- Latest user message (current direction) ---'
+_FIRST_IS_CURRENT = 'the current task; no later message was recorded'
+_CWD_HEAD = '--- Working directory ---'
+_NO_UNANSWERED = '(none)'
+
+
 def enabled():
     return bool(state.CONFIG.get('midturn_rollover_enabled', False))
 
@@ -486,14 +499,14 @@ def build_state_block(session, cwd):
                   or '(none captured)')
     unanswered = session.get('_mt_unanswered_msgs') or []
     unanswered_text = ('\n'.join(f"- [{m['ts']}] {m['text']}" for m in unanswered)
-                       or '(none)')
+                       or _NO_UNANSWERED)
     latest = session.get('_mt_latest_user_msg')
     latest_body = latest or '(none recorded after the first message)'
     # A dispatched one-prompt worker never records a later message, and its
     # first message IS the task: only call it historical when something later
     # superseded it (AP40).
     first_label = ("historical; may be long finished, not the current task"
-                   if latest else "the current task; no later message was recorded")
+                   if latest else _FIRST_IS_CURRENT)
     inflight = session.get('_mt_turn_prompt')
     # A one-prompt worker's first turn: the first-message section already
     # presents it as the current task (AP40), so don't add a second copy.
@@ -502,22 +515,20 @@ def build_state_block(session, cwd):
     inflight_text = ''
     first_body = task
     if inflight:
-        inflight_text = ("--- Message this turn was answering when the roll "
-                         "happened (NOT answered yet; finish it) ---\n"
-                         f"{inflight}\n\n")
+        inflight_text = f"{_INFLIGHT_HEAD}\n{inflight}\n\n"
         quoted = '(the message this turn was answering, quoted in the first section)'
         if latest == inflight:
             latest_body = quoted
         if task.strip() == inflight:
             first_label, first_body = 'the turn still in progress', quoted
-    latest_text = f"--- Latest user message (current direction) ---\n{latest_body}\n\n"
+    latest_text = f"{_LATEST_HEAD}\n{latest_body}\n\n"
     return (
-        "=== Mid-task rollover state ===\n"
+        f"{_BLOCK_START}\n"
         f"{inflight_text}"
-        f"--- Unanswered user messages (answer these first) ---\n{unanswered_text}\n\n"
+        f"{_UNANSWERED_HEAD}\n{unanswered_text}\n\n"
         f"{latest_text}"
         f"--- First message of this chat ({first_label}) ---\n{first_body}\n\n"
-        f"--- Working directory ---\n{cwd}\n"
+        f"{_CWD_HEAD}\n{cwd}\n"
         f"Branch: {_git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD')}\n\n"
         f"--- git status --short ---\n{_git(cwd, 'status', '--short')}\n\n"
         f"--- git diff --stat ---\n{_git(cwd, 'diff', '--stat')}\n\n"
@@ -525,7 +536,45 @@ def build_state_block(session, cwd):
         f"--- Journal file(s) written this session ---\n{journal_text}\n\n"
         f"--- Recent tool_result heads (<={TOOL_RESULT_CARRY_CAP_BYTES // 1024}KB) ---\n{heads_text}\n\n"
         f"--- Background jobs ---\n{job_text}\n"
-        "=== End of mid-task rollover state ===")
+        f"{_BLOCK_END}")
+
+
+def _section(block, head, next_head):
+    """Body of one state-block section, '' when the section is absent."""
+    start = block.find(head + '\n')
+    if start < 0:
+        return ''
+    start += len(head) + 1
+    end = block.find('\n\n' + next_head, start)
+    return block[start:end].strip() if end >= 0 else ''
+
+
+def carried_user_text(text):
+    """The user's own words inside the state block that opens a mid-task-rolled
+    session: the message the interrupted turn was answering, then the messages
+    sent while it ran. '' when `text` holds no state block, or the block names
+    no message still owed an answer.
+
+    Such a turn is nothing but injected text, so the handoff reader dropped it
+    whole and the NEXT handoff opened on an Assistant line with the message it
+    was answering nowhere in it (2026-11-25 review, F4). Never raises."""
+    if not isinstance(text, str):
+        return ''
+    start = text.find(_BLOCK_START)
+    end = text.find(_BLOCK_END, start)
+    if start < 0 or end < 0:
+        return ''
+    block = text[start:end]
+    inflight = _section(block, _INFLIGHT_HEAD, _UNANSWERED_HEAD)
+    if not inflight:
+        # A one-prompt worker: its first message IS the turn in flight (AP40).
+        inflight = _section(
+            block, f'--- First message of this chat ({_FIRST_IS_CURRENT}) ---', _CWD_HEAD)
+    unanswered = _section(block, _UNANSWERED_HEAD, _LATEST_HEAD)
+    parts = [inflight] if inflight else []
+    if unanswered and unanswered != _NO_UNANSWERED:
+        parts.append(f'[sent while that turn was running]\n{unanswered}')
+    return '\n\n'.join(parts)
 
 
 def _log_dir():

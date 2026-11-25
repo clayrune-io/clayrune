@@ -12171,6 +12171,7 @@ def _build_handoff_context(project_path, owning_provider, native_id, project_id=
                 f"cannot hand off from '{owning_provider}': its adapter has "
                 f"no extract_chat_turns reader yet")
         turns = cast(List[Tuple[str, str]], extract(tpath))  # pyright: ignore[reportAttributeAccessIssue]
+    raw_turns = turns
     turns = _handoff_turns.clean_turns(turns)
     if not turns:
         raise ValueError(
@@ -12194,11 +12195,17 @@ def _build_handoff_context(project_path, owning_provider, native_id, project_id=
               f"(session {native_id}), handed off here ===")
     if omitted:
         header += f"\n[{omitted} earlier turn(s) omitted for length]"
-    body = '\n\n'.join(kept)
+    # Review F4: budget this session's own turns left unused goes to the turns
+    # of the handoff it started from, so a chat that rolls twice with little
+    # said in between still opens with what came before the previous roll.
+    earlier = ('' if omitted else _handoff_turns.earlier_history(
+        raw_turns, _HANDOFF_MAX_CHARS - kept_chars))
+    body = '\n\n'.join(([earlier] if earlier else []) + kept)
     footer = _agent_runtime.HANDOFF_FOOTER
     context = f"{header}\n\n{body}\n\n{footer}"
     return context, {'owning_provider': owning_provider, 'total_turns': total,
-                     'included_turns': len(kept), 'omitted_turns': omitted}
+                     'included_turns': len(kept), 'omitted_turns': omitted,
+                     'earlier_history_chars': len(earlier)}
 
 
 def _live_context_tokens(project_id, claude_sid):
