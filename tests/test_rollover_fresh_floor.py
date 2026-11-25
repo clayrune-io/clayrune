@@ -97,3 +97,82 @@ def test_subagent_and_other_native_rows_are_not_the_start(tmp_path):
     assert session.get('_mt_fresh_floor') is None
     probe.observe(session, _event('late', 180_000), find, _NORMALIZE)
     assert session['_mt_fresh_floor'] == 89_000
+
+
+# ── Review F7: the probe waits by time, not by a count of events ───────────
+
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def _attach_clocked(path):
+    session, _, find = _attach(path)
+    clock = _Clock()
+    return session, FloorProbe(session['proc'], clock=clock), find, clock
+
+
+def test_probe_keeps_trying_until_the_first_row_reaches_disk(tmp_path):
+    # stdout runs ahead of the transcript: several main-conversation events
+    # arrive before the first assistant row is flushed. Three tries used to be
+    # all it got, and the floor stayed unknown for the whole segment.
+    path = tmp_path / 'native.jsonl'
+    _write(path, _prompt())
+    session, probe, find, clock = _attach_clocked(path)
+    for i in range(6):
+        clock.now += 2
+        probe.observe(session, _event(f'call-{i}', 89_000 + i), find, _NORMALIZE)
+        assert session.get('_mt_fresh_floor') is None
+
+    _write(path, _prompt(), _row('call-0', 89_000))
+    clock.now += 2
+    probe.observe(session, _event('call-6', 95_000), find, _NORMALIZE)
+    assert session['_mt_fresh_floor'] == 89_000
+
+
+def test_probe_waits_for_a_transcript_file_that_does_not_exist_yet(tmp_path):
+    path = tmp_path / 'native.jsonl'
+    session, probe, _, clock = _attach_clocked(path)
+    found = {'path': None}
+    find = lambda cwd, native: found['path']    # noqa: E731
+    for i in range(5):
+        clock.now += 1
+        probe.observe(session, _event(f'call-{i}', 89_000), find, _NORMALIZE)
+    _write(path, _prompt(), _row('call-0', 89_000))
+    found['path'] = path
+    probe.observe(session, _event('call-5', 91_000), find, _NORMALIZE)
+    assert session['_mt_fresh_floor'] == 89_000
+
+
+def test_probe_stops_after_sixty_seconds(tmp_path):
+    path = tmp_path / 'native.jsonl'
+    _write(path, _prompt())
+    session, probe, find, clock = _attach_clocked(path)
+    reads = []
+    counted = lambda cwd, native: (reads.append(1), find(cwd, native))[1]   # noqa: E731
+    probe.observe(session, _event('call-0', 89_000), counted, _NORMALIZE)
+    clock.now += 59
+    probe.observe(session, _event('call-1', 90_000), counted, _NORMALIZE)
+    assert len(reads) == 2
+
+    _write(path, _prompt(), _row('call-0', 89_000))
+    clock.now += 2                                  # 61 s after the first call
+    probe.observe(session, _event('call-2', 91_000), counted, _NORMALIZE)
+    assert len(reads) == 2, 'no transcript read after the time bound'
+    assert session.get('_mt_fresh_floor') is None
+    assert resolve(session, PIN)[:2] == (200_000, 'base')
+
+
+def test_probe_stops_reading_once_the_start_is_known_not_to_be_fresh(tmp_path):
+    path = tmp_path / 'native.jsonl'
+    _write(path, _prompt(parent='earlier'), _row('first', 240_000))
+    session, probe, find, clock = _attach_clocked(path)
+    reads = []
+    counted = lambda cwd, native: (reads.append(1), find(cwd, native))[1]   # noqa: E731
+    for i in range(4):
+        clock.now += 1
+        probe.observe(session, _event(f'late-{i}', 300_000), counted, _NORMALIZE)
+    assert len(reads) == 1 and session.get('_mt_fresh_floor') is None

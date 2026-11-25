@@ -10,6 +10,7 @@ leaving it unknown let a pin under the real floor back in).
 """
 
 import json
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -17,7 +18,7 @@ from typing import Any
 from mc.core import _log
 
 _PREFIX_BYTES = 4 * 1024 * 1024
-_PROBES = 3
+_PROBE_SECONDS = 60.0
 _NO_START = 0    # never a real reading: a first call always carries a prompt
 
 
@@ -82,13 +83,20 @@ def _start_tokens(
 
 class FloorProbe:
     """Wait for this reader's first main call, then read the segment's start
-    from disk, which may lag stdout."""
+    from disk, which may lag stdout.
 
-    def __init__(self, proc: object) -> None:
+    The read is retried on each later main-conversation event until it gives
+    an answer, for `_PROBE_SECONDS` after that first call. A count of events
+    was the bound before: three events ahead of the first row's flush left the
+    floor unknown for the whole segment (2026-11-25 review, F7)."""
+
+    def __init__(self, proc: object, clock: Callable[[], float] = time.monotonic) -> None:
         self.proc = proc
+        self.clock = clock
         self.native = ''
         self.seen = False
-        self.probes = 0
+        self.settled = False
+        self.deadline = 0.0
         self.cwd: str | None = None
 
     def observe(
@@ -104,7 +112,7 @@ class FloorProbe:
         if native != self.native:
             self.native = native
             self.seen = False
-            self.probes = 0
+            self.settled = False
         kind = event.get('type')
         if kind not in ('assistant', 'result', 'user') or event.get('parent_tool_use_id'):
             return
@@ -117,15 +125,16 @@ class FloorProbe:
             if not isinstance(call, str) or not call or normalize(message.get('usage')) is None:
                 return
             self.seen = True
-        if self.probes >= _PROBES:
+            self.deadline = self.clock() + _PROBE_SECONDS
+        if self.settled or self.clock() > self.deadline:
             return
-        self.probes += 1
         path = find(self.cwd, native)
         if path is None:
             return
         tokens = _start_tokens(path, native, normalize)
-        if tokens is not None:
-            self.probes = _PROBES
+        if tokens is None:
+            return    # the first row is still on its way to disk
+        self.settled = True
         if (tokens and session.get('claude_session_id') == native
                 and session.get('proc') is self.proc
                 and not session.get('_interrupting') and not session.get('_respawn_in_flight')):
