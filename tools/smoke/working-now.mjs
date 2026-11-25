@@ -346,6 +346,25 @@ try {
     await pill.click();
     await pill.click();
     check(await pop.count() === 0, 'clicking the pill again closes it');
+    if (!mobile) {
+      // Hover opens it, like the usage bars beside it; a click pins it.
+      await page.mouse.move(700, 300);
+      await pill.hover();
+      await pop.waitFor();
+      ok('hovering the chip opens the list');
+      await pop.locator('.wn-row').first().hover();
+      await page.waitForTimeout(500);
+      check(await pop.count() === 1, 'the list stays open while the pointer is on it');
+      await page.mouse.move(700, 300);
+      await pop.waitFor({ state: 'detached', timeout: 2000 });
+      ok('moving away closes a hovered list');
+      await pill.click();
+      await page.mouse.move(700, 300);
+      await page.waitForTimeout(500);
+      check(await pop.count() === 1, 'a click pins the list open after the pointer leaves');
+      await page.keyboard.press('Escape');
+      check(await pop.count() === 0, 'Escape closes a pinned list');
+    }
 
     await pill.click();
     world.floor = idleFloor();

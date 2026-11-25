@@ -13,7 +13,7 @@
 const _WN_ACTIVITY = { thinking: 'thinking…', writing: 'writing…', tool: 'running a tool…' };
 const _WN_MOUNTS = [
   // Desktop bottom row, and the mobile app bar for 960px and narrower.
-  { host: '#bottom-status-row', before: host => host.firstElementChild, atZero: true },
+  { host: '#bottom-status-row', before: host => host.firstElementChild, atZero: true, hover: true },
   { host: '#mobile-app-bar', before: host => host.querySelector('#beacon-badge-btn'), atZero: false },
 ];
 
@@ -26,9 +26,31 @@ const _WN_IDLE_POLL_MS = 15000;
 let _wnSharedAt = 0;   // last payload handed over by the Floor window
 let _wnPopover = null;
 let _wnAnchor = null;
+// Hover opens the list, like the usage bars beside it; a click pins it open.
+// Unlike theirs this list has rows to click, so leaving the chip waits a
+// moment for the pointer to arrive on the list before closing.
+let _wnPinned = false;
+let _wnLeaveTimer = null;
+const _WN_LEAVE_MS = 250;
+
+function _wnHoverIn(pill) {
+  clearTimeout(_wnLeaveTimer);
+  if (!_wnPopover && pill) _wnOpen(pill);
+}
+
+function _wnHoverOut() {
+  clearTimeout(_wnLeaveTimer);
+  if (_wnPopover && !_wnPinned) _wnLeaveTimer = setTimeout(() => { if (!_wnPinned) _wnClose(); }, _WN_LEAVE_MS);
+}
+
+function _wnPillClick(pill) {
+  if (_wnPopover && _wnPinned) { _wnClose(); return; }
+  if (!_wnPopover) _wnOpen(pill);   // keyboard, touch, or the mobile pill
+  _wnPinned = true;
+}
 
 function _wnPills() {
-  return _WN_MOUNTS.map(({ host, before, atZero }) => {
+  return _WN_MOUNTS.map(({ host, before, atZero, hover }) => {
     const parent = document.querySelector(host);
     if (!parent) return null;
     let pill = parent.querySelector(':scope > .wn-pill');
@@ -41,7 +63,11 @@ function _wnPills() {
       pill.setAttribute('aria-haspopup', 'dialog');
       pill.setAttribute('aria-expanded', 'false');
       pill.innerHTML = '<span class="wn-dot" aria-hidden="true"></span><span class="wn-count"></span>';
-      pill.addEventListener('click', () => (_wnPopover ? _wnClose() : _wnOpen(pill)));
+      pill.addEventListener('click', () => _wnPillClick(pill));
+      if (hover) {
+        pill.addEventListener('mouseenter', () => _wnHoverIn(pill));
+        pill.addEventListener('mouseleave', _wnHoverOut);
+      }
       parent.insertBefore(pill, before(parent));
     }
     return pill;
@@ -139,6 +165,8 @@ function _wnOpen(anchor) {
     // The same route as clicking the figure on the Floor.
     window.floorOpenFigure?.(figure.projectId, figure.claude_session_id, figure.session_id);
   });
+  _wnPopover.addEventListener('mouseenter', () => _wnHoverIn(null));
+  _wnPopover.addEventListener('mouseleave', _wnHoverOut);
   document.body.appendChild(_wnPopover);
   _wnFill();
   _wnPlace();
@@ -149,6 +177,8 @@ function _wnOpen(anchor) {
 }
 
 function _wnClose() {
+  clearTimeout(_wnLeaveTimer);
+  _wnPinned = false;
   if (!_wnPopover) return;
   _wnPopover.remove();
   _wnPopover = null;
