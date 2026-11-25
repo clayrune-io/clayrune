@@ -42,6 +42,7 @@ TIMEOUT_S = 20
 # here; an oversized body goes by Gmail whole rather than being truncated.
 SUBJECT_MAX_BYTES = 200
 BODY_MAX_BYTES = 14000
+HINT_MAX_CHARS = 300
 
 Post = Callable[[str, dict, float], Tuple[int, Any]]
 
@@ -98,10 +99,16 @@ def _unavailable(reason: str, err: Any) -> bool:
 
 
 def _reason_from(status: int, data: Any) -> str:
-    # The route's error vocabulary is closed and code-owned (never remote text).
-    code = data.get('error') if isinstance(data, dict) else ''
+    # The route's error vocabulary and hints are fixed, code-owned strings (never
+    # remote text). Still bounded and kept to one printable line here.
+    fields = data if isinstance(data, dict) else {}
+    code = fields.get('error')
     code = code[:60] if isinstance(code, str) else ''
-    return f'HTTP {status} {code}'.strip()
+    reason = f'HTTP {status} {code}'.strip()
+    hint = fields.get('hint')
+    hint = ' '.join(hint.split()) if isinstance(hint, str) else ''
+    hint = ''.join(c for c in hint if c.isprintable())[:HINT_MAX_CHARS]
+    return f'{reason}: {hint}' if hint else reason
 
 
 def attempt(subject: str, body: str, *, project: Optional[str] = None,

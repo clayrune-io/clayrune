@@ -4,6 +4,9 @@
 There is deliberately no recipient field: ``Outbound`` and the Worker only ever send to
 the verified owner. The response is ``Outbound``'s metadata dict (intent id, state,
 reason, message id), never the body, reply token or any remote error text.
+A refusal is ``{error, hint}``: ``error`` is the closed reason, ``hint`` is a fixed
+string from this module saying what the caller should do. (The flag-off 404 and the
+malformed-request 400 carry ``error`` only.)
 
 Not registered anywhere by this module; unit W3 adds it beside the other child
 blueprints in ``agent_mail_routes``. Dark unless ``agent_mail_outbound_enabled``.
@@ -32,8 +35,34 @@ NOTE_SEND_DEADLINE_SECONDS = 15
 
 # Refusal reasons are a closed, code-owned vocabulary in mc.agent_mail_outbound, so
 # they are safe to return. Anything not listed is a held state: 409.
+# service_unavailable is transient (a manifest fetch or floor write failed), not a
+# held state, so it is 503.
 _STATUS = {'invalid_send': 400, 'session_unavailable': 404, 'project_unavailable': 404,
-           'vault_locked': 503, 'outbound_full': 503, 'ownership_capacity': 503}
+           'vault_locked': 503, 'service_unavailable': 503, 'outbound_full': 503,
+           'ownership_capacity': 503}
+
+_FALLBACK = ' Fall back to Gmail meanwhile.'
+# Fixed text keyed by reason. Never interpolate exception or remote text into a hint.
+_HINTS = {
+    'vault_locked': "Clayrune's secrets vault is locked; the install owner must unlock it with "
+                    'the passcode in Settings.' + _FALLBACK,
+    'service_unavailable': 'The mail service check did not complete. Usually temporary: retry '
+                           'shortly, and check the server log if it persists.' + _FALLBACK,
+    'service_key_changed': 'The mail service key or manifest no longer matches the reviewed one; '
+                           'the install owner must check agent-mail in Settings.' + _FALLBACK,
+    'consent_required': 'Agent-mail is not enabled for this install; the install owner must '
+                        'enable it in Settings.' + _FALLBACK,
+    'outbound_disabled': 'Outbound agent-mail is switched off for this install.' + _FALLBACK,
+    'invalid_send': 'Agent-mail does not accept this subject or body.' + _FALLBACK,
+    'session_unavailable': 'No live chat matches this session_id, so a reply could not be '
+                           'routed back to it.' + _FALLBACK,
+    'project_unavailable': 'No project matches this project id.' + _FALLBACK,
+}
+_DEFAULT_HINT = 'Agent-mail did not send this note; the reason is in `error`.' + _FALLBACK
+
+
+def _refusal(reason: str, status: int):
+    return jsonify({'error': reason, 'hint': _HINTS.get(reason, _DEFAULT_HINT)}), status
 
 
 def _default_factory() -> Outbound:
@@ -66,21 +95,21 @@ def create_blueprint(*, factory: Callable[[], Outbound] | None = None,
             result = outbound.send(prepared['intent_id'], deadline=deadline, clock=clock)
         except EnrollmentRefused as exc:
             reason = str(exc)
-            return jsonify({'error': reason}), _STATUS.get(reason, 409)
+            return _refusal(reason, _STATUS.get(reason, 409))
         except OwnershipHeld:
-            return jsonify({'error': 'ownership_capacity'}), 503
+            return _refusal('ownership_capacity', 503)
         except MailStoreError:
-            return jsonify({'error': 'store_unavailable'}), 503
+            return _refusal('store_unavailable', 503)
         except MailHeld as exc:
             # MailHeld reasons are a closed, code-owned vocabulary (agent_mail_target),
             # so naming the reason is safe and is the only way to see why a send was held.
             reason = str(exc) or 'mail_held'
             _log(f'[agent-mail] note route held: {reason}', flush=True)
-            return jsonify({'error': reason}), 409
+            return _refusal(reason, 409)
         except Exception as exc:
             _log(f'[agent-mail] note route held: outbound_unavailable '
                  f'({type(exc).__name__}: {str(exc)[:200]})', flush=True)
-            return jsonify({'error': 'outbound_unavailable'}), 503
+            return _refusal('outbound_unavailable', 503)
         return jsonify(result)
 
     return bp

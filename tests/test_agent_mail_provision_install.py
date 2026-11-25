@@ -80,8 +80,10 @@ def test_result_is_accepted_by_pull_client_outbound_and_validate_pull(done):
     assert (account['install_id'], account['state'], account['local_enabled']) == (result['install_id'], 'active', 1)
     assert account['service_key_id'] == PIN.key_id and account['manifest_sequence'] == 7
     assert account['manifest_digest'] == DIGEST
+    outbound = factory.outbound()
+    review = outbound._review()  # Before any transaction (MC-1213).
     with store._read() as db:
-        row = factory.outbound()._authority(db)  # real Outbound, real pin comparison, real seal status
+        row = outbound._authority(db, review)  # real Outbound, real pin comparison, real seal status
     assert (row['address'], row['owner_address'], row['epoch']) == (result['address'], CANONICAL_OWNER, 1)
     ref = SealReference(row['flow'], row['install'], 1, row['key_id'])
     assert factory.seal().status(ref) == 'ready'
