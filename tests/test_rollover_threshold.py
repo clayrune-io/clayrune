@@ -321,3 +321,28 @@ def test_reviewed_model_with_missing_cost_input_uses_base(monkeypatch, missing):
     model = 'claude-fable-5-1'
     monkeypatch.setitem(MODEL_TABLE[model], missing, None)
     assert threshold_with_reason(_session(model), {}) == (200_000, 'base')
+
+
+# ── 2026-11-25 review F8: the hard caps do not wait for a floor ────────────
+
+@pytest.mark.parametrize('model,config,expected', [
+    # An override above half the window used to pass straight through.
+    ('claude-fable-5-2', {'context_rollover_by_character': {'global:dave': 900_000}},
+     (500_000, 'override:character/window_cap')),
+    # The base on a 200k-window model was the whole window: no roll ever fired.
+    ('claude-haiku-4-5-20251001', {}, (100_000, 'base/window_cap')),
+    ('claude-haiku-5-5', {}, (100_000, 'base/price_step')),
+    ('claude-haiku-5-5', {'context_rollover_by_character': {'global:dave': 300_000}},
+     (100_000, 'override:character/price_step')),
+])
+def test_unknown_floor_still_gets_the_window_and_price_caps(model, config, expected):
+    assert threshold_with_reason(_session(model, None), config) == expected
+
+
+def test_unknown_floor_under_the_cap_is_untouched():
+    assert threshold_with_reason(_session('claude-opus-5-5', None), {
+        'context_rollover_by_character': {'global:dave': 100_000},
+    }) == (200_000, 'base')
+    assert threshold_with_reason(_session('claude-future-6', None), {
+        'context_rollover_by_character': {'global:dave': 900_000},
+    }) == (900_000, 'override:character')      # no table row, no cap to apply

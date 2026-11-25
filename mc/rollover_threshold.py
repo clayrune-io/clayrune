@@ -147,19 +147,22 @@ def _growth(
 
 
 def _with_guards(resolved: Resolution, fresh: int | None, inputs: ModelInputs | None) -> Resolution:
-    if fresh is None:
-        return resolved
-    minimum = fresh + MIN_THRESHOLD
+    """Window and price-step caps, then the 60k of room over a known floor.
+    The caps are facts about the model and apply with or without a floor: an
+    unknown floor used to return before them, so a 900k target stood on a 1M
+    window and the 200k base was the whole window of a 200k model
+    (2026-11-25 review, F8). The room rule needs the floor and waits for it."""
+    minimum = None if fresh is None else fresh + MIN_THRESHOLD
     if inputs is not None:
         cap, guard = inputs['window_tokens'] // 2, 'window_cap'
         step = inputs['price_step_tokens']
         if step is not None and step < cap:
             cap, guard = step, 'price_step'
-        if cap < minimum:
+        if minimum is not None and cap < minimum:
             return resolved._replace(tokens=minimum, reason=resolved.reason + '/fresh_floor')
         if resolved.tokens > cap:
             return resolved._replace(tokens=cap, reason=resolved.reason + '/' + guard)
-    if resolved.tokens < minimum:
+    if minimum is not None and resolved.tokens < minimum:
         return resolved._replace(tokens=minimum, reason=resolved.reason + '/fresh_floor')
     return resolved
 
