@@ -292,10 +292,11 @@ def _prune_notifications(items: list) -> list:
 
 
 def _append_notification(*, title: str, body: str, url: str, kind: str,
-                         project_id: str, session_id: str, project_name: str | None = None) -> None:
-    """Append one Inbox event. Best-effort — never raises to the caller."""
+                         project_id: str, session_id: str, project_name: str | None = None) -> bool:
+    """Append one Inbox event. Best-effort — never raises to the caller.
+    True only when the row was saved."""
     if PUSH_NOTIF_PATH is None:
-        return
+        return False
     try:
         if project_name is None:
             p = load_project(project_id) if (load_project and project_id) else None
@@ -316,8 +317,10 @@ def _append_notification(*, title: str, body: str, url: str, kind: str,
             items = _load_notifications()
             items.insert(0, item)
             _save_notifications(_prune_notifications(items))
+        return True
     except Exception as e:
         _log(f"[notif] append failed: {e}", flush=True)
+        return False
 
 
 def _push_subject() -> str:
@@ -582,19 +585,20 @@ def _notify_push(title: str, body: str, *, url: str = '',
 
 
 def _queue_push(title: str, body: str, *, url: str = '', project_id: str = '',
-                session_id: str = '', kind: str = 'agent', project_name: str | None = None) -> None:
+                session_id: str = '', kind: str = 'agent', project_name: str | None = None) -> bool:
     """Hand one push to the delivery worker. The result of `_notify_push` is
     dropped, as it was when it was called inline (nothing read it).
 
     The Inbox row is written HERE, on the caller's thread, as it was before the
     queue existed: the Inbox is the history of what pushed, so it must not wait
     behind a stalled push service or vanish with a push the full queue drops.
-    Only the network delivery is deferred."""
-    _append_notification(title=title, body=body, url=url, kind=kind,
+    Only the network delivery is deferred. Returns whether the Inbox row was saved."""
+    saved = _append_notification(title=title, body=body, url=url, kind=kind,
                          project_id=project_id, session_id=session_id, project_name=project_name)
     _push_queue.submit(lambda: _notify_push(
         title, body, url=url, project_id=project_id, session_id=session_id,
         kind=kind, log_inbox=False))
+    return saved
 
 
 def _handle_push_signal(project_id: str, session_id: str, msg: dict) -> None:

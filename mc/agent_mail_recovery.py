@@ -86,12 +86,14 @@ class Recovery:
                  wake: Callable[[], dict[str, str]] | None = None,
                  wake_reconcile: Callable[[], None] | None = None,
                  retire: Callable[[], dict[str, int]] = retention.retire,
+                 alerts: Callable[[Any], object] | None = None,
                  max_passes: int = MAX_PASSES):
         if type(max_passes) is not int or not 1 <= max_passes <= MAX_BATCH:
             raise ValueError('max_passes must be between 1 and 100')
         self.factory, self.clock = factory, clock
         self.launder, self.wake, self.wake_reconcile = launder, wake, wake_reconcile
         self.retire, self.max_passes = retire, max_passes
+        self.alerts = alerts
         self._attempts: OrderedDict[str, int] = OrderedDict()
         self._lock = threading.Lock()
 
@@ -349,6 +351,15 @@ class Recovery:
             except Exception as exc:
                 reason = _code(exc)
                 self._notice('wake_reconcile', reason)
+                failures.append(reason)
+        # MC-1213: after reconcile and wake, so this pass's holds and expiries are told now.
+        # Not behind the ingress flag: an existing hold still expires while it is off.
+        if self.alerts is not None:
+            try:
+                self.alerts(store)
+            except Exception as exc:
+                reason = _code(exc)
+                self._notice('hold_alerts', reason)
                 failures.append(reason)
         if failures:
             return Step('inbound', 'failed', failures[0], done, {'failures': failures})
