@@ -1095,6 +1095,8 @@ function agentPanelHTML(p) {
   // 128-row chat list the digest exists to replace.
   const _mode = (typeof railMode === 'function') ? railMode(p.id) : 'chats';
   if (_mode === 'topics' && !_topicsData[p.id]) _loadTopics(p.id);
+  // Before either list renders: the rail follows whichever chat is open.
+  window.railFollow?.sync(p.id, activeSessionId, _mode, _channelExpanded);
   const _mobileUserConvos = mobileMode ? _userInitiatedConvos(p.id) : [];
   // In topics mode the list stands on the digest, so an empty conversation list
   // must not collapse the view — otherwise switching to Topics on a project
@@ -2708,7 +2710,8 @@ function mobileUserConversationsHTML(p, convos, opts) {
   // BOTH the mc session id and the (more stable across transcript/log sources)
   // claude session id, so the highlight sticks even after a session completes.
   const activeSid = activeAgentTab[p.id] || null;
-  const activeCsid = (activeSid && agentStatusCache[activeSid] && agentStatusCache[activeSid].claudeSessionId) || null;
+  const _activeS = (activeSid && agentStatusCache[activeSid]) || {};
+  const activeCsid = _activeS.claudeSessionId || (_activeS._nativeHistory && _activeS.providerSessionId) || null;
   // Bubble chats that need attention (waiting) then working ones to the top so
   // an active/awaiting conversation is never buried under older history.
   const _rank = c => { const s = _convLiveState(live, c); return s === 'waiting' ? 0 : s === 'working' ? 1 : 2; };
@@ -2905,6 +2908,7 @@ function _convCharKey(c) {
   if (!ch || !ch.name) return '';
   return (ch.scope || 'global') + ':' + ch.name;
 }
+window._convCharKey = _convCharKey;
 
 // Normalizes a row/session's persona into the {name, agent_name,
 // display_name, avatar, scope, deleted} shape `_channelRowHTML` and
@@ -3171,6 +3175,7 @@ function _railChannelHTML(p) {
 // into their (empty) expanded view.
 function openChannelPerson(projectId, key) {
   _channelExpanded[projectId] = key;
+  window.railFollow?.hold(projectId, activeAgentTab[projectId]);
   // Expanding the roster must not depend on opening a transcript. External
   // provider sessions can appear here without an id this UI can open.
   if (typeof refreshModalById === 'function') refreshModalById(projectId);
@@ -3194,6 +3199,7 @@ window.openChannelPerson = openChannelPerson;
 function toggleChannelPerson(projectId, key) {
   if (_channelExpanded[projectId] === key) {
     delete _channelExpanded[projectId];
+    window.railFollow?.hold(projectId, activeAgentTab[projectId]);
     if (typeof refreshModalById === 'function') refreshModalById(projectId);
     else refreshModal();
     return;
@@ -3209,6 +3215,7 @@ window.toggleChannelPerson = toggleChannelPerson;
 // only these explicit calls clear it, never a render.
 function collapseChannelRows(projectId) {
   delete _channelExpanded[projectId];
+  window.railFollow?.forget(projectId);
 }
 window.collapseChannelRows = collapseChannelRows;
 
@@ -3249,6 +3256,7 @@ function setRailMode(pid, mode) {
   // and THEN openChannelPerson, so the hire's expansion is written after this
   // clear and survives it.
   if (_railModeOverride[pid] === 'channel') delete _channelExpanded[pid];
+  window.railFollow?.forget(pid);
   try { localStorage.setItem('mc_rail_mode', _railModeOverride[pid]); } catch (e) {}
   // Pull the cached digest on first switch — cheap (a JSON read), and without
   // it the rail would show "no digest" for a project that has one.
@@ -4180,6 +4188,7 @@ function mcBackFromConv(projectId) {
 function switchAgentTab(projectId, sessionId) {
   // Drilling into a conversation exits "New" mode.
   delete agentConvNew[projectId];
+  window.railFollow?.forget(projectId);
   const wasOnList = !activeAgentTab[projectId];
   // FE5: the chat being left and the one entered both count as just viewed.
   window.noteAgentViewed?.(activeAgentTab[projectId]);
@@ -5897,7 +5906,10 @@ async function sendFollowup(projectId, sessionId, sendMode) {
       // different key than the primary project that's actually hosting it.
       const _splitHost = _splitPaneHost(sessionId);
       if (_splitHost) splitAgentTab[_splitHost] = targetSessionId;
-      else activeAgentTab[projectId] = targetSessionId;
+      else {
+        activeAgentTab[projectId] = targetSessionId;
+        window.railFollow?.retarget(projectId, sessionId, targetSessionId);
+      }
       _sendInFlight[targetSessionId] = _sendInFlight[sessionId] || Date.now();
       _preSendStatus[targetSessionId] = _preSendStatus[sessionId];
       delete _sendInFlight[sessionId];
