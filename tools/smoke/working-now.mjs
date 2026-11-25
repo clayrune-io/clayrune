@@ -145,7 +145,7 @@ try {
     await shot(page, `working-now-idle-${width}.png`);
 
     world.floor = busyFloor();
-    await pill.waitFor({ state: 'visible', timeout: 8000 });
+    await pill.waitFor({ state: 'visible', timeout: 20000 });   // idle poll is 15s
     check((await pill.textContent()).trim() === '2 working', 'pill reads "2 working" (idle and asking figures not counted)',
       `pill reads "${await pill.textContent()}"`);
     const after = await geometry();
@@ -190,12 +190,12 @@ try {
     await pill.waitFor({ state: 'hidden', timeout: 8000 });
     check(await pop.count() === 0, 'N=0 hides the pill and closes the popover');
     world.floor = busyFloor();
-    await pill.waitFor({ state: 'visible', timeout: 8000 });
+    await pill.waitFor({ state: 'visible', timeout: 20000 });   // idle poll is 15s
     world.floorStatus = 500;
     await pill.waitFor({ state: 'hidden', timeout: 8000 });
     ok('a failed read hides the pill instead of keeping a stale count');
     world.floorStatus = 200;
-    await pill.waitFor({ state: 'visible', timeout: 8000 });
+    await pill.waitFor({ state: 'visible', timeout: 20000 });   // idle poll is 15s
 
     await pill.click();
     await pop.locator('.wn-row').first().click();

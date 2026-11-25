@@ -1,6 +1,7 @@
 // Top-bar "N working" pill: who is working right now, without opening the Floor.
 //
-// Reads GET /api/floor at the server's poll_seconds. The Floor window polls the
+// Reads GET /api/floor at the server's poll_seconds while someone is working,
+// and every 15s while nobody is. The Floor window polls the
 // same route while it is open and hands each payload to window.workingNowFeed
 // (floor.js), so this module only fetches when nobody else has just done so.
 // Hidden entirely when nobody is working. Inserted at the LEFT of the header's
@@ -15,6 +16,9 @@ const _WN_MOUNTS = [
 
 let _wnWorking = [];
 let _wnPollMs = 5000;
+// With nobody working the pill is hidden, so it reads the Floor less often:
+// it may appear up to this late, and an idle dashboard costs a third as much.
+const _WN_IDLE_POLL_MS = 15000;
 let _wnSharedAt = 0;   // last payload handed over by the Floor window
 let _wnPopover = null;
 let _wnAnchor = null;
@@ -163,7 +167,7 @@ async function _wnTick() {
     }
   }
   clearTimeout(_wnTimer);
-  _wnTimer = setTimeout(_wnTick, _wnPollMs);
+  _wnTimer = setTimeout(_wnTick, _wnWorking.length ? _wnPollMs : Math.max(_wnPollMs, _WN_IDLE_POLL_MS));
 }
 
 // ES-module cross-boundary rule: floor.js reaches this via window.
