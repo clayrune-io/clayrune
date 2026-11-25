@@ -1,24 +1,46 @@
-/* Top-bar "N working" pill and its popover (static/js/working-now.js). */
+/* The "N working" chip and its popover (static/js/working-now.js).
+   Quiet (grey, like its neighbours) by default; .wn-live when someone works. */
 .wn-pill {
   display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
-  padding: 4px 10px; border-radius: 5px; border: 0; cursor: pointer;
+  /* The border is always there, so turning live changes colour, never size. */
+  padding: 3px 9px; border-radius: 5px; border: 1px solid transparent; cursor: pointer;
   background: var(--surface2); color: var(--text-dim);
   font: inherit; font-size: 11px; font-weight: 600; line-height: 1.4; white-space: nowrap;
 }
 .wn-pill:hover, .wn-pill[aria-expanded="true"] { background: var(--surface3); color: var(--text); }
-.wn-dot {
-  width: 7px; height: 7px; border-radius: 50%; background: var(--green);
-  animation: wn-pulse 1.6s ease-in-out infinite;
+/* In the 24px bottom row: 18px tall, in the row's 11px type. */
+.bottom-status-row .wn-pill {
+  align-self: center; height: 18px; margin-left: 14px; padding: 0 8px;
+  background: transparent; border-color: var(--border2); line-height: 16px;
 }
+.bottom-status-row .wn-pill:hover,
+.bottom-status-row .wn-pill[aria-expanded="true"] { background: var(--surface3); }
+/* Room for two digits whatever the font, so a new count never shifts the bars. */
+.bottom-status-row .wn-count { display: inline-flex; flex-direction: column; align-items: center; font-variant-numeric: tabular-nums; }
+.bottom-status-row .wn-count::after { content: '00 working'; height: 0; overflow: hidden; visibility: hidden; }
+.wn-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-faint); opacity: .6; }
+.wn-live .wn-dot { background: var(--green); opacity: 1; animation: wn-pulse 1.6s ease-in-out infinite; }
 @keyframes wn-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.75); } }
-@media (prefers-reduced-motion: reduce) { .wn-dot { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .wn-live .wn-dot { animation: none; } }
 
 /* On the mobile app bar the pill is a touch target, so it is taller. */
 .mc-app-bar .wn-pill {
   min-height: 36px; padding: 0 12px; border-radius: 999px; font-size: 12px;
   background: var(--surface); border: 1.5px solid var(--border2);
 }
-/* After both display rules above, so hidden always wins: nothing when idle. */
+/* Live: the same green tint as .children-running-notice, in both places. */
+.wn-pill.wn-live, .mc-app-bar .wn-pill.wn-live, .bottom-status-row .wn-pill.wn-live {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--green) 40%, transparent);
+  background: color-mix(in srgb, var(--green) 9%, transparent);
+}
+.mc-app-bar .wn-pill.wn-live[aria-expanded="true"],
+.bottom-status-row .wn-pill.wn-live:hover,
+.bottom-status-row .wn-pill.wn-live[aria-expanded="true"] {
+  border-color: var(--green);
+  background: color-mix(in srgb, var(--green) 18%, transparent);
+}
+/* After the display rules above, so hidden always wins (mobile bar at zero). */
 .wn-pill[hidden], .mc-app-bar .wn-pill[hidden] { display: none; }
 
 .wn-popover {
@@ -28,6 +50,13 @@
   border: 1px solid var(--border2); border-radius: 10px;
   box-shadow: 0 12px 32px rgba(0,0,0,.28);
 }
+.wn-none { margin: 0; padding: 10px 10px 8px; font-size: 13px; color: var(--text-dim); }
+.wn-open-floor {
+  margin: 0 10px 8px; padding: 6px 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--border2); background: var(--surface2); color: var(--text);
+  font: inherit; font-size: 12px; font-weight: 600;
+}
+.wn-open-floor:hover, .wn-open-floor:focus-visible { background: var(--surface3); }
 .wn-row {
   display: flex; align-items: flex-start; gap: 10px; width: 100%; padding: 8px 10px;
   border: 0; border-radius: 7px; background: none; color: inherit;

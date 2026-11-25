@@ -1424,15 +1424,30 @@
      up from the true bottom edge); while this strip is non-empty its CSS
      nudges the tray up by the strip's own height so a minimized-modal chip
      never renders on top of a usage bar. */
-  .usage-bar-strip {
+  /* The row shows when it has something: the working chip (working-now.js) or
+     usage bars. It is the box; the strip inside only lays out the bars. */
+  .bottom-status-row {
     flex-shrink: 0;
-    display: flex; align-items: center; gap: 14px;
-    height: 24px; padding: 0 14px;
+    display: none; align-items: stretch;
+    height: 24px;
     background: var(--surface2);
     border-top: 1px solid var(--border);
+  }
+  .bottom-status-row:has(> .wn-pill),
+  .bottom-status-row:has(> .usage-bar-strip:not(:empty)) { display: flex; }
+  .usage-bar-strip {
+    flex: 1; min-width: 0;
+    display: flex; align-items: center; gap: 14px;
+    padding: 0 14px;
     overflow-x: auto;
   }
   .usage-bar-strip:empty { display: none; }
+  /* Desktop: the chip keeps the row up even with no usage bars, so the same two
+     lifts as below must hold for it. */
+  @media (min-width: 961px) {
+    body:has(.bottom-status-row > .wn-pill) .minimized-tray,
+    body:has(.bottom-status-row > .wn-pill) .agent-console { bottom: 24px; }
+  }
   body:has(.usage-bar-strip:not(:empty)) .minimized-tray { bottom: 24px; }
   /* The agent console is ALSO fixed at bottom:0 (z-index 150), so without this
      it painted over the strip the moment it rendered (Ron, 2026-09-27: "shows
@@ -1464,7 +1479,7 @@
     font-size: 10.5px; color: var(--text-faint);
     min-width: 28px;
   }
-  @media (max-width: 960px) { .usage-bar-strip { display: none !important; } }
+  @media (max-width: 960px) { .bottom-status-row, .usage-bar-strip { display: none !important; } }
 
   /* MC-998 follow-up: the hover/click/focus summary popup anchored to a bar
      item (static/js/system-status.js `_ubOpenBarPopup`). Composes with

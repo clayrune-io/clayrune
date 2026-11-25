@@ -1,30 +1,33 @@
-// Top-bar "N working" pill: who is working right now, without opening the Floor.
+// The "N working" chip: who is working right now, without opening the Floor.
 //
 // Reads GET /api/floor at the server's poll_seconds while someone is working,
 // and every 15s while nobody is. The Floor window polls the
 // same route while it is open and hands each payload to window.workingNowFeed
 // (floor.js), so this module only fetches when nobody else has just done so.
-// Hidden entirely when nobody is working. Inserted at the LEFT of the header's
-// right-hand group, so appearing moves none of the controls already there.
+// Desktop: first item of the bottom status row, left of the usage bars. Always
+// there, so its place never moves; green when someone is working, quiet
+// "0 working" otherwise (also when the Floor cannot be read, so no stale count
+// survives). Mobile hides that row, so the app bar has its own pill, hidden at
+// zero because the bar has no room.
 
 const _WN_ACTIVITY = { thinking: 'thinking…', writing: 'writing…', tool: 'running a tool…' };
 const _WN_MOUNTS = [
-  // Desktop header, and the mobile app bar that replaces it at 960px.
-  { host: '.header .header-right', before: host => host.firstElementChild },
-  { host: '#mobile-app-bar', before: host => host.querySelector('#beacon-badge-btn') },
+  // Desktop bottom row, and the mobile app bar for 960px and narrower.
+  { host: '#bottom-status-row', before: host => host.firstElementChild, atZero: true },
+  { host: '#mobile-app-bar', before: host => host.querySelector('#beacon-badge-btn'), atZero: false },
 ];
 
 let _wnWorking = [];
 let _wnPollMs = 5000;
-// With nobody working the pill is hidden, so it reads the Floor less often:
-// it may appear up to this late, and an idle dashboard costs a third as much.
+// With nobody working it reads the Floor less often: the chip may turn live up
+// to this late, and an idle dashboard costs a third as much.
 const _WN_IDLE_POLL_MS = 15000;
 let _wnSharedAt = 0;   // last payload handed over by the Floor window
 let _wnPopover = null;
 let _wnAnchor = null;
 
 function _wnPills() {
-  return _WN_MOUNTS.map(({ host, before }) => {
+  return _WN_MOUNTS.map(({ host, before, atZero }) => {
     const parent = document.querySelector(host);
     if (!parent) return null;
     let pill = parent.querySelector(':scope > .wn-pill');
@@ -32,7 +35,8 @@ function _wnPills() {
       pill = document.createElement('button');
       pill.type = 'button';
       pill.className = 'wn-pill';
-      pill.hidden = true;
+      pill.hidden = !atZero;
+      pill._atZero = atZero;
       pill.setAttribute('aria-haspopup', 'dialog');
       pill.setAttribute('aria-expanded', 'false');
       pill.innerHTML = '<span class="wn-dot" aria-hidden="true"></span><span class="wn-count"></span>';
@@ -46,12 +50,17 @@ function _wnPills() {
 function _wnRender() {
   const n = _wnWorking.length;
   for (const pill of _wnPills()) {
-    pill.hidden = !n;
-    pill.querySelector('.wn-count').textContent = n ? `${n} working` : '';
+    pill.hidden = !n && !pill._atZero;
+    pill.classList.toggle('wn-live', n > 0);
+    pill.querySelector('.wn-count').textContent = `${n} working`;
   }
-  if (!n) _wnClose();
-  else if (_wnPopover) _wnFill();
+  if (!_wnPopover) return;
+  if (_wnAnchor.hidden) _wnClose();   // the mobile pill left at zero
+  else _wnFill();
 }
+
+const _WN_NONE_HTML = '<p class="wn-none">No one is working right now</p>' +
+  '<button type="button" class="wn-open-floor">Open the Floor</button>';
 
 function _wnRowHTML(f) {
   const avatar = typeof window.avatarHTML === 'function' ? window.avatarHTML(f.avatar || '', 28) : '';
@@ -64,26 +73,32 @@ function _wnRowHTML(f) {
 }
 
 function _wnFill() {
-  const html = _wnWorking.map(_wnRowHTML).join('');
+  const html = _wnWorking.map(_wnRowHTML).join('') || _WN_NONE_HTML;
   // Compared against what was written, not read back: an unchanged board must
   // not rebuild the list under a finger or drop keyboard focus.
   if (_wnPopover._html === html) return;
-  const focused = _wnPopover.contains(document.activeElement) ? document.activeElement.dataset.sid : '';
+  const hadFocus = _wnPopover.contains(document.activeElement);
+  const focused = hadFocus ? document.activeElement.dataset.sid : '';
   _wnPopover._html = html;
   _wnPopover.innerHTML = html;
-  if (focused) {
-    [..._wnPopover.querySelectorAll('.wn-row')].find(r => r.dataset.sid === focused)
-      ?.focus({ preventScroll: true });
+  if (hadFocus) {
+    const buttons = [..._wnPopover.querySelectorAll('button')];
+    (buttons.find(b => b.dataset.sid === focused) || buttons[0])?.focus({ preventScroll: true });
   }
 }
 
 function _wnPlace() {
-  const bar = _wnAnchor.closest('.header, .mc-app-bar').getBoundingClientRect();
-  _wnPopover.style.top = `${Math.round(bar.bottom)}px`;
-  if (_wnAnchor.closest('.mc-app-bar')) return;   // full width (working-now.css)
+  const bar = _wnAnchor.closest('.mc-app-bar');
+  if (bar) {   // hangs under the bar, full width (working-now.css)
+    _wnPopover.style.top = `${Math.round(bar.getBoundingClientRect().bottom)}px`;
+    return;
+  }
+  // The bottom row: opens upward, like the usage bars' popup beside it.
+  // Anchored by its bottom edge, so a longer list grows up, not off-screen.
   const pill = _wnAnchor.getBoundingClientRect();
   const left = Math.min(pill.left, window.innerWidth - _wnPopover.offsetWidth - 8);
   _wnPopover.style.left = `${Math.round(Math.max(8, left))}px`;
+  _wnPopover.style.bottom = `${Math.round(window.innerHeight - pill.top + 8)}px`;
 }
 
 function _wnOutside(event) {
@@ -109,6 +124,11 @@ function _wnOpen(anchor) {
   _wnPopover.setAttribute('role', 'dialog');
   _wnPopover.setAttribute('aria-label', 'Agents working now');
   _wnPopover.addEventListener('click', event => {
+    if (event.target.closest('.wn-open-floor')) {
+      _wnClose();
+      window.openFloor?.();
+      return;
+    }
     const row = event.target.closest('.wn-row');
     const figure = row && _wnWorking.find(f => f.session_id === row.dataset.sid);
     if (!figure) return;
@@ -181,6 +201,8 @@ window.workingNowFeed = payload => {
     console.warn('[working-now] could not read the Floor payload:', e);
   }
 };
+// Take the slot before the first read, so nothing in the bar shifts when it lands.
+_wnRender();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) _wnTick(); });
 // Wait for load: avatarHTML and floorOpenFigure come from later modules.
 if (document.readyState === 'complete') _wnTick();
