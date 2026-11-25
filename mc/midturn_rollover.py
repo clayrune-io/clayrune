@@ -28,6 +28,7 @@ the MC session_id is kept and `notify_session` callbacks still fire.
 Off unless `midturn_rollover_enabled` is true (default false).
 """
 import json
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -48,6 +49,11 @@ RECENT_TOOLS_KEEP = 10
 TOOL_RESULT_CARRY_CAP_BYTES = 4096
 _TOOL_RESULT_HEAD_CHARS = 300
 _JOURNAL_MARKER = 'docs/_journal/'
+# A shell write into a journal (`cat >> .../docs/_journal/x.md`, `tee -a`).
+# Write forms only: the carried section says "written", so a `cat` read is out.
+_JOURNAL_SHELL_WRITE_RE = re.compile(
+    r'''(?:>|\btee(?:\s+-a)?\s)\s*["']?'''
+    r'''([^\s"'<>|;&()]*docs[\\/]_journal[\\/][^\s"'<>|;&()*]+\.md)''')
 # A roll that lands on a fresh prefix already over the threshold (threshold set
 # below the size of the injected context) would otherwise re-roll at every tool
 # boundary. Re-rolling needs this much growth over the fresh session's first
@@ -111,15 +117,19 @@ def _pending(session):
 
 
 def _journal_path(tool_input):
-    """The `file_path` a Write/Edit call targeted, if it's under
-    `docs/_journal/` — MC-964 Step C carries these across a roll since a
-    fresh session otherwise has no way to know which journal file already
-    holds this task's log (re-reading the wrong/no file re-derives it)."""
+    """The `file_path` a Write/Edit call targeted, or the file a shell command
+    redirected into, if it's under `docs/_journal/` — MC-964 Step C carries
+    these across a roll since a fresh session otherwise has no way to know
+    which journal file already holds this task's log (re-reading the wrong/no
+    file re-derives it)."""
     if not isinstance(tool_input, dict):
         return None
     fp = tool_input.get('file_path')
     if not isinstance(fp, str) or not fp:
-        return None
+        command = tool_input.get('command')
+        hit = (_JOURNAL_SHELL_WRITE_RE.search(command)
+               if isinstance(command, str) else None)
+        return hit.group(1) if hit else None
     return fp if _JOURNAL_MARKER in fp.replace('\\', '/') else None
 
 
@@ -240,7 +250,8 @@ def note_tool_results(session, content):
 def note_user_message(session, text, *, mid_turn=False):
     """Record a user message for the rollover state block (MC-1088).
 
-    Every message is the session's latest user message. `mid_turn=True` marks
+    Every message is the session's latest user message. One that is not
+    `mid_turn` also opens a turn (`note_turn_prompt`). `mid_turn=True` marks
     one delivered WHILE a turn was running -- stdin steer, or a follow-up held
     in `pending_followups`: the CLI folds it into the running turn (transcript
     `queue-operation` ... `absorbed_mid_turn`) or the interrupt that performs
@@ -254,12 +265,24 @@ def note_user_message(session, text, *, mid_turn=False):
     try:
         message = text.strip()
         session['_mt_latest_user_msg'] = message
-        if mid_turn:
+        if not mid_turn:
+            session['_mt_turn_prompt'] = message
+        else:
             msgs = session.setdefault('_mt_unanswered_msgs', [])
             msgs.append({'ts': datetime.now(timezone.utc).strftime('%H:%M:%SZ'),
                          'text': message})
     except Exception as e:
         _log(f"[midturn-rollover] note_user_message failed: {e}")
+
+
+def note_turn_prompt(session, text):
+    """Record the message that opened the turn now running, without making it
+    the latest message (a follow-up delivered from the queue may have newer
+    ones queued behind it). A mid-turn steer never replaces it, so a roll can
+    still say what the turn was answering; `note_turn_complete` clears it."""
+    if not enabled() or not isinstance(text, str) or not text.strip():
+        return
+    session['_mt_turn_prompt'] = text.strip()
 
 
 def note_assistant_text(session):
@@ -284,6 +307,7 @@ def note_turn_complete(session):
     before any `result` -- so messages with no post-roll text survive repeated
     rolls."""
     session.pop('_mt_unanswered_msgs', None)
+    session.pop('_mt_turn_prompt', None)
 
 
 def note_call_tokens(session, tokens, parent_tool_use_id=None):
@@ -433,7 +457,12 @@ def build_state_block(session, cwd):
     """The mid-task state the transcript handoff cannot carry. Every section is
     always present; an unavailable one says so instead of vanishing.
 
-    MC-1088 puts the user's mid-turn messages FIRST ("Unanswered user messages
+    When the roll interrupts a turn, the message that opened it comes first:
+    on 2026-11-25 a steer became the only "current direction" and the message
+    being worked on was never answered. A text quoted there is not printed
+    again; the later sections point at it.
+
+    MC-1088 puts the user's mid-turn messages next ("Unanswered user messages
     (answer these first)") and the latest user message as current direction:
     a roll used to rebuild the session from the first
     prompt alone, so messages the CLI had absorbed mid-turn were never
@@ -465,18 +494,35 @@ def build_state_block(session, cwd):
     unanswered_text = ('\n'.join(f"- [{m['ts']}] {m['text']}" for m in unanswered)
                        or '(none)')
     latest = session.get('_mt_latest_user_msg')
-    latest_text = (f"--- Latest user message (current direction) ---\n"
-                   f"{latest or '(none recorded after the first message)'}\n\n")
+    latest_body = latest or '(none recorded after the first message)'
     # A dispatched one-prompt worker never records a later message, and its
     # first message IS the task: only call it historical when something later
     # superseded it (AP40).
     first_label = ("historical; may be long finished, not the current task"
                    if latest else "the current task; no later message was recorded")
+    inflight = session.get('_mt_turn_prompt')
+    # A one-prompt worker's first turn: the first-message section already
+    # presents it as the current task (AP40), so don't add a second copy.
+    if latest is None and inflight == task.strip():
+        inflight = None
+    inflight_text = ''
+    first_body = task
+    if inflight:
+        inflight_text = ("--- Message this turn was answering when the roll "
+                         "happened (NOT answered yet; finish it) ---\n"
+                         f"{inflight}\n\n")
+        quoted = '(the message this turn was answering, quoted in the first section)'
+        if latest == inflight:
+            latest_body = quoted
+        if task.strip() == inflight:
+            first_label, first_body = 'the turn still in progress', quoted
+    latest_text = f"--- Latest user message (current direction) ---\n{latest_body}\n\n"
     return (
         "=== Mid-task rollover state ===\n"
+        f"{inflight_text}"
         f"--- Unanswered user messages (answer these first) ---\n{unanswered_text}\n\n"
         f"{latest_text}"
-        f"--- First message of this chat ({first_label}) ---\n{task}\n\n"
+        f"--- First message of this chat ({first_label}) ---\n{first_body}\n\n"
         f"--- Working directory ---\n{cwd}\n"
         f"Branch: {_git(cwd, 'rev-parse', '--abbrev-ref', 'HEAD')}\n\n"
         f"--- git status --short ---\n{_git(cwd, 'status', '--short')}\n\n"

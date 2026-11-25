@@ -232,6 +232,10 @@ def _session(proc, **extra):
         'last_output_time': 0.0, 'last_status_change_time': 0.0,
         'context_tokens': None, '_notify_session': 'spawner-1',
         'provider': 'claude',
+        # The fresh-start load was already read, so a script's first big
+        # reading is growth. Without it that reading IS the floor and the
+        # threshold sits 60k above it.
+        '_mt_fresh_floor': 30_000,
     }
     s.update(extra)
     return s
@@ -346,7 +350,7 @@ def test_roll_row_logs_character_model_provider_and_fresh_floor(env):
         yield _tool_result('tool2')
 
     _run_reader(env, lines, character={'name': 'dave', 'scope': 'global'},
-                observed_model='claude-opus-x')
+                observed_model='claude-opus-x', _mt_fresh_floor=None)
     log = env['tmp'] / 'midturn_log' / 'p1.jsonl'
     assert _wait(log.is_file)
     row = json.loads(log.read_text().splitlines()[0])
@@ -521,7 +525,10 @@ def test_flag_off_changes_nothing(env):
         yield _assistant('tool2', 300_000, 'm2')
         yield _tool_result('tool2')
 
-    session = _run_reader(env, lines)
+    proc = _Proc()
+    session = _session(proc)
+    del session['_mt_fresh_floor']    # the helper's seed would trip the check below
+    _run_reader(env, lines, session=session, proc=proc)
     time.sleep(0.2)
     assert env['spawned'] == []
     assert not [a for a in env['activity'] if 'Auto-fresh' in a]
@@ -693,7 +700,7 @@ def test_finding6_no_reroll_loop_when_the_fresh_prefix_is_over_the_threshold(env
     """threshold below the fresh session's own size: every tool boundary would
     roll again, forever. Re-rolling needs real growth over the fresh figure."""
     mt = env['ar']._midturn
-    over = env['ar']._context_tokens_over_threshold
+    over = lambda tokens, session: True    # the growth gate alone is under test
     session = _session(_Proc())
     mt.begin_roll(session)                       # a roll just happened
     mt.note_call_tokens(session, 250_000)        # fresh session reports 250k already
@@ -911,7 +918,12 @@ def test_mc1088_roll_without_midturn_messages_says_none(env):
 def test_mc1088_latest_message_is_current_and_distinct_from_unanswered(env):
     from mc import midturn_rollover as mt
     p = _roll_prompt(env, lambda s: mt.note_user_message(s, 'yes please'))
-    assert '--- Latest user message (current direction) ---\nyes please' in p
+    # It opened the turn being rolled, so it is quoted once, in the first
+    # section; the latest-message section points there.
+    assert 'NOT answered yet; finish it) ---\nyes please\n' in p
+    assert p.count('yes please') == 1
+    assert ('--- Latest user message (current direction) ---\n(the message this '
+            'turn was answering' in p)
     assert '(none)' in p.split('--- First message of this chat')[0], \
         'a non-mid-turn message is the latest message but not unanswered'
 
@@ -999,7 +1011,7 @@ def test_mc1089_roll_without_assistant_text_recarries(env, reader):
     def lines():
         yield _assistant('tool3', 250_000, 'm3')  # fresh baseline
         yield _tool_result('tool3')
-        yield _assistant('tool4', 280_000, 'm4')  # enough growth to roll again
+        yield _assistant('tool4', 320_000, 'm4')  # past fresh floor + 60k
         yield _tool_result('tool4')
 
     _run_reader(env, lines, session=session, proc=env['new_proc'], reader=reader)
@@ -1282,7 +1294,7 @@ def test_model_rollover_waits_for_cost_optimum_and_logs_it(env):
         yield _assistant('tool3', 280_000, 'm3')
         yield _tool_result('tool3')
 
-    _run_reader(env, lines, model='claude-fable-5-2')
+    _run_reader(env, lines, model='claude-fable-5-2', _mt_fresh_floor=None)
     log = env['tmp'] / 'midturn_log' / 'p1.jsonl'
     assert _wait(log.is_file)
     row = json.loads(log.read_text().splitlines()[0])
@@ -1301,3 +1313,68 @@ def test_ap40_first_message_is_the_current_task_when_nothing_later_was_recorded(
     assert 'historical; may be long finished' not in block
     assert '--- First message of this chat (the current task' in block
     assert 'build the thing' in block
+
+
+_INFLIGHT = '--- Message this turn was answering when the roll happened'
+
+
+def test_roll_keeps_the_prompt_in_flight_ahead_of_a_midturn_steer(env):
+    """2026-11-25: the steer became the only current direction and the message
+    the turn was answering appeared nowhere in the state block."""
+    from mc import midturn_rollover as mt
+
+    def during_turn(s):
+        mt.note_user_message(s, 'ENTRY #247, decide GO or PASS')
+        mt.note_user_message(s, 'CLOSE #246', mid_turn=True)
+
+    p = _roll_prompt(env, during_turn)
+    state = p[p.index('=== Mid-task rollover state ==='):]
+    assert state.startswith(f'=== Mid-task rollover state ===\n{_INFLIGHT}')
+    assert 'finish it) ---\nENTRY #247, decide GO or PASS\n' in state
+    assert state.index('ENTRY #247') < state.index('--- Unanswered user messages')
+    assert state.count('ENTRY #247') == 1
+    assert '--- Latest user message (current direction) ---\nCLOSE #246' in state
+
+
+def test_turn_prompt_from_the_queue_leaves_the_latest_message_alone(monkeypatch):
+    from mc import midturn_rollover as mt
+    monkeypatch.setattr(mt, '_git', lambda *a: '(clean)')
+    monkeypatch.setattr(mt, 'enabled', lambda: True)
+    s = {'task': 'first task'}
+    mt.note_user_message(s, 'queued one', mid_turn=True)
+    mt.note_user_message(s, 'queued two', mid_turn=True)
+    mt.note_turn_complete(s)
+    mt.note_turn_prompt(s, 'queued one')
+    assert s['_mt_latest_user_msg'] == 'queued two'
+    block = mt.build_state_block(s, '.')
+    assert 'finish it) ---\nqueued one\n' in block
+    mt.note_turn_complete(s)
+    assert _INFLIGHT not in mt.build_state_block(s, '.')
+
+
+def test_first_turn_prompt_is_not_called_historical_after_a_steer(monkeypatch):
+    from mc import midturn_rollover as mt
+    monkeypatch.setattr(mt, '_git', lambda *a: '(clean)')
+    monkeypatch.setattr(mt, 'enabled', lambda: True)
+    s = {'task': 'build the thing'}
+    mt.note_turn_prompt(s, s['task'])
+    only = mt.build_state_block(s, '.')
+    assert _INFLIGHT not in only, 'AP40: one-prompt worker stays one copy'
+    assert only.count('build the thing') == 1
+    mt.note_user_message(s, 'also add a test', mid_turn=True)
+    block = mt.build_state_block(s, '.')
+    assert 'finish it) ---\nbuild the thing\n' in block
+    assert block.count('build the thing') == 1
+    assert 'historical' not in block
+
+
+@pytest.mark.parametrize('command,path', [
+    ("cat >> /c/repo/docs/_journal/a-b.md <<'EOF'\nx\nEOF", '/c/repo/docs/_journal/a-b.md'),
+    (r'echo x | tee -a "C:\repo\docs\_journal\c.md"', r'C:\repo\docs\_journal\c.md'),
+    ('echo x > docs/_journal/d.md', 'docs/_journal/d.md'),
+    ('cat docs/_journal/only-read.md', None),
+    ('grep x docs/_journal/*.md > /tmp/out.txt', None),
+])
+def test_shell_writes_to_a_journal_are_carried(command, path):
+    from mc import midturn_rollover as mt
+    assert mt._journal_path({'command': command}) == path
