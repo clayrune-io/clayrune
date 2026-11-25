@@ -1,5 +1,13 @@
 # Clayrune — Changelog
 
+## [2026-11-24] - who is working right now, without opening the Floor
+
+- A Tobin dispatched from a Clayrune website chat ran in the Mission Control project, and nothing on screen outside the Floor said it was working.
+- Top bar (and the phone app bar): a pulsing dot plus `N working`, counting Floor figures whose state is `working`. Hidden at zero and when `/api/floor` cannot be read. Click lists each one (avatar, name, project, activity, age, first line of task); a row opens that chat the way the Floor does. It reads `/api/floor` every `poll_seconds` while the tab is visible, and uses the Floor window's payload instead while that is open. New `static/js/working-now.js` + css.
+- Dispatching chat: `Tobin is working in Mission Control, 10m, 94 steps` with Open, above the transcript; several children collapse into one line. It also covers a child waiting on a question or a background job. New `mc/delegation_running.py` adds `children_running` per session to `/agent/status`, across projects, for the dispatcher and the session the report will wake. New `static/js/children-running.js` + css. An idle open chat updates on the existing 15 s status poll.
+- Steps are tool calls. `mc/log_lines_trim.py` now carries the count of tool lines it drops, so the number does not fall on a long run (a server restart that re-adopts a child still resets it to what its kept log holds).
+- Tests: `tests/test_delegation_running.py`, `tools/smoke/working-now.mjs` (1440 and 390px). Screenshots `docs/screenshots/working-now-*.png`. The server half needs a restart; the browser half needs a hard reload.
+
 ## [2026-11-24] - agent-mail: a held email reply is no longer silent (MC-1213 d)
 
 - A reply held on 2026-11-15 (`worktree_unavailable`) sat 9 days unnoticed. `blocked` rows are never re-claimed, so the MC-1177 spawner fallback (2026-11-16) never saw it; the only signs were a line inside that chat and a list in Settings, and at retention it would have expired with a log line only.

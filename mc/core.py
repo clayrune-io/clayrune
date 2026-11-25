@@ -202,6 +202,8 @@ class TimestampedLines(list):
     turned into "now" by a later reader.
     """
 
+    dropped_steps = 0  # tool lines log_lines_trim has removed from this chat
+
     def __init__(self, iterable=(), ts=None):
         items = list(iterable)
         list.__init__(self, items)

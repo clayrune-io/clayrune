@@ -6107,6 +6107,7 @@ async function fetchAgentStatus(projectId) {
       agentStatusCache[sid].reportsWaiting = s.reports_waiting || [];
       window.paintBgWait?.(sid, s.bg_wait || '');   // MC-946 (bg-wait-status.js)
       window.paintReportsWaiting?.(sid, s.reports_waiting || []);   // MC-1063 (report-waiting.js)
+      window.paintChildrenRunning?.(sid, s.children_running || []);   // children-running.js
       // MC-937 Phase 4 (frontend): patch this session's nested subagent
       // card(s) + its rail helper-count badge in place from server truth —
       // same discipline as the pendingQuestions reconciliation below (touch

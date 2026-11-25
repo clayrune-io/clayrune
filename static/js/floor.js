@@ -589,6 +589,8 @@ async function refreshFloor() {
     return;
   }
 
+  window.workingNowFeed?.(d);   // working-now.js: the top-bar pill shares this read
+
   // Everything below THROWS on a bad payload or a broken cross-module global
   // (window.avatarHTML, per figure/bench card). refreshFloor is async and
   // nothing catches its rejection (openFloor:57 awaits it inside an

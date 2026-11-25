@@ -163,6 +163,7 @@ from mc import log_lines_trim as _log_lines_trim  # log_lines cap that keeps use
 from mc.rollover_threshold import threshold_for as _rollover_threshold_for
 import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (Mode B)
 import mc.delegation_waiting as _delegation_waiting  # MC-1063: queued child reports shown on the parent
+import mc.delegation_running as _delegation_running  # running children shown on the parent
 import mc.delegation_wake as _delegation_wake  # MC-1063: a parent's turn-end wakes its queued reports
 import mc.delegation_wake_absent as _delegation_wake_absent  # status-blocked reports of a parent gone from memory
 import mc.delegation_settlement as _delegation_settlement
@@ -16422,6 +16423,10 @@ def agent_status(project_id):
             _live_by_csid.setdefault(_ls['claude_session_id'], []).append(_lsid)
     # MC-1063: child reports queued for a session in this project, one read.
     _reports_waiting = _delegation_waiting.waiting_by_parent(project_id)
+    # Children (any project) still running for a session in this one.
+    _children_running = _delegation_running.running_by_parent(
+        agent_sessions, {k for k, v in list(agent_sessions.items())
+                         if v.get('project_id') == project_id}, load_project)
     for sid, s in list(agent_sessions.items()):
         if s['project_id'] == project_id:
             # Filter log_lines and its parallel per-line timestamp array
@@ -16564,6 +16569,7 @@ def agent_status(project_id):
                 # MC-1063: child reports queued for THIS session (held while it
                 # is mid-turn, or parked). [] when none.
                 'reports_waiting': _reports_waiting.get(sid, []),
+                'children_running': _children_running.get(sid, []),
             })
     # Sort: running first, then newest first (ISO timestamps sort lexically)
     sessions.sort(key=lambda s: (
