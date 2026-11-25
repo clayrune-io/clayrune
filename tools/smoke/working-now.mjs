@@ -6,13 +6,21 @@
  * Mission Control project, and nothing on screen said it was working.
  *
  * Pins, at 1440 and 390px:
- *   A. Top-bar pill (working-now.js)
- *      1. Nothing at all when nobody is working; "N working" counts only
- *         `working` figures; appearing moves no existing header control and
- *         does not change the bar's height.
+ *   A. The chip (working-now.js)
+ *      1. Desktop: first item of the bottom status row, left of the usage bars,
+ *         never in the header. There even at zero, grey "0 working"; its
+ *         popover says so and opens the Floor. Mobile: the row is hidden and
+ *         the app-bar pill shows nothing at zero. "N working" counts only
+ *         `working` figures and is green and pulsing, light and dark. Going
+ *         0 -> 2 -> 12 moves no usage bar and keeps the chip's place and size.
+ *         It survives a usage redraw, the usage feature switched off and an
+ *         empty usage payload, and the agent console and minimized tray stay
+ *         above the row.
  *      2. Popover lists name, project, activity, age and task; inside the
- *         viewport; full width under the bar at 390.
- *      3. Escape and an outside click close it; N=0 and a failed read hide it.
+ *         viewport; opens upward from the chip at 1440, full width under the
+ *         app bar at 390.
+ *      3. Escape and an outside click close it; N=0 and a failed read turn it
+ *         quiet (desktop) or hide it (mobile), never a stale count.
  *      4. A row opens that agent's chat in its own project.
  *      5. While the Floor window is open the pill adds no request of its own.
  *   B. Dispatching chat (children-running.js)
@@ -73,10 +81,14 @@ const session = (sid, status, lines, over = {}) => ({ session_id: sid, claude_se
   task: 'smoke', log_lines: lines, started_at: new Date().toISOString(), process_alive: true, mode: 'B',
   live_copies: [], cwd_moved_from: '', reports_waiting: [], children_running: [], active_subagents: [], ...over });
 
+const USAGE = { provider_weekly_usage: {
+  claude: { utilization: 41, resets_at: '2026-12-03T19:20:26+00:00' },
+  codex: { utilization: 92, resets_at: '2026-11-30T00:00:00+00:00' } } };
+
 const browser = await chromium.launch();
 
-async function open(width) {
-  const world = { floor: idleFloor(), floorStatus: 200, floorHits: 0, children: [], parentListed: true };
+async function open(width, usage = USAGE) {
+  const world = { floor: idleFloor(), floorStatus: 200, floorHits: 0, children: [], parentListed: true, usage };
   const ctx = await browser.newContext({ viewport: { width, height: width > 500 ? 900 : 844 } });
   const page = await ctx.newPage();
   await page.addInitScript(() => { localStorage.setItem('walkthrough_done', '1'); localStorage.setItem('mc_walkthrough_done', '1'); });
@@ -106,6 +118,7 @@ async function open(width) {
     if (path === '/api/projects') return json(PROJECTS);
     if (path === '/api/local-auth/status') return json({ configured: true });
     if (path === '/api/config') return json({});
+    if (path === '/api/system/usage') return json(world.usage);
     if (path === '/api/floor') { world.floorHits++; return json(world.floor, world.floorStatus); }
     if (path === `/api/project/${WEB}/agent/status`)
       return json({ sessions: world.parentListed ? [session(PARENT, 'idle',
@@ -124,39 +137,185 @@ async function open(width) {
 
 const shot = async (page, name) => { if (SHOT_DIR) await page.screenshot({ path: join(SHOT_DIR, name) }); };
 
+// Hovering the sidebar widens it and shifts the whole main area, so the pointer
+// rests mid-page whenever positions or resting colours are read.
+const restPointer = async (page) => { await page.mouse.move(700, 300); await page.waitForTimeout(350); };
+
+// The agent console and the minimized tray are fixed to the bottom edge. Forced
+// open here and measured in the same step, before any redraw can undo it.
+const overlaysClearRow = (page) => page.evaluate(() => {
+  const rect = (el) => el.getBoundingClientRect();
+  const row = rect(document.getElementById('bottom-status-row'));
+  const chip = document.querySelector('#bottom-status-row > .wn-pill'); const c = rect(chip);
+  const consoleEl = document.getElementById('agent-console'); const was = consoleEl.className;
+  const tray = document.getElementById('minimized-tray');
+  const fake = tray.appendChild(Object.assign(document.createElement('div'), { className: 'minimized-chip', textContent: 'smoke' }));
+  const out = ['collapsed', 'expanded'].map((state) => {
+    consoleEl.className = `agent-console ${state}`;
+    const hit = document.elementFromPoint(c.left + c.width / 2, c.top + c.height / 2);
+    return { state, rowTop: row.top, rowHeight: row.height, rowBottom: row.bottom, vh: innerHeight,
+      consoleBottom: rect(consoleEl).bottom, consoleHeight: rect(consoleEl).height,
+      trayBottom: rect(tray).bottom, chipOnTop: !!hit && chip.contains(hit) };
+  });
+  consoleEl.className = was; fake.remove();
+  return out;
+});
+const checkOverlays = async (page, label) => {
+  const seen = await overlaysClearRow(page);
+  check(seen.every((o) => o.rowHeight === 24 && Math.abs(o.rowBottom - o.vh) <= 0.5 && o.consoleHeight > 0
+      && o.consoleBottom <= o.rowTop + 0.5 && o.trayBottom <= o.rowTop + 0.5 && o.chipOnTop),
+    `${label}: agent console (collapsed and expanded) and minimized tray stay above the 24px row`, `${label}: ${JSON.stringify(seen)}`);
+};
+
 try {
   for (const width of [1440, 390]) {
-    console.log(`── ${width}px: top-bar pill`);
+    console.log(`── ${width}px: working chip`);
     const { page, ctx, errors, world } = await open(width);
     const mobile = width <= 960;
-    const pill = page.locator(mobile ? '#mobile-app-bar .wn-pill' : '.header .wn-pill');
+    const pill = page.locator(mobile ? '#mobile-app-bar .wn-pill' : '#bottom-status-row > .wn-pill');
+    if (!mobile) await page.waitForSelector('#usage-bar-strip .usage-bar-item', { timeout: 8000 });
+    // Everything that must stay put when N changes.
     const geometry = () => page.evaluate((m) => {
+      // The countdown is monospace text that changes width by itself ("30s" ->
+      // "9s"); pinned so only a change in N can move anything here.
+      const timer = document.getElementById('refresh-timer');
+      if (timer) timer.textContent = 'refresh in 30s';
       const bar = document.querySelector(m ? '#mobile-app-bar' : '.header');
-      const pick = m ? ['#mc-hamburger-btn'] : ['.header-search', '.live-badge', '.header-tour-btn', '.header-breadcrumb'];
+      const picks = m ? ['#mc-hamburger-btn']
+        : ['.header-search', '.header .metric-pill', '#sys-status-pill', '.live-badge', '.header-breadcrumb',
+          '#bottom-status-row', '#usage-bar-strip .usage-bar-item', '#usage-bar-strip .usage-bar-item:nth-child(2)'];
       return { height: bar.getBoundingClientRect().height, bottom: bar.getBoundingClientRect().bottom,
-        // The search box sits right of the pill's slot, so none of these may move.
-        at: pick.map((s) => { const r = bar.querySelector(s).getBoundingClientRect(); return `${Math.round(r.left)},${Math.round(r.top)}`; }) };
+        at: picks.map((s) => { const r = document.querySelector(s).getBoundingClientRect(); return `${Math.round(r.left)},${Math.round(r.top)},${Math.round(r.width)}`; }) };
     }, mobile);
 
+    const look = () => pill.evaluate((el) => {
+      const s = getComputedStyle(el), dot = getComputedStyle(el.querySelector('.wn-dot'));
+      return { live: el.classList.contains('wn-live'), bg: s.backgroundColor, border: s.borderTopColor,
+        color: s.color, dotBg: dot.backgroundColor, dotOpacity: Number(dot.opacity), animation: dot.animationName };
+    });
+    // Desktop keeps a quiet chip at zero; the mobile bar drops it.
+    const waitNobody = (timeout) => (mobile ? pill.waitFor({ state: 'hidden', timeout })
+      : page.waitForFunction(() => {
+        const el = document.querySelector('#bottom-status-row > .wn-pill');
+        return !!el && !el.hidden && !el.classList.contains('wn-live') && el.textContent.trim() === '0 working';
+      }, null, { timeout }));
+    const waitLive = (n = 2) => page.waitForFunction(({ sel, text }) => {
+      const el = document.querySelector(sel);
+      return !!el && !el.hidden && el.classList.contains('wn-live') && el.textContent.trim() === text;
+    }, { sel: mobile ? '#mobile-app-bar .wn-pill' : '#bottom-status-row > .wn-pill', text: `${n} working` }, { timeout: 20000 });   // idle poll is 15s
+    const pop = page.locator('#working-now-popover');
+
     await page.waitForTimeout(400);
-    check(!(await pill.isVisible()), 'nobody working: no pill at all');
-    check(await page.locator('.wn-pill:visible').count() === 0, 'nobody working: no pill in either bar');
+    check(await page.locator('.header .wn-pill').count() === 0, 'no working chip in the desktop header');
+    check(await page.locator('.header #header-agent-count').count() === 1, 'the header keeps its "N agents" chip');
+    let quiet = null;
+    if (mobile) {
+      check(await page.locator('.wn-pill:visible').count() === 0, 'nobody working: no pill in the mobile bar');
+      check(!(await page.locator('#bottom-status-row').isVisible()), 'the bottom row is hidden on mobile');
+    } else {
+      await waitNobody(3000);
+      check(await page.locator('.wn-pill:visible').count() === 1, 'nobody working: exactly one chip, reading "0 working"');
+      const placed = await pill.evaluate((el) => {
+        const r = el.getBoundingClientRect(), row = el.parentElement.getBoundingClientRect();
+        const bar = el.parentElement.querySelector('.usage-bar-item').getBoundingClientRect();
+        return { first: el.parentElement.firstElementChild === el, next: el.nextElementSibling?.id,
+          inRow: r.top >= row.top && r.bottom <= row.bottom, gap: bar.left - r.right, h: r.height,
+          font: getComputedStyle(el).fontSize };
+      });
+      check(placed.first && placed.next === 'usage-bar-strip' && placed.inRow && placed.gap >= 8 && placed.gap <= 20
+        && placed.h <= 20 && placed.font === '11px',
+        'left-most in the bottom row, just left of the usage bars, fits it at 11px', JSON.stringify(placed));
+      await restPointer(page);
+      quiet = await look();
+      const labelColor = await page.locator('.usage-bar-label').first().evaluate((el) => getComputedStyle(el).color);
+      check(quiet.color === labelColor && quiet.animation === 'none' && quiet.bg === 'rgba(0, 0, 0, 0)' && quiet.dotOpacity < 1,
+        'quiet: the grey of the usage labels, no fill, dim dot, no pulse', JSON.stringify({ ...quiet, labelColor }));
+      await checkOverlays(page, 'with usage bars');
+    }
+    await restPointer(page);
     const before = await geometry();
+    const quietBox = mobile ? null : await pill.boundingBox();
     await shot(page, `working-now-idle-${width}.png`);
 
+    // Popover against the chip: above it, left edges aligned, on screen.
+    const checkUpward = async (label) => {
+      const p = await pop.boundingBox(), c = await pill.boundingBox(), vh = page.viewportSize().height;
+      check(p.y + p.height <= c.y && c.y - (p.y + p.height) <= 12 && Math.abs(p.x - c.x) <= 1
+        && p.y >= 0 && p.x >= 0 && p.x + p.width <= width && p.y + p.height <= vh,
+        `${label} opens upward, left-aligned to the chip, inside the viewport`, `popover ${JSON.stringify(p)} chip ${JSON.stringify(c)}`);
+    };
+    if (!mobile) {
+      await pill.click();
+      await pop.waitFor();
+      check((await pop.locator('.wn-none').textContent()) === 'No one is working right now' && await pop.locator('.wn-row').count() === 0,
+        'quiet popover says no one is working');
+      await checkUpward('quiet popover');
+      await shot(page, `working-now-popover-quiet-${width}.png`);
+      await pop.getByRole('button', { name: 'Open the Floor' }).click();
+      await page.waitForSelector('#floor-body', { timeout: 5000 });
+      check(await pop.count() === 0, '"Open the Floor" opens the Floor and closes the popover');
+      await page.evaluate(() => window.closeFloor());
+    }
+
     world.floor = busyFloor();
-    await pill.waitFor({ state: 'visible', timeout: 20000 });   // idle poll is 15s
+    await waitLive();
     check((await pill.textContent()).trim() === '2 working', 'pill reads "2 working" (idle and asking figures not counted)',
       `pill reads "${await pill.textContent()}"`);
+    await restPointer(page);
     const after = await geometry();
     check(after.height === before.height, `bar height unchanged (${after.height}px)`, `bar height ${before.height} -> ${after.height}`);
-    check(JSON.stringify(after.at) === JSON.stringify(before.at), 'existing bar controls did not move',
+    check(JSON.stringify(after.at) === JSON.stringify(before.at),
+      mobile ? 'existing bar controls did not move' : 'usage bars, the row and header controls did not move',
       `moved: ${before.at} -> ${after.at}`);
     const pillBox = await pill.boundingBox();
     check(pillBox.x >= 0 && pillBox.x + pillBox.width <= width, 'pill is inside the viewport', `pill ${JSON.stringify(pillBox)}`);
+    const live = await look();
+    // Dot opacity is not read here: the pulse is animating it.
+    check(live.live && live.animation === 'wn-pulse' && live.border !== 'rgba(0, 0, 0, 0)',
+      'live: green border and pulsing dot', JSON.stringify(live));
+    if (!mobile) {
+      check(live.bg !== quiet.bg && live.border !== quiet.border && live.color !== quiet.color && live.dotBg !== quiet.dotBg,
+        'live differs from quiet in background, border, text and dot', JSON.stringify({ quiet, live }));
+      check(JSON.stringify(pillBox) === JSON.stringify(quietBox), 'the chip keeps its place and size from 0 to 2',
+        `${JSON.stringify(quietBox)} -> ${JSON.stringify(pillBox)}`);
+    }
+    await shot(page, `working-now-live-${width}.png`);
+    if (!mobile) {
+      await page.evaluate(() => document.body.classList.remove('tone-warm'));
+      await page.waitForTimeout(400);
+      const dark = await look();
+      check(dark.live && dark.animation === 'wn-pulse' && dark.border !== live.border, 'dark theme: still the green live chip', JSON.stringify(dark));
+      await shot(page, `working-now-live-dark-${width}.png`);
+      await page.evaluate(() => document.body.classList.add('tone-warm'));
+      world.floor = floorBody([], Array.from({ length: 12 }, (_, i) => figure(`wnmany00${100 + i}`, 'Fenn')));
+      await waitLive(12);
+      await restPointer(page);
+      const many = await geometry(), manyBox = await pill.boundingBox();
+      check(JSON.stringify(many.at) === JSON.stringify(before.at) && JSON.stringify(manyBox) === JSON.stringify(quietBox),
+        '"12 working" moves nothing and keeps the chip size', `${before.at} -> ${many.at}; ${JSON.stringify(manyBox)}`);
+      world.floor = busyFloor();
+      await waitLive();
+
+      const redraw = await page.evaluate(() => {
+        const chip = document.querySelector('#bottom-status-row > .wn-pill');
+        const strip = document.getElementById('usage-bar-strip');
+        const same = () => chip === document.querySelector('#bottom-status-row > .wn-pill') && document.querySelectorAll('.wn-pill').length === 2;
+        window._renderUsageBarStrip();
+        const redrawn = { kept: same(), bars: strip.querySelectorAll('.usage-bar-item').length };
+        _globalConfig.usage_bar_enabled = false;
+        window._renderUsageBarStrip();
+        const off = { kept: same(), strip: strip.innerHTML, shown: chip.getBoundingClientRect().height > 0,
+          x: chip.getBoundingClientRect().left };
+        return { redrawn, off };
+      });
+      check(redraw.redrawn.kept && redraw.redrawn.bars === 2, 'the chip survives a usage-strip redraw', JSON.stringify(redraw.redrawn));
+      check(redraw.off.kept && redraw.off.strip === '' && redraw.off.shown && redraw.off.x === pillBox.x,
+        'usage feature off: strip emptied, chip stays where it was', JSON.stringify(redraw.off));
+      await checkOverlays(page, 'usage feature off');
+      await page.evaluate(() => { _globalConfig.usage_bar_enabled = true; window._renderUsageBarStrip(); });
+    }
 
     await pill.click();
-    const pop = page.locator('#working-now-popover');
     await pop.waitFor();
     check(await pill.getAttribute('aria-expanded') === 'true', 'pill reports expanded');
     check(await pop.locator('.wn-row').count() === 2, 'one row per working figure');
@@ -167,10 +326,13 @@ try {
       && [...document.querySelectorAll('.wn-row .wn-avatar img')].every((i) => i.complete && i.naturalWidth > 0), null, { timeout: 5000 });
     ok('each row has a loaded avatar');
     const box = await pop.boundingBox();
-    const bar = await geometry();
-    check(box.x >= 0 && box.x + box.width <= width + 0.5, 'popover is inside the viewport', `popover ${JSON.stringify(box)}`);
-    check(Math.abs(box.y - bar.bottom) <= 1, 'popover hangs from the bottom of the bar', `popover y=${box.y}, bar bottom=${bar.bottom}`);
-    if (mobile) check(box.x === 0 && Math.round(box.width) === width, `popover is full width at ${width}px`, `popover ${JSON.stringify(box)}`);
+    check(box.x >= 0 && box.x + box.width <= width + 0.5 && box.y >= 0 && box.y + box.height <= page.viewportSize().height,
+      'popover is inside the viewport', `popover ${JSON.stringify(box)}`);
+    if (mobile) {
+      const bar = await geometry();
+      check(Math.abs(box.y - bar.bottom) <= 1, 'popover hangs from the bottom of the app bar', `popover y=${box.y}, bar bottom=${bar.bottom}`);
+      check(box.x === 0 && Math.round(box.width) === width, `popover is full width at ${width}px`, `popover ${JSON.stringify(box)}`);
+    } else await checkUpward('live popover');
     const oneLine = await pop.locator('.wn-task').first().evaluate((el) =>
       el.getBoundingClientRect().height <= parseFloat(getComputedStyle(el).lineHeight || '20') + 3 || getComputedStyle(el).whiteSpace === 'nowrap');
     check(oneLine, 'task is truncated to one line');
@@ -187,15 +349,20 @@ try {
 
     await pill.click();
     world.floor = idleFloor();
-    await pill.waitFor({ state: 'hidden', timeout: 8000 });
-    check(await pop.count() === 0, 'N=0 hides the pill and closes the popover');
+    await waitNobody(8000);
+    if (mobile) check(await pop.count() === 0, 'N=0 hides the mobile pill and closes the popover');
+    else {
+      check(await pop.locator('.wn-none').count() === 1 && await pop.locator('.wn-row').count() === 0,
+        'N=0 turns the chip quiet and the open popover says so');
+      await page.keyboard.press('Escape');
+    }
     world.floor = busyFloor();
-    await pill.waitFor({ state: 'visible', timeout: 20000 });   // idle poll is 15s
+    await waitLive();
     world.floorStatus = 500;
-    await pill.waitFor({ state: 'hidden', timeout: 8000 });
-    ok('a failed read hides the pill instead of keeping a stale count');
+    await waitNobody(8000);
+    ok('a failed read shows the quiet (desktop) or hidden (mobile) state, not a stale count');
     world.floorStatus = 200;
-    await pill.waitFor({ state: 'visible', timeout: 20000 });   // idle poll is 15s
+    await waitLive();
 
     await pill.click();
     await pop.locator('.wn-row').first().click();
@@ -224,7 +391,7 @@ try {
     check(!threw, "a payload the pill cannot read does not throw into the Floor's refresh");
     await page.evaluate(() => window.closeFloor());
     world.floor = idleFloor();
-    await pill.waitFor({ state: 'hidden', timeout: 12000 });
+    await waitNobody(12000);
     ok('after the Floor closes the pill polls on its own again');
 
     console.log(`── ${width}px: dispatching chat`);
@@ -311,6 +478,41 @@ try {
     await page.waitForFunction((sid) => (document.getElementById(`agent-output-${sid}`)?.textContent || '').includes('CHILD TRANSCRIPT MARKER'), CHILD, { timeout: 8000 });
     ok("Open goes to the child's chat in the other project");
 
+    check(errors.length === 0, 'no uncaught page errors', `errors: ${errors}`);
+    await ctx.close();
+  }
+
+  console.log('── 1440px: no usage data at all');
+  {
+    const { page, ctx, errors, world } = await open(1440, { provider_weekly_usage: {} });
+    const chip = page.locator('#bottom-status-row > .wn-pill');
+    await page.waitForTimeout(600);
+    const alone = await page.evaluate(() => {
+      const strip = document.getElementById('usage-bar-strip');
+      return { strip: strip.innerHTML.trim(), stripShown: getComputedStyle(strip).display,
+        rowShown: getComputedStyle(document.getElementById('bottom-status-row')).display };
+    });
+    check(alone.strip === '' && alone.stripShown === 'none' && alone.rowShown === 'flex' && await chip.isVisible()
+      && (await chip.textContent()).trim() === '0 working', 'the row holds only the chip, reading "0 working"', JSON.stringify(alone));
+    await checkOverlays(page, 'no usage data');
+    await shot(page, 'working-now-no-usage-1440.png');
+    // Control: with the strip empty only the chip's own lift rule keeps the
+    // overlays up, so without it the measurement above must see the row covered.
+    const dropped = await page.evaluate(() => {
+      for (const sheet of document.styleSheets) {
+        let rules; try { rules = sheet.cssRules; } catch (e) { continue; }
+        const i = [...rules].findIndex((r) => r.media && r.cssText.includes('.bottom-status-row > .wn-pill'));
+        if (i >= 0) { sheet.deleteRule(i); return true; }
+      }
+      return false;
+    });
+    const covered = await overlaysClearRow(page);
+    check(dropped && covered.every((o) => o.consoleBottom > o.rowTop + 1 && !o.chipOnTop),
+      'control: without the lift rule the agent console covers the chip', `dropped=${dropped} ${JSON.stringify(covered)}`);
+    world.floor = busyFloor();
+    await page.waitForFunction(() => document.querySelector('#bottom-status-row > .wn-pill.wn-live')?.textContent.trim() === '2 working',
+      null, { timeout: 20000 });
+    ok('it turns live with no usage bars beside it');
     check(errors.length === 0, 'no uncaught page errors', `errors: ${errors}`);
     await ctx.close();
   }

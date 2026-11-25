@@ -778,14 +778,17 @@
     <div class="agent-console-body" id="ac-body"></div>
   </div>
 
-  <!-- Bottom usage strip (MC-966): one bar per provider's weekly quota %.
-       A real flex child of .main-area (not fixed) so it reserves its own
-       row instead of overlaying content; empty and collapses to nothing
-       when no provider has real data or the feature is off. #minimized-tray
-       is a separate fixed overlay for minimized modal chips — the CSS
-       nudges it up by this strip's height only while the strip is non-empty,
-       so the two coexist without one covering the other. -->
-  <div class="usage-bar-strip" id="usage-bar-strip"></div>
+  <!-- Bottom status row, desktop only. A real flex child of .main-area (not
+       fixed) so it reserves its own height instead of overlaying content.
+       working-now.js puts the "N working" chip in as its first child, a
+       sibling of the strip so that no usage redraw can remove it.
+       Bottom usage strip (MC-966): one bar per provider's weekly quota %,
+       empty and collapsed when no provider has real data or the feature is
+       off. #minimized-tray and .agent-console are fixed overlays; the CSS
+       lifts both by the row's height while the row is showing. -->
+  <div class="bottom-status-row" id="bottom-status-row">
+    <div class="usage-bar-strip" id="usage-bar-strip"></div>
+  </div>
 
 </div><!-- end .main-area -->
 
