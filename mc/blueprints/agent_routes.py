@@ -156,6 +156,7 @@ import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends
 import mc.turn_clock as _turn_clock          # per-turn "Now ... since your last reply" stamp + gap briefing
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
+import mc.rollover_fresh_floor as _rollover_floor
 from mc import handoff_turns as _handoff_turns
 import mc.long_job_guidance as _long_job_guidance  # MC-1149: long jobs -> /job route, every engine
 import mc.resume_target as _resume_target  # unresumable `-r` ids: heal, don't loop
@@ -6174,6 +6175,7 @@ def _read_agent_stream(proc, session):
     # Snapshot the proc we were launched with so we can detect if a follow-up
     # replaced us with a newer process while we were still draining stdout.
     my_proc = proc
+    floor_probe = _rollover_floor.FloorProbe(my_proc)
     # Last total_cost_usd THIS process reported, plus its CLI version and, on
     # CLI >= 2.1.277, the total its resume carried over (read from the
     # transcript at init). This reader IS the process. See accumulate_result_cost.
@@ -6206,6 +6208,8 @@ def _read_agent_stream(proc, session):
                 # read stdin, so a child killed there never gets a transcript.
                 if 'session_id' in msg and not _resume_target.is_startup_hook_event(msg):
                     _note_claude_sid(session, msg['session_id'])
+                floor_probe.observe(session, msg, _agent_runtime._find_claude_transcript,
+                                    _agent_runtime.normalize_context_tokens)
                 # Refresh the account-global system status cache from
                 # `system/init` and `rate_limit_event` messages (every claude
                 # session emits these). No-op for any other message type.
@@ -6478,6 +6482,7 @@ def _read_agent_stream_b(proc, session):
     A 'result' message signals the end of a turn, not the end of the process.
     """
     my_proc = proc
+    floor_probe = _rollover_floor.FloorProbe(my_proc)
     # MC-958: background jobs belong to the process that started them. A
     # respawn (followup, eviction, AskUserQuestion) means they are gone —
     # say so instead of letting the promised wake silently never come.
@@ -6629,6 +6634,8 @@ def _read_agent_stream_b(proc, session):
                 msg_type = msg.get('type', '')
                 if 'session_id' in msg and not _resume_target.is_startup_hook_event(msg):
                     _note_claude_sid(session, msg['session_id'])
+                floor_probe.observe(session, msg, _agent_runtime._find_claude_transcript,
+                                    _agent_runtime.normalize_context_tokens)
                 # See Mode A reader: refresh the system-status cache.
                 _capture_system_init(msg)
                 _limit_resume.observe_claude(session, msg)
@@ -8829,6 +8836,8 @@ def _note_claude_sid(session, sid):
     with _CSID_LOCK:
         prev = session.get('claude_session_id')
         session['claude_session_id'] = sid
+        if prev != sid:
+            _rollover_floor.clear_floor(session)
         # MC-998 follow-up 5: a respawn/resume starts a NEW claude_session_id
         # (new transcript .jsonl); retain every one this MC session has run
         # under so `_session_cumulative_transcript_telemetry` can sum all of
@@ -12229,6 +12238,7 @@ def _mark_context_rolled(session, old_native_id):
     that actually has a transcript, not at an intermediate dead end.
     """
     session['context_tokens'] = None
+    _rollover_floor.clear_floor(session)
     if old_native_id:
         session['_rolled_from'] = session.get('_rolled_from') or old_native_id
 

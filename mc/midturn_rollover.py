@@ -38,6 +38,7 @@ from mc import state
 from mc import bg_job_liveness as _bg_live
 from mc.core import _log, TimestampedLines
 from mc.long_job_guidance import job_route_url as _job_url
+from mc.rollover_fresh_floor import clear_floor
 from mc.rollover_threshold import _character_ref, inputs_for_session, threshold_with_reason
 
 RECENT_TOOLS_KEEP = 10
@@ -318,10 +319,6 @@ def note_call_tokens(session, tokens, parent_tool_use_id=None):
     if not enabled() or parent_tool_use_id or tokens is None:
         return
     session['_mt_main_tokens'] = tokens
-    if session.get('_mt_fresh_floor') is None:
-        # MC-1178 prep: log-only. The first reading since session start / the
-        # last roll is the fresh-start load, before any work grew it.
-        session['_mt_fresh_floor'] = tokens
     if session.get('_mt_awaiting_baseline'):
         session['_mt_awaiting_baseline'] = False
         session['_mt_baseline_tokens'] = tokens
@@ -399,7 +396,7 @@ def begin_roll(session):
     # of _maybe_midturn_roll), so the outgoing segment's floor is parked for
     # that row and the new segment starts un-set.
     session['_mt_rolled_floor'] = session.get('_mt_fresh_floor')
-    session['_mt_fresh_floor'] = None
+    clear_floor(session)
     session['_mt_main_tokens'] = None
     session['_mt_awaiting_baseline'] = True
     session['_mt_baseline_tokens'] = None

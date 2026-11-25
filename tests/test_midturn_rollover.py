@@ -121,6 +121,7 @@ def env(tmp_path, monkeypatch, survive_restart_off):
     from mc.blueprints import agent_routes as ar
     from mc.delegation_delivery import DeliveryStore
 
+    monkeypatch.setattr(ar._agent_runtime, '_find_claude_transcript', lambda *_: None)
     project_path = tmp_path / 'proj'
     project_path.mkdir()
     for args in (['init', '-q'], ['config', 'user.email', 't@example.invalid'],
@@ -340,9 +341,11 @@ def test_roll_is_logged_to_a_durable_file(env):
     assert len(env['spawned']) == 1
 
 
-def test_roll_row_logs_character_model_provider_and_fresh_floor(env):
+def test_roll_row_logs_character_model_provider_and_fresh_floor(env, monkeypatch):
     """MC-1178 prep, through the real reader + agent_interrupt (which calls
     begin_roll BEFORE record_roll): the row carries the segment that rolled."""
+    _write_floor_transcript(env, monkeypatch, _assistant('tool1', 50_000, 'm1'))
+
     def lines():
         yield _assistant('tool1', 50_000, 'm1')     # first reading = fresh floor
         yield _tool_result('tool1')
@@ -359,6 +362,62 @@ def test_roll_row_logs_character_model_provider_and_fresh_floor(env):
     assert row['fresh_floor_tokens'] == 50_000
     assert row['working_room_tokens'] == 150_000
     env['join_respawns']()
+
+
+@pytest.mark.parametrize('reader', ['reader', 'reader_a'])
+def test_reader_attached_after_first_call_does_not_invent_a_floor(env, monkeypatch, reader):
+    _write_floor_transcript(env, monkeypatch, _assistant('earlier', 85_000, 'first'))
+
+    def lines():
+        yield _assistant('late', 389_142, '146')
+
+    session = _run_reader(env, lines, reader=reader, _mt_fresh_floor=None)
+    assert session['context_tokens'] == 389_142
+    assert session['_mt_fresh_floor'] is None
+
+
+def test_roll_and_native_change_clear_only_the_outgoing_floor(env):
+    ar = env['ar']
+    session = _session(_Proc())
+    ar._note_claude_sid(session, CSID)
+    assert session['_mt_fresh_floor'] == 30_000
+    ar._mark_context_rolled(session, CSID)
+    assert session['_mt_fresh_floor'] is None
+    session['_mt_fresh_floor'] = 80_000
+    ar._note_claude_sid(session, 'different-native-id')
+    assert session['_mt_fresh_floor'] is None
+
+
+def test_successor_verifies_its_own_first_call_after_transcript_flush(env, monkeypatch):
+    proc = _Proc()
+    session = _session(proc)
+    env['ar']._midturn.begin_roll(session)
+
+    def lines():
+        first = _assistant('first', 84_000, 'new-first')
+        yield first                      # transcript is not on disk yet
+        assert session['_mt_fresh_floor'] is None
+        _write_floor_transcript(env, monkeypatch, first)
+        yield _assistant('next', 95_000, 'new-second')
+
+    _run_reader(env, lines, session=session, proc=proc)
+    assert session['_mt_fresh_floor'] == 84_000
+    assert session['context_tokens'] == 95_000
+
+
+def _write_floor_transcript(env, monkeypatch, assistant_line):
+    path = env['tmp'] / f'{CSID}.jsonl'
+    assistant = json.loads(assistant_line)
+    assistant['sessionId'] = CSID
+    assistant['parentUuid'] = 'prompt'
+    assistant['message']['model'] = 'claude-fable-5-2'
+    events = [
+        {'sessionId': CSID, 'type': 'user', 'parentUuid': None,
+         'uuid': 'prompt', 'message': {'content': 'opening prompt'}},
+        assistant,
+    ]
+    path.write_text(''.join(json.dumps(event) + '\n' for event in events), encoding='utf-8')
+    monkeypatch.setattr(env['ar']._agent_runtime, '_find_claude_transcript', lambda *_: path)
 
 
 def test_journal_path_and_tool_result_heads_carried_across_roll(env):
@@ -1285,7 +1344,9 @@ def test_non_claude_process_that_really_dies_after_interrupt_still_goes_to_error
 
 
 
-def test_model_rollover_waits_for_cost_optimum_and_logs_it(env):
+def test_model_rollover_waits_for_cost_optimum_and_logs_it(env, monkeypatch):
+    _write_floor_transcript(env, monkeypatch, _assistant('tool1', 90_000, 'm1'))
+
     def lines():
         yield _assistant('tool1', 90_000, 'm1')
         yield _tool_result('tool1')

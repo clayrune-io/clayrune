@@ -34,7 +34,7 @@ def _session(**extra):
 def test_row_carries_all_fields(log):
     s = _session(character={'name': 'dave', 'scope': 'global'}, provider='claude',
                  model='claude-opus-4', observed_model='claude-opus-4-20250101')
-    mt.note_call_tokens(s, 30_000)
+    s['_mt_fresh_floor'] = 30_000
     mt.record_roll(s, 250_000)
     row = log()[0]
     assert row['character'] == 'global:dave'
@@ -72,15 +72,14 @@ def test_working_room_uses_the_character_threshold(log, monkeypatch):
     monkeypatch.setitem(state.CONFIG, 'context_rollover_by_character',
                         {'global:dave': 120_000})
     s = _session(character={'name': 'dave', 'scope': 'global'})
-    mt.note_call_tokens(s, 45_000)
+    s['_mt_fresh_floor'] = 45_000
     mt.record_roll(s, 130_000)
     row = log()[0]
     assert row['threshold'] == 120_000 and row['working_room_tokens'] == 75_000
 
 
-def test_floor_is_the_first_reading_not_the_latest(log):
-    s = _session()
-    mt.note_call_tokens(s, 40_000)
+def test_call_tokens_never_replace_verified_floor(log):
+    s = _session(_mt_fresh_floor=40_000)
     mt.note_call_tokens(s, 90_000)
     mt.note_call_tokens(s, 150_000)
     assert s['_mt_fresh_floor'] == 40_000
@@ -88,24 +87,23 @@ def test_floor_is_the_first_reading_not_the_latest(log):
     assert log()[0]['fresh_floor_tokens'] == 40_000
 
 
-def test_subagent_readings_never_set_the_floor(log):
+def test_unverified_readings_never_set_the_floor(log):
     s = _session()
     mt.note_call_tokens(s, 5_000, parent_tool_use_id='toolu_x')
     assert s.get('_mt_fresh_floor') is None
     mt.note_call_tokens(s, 40_000)
-    assert s['_mt_fresh_floor'] == 40_000
+    assert s.get('_mt_fresh_floor') is None
 
 
-def test_floor_is_first_post_roll_reading_and_roll_row_keeps_outgoing_floor(log):
-    s = _session()
-    mt.note_call_tokens(s, 40_000)
+def test_roll_row_keeps_outgoing_floor(log):
+    s = _session(_mt_fresh_floor=40_000)
     mt.note_call_tokens(s, 210_000)
     # agent_interrupt calls begin_roll BEFORE _maybe_midturn_roll calls record_roll.
     mt.begin_roll(s)
     assert s['_mt_fresh_floor'] is None             # reset for the new segment
     mt.record_roll(s, 210_000)
     assert log()[0]['fresh_floor_tokens'] == 40_000  # the segment that rolled
-    mt.note_call_tokens(s, 55_000)                  # first reading after the roll
+    s['_mt_fresh_floor'] = 55_000                   # verified in the successor
     mt.note_call_tokens(s, 120_000)
     assert s['_mt_fresh_floor'] == 55_000
     mt.begin_roll(s)
@@ -126,7 +124,7 @@ def test_roll_with_no_reading_logs_null_floor_and_room(log):
 
 def test_gave_up_row_carries_the_current_segments_floor(log):
     s = _session(character={'name': 'dave', 'scope': 'global'})
-    mt.note_call_tokens(s, 35_000)
+    s['_mt_fresh_floor'] = 35_000
     s['_mt_roll_failures'] = mt.MAX_ROLL_FAILURES
     s['_mt_attempt_tokens'] = 210_000
     mt._observe_failures(s)
@@ -147,7 +145,7 @@ def test_decisions_unchanged_by_the_floor(log):
 def test_model_threshold_reason_uses_outgoing_floor_after_reset(log, monkeypatch):
     monkeypatch.setitem(state.CONFIG, 'context_rollover_by_character', {'global:dave': 100_000})
     s = _session(model='claude-fable-5-2', character='global:dave')
-    mt.note_call_tokens(s, 90_000)
+    s['_mt_fresh_floor'] = 90_000
     mt.begin_roll(s)
     mt.record_roll(s, 280_000)
     row = log()[0]
@@ -161,7 +159,7 @@ def test_model_threshold_reason_uses_outgoing_floor_after_reset(log, monkeypatch
 
 def test_gave_up_logs_model_threshold_for_current_floor(log):
     s = _session(agent_model='claude-fable-5-1')
-    mt.note_call_tokens(s, 90_000)
+    s['_mt_fresh_floor'] = 90_000
     s['_mt_roll_failures'] = mt.MAX_ROLL_FAILURES
     s['_mt_attempt_tokens'] = 280_000
     mt._observe_failures(s)
