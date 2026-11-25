@@ -53,13 +53,22 @@ def test_carry_note_ahead_of_the_message_is_stripped(tmp_path, monkeypatch):
     assert f'User: {REAL}' in _handoff(tmp_path, monkeypatch, turn)
 
 
-def test_long_user_text_keeps_its_end_and_states_the_cut():
-    text = 'HEAD ' + 'y' * 9000 + ' THE-ACTUAL-ASK'
+def test_long_user_text_keeps_both_ends_and_states_the_cut():
+    # Review F5: a 9,000-char dispatch brief has its constraints at the top
+    # and its ask at the bottom; a tail-only cap dropped the constraints.
+    text = 'HEAD-CONSTRAINTS ' + 'y' * 9000 + ' THE-ACTUAL-ASK'
     [(_, out)] = handoff_turns.clean_turns([('user', text)])
-    assert out.endswith('THE-ACTUAL-ASK')
-    assert out.startswith(
-        f'[... {len(text) - handoff_turns.USER_TURN_CAP} chars omitted]\n')
-    assert 'HEAD' not in out
+    omitted = len(text) - handoff_turns.USER_TURN_CAP
+    head, tail = out.split(f'\n[... {omitted} chars omitted from the middle]\n')
+    assert head == text[:handoff_turns.USER_HEAD_KEEP]
+    assert head.startswith('HEAD-CONSTRAINTS')
+    assert tail == text[-(handoff_turns.USER_TURN_CAP - handoff_turns.USER_HEAD_KEEP):]
+    assert tail.endswith('THE-ACTUAL-ASK')
+
+
+def test_user_text_at_the_cap_is_untouched():
+    text = 'z' * handoff_turns.USER_TURN_CAP
+    assert handoff_turns.clean_turns([('user', text)]) == [('user', text)]
 
 
 def test_injection_only_turns_drop_and_other_roles_pass_through():
